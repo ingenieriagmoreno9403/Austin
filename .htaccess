@@ -1,0 +1,12 @@
+
+# DO NOT REMOVE THIS LINE AND THE LINES BELOW IPALLOWID:h6WyBnw8dF
+allow from 172.30.12.209
+# DO NOT REMOVE THIS LINE AND THE LINES ABOVE h6WyBnw8dF:IPALLOWID
+
+
+
+
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>

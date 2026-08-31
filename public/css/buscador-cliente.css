@@ -1,0 +1,288 @@
+/* Estilos para el componente BuscadorCliente */
+.buscador-cliente {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Estilos para los labels */
+.buscador-cliente .form-label {
+    font-weight: 600;
+    color: #2c3e50;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Estilos para los inputs */
+.buscador-cliente .form-control {
+    border: 2px solid #e9ecef;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    font-size: 0.95rem;
+    transition: all 0.3s ease;
+    background-color: #f8f9fa;
+}
+
+.buscador-cliente .form-control:focus {
+    border-color: #007bff;
+    box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+    background-color: #ffffff;
+    transform: translateY(-1px);
+}
+
+.buscador-cliente .form-control::placeholder {
+    color: #adb5bd;
+    font-style: italic;
+}
+
+/* Estilos para los botones */
+.buscador-cliente .btn {
+    border-radius: 8px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 0.5rem 1rem;
+    transition: all 0.3s ease;
+    border: 2px solid transparent;
+}
+
+.buscador-cliente .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+.buscador-cliente .btn-outline-secondary {
+    border-color: #6c757d;
+    color: #6c757d;
+}
+
+.buscador-cliente .btn-outline-secondary:hover {
+    background-color: #6c757d;
+    border-color: #6c757d;
+    color: white;
+}
+
+.buscador-cliente .btn-outline-primary {
+    border-color: #007bff;
+    color: #007bff;
+}
+
+.buscador-cliente .btn-outline-primary:hover {
+    background-color: #007bff;
+    border-color: #007bff;
+    color: white;
+}
+
+.buscador-cliente .btn-primary {
+    background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
+    border: none;
+    color: white;
+}
+
+.buscador-cliente .btn-secondary {
+    background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
+    border: none;
+    color: white;
+}
+
+/* Estilos para los dropdowns de búsqueda */
+.buscador-cliente .dropdown-menu {
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+    padding: 0.5rem 0;
+    margin-top: 0.5rem;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.buscador-cliente .dropdown-item {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid #f8f9fa;
+    transition: all 0.2s ease;
+    color: #495057;
+}
+
+.buscador-cliente .dropdown-item:hover {
+    background-color: #f8f9fa;
+    color: #007bff;
+    transform: translateX(5px);
+}
+
+.buscador-cliente .dropdown-item:last-child {
+    border-bottom: none;
+}
+
+/* Estilos para las alertas */
+.buscador-cliente .alert {
+    border: none;
+    border-radius: 12px;
+    padding: 1rem;
+    margin-top: 0.75rem;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+.buscador-cliente .alert-success {
+    background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+    color: #155724;
+    border-left: 4px solid #28a745;
+}
+
+.buscador-cliente .alert-info {
+    background: linear-gradient(135deg, #d1ecf1 0%, #bee5eb 100%);
+    color: #0c5460;
+    border-left: 4px solid #17a2b8;
+}
+
+/* Estilos para el formulario de nueva persona */
+.buscador-cliente .card {
+    border: none;
+    border-radius: 16px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+
+.buscador-cliente .card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.15);
+}
+
+.buscador-cliente .card-header {
+    background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
+    border: none;
+    padding: 1rem 1.5rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.buscador-cliente .card-body {
+    padding: 1.5rem;
+    background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+}
+
+/* Estilos para los campos del formulario */
+.buscador-cliente .form-control.is-invalid {
+    border-color: #dc3545;
+    background-color: #fff5f5;
+}
+
+.buscador-cliente .invalid-feedback {
+    font-size: 0.8rem;
+    color: #dc3545;
+    font-weight: 500;
+    margin-top: 0.25rem;
+}
+
+/* Estilos para los iconos */
+.buscador-cliente .fa-solid {
+    font-size: 0.9rem;
+}
+
+/* Estilos para el botón de agregar nueva persona */
+.buscador-cliente .btn-outline-primary.btn-sm {
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+    border-radius: 20px;
+    background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+}
+
+/* Estilos para los campos del formulario en filas */
+.buscador-cliente .row .col-md-6 {
+    margin-bottom: 1rem;
+}
+
+/* Estilos para los botones del formulario */
+.buscador-cliente .d-flex.gap-2 {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid #e9ecef;
+}
+
+/* Estilos para el input group */
+.buscador-cliente .input-group {
+    position: relative;
+}
+
+.buscador-cliente .input-group .btn {
+    border-radius: 0 8px 8px 0;
+    border-left: none;
+}
+
+.buscador-cliente .input-group .form-control {
+    border-radius: 8px 0 0 8px;
+}
+
+.buscador-cliente .input-group .form-control:focus + .btn {
+    border-color: #007bff;
+}
+
+/* Estilos para el scrollbar del dropdown */
+.buscador-cliente .dropdown-menu::-webkit-scrollbar {
+    width: 6px;
+}
+
+.buscador-cliente .dropdown-menu::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
+
+.buscador-cliente .dropdown-menu::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 3px;
+}
+
+.buscador-cliente .dropdown-menu::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+/* Animaciones */
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.buscador-cliente .card {
+    animation: fadeInUp 0.5s ease-out;
+}
+
+/* Estilos responsivos */
+@media (max-width: 768px) {
+    .buscador-cliente .card-body {
+        padding: 1rem;
+    }
+    
+    .buscador-cliente .btn {
+        padding: 0.75rem 1rem;
+        font-size: 0.9rem;
+    }
+    
+    .buscador-cliente .form-control {
+        padding: 0.875rem 1rem;
+    }
+}
+
+/* Estilos para el estado de carga */
+.buscador-cliente .loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* Estilos para el estado de éxito */
+.buscador-cliente .success {
+    border-color: #28a745;
+    background-color: #f8fff9;
+}
+
+/* Estilos para el estado de error */
+.buscador-cliente .error {
+    border-color: #dc3545;
+    background-color: #fff5f5;
+}

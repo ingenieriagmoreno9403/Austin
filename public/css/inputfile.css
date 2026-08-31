@@ -1,0 +1,339 @@
+:root {
+    --primary-green: #202020;
+    --secondary-green: #9e9e9e;
+    --accent-yellow: #ffc107;
+    --light-yellow: #ffca2c;
+    --white: #ffffff;
+    --light-gray: #f8f9fa;
+    --dark-gray: #495057;
+    --border-radius: 16px;
+    --shadow: 0 8px 32px rgba(0,0,0,0.1);
+    --shadow-hover: 0 12px 40px rgba(0,0,0,0.15);
+}
+
+/* Modern File Input Styles */
+.modern-file-input {
+    position: relative;
+    display: inline-block;
+    width: 100%;
+    cursor: pointer;
+    border-radius: var(--border-radius);
+    transition: all 0.3s ease;
+    overflow: visible;
+    margin-bottom: 1rem;
+}
+
+.modern-file-input:hover {
+    transform: translateY(-2px);
+    /* box-shadow: var(--shadow-hover); */
+}
+
+.file-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 140px;
+    background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+    border: 2px dashed #dee2e6;
+    border-radius: var(--border-radius);
+    padding: 2rem;
+    text-align: center;
+    transition: all 0.3s ease;
+}
+
+.file-input-wrapper:hover {
+    box-shadow: var(--shadow-hover);
+}
+
+.file-input-wrapper.dragover {
+    background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+    border-color: #adb5bd;
+    transform: scale(1.02);
+    box-shadow: var(--shadow-hover);
+}
+
+.file-input-wrapper.has-file {
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    border-color: #6c757d;
+    box-shadow: var(--shadow-hover);
+}
+
+.file-input-icon {
+    font-size: 3rem;
+    color: #adb5bd;
+    margin-bottom: 1rem;
+    transition: all 0.3s ease;
+}
+
+.file-input-text {
+    color: #6c757d;
+    font-weight: 600;
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.file-input-subtext {
+    color: #adb5bd;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+
+.hidden-file-input {
+    position: absolute;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+    z-index: 2;
+}
+
+.file-preview {
+    display: none;
+    margin-top: 1rem;
+    padding: 1.5rem;
+    background: #ffffff!important;
+    border-radius: 12px;
+    border-left: 4px solid var(--primary-green);
+    animation: slideDown 0.3s ease;
+    box-shadow: var(--shadow-hover);
+}
+
+.file-preview.show {
+    display: block;
+}
+
+.file-preview-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    background: var(--white);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.file-preview-info {
+    display: flex;
+    align-items: center;
+    flex: 1;
+}
+
+.file-preview-icon {
+    font-size: 1.8rem;
+    margin-right: 1rem;
+    color: var(--primary-green);
+}
+
+.file-preview-details h6 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--dark-gray);
+    font-weight: 600;
+}
+
+.file-preview-details small {
+    color: var(--dark-gray);
+    font-size: 0.85rem;
+    opacity: 0.7;
+}
+
+.file-preview-remove {
+    background: #dc3545;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 35px;
+    height: 35px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 1rem;
+}
+
+.file-preview-remove:hover {
+    background: #c82333;
+    transform: scale(1.1);
+}
+
+/* Solo dentro de uploads; no chocar con Bootstrap .progress > .progress-bar */
+.modern-file-input .progress-bar,
+.file-preview .progress-bar {
+    height: 6px;
+    background: #e9ecef;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 1rem;
+}
+
+.modern-file-input .progress-fill,
+.file-preview .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary-green), var(--secondary-green));
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+/* Validation Messages */
+.modern-file-input .valid-feedback {
+    display: block;
+    width: 100%;
+    margin-top: 0.25rem;
+    font-size: 0.875em;
+    color: #198754;
+    font-weight: 500;
+}
+
+.modern-file-input .invalid-feedback {
+    display: block;
+    width: 100%;
+    margin-top: 0.25rem;
+    font-size: 0.875em;
+    color: #dc3545;
+    font-weight: 500;
+}
+
+/* Validation States */
+.modern-file-input.is-valid .file-input-wrapper {
+    border-color: #198754;
+    background: linear-gradient(135deg, #f8fff9 0%, #e8f5e8 100%);
+}
+
+.modern-file-input.is-invalid .file-input-wrapper {
+    border-color: #dc3545;
+    background: linear-gradient(135deg, #fff8f8 0%, #ffe8e8 100%);
+    animation: pulseError 0.5s ease-in-out;
+}
+
+/* Clase en el propio dropzone: prioridad sobre otros estilos (p. ej. pestaña oculta) */
+.file-input-wrapper.doc-file-invalid {
+    border: 2px solid #dc3545 !important;
+    background: linear-gradient(135deg, #fff5f5 0%, #ffe4e4 100%) !important;
+    animation: pulseError 0.5s ease-in-out;
+}
+
+.file-input-wrapper.doc-file-invalid .file-input-text,
+.file-input-wrapper.doc-file-invalid .file-input-subtext {
+    color: #842029;
+}
+
+.file-input-wrapper.doc-file-invalid .file-input-icon {
+    color: #dc3545 !important;
+}
+
+.modern-file-input.is-valid .file-input-icon {
+    color: #198754;
+}
+
+.modern-file-input.is-invalid .file-input-icon {
+    color: #dc3545;
+}
+
+/* File Selected States */
+.file-input-wrapper.has-file .file-input-text {
+    color: #198754;
+    font-weight: 700;
+}
+
+.file-input-wrapper.has-file .file-input-subtext {
+    color: #20c997;
+    font-weight: 500;
+}
+
+.file-input-wrapper.has-file .file-input-icon {
+    color: #198754;
+}
+
+/* File Preview Green States */
+.file-preview.show .file-preview-details h6 {
+    color: #198754;
+    font-weight: 700;
+}
+
+.file-preview.show .file-preview-details small {
+    color: #b9b9b9;
+    font-weight: 500;
+}
+
+.file-preview.show .file-preview-icon {
+    color: #808080;
+}
+
+/* Submit Button States */
+.modern-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none !important;
+}
+
+.modern-btn:disabled:hover {
+    transform: none !important;
+    box-shadow: var(--shadow) !important;
+}
+
+/* Loading State */
+.modern-btn .fa-spinner {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Error State for Missing Files */
+.modern-file-input.is-invalid .file-input-wrapper::after,
+.file-input-wrapper.doc-file-invalid::after {
+    content: "⚠️ Archivo requerido";
+    position: absolute;
+    bottom: -25px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.75rem;
+    color: #dc3545;
+    font-weight: 600;
+    background: #fff;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid #dc3545;
+    white-space: nowrap;
+    z-index: 3;
+}
+
+/* Success State for Valid Files */
+.modern-file-input.is-valid .file-input-wrapper::after {
+    content: "✓ Archivo válido";
+    position: absolute;
+    bottom: -25px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.75rem;
+    color: #198754;
+    font-weight: 600;
+    background: #fff;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid #198754;
+    white-space: nowrap;
+}
+
+/* Animation for file input validation */
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes pulseError {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+    100% { transform: scale(1); }
+}
