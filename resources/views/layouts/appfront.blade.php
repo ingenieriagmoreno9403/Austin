@@ -7,7 +7,7 @@
     <!-- CSRF Token -->
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
-    <title>IOHISA ® - MBNTAS ERP</title>
+    <title>AUSTIN POWDER ® - MBNTAS ERP</title>
     <link rel="icon" type="image/png" href="{{ asset('Images/IOHISA.png') }}">
 
          <!-- Scripts -->

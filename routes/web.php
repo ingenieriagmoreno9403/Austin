@@ -47,6 +47,7 @@ use App\Http\Controllers\RegistroProduccionController;
 use App\Http\Controllers\VentasController;
 use App\Http\Controllers\ReporteNoExistenciasController;
 use App\Http\Controllers\AutinApiController;
+use App\Http\Controllers\CentrosCostosController;
 /*
 |--------------------------------------------------------------------------
 | Web Routes
@@ -1180,6 +1181,28 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
         Route::get('/', 'App\Http\Controllers\ServiciosController@seguimiento_index')->name('seguimiento.index');
         Route::post('/actualizar-comision', 'App\Http\Controllers\ServiciosController@actualizarPorcentajeComision')->name('seguimiento.actualizar-comision');
     });
+
+    Route::get('/AdminCentros', [CentrosCostosController::class, 'admin'])->name('centros.admin');
+    Route::get('/AdminCentros/{ciclo}/asignar/{empresa?}', [CentrosCostosController::class, 'asignar'])
+        ->where('empresa', 'austin|imsa|pitic|sydney')
+        ->name('centros.asignar');
+    Route::get('/AdminCentros/{ciclo}/asignaciones', [CentrosCostosController::class, 'listAsignaciones'])->name('centros.asignaciones.index');
+    Route::post('/AdminCentros/{ciclo}/asignaciones', [CentrosCostosController::class, 'storeAsignacion'])->name('centros.asignaciones.store');
+    Route::put('/AdminCentros/{ciclo}/asignaciones/{id}', [CentrosCostosController::class, 'updateAsignacion'])->name('centros.asignaciones.update');
+    Route::delete('/AdminCentros/{ciclo}/asignaciones/{id}', [CentrosCostosController::class, 'destroyAsignacion'])->name('centros.asignaciones.destroy');
+    Route::get('/AdminCentros/{ciclo}', [CentrosCostosController::class, 'ciclo'])->name('centros.ciclo');
+    Route::get('/CentrosCostos/api/ciclos', [CentrosCostosController::class, 'listCiclos'])->name('centros.api.ciclos');
+    Route::post('/CentrosCostos/api/ciclos', [CentrosCostosController::class, 'storeCiclo'])->name('centros.api.ciclos.store');
+    Route::post('/CentrosCostos/api/ciclos/{ciclo}/estado', [CentrosCostosController::class, 'updateCicloEstado'])->name('centros.api.ciclos.estado');
+    Route::delete('/CentrosCostos/api/ciclos/{ciclo}', [CentrosCostosController::class, 'destroyCiclo'])->name('centros.api.ciclos.destroy');
+    Route::get('/CentrosCostos/api/empresas', [CentrosCostosController::class, 'empresasSap'])->name('centros.api.empresas');
+    Route::get('/CentrosCostos/api/centros', [CentrosCostosController::class, 'centrosSap'])->name('centros.api.centros');
+    Route::get('/CentrosCostos/api/cuentas', [CentrosCostosController::class, 'cuentasSap'])->name('centros.api.cuentas');
+    Route::get('/CentrosCostos/api/mis-asignaciones', [CentrosCostosController::class, 'misAsignaciones'])->name('centros.api.mis');
+    Route::get('/ControlCentros', [CentrosCostosController::class, 'control'])->name('centros.control');
+    Route::get('/ControlCentros/detalle', [CentrosCostosController::class, 'detalle'])->name('centros.detalle');
+    Route::get('/AnalisisProgreso', [CentrosCostosController::class, 'analisis'])->name('centros.analisis');
+    Route::get('/CentrosCostos/api/catalogo', [CentrosCostosController::class, 'catalogo'])->name('centros.catalogo');
 
    
   });

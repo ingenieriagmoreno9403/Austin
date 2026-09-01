@@ -6,8 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
-    <title>IOHISA  ® - MBNTAS ERP</title>
-    <link rel="icon" type="image/png" href="{{ asset('Images/IOHISA.png') }}">
+    <title>AUSTIN POWDER  ® - MBNTAS ERP</title>
+    <link rel="icon" type="image/png" href="{{ asset('Images/AUSTIN_POWDER.png') }}">
 
     <link href="{{ asset('css/menu.css') }}" rel="stylesheet">
     <link href="{{ asset('css/main.css') }}" rel="stylesheet">
@@ -254,7 +254,7 @@
                         <i class="fa-solid fa-bars"></i>
                     </button>
                     <div class="sidebar-logo">
-                        <h4>IOHISA ®</h4>
+                        <h4>AUSTIN POWDER ®</h4>
                     </div>
                 </div>
                 <ul class="sidebar-nav">

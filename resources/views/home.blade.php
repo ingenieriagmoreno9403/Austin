@@ -950,7 +950,7 @@
                 
                 <div class="col-lg-4 mb-4">
                     <div class="weather-widget">
-                        <img src= "{{ asset('Images/IOHISA.png') }}" width="150px"/>
+                        <img src= "{{ asset('Images/AUSTIN_POWDER.png') }}" width="400px"/>
                     </div>
                 </div>
             </div>
