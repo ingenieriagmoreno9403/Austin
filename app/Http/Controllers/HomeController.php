@@ -15,6 +15,9 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Carbon;
+use App\Models\CcAsignacion;
+use App\Models\CcAsignacionCuenta;
+use App\Models\CcCiclo;
 use App\Models\GestionAlumnosVisitaProspeccion;
 use App\Models\Mantenimiento;
 use App\Models\ProgramacionMantenimiento;
@@ -96,6 +99,7 @@ class HomeController extends Controller
             }
 
             $datosMantenimientoMaquinas = $this->obtenerDatosCalendarioMantenimiento();
+            $resumenCentros = $this->obtenerResumenCentrosHome();
 
             if(auth()->user()->tipo != "ext"){
             
@@ -111,7 +115,8 @@ class HomeController extends Controller
                     'ordenesAceptadas',
                     'ordenesEnviadas',
                     'visitasEmpresasCalendario',
-                    'datosMantenimientoMaquinas'
+                    'datosMantenimientoMaquinas',
+                    'resumenCentros'
                 ));
             }else{
                 return redirect()->route('ext_licitaciones');
@@ -622,6 +627,119 @@ class HomeController extends Controller
 
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
+        }
+    }
+
+    /**
+     * Resumen de alto nivel del ciclo de centros (conteos, sin montos ni nombres).
+     *
+     * @return array<string, mixed>
+     */
+    private function obtenerResumenCentrosHome(): array
+    {
+        $labels = [
+            'abierto' => 'Abierto',
+            'en_proceso' => 'En captura',
+            'en_revision' => 'En revisión',
+            'terminado' => 'Terminado',
+            'aceptado' => 'Aceptado',
+            'rechazado' => 'Cerrado',
+        ];
+
+        $empty = [
+            'hayCiclo' => false,
+            'nombre' => 'Centros de costos',
+            'anioRef' => 2026,
+            'anioPpto' => 2027,
+            'estado' => '',
+            'estadoLabel' => 'Sin ciclo',
+            'enVentana' => false,
+            'diasRestantes' => null,
+            'capturaHasta' => null,
+            'centros' => 0,
+            'cuentas' => 0,
+            'usuarios' => 0,
+            'empresas' => 0,
+            'misCentros' => 0,
+        ];
+
+        try {
+            if (! Schema::hasTable('tbl_cc_ciclos')) {
+                return $empty;
+            }
+
+            $hoy = Carbon::today();
+            $ciclos = CcCiclo::query()->orderByDesc('anio_presupuesto')->orderByDesc('id')->get();
+            if ($ciclos->isEmpty()) {
+                return $empty;
+            }
+
+            $ciclo = $ciclos->first(function (CcCiclo $c) use ($hoy) {
+                $inicio = $c->fecha_inicio;
+                $cierre = $c->captura_hasta ?: $c->fecha_fin;
+                if ($inicio && $cierre) {
+                    return $hoy->between($inicio, $cierre);
+                }
+
+                return in_array((string) $c->estado, ['abierto', 'en_proceso'], true);
+            }) ?: $ciclos->first();
+
+            $cierre = $ciclo->captura_hasta ?: $ciclo->fecha_fin;
+            $enVentana = false;
+            $dias = null;
+            if ($cierre) {
+                $enVentana = $hoy->lte($cierre) && in_array((string) $ciclo->estado, ['abierto', 'en_proceso'], true);
+                $dias = (int) $hoy->diffInDays($cierre, false);
+                $dias = max(0, $dias);
+            }
+
+            $centros = 0;
+            $cuentas = 0;
+            $usuarios = 0;
+            $empresas = 0;
+            $misCentros = 0;
+
+            if (Schema::hasTable('tbl_cc_asignaciones')) {
+                $asigs = CcAsignacion::query()
+                    ->where('ciclo_codigo', $ciclo->codigo)
+                    ->get(['id', 'user_id', 'empresa', 'centro_codigo']);
+
+                $centros = $asigs->unique(function ($a) {
+                    return strtolower((string) $a->empresa).'|'.$a->centro_codigo;
+                })->count();
+                $usuarios = $asigs->pluck('user_id')->unique()->filter()->count();
+                $empresas = $asigs->pluck('empresa')->map(fn ($e) => strtolower(trim((string) $e)))->filter()->unique()->count();
+                $misCentros = $asigs->where('user_id', auth()->id())->unique(function ($a) {
+                    return strtolower((string) $a->empresa).'|'.$a->centro_codigo;
+                })->count();
+
+                if (Schema::hasTable('tbl_cc_asignacion_cuentas') && $asigs->isNotEmpty()) {
+                    $cuentas = (int) CcAsignacionCuenta::query()
+                        ->whereIn('asignacion_id', $asigs->pluck('id'))
+                        ->count();
+                }
+            }
+
+            return [
+                'hayCiclo' => true,
+                'nombre' => $ciclo->nombre ?: ('Presupuesto '.(int) $ciclo->anio_presupuesto),
+                'anioRef' => (int) $ciclo->anio_referencia,
+                'anioPpto' => (int) $ciclo->anio_presupuesto,
+                'estado' => (string) $ciclo->estado,
+                'estadoLabel' => $labels[(string) $ciclo->estado] ?? ucfirst((string) $ciclo->estado),
+                'enVentana' => $enVentana,
+                'diasRestantes' => $dias,
+                'capturaHasta' => $cierre ? $cierre->format('d/m/Y') : null,
+                'centros' => $centros,
+                'cuentas' => $cuentas,
+                'usuarios' => $usuarios,
+                'empresas' => $empresas,
+                'misCentros' => $misCentros,
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('Resumen centros home: '.$e->getMessage());
+
+            return $empty;
         }
     }
 

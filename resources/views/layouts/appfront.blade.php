@@ -8,7 +8,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
     <title>AUSTIN POWDER ® - MBNTAS ERP</title>
-    <link rel="icon" type="image/png" href="{{ asset('Images/IOHISA.png') }}">
+    <link rel="icon" type="image/png" href="{{ asset('Images/AUSTIN_POWDER.png') }}">
 
          <!-- Scripts -->
          <script src="{{ asset('js/app.js') }}"></script>
