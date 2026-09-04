@@ -1360,6 +1360,66 @@
 
 .cc-legend { display: flex; gap: 0.8rem; flex-wrap: wrap; font-size: 0.75rem; color: var(--cc-muted); }
 .cc-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 0.25rem; }
+.cc-panel-head-tools {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+.cc-scope-toggle {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.18rem;
+    border: 1px solid var(--cc-line);
+    border-radius: 999px;
+    background: #fff;
+    gap: 0.15rem;
+}
+.cc-scope-toggle button {
+    border: 0;
+    background: transparent;
+    border-radius: 999px;
+    padding: 0.32rem 0.75rem;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: var(--cc-muted);
+    cursor: pointer;
+    line-height: 1.2;
+}
+.cc-scope-toggle button:hover { color: var(--cc-ink); }
+.cc-scope-toggle button.is-on {
+    background: var(--cc-ink);
+    color: #fff;
+}
+.cc-scope-toggle button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.cc-scope-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0.32rem 0.75rem;
+    border: 1px solid var(--cc-line);
+    border-radius: 999px;
+    background: #fff;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: var(--cc-muted);
+    cursor: pointer;
+    line-height: 1.2;
+}
+.cc-scope-check:has(input:checked) {
+    background: var(--cc-ink);
+    color: #fff;
+    border-color: var(--cc-ink);
+}
+.cc-scope-check input {
+    margin: 0;
+    accent-color: currentColor;
+}
 
 .cc-sap-flag {
     font-size: 0.72rem; font-weight: 700;
@@ -2164,6 +2224,7 @@
 .cc-table td.is-over { background: #fef2f2; color: #991b1b; }
 .cc-table tbody tr.cc-result-row { cursor: pointer; }
 .cc-table tbody.is-readonly tr.cc-result-row { cursor: default; }
+.cc-table tbody.is-readonly.is-selectable tr.cc-result-row { cursor: pointer; }
 .cc-table tbody tr.is-editing td.sticky-col {
     background: #f4f4f5;
     box-shadow: inset 3px 0 0 #0a0a0a;
@@ -2362,4 +2423,5 @@
     .cc-visor-filters { grid-template-columns: 1fr; }
     .cc-visor-kpis { grid-template-columns: 1fr 1fr; }
     .cc-detalle-facts { grid-template-columns: 1fr 1fr; }
+    .cc-panel-head-tools { justify-content: flex-start; }
 }

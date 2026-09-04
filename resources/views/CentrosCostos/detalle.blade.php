@@ -26,17 +26,26 @@
     <div class="cc-panel cc-captura-results">
         <div class="cc-panel-head">
             <h3><i class="fa-solid fa-table"></i> Detalle por cuenta y mes</h3>
-            <div class="cc-legend">
-                <span><i style="background:#fffbeb"></i> Sin capturar</span>
-                <span><i style="background:#ecfdf5"></i> Capturado</span>
-                <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+            <div class="cc-panel-head-tools">
+                <div class="cc-scope-toggle" id="ctl-scope-tabla" data-for="tabla" role="group" aria-label="Filtro del detalle">
+                    <button type="button" data-scope-val="cuenta">Esta cuenta</button>
+                    <button type="button" data-scope-val="centro" class="is-on">Todo el centro</button>
+                </div>
+                <label class="cc-scope-check" id="ctl-chart-todas-wrap">
+                    <input type="checkbox" id="ctl-chart-todas"> Ver todas
+                </label>
+                <div class="cc-legend">
+                    <span><i style="background:#fffbeb"></i> Sin capturar</span>
+                    <span><i style="background:#ecfdf5"></i> Capturado</span>
+                    <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                </div>
             </div>
         </div>
-        <p class="text-muted" style="font-size:.8rem;margin:-.35rem 0 .7rem">Consulta el presupuesto capturado de este centro, mes a mes.</p>
+        <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Elige una fila para verla en la gráfica, o marca Ver todas para el centro completo.</p>
         <div class="cc-table-wrap">
             <table class="cc-table">
                 <thead id="det-thead"></thead>
-                <tbody id="det-tbody" class="is-readonly"></tbody>
+                <tbody id="det-tbody" class="is-readonly is-selectable"></tbody>
             </table>
         </div>
         <div class="cc-sticky-totales">

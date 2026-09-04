@@ -183,13 +183,22 @@
         <div class="cc-panel cc-captura-results">
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-table"></i> Detalle por cuenta y mes</h3>
-                <div class="cc-legend">
-                    <span><i style="background:#fffbeb"></i> Sin capturar</span>
-                    <span><i style="background:#ecfdf5"></i> Capturado</span>
-                    <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                <div class="cc-panel-head-tools">
+                    <div class="cc-scope-toggle" id="ctl-scope-tabla" data-for="tabla" role="group" aria-label="Filtro del detalle">
+                        <button type="button" data-scope-val="cuenta" class="is-on">Esta cuenta</button>
+                        <button type="button" data-scope-val="centro">Todo el centro</button>
+                    </div>
+                    <label class="cc-scope-check" id="ctl-chart-todas-wrap" hidden>
+                        <input type="checkbox" id="ctl-chart-todas"> Ver todas
+                    </label>
+                    <div class="cc-legend">
+                        <span><i style="background:#fffbeb"></i> Sin capturar</span>
+                        <span><i style="background:#ecfdf5"></i> Capturado</span>
+                        <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                    </div>
                 </div>
             </div>
-            <p class="text-muted" style="font-size:.8rem;margin:-.35rem 0 .7rem">Se va llenando sola conforme capturas cada cuenta. Haz clic en una fila para editarla arriba.</p>
+            <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Se muestra la cuenta en la que estás trabajando. Cambia a Todo el centro para ver todas las cuentas.</p>
             <div class="cc-table-wrap">
                 <table class="cc-table">
                     <thead id="ctl-thead"></thead>
