@@ -37,6 +37,7 @@ class AutinApiController extends Controller
         $globalResources = [
             'centros-costo' => 'Centros de costo (todas las empresas)',
             'cuentas' => 'Cuentas (todas las empresas)',
+            'gasto-real' => 'Gasto real (histórico / GroupMask)',
         ];
         $defaultDb = $api->defaultDatabase();
         $apiBaseUrl = rtrim((string) config('services.autin_api.base_url'), '/');
@@ -66,6 +67,14 @@ class AutinApiController extends Controller
                 'proxy' => $proxyBaseUrl . '/centros-costo',
                 'remoto' => $apiBaseUrl . '/centros-costo',
                 'descripcion' => 'Centros de costo unificados. Filtros: Empresa, PrcCode, PrcName, per_page, page.',
+            ],
+            [
+                'grupo' => 'Global (todas las empresas)',
+                'method' => 'GET',
+                'path' => '/gasto-real',
+                'proxy' => $proxyBaseUrl . '/gasto-real',
+                'remoto' => $apiBaseUrl . '/gasto-real',
+                'descripcion' => 'Gasto real histórico. Filtros: Empresa, CC, Cuenta, DescCuenta, year, GroupMask, fecha_desde, fecha_hasta, per_page, page.',
             ],
             [
                 'grupo' => 'Por empresa',
@@ -117,6 +126,19 @@ class AutinApiController extends Controller
             ],
         ];
 
+        $gastoRealFilters = [
+            'Empresa' => 'Empresa SAP (AUSTIN, IMSA, PITIC, SYDNEY)',
+            'CC' => 'Centro de costo',
+            'Cuenta' => 'Código de cuenta',
+            'DescCuenta' => 'Descripción de cuenta (texto)',
+            'year' => 'Año (ej. 2026)',
+            'GroupMask' => 'Máscara de agrupación (ej. 6)',
+            'fecha_desde' => 'Fecha inicio (YYYY-MM-DD)',
+            'fecha_hasta' => 'Fecha fin (YYYY-MM-DD)',
+            'per_page' => 'Registros por página',
+            'page' => 'Página',
+        ];
+
         return view('AutinApi.index', compact(
             'varpantallas',
             'varsubmenus',
@@ -127,7 +149,8 @@ class AutinApiController extends Controller
             'defaultDb',
             'apiBaseUrl',
             'proxyBaseUrl',
-            'endpoints'
+            'endpoints',
+            'gastoRealFilters'
         ));
     }
 
@@ -148,6 +171,13 @@ class AutinApiController extends Controller
     public function centrosCostoGlobal(Request $request, AutinApiClient $api): JsonResponse
     {
         $result = $api->centrosCostoGlobal($request->except(['_token']));
+
+        return $this->jsonFromApi($result);
+    }
+
+    public function gastoReal(Request $request, AutinApiClient $api): JsonResponse
+    {
+        $result = $api->gastoReal($request->except(['_token']));
 
         return $this->jsonFromApi($result);
     }

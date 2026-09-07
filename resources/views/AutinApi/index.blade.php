@@ -132,7 +132,7 @@
             </table>
         </div>
         <p class="sap-meta mt-3 mb-0">
-            <strong>Global:</strong> <code>/cuentas</code> · <code>/centros-costo</code>
+            <strong>Global:</strong> <code>/cuentas</code> · <code>/centros-costo</code> · <code>/gasto-real</code>
             &nbsp;|&nbsp;
             <strong>Por empresa:</strong> <code>{database}</code> = austin | imsa | pitic | sydney ·
             <code>{resource}</code> = centros-costo | cuentas | agrupaciones-cuentas | transacciones
@@ -150,7 +150,7 @@
                 </select>
             </div>
             <div class="col-md-3" id="sapDatabaseWrap" style="display:none;">
-                <label class="form-label fw-semibold">Empresa</label>
+                <label class="form-label fw-semibold">Empresa (ruta)</label>
                 <select id="sapDatabase" class="form-select" name="database">
                     @foreach($databases as $db)
                         <option value="{{ $db }}" {{ $db === $defaultDb ? 'selected' : '' }}>{{ strtoupper($db) }}</option>
@@ -170,11 +170,12 @@
                     <option value="200">200</option>
                 </select>
             </div>
-            <div class="col-md-2">
+
+            <div class="col-md-2" id="sapGenericCodeWrap">
                 <label class="form-label fw-semibold">Filtro (código)</label>
                 <input type="text" id="sapFilterCode" class="form-control" placeholder="Código">
             </div>
-            <div class="col-md-2">
+            <div class="col-md-2" id="sapGenericNameWrap">
                 <label class="form-label fw-semibold">Filtro (nombre)</label>
                 <input type="text" id="sapFilterName" class="form-control" placeholder="Nombre">
             </div>
@@ -187,12 +188,71 @@
                     @endforeach
                 </select>
             </div>
-            <div class="col-12 d-flex gap-2">
+
+            <div id="sapGastoRealFilters" class="col-12" style="display:none;">
+                <div class="border rounded-3 p-3 bg-light">
+                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                        <strong class="text-marino"><i class="fas fa-coins me-1"></i> Filtros gasto-real</strong>
+                        <span class="sap-meta mb-0">Opcionales · proxy <code>/Sistemas/AutinApi/gasto-real</code></span>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">Empresa</label>
+                            <select id="gastoEmpresa" class="form-select form-select-sm">
+                                <option value="">Todas</option>
+                                @foreach($databases as $db)
+                                    <option value="{{ strtoupper($db) }}">{{ strtoupper($db) }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">CC</label>
+                            <input type="text" id="gastoCC" class="form-control form-control-sm" placeholder="04">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">Cuenta</label>
+                            <input type="text" id="gastoCuenta" class="form-control form-control-sm" placeholder="6000">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">DescCuenta</label>
+                            <input type="text" id="gastoDescCuenta" class="form-control form-control-sm" placeholder="ARRENDAMIENTO">
+                        </div>
+                        <div class="col-md-1">
+                            <label class="form-label small mb-1">year</label>
+                            <input type="number" id="gastoYear" class="form-control form-control-sm" placeholder="2026" min="2000" max="2100">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">GroupMask</label>
+                            <input type="text" id="gastoGroupMask" class="form-control form-control-sm" placeholder="6" value="6">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">fecha_desde</label>
+                            <input type="date" id="gastoFechaDesde" class="form-control form-control-sm">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">fecha_hasta</label>
+                            <input type="date" id="gastoFechaHasta" class="form-control form-control-sm">
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <div class="sap-meta">
+                                Ejemplos:
+                                <code>?Empresa=IMSA&amp;per_page=50</code> ·
+                                <code>?Empresa=AUSTIN&amp;CC=04&amp;year=2026</code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12 d-flex gap-2 flex-wrap">
                 <button type="submit" class="btn btn-primary" id="sapBtnLoad">
                     <i class="fas fa-search me-1"></i> Consultar
                 </button>
                 <button type="button" class="btn btn-outline-secondary" id="sapBtnHealth">
                     <i class="fas fa-heartbeat me-1"></i> Probar health
+                </button>
+                <button type="button" class="btn btn-outline-primary" id="sapBtnGastoQuick">
+                    <i class="fas fa-bolt me-1"></i> Abrir gasto-real
                 </button>
             </div>
         </form>
@@ -232,6 +292,22 @@
 
     let currentPage = 1;
 
+    function isGastoReal() {
+        return document.getElementById('sapScope').value === 'global'
+            && document.getElementById('sapResource').value === 'gasto-real';
+    }
+
+    function toggleFilters() {
+        const gasto = isGastoReal();
+        document.getElementById('sapGastoRealFilters').style.display = gasto ? '' : 'none';
+        document.getElementById('sapGenericCodeWrap').style.display = gasto ? 'none' : '';
+        document.getElementById('sapGenericNameWrap').style.display = gasto ? 'none' : '';
+        // Empresa genérica solo en globales que no son gasto-real
+        const scope = document.getElementById('sapScope').value;
+        document.getElementById('sapEmpresaFilterWrap').style.display = (scope === 'global' && !gasto) ? '' : 'none';
+        document.getElementById('sapDatabaseWrap').style.display = scope === 'empresa' ? '' : 'none';
+    }
+
     function fillResources() {
         const scope = document.getElementById('sapScope').value;
         const select = document.getElementById('sapResource');
@@ -239,11 +315,11 @@
         select.innerHTML = Object.keys(map).map(function (key) {
             return '<option value="' + key + '">' + map[key] + '</option>';
         }).join('');
-        document.getElementById('sapDatabaseWrap').style.display = scope === 'empresa' ? '' : 'none';
-        document.getElementById('sapEmpresaFilterWrap').style.display = scope === 'global' ? '' : 'none';
+        toggleFilters();
     }
 
     document.getElementById('sapScope').addEventListener('change', fillResources);
+    document.getElementById('sapResource').addEventListener('change', toggleFilters);
     fillResources();
 
     document.querySelectorAll('.sap-copy[data-url]').forEach(function (btn) {
@@ -260,6 +336,12 @@
         });
     });
 
+    function setParam(params, key, value) {
+        if (value !== null && value !== undefined && String(value).trim() !== '') {
+            params.set(key, String(value).trim());
+        }
+    }
+
     function buildRequest() {
         const scope = document.getElementById('sapScope').value;
         const resource = document.getElementById('sapResource').value;
@@ -275,13 +357,25 @@
         let url;
         if (scope === 'global') {
             url = routes.base + '/' + resource;
-            if (empresaFiltro) params.set('Empresa', empresaFiltro);
-            if (resource === 'centros-costo') {
-                if (code) params.set('PrcCode', code);
-                if (name) params.set('PrcName', name);
-            } else if (resource === 'cuentas') {
-                if (code) params.set('FormatCode', code);
-                if (name) params.set('AcctName', name);
+
+            if (resource === 'gasto-real') {
+                setParam(params, 'Empresa', document.getElementById('gastoEmpresa').value);
+                setParam(params, 'CC', document.getElementById('gastoCC').value);
+                setParam(params, 'Cuenta', document.getElementById('gastoCuenta').value);
+                setParam(params, 'DescCuenta', document.getElementById('gastoDescCuenta').value);
+                setParam(params, 'year', document.getElementById('gastoYear').value);
+                setParam(params, 'GroupMask', document.getElementById('gastoGroupMask').value);
+                setParam(params, 'fecha_desde', document.getElementById('gastoFechaDesde').value);
+                setParam(params, 'fecha_hasta', document.getElementById('gastoFechaHasta').value);
+            } else {
+                if (empresaFiltro) params.set('Empresa', empresaFiltro);
+                if (resource === 'centros-costo') {
+                    if (code) params.set('PrcCode', code);
+                    if (name) params.set('PrcName', name);
+                } else if (resource === 'cuentas') {
+                    if (code) params.set('FormatCode', code);
+                    if (name) params.set('AcctName', name);
+                }
             }
         } else {
             const db = document.getElementById('sapDatabase').value;
@@ -308,11 +402,23 @@
         const tbody = document.getElementById('sapTbody');
         const data = Array.isArray(payload.data) ? payload.data : [];
         const meta = payload.meta || {};
+        const filters = payload.filters_applied || null;
 
-        document.getElementById('sapTitle').textContent = payload.label || 'Resultados';
-        document.getElementById('sapMeta').textContent = payload.empresa
-            ? (payload.empresa + ' · página ' + (meta.current_page || 1) + ' de ' + (meta.last_page || 1) + ' · ' + (meta.total || data.length) + ' registros')
-            : ('página ' + (meta.current_page || 1) + ' de ' + (meta.last_page || 1) + ' · ' + (meta.total || data.length) + ' registros');
+        document.getElementById('sapTitle').textContent = payload.label || payload.resource || 'Resultados';
+
+        let metaText = '';
+        if (payload.empresa) metaText += payload.empresa + ' · ';
+        metaText += 'página ' + (meta.current_page || 1) + ' de ' + (meta.last_page || 1)
+            + ' · ' + (meta.total || data.length) + ' registros';
+        if (filters) {
+            const parts = Object.keys(filters).filter(function (k) {
+                return filters[k] !== null && filters[k] !== '';
+            }).map(function (k) {
+                return k + '=' + filters[k];
+            });
+            if (parts.length) metaText += ' · filtros: ' + parts.join(', ');
+        }
+        document.getElementById('sapMeta').textContent = metaText;
 
         currentPage = meta.current_page || 1;
         document.getElementById('sapPrev').disabled = !meta.current_page || meta.current_page <= 1;
@@ -387,6 +493,18 @@
         } catch (err) {
             alert('No se pudo contactar AutinApi: ' + err.message);
         }
+    });
+
+    document.getElementById('sapBtnGastoQuick').addEventListener('click', function () {
+        document.getElementById('sapScope').value = 'global';
+        fillResources();
+        document.getElementById('sapResource').value = 'gasto-real';
+        toggleFilters();
+        if (!document.getElementById('gastoYear').value) {
+            document.getElementById('gastoYear').value = String(new Date().getFullYear());
+        }
+        currentPage = 1;
+        loadData();
     });
 })();
 </script>
