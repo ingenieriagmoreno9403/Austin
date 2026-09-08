@@ -106,6 +106,18 @@ class AutinApiClient
     }
 
     /**
+     * Gasto real histórico (consulta global AutinApi).
+     * Filtros: Empresa, CC, Cuenta, DescCuenta, year, GroupMask, fecha_desde, fecha_hasta, per_page, page.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, status: int, body: array|null, message: string|null}
+     */
+    public function gastoReal(array $filters = []): array
+    {
+        return $this->request('GET', 'gasto-real', $filters);
+    }
+
+    /**
      * @return array{ok: bool, status: int, body: array|null, message: string|null}
      */
     public function catalogos(?string $database = null): array

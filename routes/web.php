@@ -300,6 +300,7 @@ use App\Http\Controllers\CentrosCostosController;
             // Globales (todas las empresas) — antes de {database}
             Route::get('/cuentas', [AutinApiController::class, 'cuentasGlobal'])->name('autin-api.cuentas-global');
             Route::get('/centros-costo', [AutinApiController::class, 'centrosCostoGlobal'])->name('autin-api.centros-global');
+            Route::get('/gasto-real', [AutinApiController::class, 'gastoReal'])->name('autin-api.gasto-real');
 
             Route::get('/{database}/catalogos', [AutinApiController::class, 'catalogos'])
                 ->where('database', 'austin|imsa|pitic|sydney')
