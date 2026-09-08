@@ -12,6 +12,16 @@
             <h1 class="cc-title" id="cc-page-title">Centro de costos</h1>
         </div>
         <div class="cc-header-actions">
+            <label class="cc-header-moneda-wrap">
+                <span>Ver en</span>
+                <select id="ctl-moneda" class="cc-select cc-header-ciclo cc-header-moneda" aria-label="Ver valores en MXN o USD">
+                    <option value="MXN">MXN</option>
+                    <option value="USD">USD</option>
+                </select>
+            </label>
+            <button type="button" class="cc-btn" onclick="CC.showModal('modalIndicadores')">
+                <i class="fa-solid fa-circle-info"></i> Indicadores
+            </button>
             <a class="cc-btn" href="{{ route('centros.control', ['vista' => 'visor']) }}">
                 <i class="fa-solid fa-arrow-left"></i> Volver al visor
             </a>
@@ -63,6 +73,8 @@
         <div class="cc-chart"><canvas id="chart-detalle"></canvas></div>
     </div>
 </div>
+
+@include('CentrosCostos.partials.modal-indicadores')
 @endsection
 
 @section('js')

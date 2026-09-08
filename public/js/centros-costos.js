@@ -1161,7 +1161,7 @@
     }
 
     function setCapturaEnabled(on) {
-        ['ctl-guardar', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-fijo', 'ctl-btn-dispersar'].forEach(function (id) {
+        ['ctl-guardar', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.disabled = !on;
         });
@@ -1222,13 +1222,13 @@
         var hint = document.getElementById('ctl-detalle-hint');
         if (hint) {
             if (control.scopeTabla === 'cuenta' && cta) {
-                hint.textContent = 'Solo la cuenta ' + cta.codigo + ' — ' + cta.nombre + '. Cambia a Todo el centro para ver todas las cuentas.';
+                hint.textContent = 'Solo la cuenta ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Cambia a Todo el centro para ver todas las cuentas.';
             } else if (control.scopeTabla === 'cuenta' && !control.cuenta) {
                 hint.textContent = 'Elige una cuenta para filtrar el detalle, o cambia a Todo el centro para verlas todas.';
             } else if (control.chartVerTodas) {
                 hint.textContent = 'Todas las cuentas del centro. La gráfica muestra el centro completo.';
             } else if (cta) {
-                hint.textContent = 'Todas las cuentas del centro. La gráfica muestra ' + cta.codigo + '. Marca Ver todas para ver el centro completo.';
+                hint.textContent = 'Todas las cuentas del centro. La gráfica muestra ' + (cta.nombre || cta.codigo) + '. Marca Ver todas para ver el centro completo.';
             } else {
                 hint.textContent = 'Todas las cuentas del centro. Elige una fila para verla en la gráfica, o marca Ver todas.';
             }
@@ -1242,7 +1242,7 @@
             if (!chartHint) return;
             var base = 'Gasto ' + CC.state.anioGasto + ' vs presupuesto ' + CC.state.anioPresupuesto;
             if (chartScopePref() === 'cuenta' && cta) {
-                chartHint.textContent = base + ' · ' + cta.codigo;
+                chartHint.textContent = base + ' · ' + (cta.nombre || cta.codigo);
             } else {
                 chartHint.textContent = base + ' · Todo el centro';
             }
@@ -1398,7 +1398,7 @@
                 empresa: emp
             });
             html += '<option value="' + escapeHtml(a.centro_codigo) + '">' +
-                escapeHtml(a.centro_codigo + ' — ' + (a.centro_nombre || a.centro_codigo) + '   ·   ' + markPendLabel(st.pendientes)) + '</option>';
+                escapeHtml(labelNombreCodigo(a.centro_nombre, a.centro_codigo) + '   ·   ' + markPendLabel(st.pendientes)) + '</option>';
         });
         el.innerHTML = html;
         el.disabled = !list.length;
@@ -1437,7 +1437,7 @@
         ctas.forEach(function (cta) {
             var pend = cta.totP > 0 ? 0 : 1;
             html += '<option value="' + escapeHtml(cta.codigo) + '">' +
-                escapeHtml(cta.codigo + ' — ' + cta.nombre + '   ·   ' + markPendLabel(pend)) + '</option>';
+                escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo) + '   ·   ' + markPendLabel(pend)) + '</option>';
         });
         el.innerHTML = html;
         el.disabled = !ctas.length;
@@ -1623,6 +1623,7 @@
             return;
         }
         CC._cicloUserPicked = true;
+        bindDetalleCurrency();
         var ciclo = CC.state.cicloInicial || cicloControlPreferido();
         renderCicloPicks();
         if (ciclo) {
@@ -1636,6 +1637,7 @@
                 loadOverlaysForCycle();
             }
         }
+        renderPeriodBanner();
         CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
         setVal('ctl-empresa', CC.state.empresaInicial);
         setVal('ctl-centro', CC.state.centroInicial);
@@ -1648,6 +1650,22 @@
         renderDetalleChart();
         paintScopeHints();
     };
+
+    function bindDetalleCurrency() {
+        var mon = document.getElementById('ctl-moneda');
+        if (mon) mon.value = CC.state.currency || 'MXN';
+        if (CC._detalleBound) return;
+        if (mon) {
+            mon.addEventListener('change', function () {
+                CC.state.currency = this.value || 'MXN';
+                saveJSON(SK.currency, CC.state.currency);
+                paintDetalleHeader();
+                renderDetalleTable();
+                renderDetalleChart();
+            });
+        }
+        CC._detalleBound = true;
+    }
 
     function fillCentrosControl() {
         renderNavCentros();
@@ -1710,7 +1728,6 @@
         renderCapturaForm();
         renderControlTable();
         renderControlCharts();
-        fillCuentasDisp();
         renderVisorTable();
     }
 
@@ -1774,8 +1791,8 @@
         box.innerHTML = ctas.map(function (cta) {
             var on = String(cta.codigo) === String(control.cuenta || '');
             var ok = cta.totP > 0;
-            return '<button type="button" class="cc-cta-chip' + (on ? ' is-on' : '') + (ok ? ' is-ok' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '" title="' + escapeHtml(cta.nombre) + '">' +
-                '<span class="dot"></span>' + escapeHtml(cta.codigo) + '</button>';
+            return '<button type="button" class="cc-cta-chip' + (on ? ' is-on' : '') + (ok ? ' is-ok' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '" title="' + escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo)) + '">' +
+                '<span class="dot"></span><span class="cc-cta-chip-name">' + escapeHtml(cta.nombre || cta.codigo) + '</span></button>';
         }).join('') || '<div class="text-muted" style="font-size:.8rem">Sin cuentas para mostrar</div>';
         box.querySelectorAll('[data-cta]').forEach(function (btn) {
             btn.addEventListener('click', function () {
@@ -1794,7 +1811,6 @@
         renderCapturaForm();
         renderControlTable();
         renderControlCharts();
-        fillCuentasDisp();
         renderDetalleTable();
         renderDetalleChart();
         paintScopeHints();
@@ -1813,11 +1829,21 @@
         if (body) body.hidden = false;
         setText('ctl-form-grupo', cta.grupo || 'Cuenta');
         var cc = control.centro;
-        setText('ctl-form-cc', cc ? (cc.codigo + ' — ' + cc.nombre) : '—');
-        setText('ctl-form-cta', cta.codigo + ' — ' + cta.nombre);
+        paintNombreCodigo('ctl-form-cc', cc ? cc.nombre : '', cc ? cc.codigo : '');
+        paintNombreCodigo('ctl-form-cta', cta.nombre, cta.codigo);
+        paintFormPresupuestoLabel();
         paintFormEstado(cta);
         updateFormTotals(cta);
         drawMonthGrid(cta);
+    }
+
+    function nombrePresupuestoActual() {
+        var p = CC.state.period || {};
+        return p.nombre || p.codigo || ('Presupuesto ' + (p.anio || CC.state.anioPresupuesto || ''));
+    }
+
+    function paintFormPresupuestoLabel() {
+        setText('ctl-form-ppto-label', nombrePresupuestoActual());
     }
 
     function paintFormEstado(cta) {
@@ -1956,7 +1982,7 @@
                     var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
-                    html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (cta.totP ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col"><div class="fw-semibold">' + cta.codigo + '</div><div class="text-muted" style="font-size:.75rem">' + escapeHtml(cta.nombre) + '</div></td>';
+                    html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (cta.totP ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
                     html += '<td class="num">' + money(cta.totG) + '</td><td class="num fw-semibold">' + money(cta.totP) + '</td>';
                     html += '<td class="num ' + dCls + '">' + (cta.totP ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
                     for (var i = 0; i < 12; i++) {
@@ -2131,8 +2157,9 @@
         var stt = statsDeCentro(c);
         var dep = deptoDeCentro(c);
         var barCls = stt.pendientes ? 'warn' : 'good';
-        setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : ''));
-        setText('cc-page-title', c.codigo + ' — ' + c.nombre);
+        setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
+        var title = document.getElementById('cc-page-title');
+        if (title) title.innerHTML = escapeHtml(c.nombre || c.codigo || 'Centro de costos');
         if (sub) sub.hidden = true;
         if (facts) {
             facts.hidden = false;
@@ -2295,7 +2322,7 @@
             return '<tr data-key="' + escapeHtml(centroKey(c)) + '">' +
                 '<td><a class="cc-btn cc-btn-detalle" href="' + detalleHref(c) + '"><i class="fa-solid fa-eye"></i> Detalle</a></td>' +
                 '<td>' + escapeHtml(c.empresa || '—') + '</td>' +
-                '<td><div class="fw-semibold">' + escapeHtml(c.codigo) + ' — ' + escapeHtml(c.nombre) + '</div></td>' +
+                '<td>' + htmlNombreCodigo(c.nombre, c.codigo) + '</td>' +
                 '<td>' + escapeHtml(dep) + '</td>' +
                 '<td class="num">' + money(stt.totG) + '</td>' +
                 '<td class="num">' + money(stt.totP) + '</td>' +
@@ -2315,25 +2342,41 @@
             '&ciclo=' + encodeURIComponent(ciclo);
     }
 
+    function paintDispMontoLabel() {
+        var mismo = val('d-modo') === 'mismo';
+        var label = document.getElementById('d-monto-label');
+        var hint = document.getElementById('d-modo-hint');
+        if (label) label.textContent = mismo ? 'Monto mensual' : 'Monto total';
+        if (hint) {
+            hint.textContent = mismo
+                ? 'Gasto fijo: se copia el mismo monto a cada mes del rango Desde–Hasta.'
+                : 'El total se reparte entre los meses del rango.';
+        }
+    }
+
     function bindControlTools() {
         var formDisp = document.getElementById('form-dispersar');
         if (formDisp) {
-            fillCuentasDisp();
+            paintDispMontoLabel();
+            var modoEl = document.getElementById('d-modo');
+            if (modoEl) modoEl.addEventListener('change', paintDispMontoLabel);
             formDisp.addEventListener('submit', function (e) {
                 e.preventDefault();
                 var c = control.centro;
-                var codigo = val('d-cuenta');
+                var cta = currentCta();
+                var codigo = cta ? cta.codigo : '';
                 var monto = Number(val('d-monto')) || 0;
                 var from = Number(val('d-desde')) || 0;
                 var to = Number(val('d-hasta')) || 11;
                 var modo = val('d-modo');
-                var cta = (control._allCtas || control._ctas || []).filter(function (x) { return x.codigo === codigo; })[0];
                 if (!cta || to < from) return;
                 var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
                 var n = to - from + 1;
                 if (modo === 'igual') {
                     var each = Math.round(monto / n);
                     for (var i = from; i <= to; i++) months[i] = each;
+                } else if (modo === 'mismo') {
+                    for (var k = from; k <= to; k++) months[k] = monto;
                 } else {
                     var weights = cta.gasto.slice(from, to + 1);
                     var tw = sum(weights) || n;
@@ -2343,23 +2386,10 @@
                 hideModal('modalDispersar');
                 control.cuenta = codigo;
                 refreshControlAfterEdit(codigo);
-                toast('success', 'Costo dispersado', money(monto) + ' en ' + cta.nombre);
-            });
-        }
-        var formFijo = document.getElementById('form-fijo');
-        if (formFijo) {
-            formFijo.addEventListener('submit', function (e) {
-                e.preventDefault();
-                var c = control.centro;
-                var codigo = val('fijo-cuenta');
-                var monto = Number(val('fijo-monto')) || 0;
-                var cta = (control._allCtas || control._ctas || []).filter(function (x) { return x.codigo === codigo; })[0];
-                if (!cta) return;
-                persistBudget(c.empresa, c.codigo, codigo, MONTHS.map(function () { return monto; }));
-                hideModal('modalFijo');
-                control.cuenta = codigo;
-                refreshControlAfterEdit(codigo);
-                toast('success', 'Gasto fijo', '12 meses en ' + money(monto));
+                var rango = MONTHS[from] + '–' + MONTHS[to];
+                toast('success', modo === 'mismo' ? 'Gasto fijo' : 'Costo dispersado', modo === 'mismo'
+                    ? money(monto) + ' en cada mes (' + rango + ')'
+                    : money(monto) + ' en ' + cta.nombre);
             });
         }
         var save = document.getElementById('ctl-guardar');
@@ -2368,20 +2398,6 @@
             renderVisorTable();
             toast('success', 'Captura guardada', 'El presupuesto 2027 quedó en este navegador');
         });
-    }
-
-    function fillCuentasDisp() {
-        var c = control.centro;
-        if (!c) return;
-        var list = cuentasDeCentro(c).map(function (x) { return { codigo: x.codigo, nombre: x.codigo + ' — ' + x.nombre }; });
-        fillSelect(document.getElementById('d-cuenta'), list, 'codigo', 'nombre');
-        fillSelect(document.getElementById('fijo-cuenta'), list, 'codigo', 'nombre');
-        if (control.cuenta) {
-            var d = document.getElementById('d-cuenta');
-            var f = document.getElementById('fijo-cuenta');
-            if (d) d.value = control.cuenta;
-            if (f) f.value = control.cuenta;
-        }
     }
 
     function renderControlCharts() {
@@ -2415,7 +2431,17 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
+                plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 12 } },
+                    tooltip: {
+                        callbacks: {
+                            label: function (ctx) {
+                                if (ctx.dataset.yAxisID === 'y1') return ctx.dataset.label + ': ' + ctx.parsed.y + '%';
+                                return ctx.dataset.label + ': ' + money(ctx.parsed.y);
+                            }
+                        }
+                    }
+                },
                 scales: {
                     x: { grid: { display: false } },
                     y: { ticks: { callback: function (v) { return money(v); } }, grid: { color: '#f1f1f3' } },
@@ -2585,6 +2611,27 @@
         var el = document.getElementById(id);
         if (el) el.textContent = t;
     }
+    function labelNombreCodigo(nombre, codigo) {
+        var name = String(nombre || '').trim();
+        var id = String(codigo || '').trim();
+        if (name && id && name !== id) return name + ' — ' + id;
+        return name || id || '—';
+    }
+    function htmlNombreCodigo(nombre, codigo) {
+        var name = String(nombre || '').trim();
+        var id = String(codigo || '').trim();
+        var main = escapeHtml(name || id || '—');
+        var sub = id && id !== name ? '<div class="cc-name-id-code">' + escapeHtml(id) + '</div>' : '';
+        return '<div class="cc-name-id"><div class="cc-name-id-name">' + main + '</div>' + sub + '</div>';
+    }
+    function paintNombreCodigo(id, nombre, codigo) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var name = String(nombre || '').trim();
+        var code = String(codigo || '').trim();
+        el.innerHTML = '<span class="cc-name-id-name">' + escapeHtml(name || code || '—') + '</span>' +
+            (code && code !== name ? '<span class="cc-name-id-code">' + escapeHtml(code) + '</span>' : '');
+    }
     function escapeHtml(s) {
         return String(s || '').replace(/[&<>"']/g, function (m) {
             return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m];
@@ -2593,7 +2640,8 @@
     function showModal(id) {
         var el = document.getElementById(id);
         if (el && window.bootstrap) bootstrap.Modal.getOrCreateInstance(el).show();
-        if (id === 'modalDispersar' || id === 'modalFijo') fillCuentasDisp();
+        if (id === 'modalIndicadores') renderPeriodBanner();
+        if (id === 'modalDispersar') paintDispMontoLabel();
         if (id === 'modalPeriodo') {
             var editing = CC.state.page === 'admin-ciclo';
             var title = document.getElementById('modal-ciclo-title');

@@ -18,6 +18,77 @@
         }).join(' ') || '<span class="text-muted">—</span>';
     }
 
+    function maskLabel(id, nombre) {
+        var code = String(id || '').trim();
+        var nom = String(nombre || '').trim();
+        if (code && nom && nom !== code) return code + ' · ' + nom;
+        return nom || code || 'Sin GroupMask';
+    }
+
+    function defaultMasks() {
+        return [
+            { id: '1', nombre: 'Activo' },
+            { id: '2', nombre: 'Pasivo' },
+            { id: '3', nombre: 'Capital' },
+            { id: '4', nombre: 'Ingresos' },
+            { id: '5', nombre: 'Costo de ventas' },
+            { id: '6', nombre: 'Gastos' },
+            { id: '7', nombre: 'Otros ingresos y gastos' },
+            { id: '8', nombre: 'Otros' },
+            { id: '9', nombre: 'GroupMask 9' },
+            { id: '10', nombre: 'GroupMask 10' }
+        ];
+    }
+
+    function masksFromCatalogo(agrupaciones, rows) {
+        var map = {};
+        defaultMasks().forEach(function (m) { map[m.id] = { id: m.id, nombre: m.nombre }; });
+        (agrupaciones || []).forEach(function (g) {
+            var id = String(g.id || '').trim();
+            if (!id) return;
+            var nom = String(g.nombre || '').trim();
+            map[id] = { id: id, nombre: (nom && nom !== id) ? nom : (map[id] ? map[id].nombre : id) };
+        });
+        (rows || []).forEach(function (c) {
+            var id = String(c.grupo_id || '').trim();
+            if (!id) return;
+            if (!map[id] || map[id].nombre === id) {
+                map[id] = { id: id, nombre: c.grupo || (map[id] && map[id].nombre) || id };
+            }
+        });
+        return Object.keys(map).sort(function (a, b) {
+            var na = Number(a);
+            var nb = Number(b);
+            if (!isNaN(na) && !isNaN(nb)) return na - nb;
+            return a.localeCompare(b);
+        }).map(function (k) { return map[k]; });
+    }
+
+    function fillMaskUi(selId, agrupaciones, cuentas, current, onPick) {
+        var sel = document.getElementById(selId);
+        if (!sel) return;
+        var masks = masksFromCatalogo(agrupaciones, cuentas);
+        current = String(current || '');
+        sel.innerHTML = '<option value="">Todos los GroupMask</option>' + masks.map(function (m) {
+            return '<option value="' + escapeHtml(m.id) + '"' + (current === String(m.id) ? ' selected' : '') + '>' +
+                escapeHtml(maskLabel(m.id, m.nombre)) + '</option>';
+        }).join('');
+        sel.value = current;
+        sel.onchange = function () { onPick(sel.value || ''); };
+    }
+
+    function groupByMask(rows) {
+        var groups = {};
+        (rows || []).forEach(function (c) {
+            var id = String(c.grupo_id || '').trim() || '_';
+            if (!groups[id]) {
+                groups[id] = { id: id === '_' ? '' : id, label: maskLabel(c.grupo_id, c.grupo), rows: [] };
+            }
+            groups[id].rows.push(c);
+        });
+        return groups;
+    }
+
     var CCAsig = {};
 
     var PERMS_FALLBACK = [
@@ -409,26 +480,71 @@
         if (qEl) qEl.value = '';
         var list = document.getElementById('asig-edit-list');
         if (list) list.innerHTML = '<div class="cc-empty">Cargando cuentas SAP…</div>';
+        CCAsig._editMask = '';
+        var maskSel = document.getElementById('asig-edit-mask');
+        if (maskSel) maskSel.value = '';
         showModal('modalAsigEditar');
         loadCuentasEditar(row.empresa, qEl ? qEl.value : '');
     }
 
     function loadCuentasEditar(empresa, q) {
         var key = String(empresa || '').toLowerCase();
-        var apply = function (rows) {
-            CCAsig._editCuentas = rows || [];
+        var apply = function (rows, groups) {
+            CCAsig._editCuentasAll = rows || [];
+            CCAsig._editCuentas = CCAsig._editCuentasAll;
+            if (groups && groups.length) CCAsig._editAgrupaciones = groups;
+            fillMaskUi('asig-edit-mask', CCAsig._editAgrupaciones || [], CCAsig._editCuentasAll, CCAsig._editMask || '', setEditMask);
+            if (CCAsig._editMask) {
+                setEditMask(CCAsig._editMask);
+                return;
+            }
             renderCuentasEditar(q);
         };
         CCAsig._cuentasCache = CCAsig._cuentasCache || {};
         if (CCAsig._cuentasCache[key]) {
-            apply(CCAsig._cuentasCache[key]);
+            apply(CCAsig._cuentasCache[key], CCAsig._editAgrupaciones || []);
             return;
         }
-        getJSON('/CentrosCostos/api/cuentas?empresa=' + encodeURIComponent(key)).then(function (json) {
+        getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(key)).then(function (json) {
             CCAsig._cuentasCache[key] = json.cuentas || [];
-            apply(CCAsig._cuentasCache[key]);
+            apply(CCAsig._cuentasCache[key], json.agrupaciones || []);
         }).catch(function () {
-            apply((principalDe(CCAsig._activo).cuentas) || []);
+            apply((principalDe(CCAsig._activo).cuentas) || [], []);
+        });
+    }
+
+    function setEditMask(mask) {
+        CCAsig._editMask = String(mask || '');
+        fillMaskUi('asig-edit-mask', CCAsig._editAgrupaciones || [], CCAsig._editCuentasAll || [], CCAsig._editMask, setEditMask);
+        var qEl = document.getElementById('asig-edit-q');
+        var q = qEl ? qEl.value : '';
+        if (!CCAsig._editMask) {
+            CCAsig._editCuentas = CCAsig._editCuentasAll || [];
+            renderCuentasEditar(q);
+            return;
+        }
+        var empresa = String((CCAsig._activo && CCAsig._activo.empresa) || '').toLowerCase();
+        var key = empresa + '|' + CCAsig._editMask;
+        CCAsig._cuentasCache = CCAsig._cuentasCache || {};
+        if (CCAsig._cuentasCache[key]) {
+            CCAsig._editCuentas = CCAsig._cuentasCache[key];
+            renderCuentasEditar(q);
+            return;
+        }
+        var box = document.getElementById('asig-edit-list');
+        if (box) box.innerHTML = '<div class="cc-empty">Cargando GroupMask ' + escapeHtml(CCAsig._editMask) + '…</div>';
+        getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(empresa) +
+            '&group_mask=' + encodeURIComponent(CCAsig._editMask)).then(function (json) {
+            if (String(CCAsig._editMask) !== String(mask || '')) return;
+            CCAsig._cuentasCache[key] = json.cuentas || [];
+            if (json.agrupaciones && json.agrupaciones.length) {
+                CCAsig._editAgrupaciones = json.agrupaciones;
+            }
+            CCAsig._editCuentas = CCAsig._cuentasCache[key];
+            fillMaskUi('asig-edit-mask', CCAsig._editAgrupaciones || [], CCAsig._editCuentasAll || [], CCAsig._editMask, setEditMask);
+            renderCuentasEditar(qEl ? qEl.value : '');
+        }).catch(function () {
+            renderCuentasEditar(q);
         });
     }
 
@@ -436,20 +552,32 @@
         q = (q || '').toLowerCase();
         var box = document.getElementById('asig-edit-list');
         if (!box) return;
+        var mask = String(CCAsig._editMask || '');
         var rows = (CCAsig._editCuentas || []).filter(function (c) {
-            return ((c.codigo || '') + ' ' + (c.nombre || '') + ' ' + (c.grupo || '')).toLowerCase().indexOf(q) !== -1;
+            return ((c.codigo || '') + ' ' + (c.nombre || '') + ' ' + (c.grupo || '') + ' ' + (c.grupo_id || '')).toLowerCase().indexOf(q) !== -1;
         });
         if (!rows.length) {
-            box.innerHTML = '<div class="cc-empty">Sin cuentas para este catálogo</div>';
+            box.innerHTML = '<div class="cc-empty">' + (mask ? 'Sin cuentas para este GroupMask' : 'Sin cuentas para este catálogo') + '</div>';
             return;
         }
         var sel = CCAsig._editSelected || {};
-        box.innerHTML = rows.map(function (c) {
-            var on = !!sel[String(c.codigo)];
-            return '<label class="cc-cta-item"><input type="checkbox" data-edit-cta="1" value="' + escapeHtml(c.codigo) + '"' +
-                ' data-nombre="' + escapeHtml(c.nombre || '') + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' + (on ? ' checked' : '') + '>' +
-                '<span class="cc-cta-code">' + escapeHtml(c.codigo) + '</span>' +
-                '<span class="cc-cta-name">' + escapeHtml(c.nombre || '') + '</span></label>';
+        var groups = groupByMask(rows);
+        box.innerHTML = Object.keys(groups).map(function (key) {
+            var pack = groups[key];
+            var nOn = 0;
+            pack.rows.forEach(function (c) { if (sel[String(c.codigo)]) nOn += 1; });
+            var allOn = pack.rows.length > 0 && nOn === pack.rows.length;
+            return '<div class="cc-cta-group">' +
+                '<label class="cc-cta-group-h cc-cta-mask-h"><input type="checkbox" data-edit-mask="' + escapeHtml(pack.id) + '"' + (allOn ? ' checked' : '') + '>' +
+                'GroupMask ' + escapeHtml(pack.label) + ' · ' + pack.rows.length + '</label>' +
+                pack.rows.map(function (c) {
+                    var on = !!sel[String(c.codigo)];
+                    return '<label class="cc-cta-item"><input type="checkbox" data-edit-cta="1" value="' + escapeHtml(c.codigo) + '"' +
+                        ' data-nombre="' + escapeHtml(c.nombre || '') + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
+                        ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + (on ? ' checked' : '') + '>' +
+                        '<span class="cc-cta-code">' + escapeHtml(c.codigo) + '</span>' +
+                        '<span class="cc-cta-name">' + escapeHtml(c.nombre || '') + '</span></label>';
+                }).join('') + '</div>';
         }).join('');
         var todas = document.getElementById('asig-edit-todas');
         if (todas) {
@@ -640,7 +768,20 @@
             syncEditSelectedFromDom();
         });
         var editList = document.getElementById('asig-edit-list');
-        if (editList) editList.addEventListener('change', syncEditSelectedFromDom);
+        if (editList) editList.addEventListener('change', function (ev) {
+            var t = ev.target;
+            if (t && t.getAttribute('data-edit-mask') != null) {
+                var on = t.checked;
+                editList.querySelectorAll('[data-edit-cta]').forEach(function (i) {
+                    if (String(i.getAttribute('data-mask') || '') === String(t.getAttribute('data-edit-mask') || '')) {
+                        i.checked = on;
+                    }
+                });
+            }
+            syncEditSelectedFromDom();
+            var qEl = document.getElementById('asig-edit-q');
+            renderCuentasEditar(qEl ? qEl.value : '');
+        });
 
         var formEdit = document.getElementById('form-asig-editar');
         if (formEdit) formEdit.addEventListener('submit', function (e) {
@@ -730,9 +871,12 @@
         var empresas = [];
         var centros = [];
         var cuentas = [];
+        var agrupaciones = [];
         var saved = [];
         var cacheCentros = {};
         var cacheCuentas = {};
+        var ctaSelected = {};
+        var ctaMask = '';
         var lastFlashKey = '';
         var currentUserId = 0;
 
@@ -1082,6 +1226,9 @@
             }
             centros = [];
             cuentas = [];
+            agrupaciones = [];
+            ctaSelected = {};
+            ctaMask = '';
             if (centroSel) {
                 centroSel.innerHTML = '<option value="">Cargando centros…</option>';
                 centroSel.disabled = false;
@@ -1092,6 +1239,7 @@
             if (ctaQ) { ctaQ.disabled = true; ctaQ.value = ''; }
             var list = document.getElementById('asig-cta-list');
             if (list) list.innerHTML = '<div class="cc-empty">Elige un centro para ver sus cuentas</div>';
+            fillMaskUi('asig-cta-mask', [], [], '', setCtaMask);
             loadCentros();
         }
 
@@ -1208,58 +1356,133 @@
             if (codigo) {
                 setStep(4);
                 if (ctaQ) ctaQ.disabled = false;
+                seedCtaSelected();
                 loadCuentas();
             }
+        }
+
+        function seedCtaSelected() {
+            ctaSelected = {};
+            var current = centroSel ? centroSel.value : '';
+            var prev = asignacionDeCentro(cfg.empresa, current);
+            ((prev && prev.cuentas) || []).forEach(function (c) {
+                var codigo = c.codigo || c.cuenta_codigo || '';
+                if (!codigo) return;
+                ctaSelected[normCode(codigo)] = {
+                    codigo: codigo,
+                    nombre: c.nombre || c.cuenta_nombre || '',
+                    agrupacion: c.agrupacion || c.grupo || ''
+                };
+            });
+        }
+
+        function setCtaMask(mask) {
+            ctaMask = String(mask || '');
+            fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
+            if (!ctaMask) {
+                var all = cacheCuentas[cfg.empresa];
+                if (all) cuentas = all;
+                renderCuentas(ctaQ ? ctaQ.value : '');
+                return;
+            }
+            var key = String(cfg.empresa || '') + '|' + ctaMask;
+            if (cacheCuentas[key]) {
+                cuentas = cacheCuentas[key];
+                renderCuentas(ctaQ ? ctaQ.value : '');
+                return;
+            }
+            var box = document.getElementById('asig-cta-list');
+            if (box) box.innerHTML = '<div class="cc-empty">Cargando GroupMask ' + escapeHtml(ctaMask) + '…</div>';
+            getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(cfg.empresa) +
+                '&group_mask=' + encodeURIComponent(ctaMask)).then(function (json) {
+                if (String(ctaMask) !== String(mask || '')) return;
+                cacheCuentas[key] = json.cuentas || [];
+                if (json.agrupaciones && json.agrupaciones.length) {
+                    agrupaciones = json.agrupaciones;
+                }
+                cuentas = cacheCuentas[key];
+                fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
+                renderCuentas(ctaQ ? ctaQ.value : '');
+            }).catch(function () {
+                renderCuentas(ctaQ ? ctaQ.value : '');
+            });
+        }
+
+        function syncCtaSelectedFromDom() {
+            document.querySelectorAll('#asig-cta-list [data-cta]').forEach(function (i) {
+                var key = normCode(i.value);
+                if (i.checked) {
+                    ctaSelected[key] = {
+                        codigo: i.value,
+                        nombre: i.getAttribute('data-nombre') || '',
+                        agrupacion: i.getAttribute('data-grupo') || ''
+                    };
+                } else {
+                    delete ctaSelected[key];
+                }
+            });
+            updateCtaSelCount();
+        }
+
+        function updateCtaSelCount() {
+            var el = document.getElementById('asig-cta-sel');
+            if (!el) return;
+            var n = Object.keys(ctaSelected).length;
+            el.textContent = n + (n === 1 ? ' seleccionada' : ' seleccionadas');
         }
 
         function loadCuentas() {
             var box = document.getElementById('asig-cta-list');
             box.innerHTML = '<div class="cc-empty">Cargando cuentas SAP…</div>';
             var key = cfg.empresa;
-            var apply = function (rows) {
+            var apply = function (rows, groups) {
                 cuentas = rows || [];
+                if (groups && groups.length) agrupaciones = groups;
+                fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
+                if (ctaMask) {
+                    setCtaMask(ctaMask);
+                    return;
+                }
                 renderCuentas(ctaQ ? ctaQ.value : '');
             };
             if (cacheCuentas[key]) {
-                apply(cacheCuentas[key]);
+                apply(cacheCuentas[key], agrupaciones);
                 return;
             }
-            getJSON('/CentrosCostos/api/cuentas?empresa=' + encodeURIComponent(cfg.empresa)).then(function (json) {
+            getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(cfg.empresa)).then(function (json) {
                 cacheCuentas[key] = json.cuentas || [];
-                apply(cacheCuentas[key]);
+                apply(cacheCuentas[key], json.agrupaciones || []);
             });
         }
 
         function renderCuentas(q) {
             q = (q || '').toLowerCase();
             var box = document.getElementById('asig-cta-list');
+            var mask = String(ctaMask || '');
             var rows = cuentas.filter(function (c) {
-                return ((c.codigo || '') + ' ' + (c.nombre || '') + ' ' + (c.grupo || '')).toLowerCase().indexOf(q) !== -1;
+                return ((c.codigo || '') + ' ' + (c.nombre || '') + ' ' + (c.grupo || '') + ' ' + (c.grupo_id || '')).toLowerCase().indexOf(q) !== -1;
             });
             if (!rows.length) {
-                box.innerHTML = '<div class="cc-empty">Sin cuentas para este catálogo</div>';
+                box.innerHTML = '<div class="cc-empty">' + (mask ? 'Sin cuentas para este GroupMask' : 'Sin cuentas para este catálogo') + '</div>';
+                updateCtaSelCount();
                 return;
             }
             var current = centroSel ? centroSel.value : '';
             var prev = asignacionDeCentro(cfg.empresa, current);
-            var prevCodes = {};
-            ((prev && prev.cuentas) || []).forEach(function (c) {
-                prevCodes[normCode(c.codigo || c.cuenta_codigo)] = true;
-            });
-            var groups = {};
-            rows.forEach(function (c) {
-                var g = etiquetaGrupo(c.grupo);
-                (groups[g] = groups[g] || []).push(c);
-            });
-            var keys = Object.keys(groups);
-            var mostrarCabecera = keys.filter(function (g) { return g !== ''; }).length > 1;
-            box.innerHTML = keys.map(function (g) {
-                var head = (mostrarCabecera && g) ? '<div class="cc-cta-group-h">' + escapeHtml(g) + '</div>' : '';
-                return '<div class="cc-cta-group">' + head +
-                    groups[g].map(function (c) {
-                        var checked = prevCodes[normCode(c.codigo)] ? ' checked' : '';
+            var groups = groupByMask(rows);
+            box.innerHTML = Object.keys(groups).map(function (key) {
+                var pack = groups[key];
+                var nOn = 0;
+                pack.rows.forEach(function (c) { if (ctaSelected[normCode(c.codigo)]) nOn += 1; });
+                var allOn = pack.rows.length > 0 && nOn === pack.rows.length;
+                return '<div class="cc-cta-group">' +
+                    '<label class="cc-cta-group-h cc-cta-mask-h"><input type="checkbox" data-cta-mask="' + escapeHtml(pack.id) + '"' + (allOn ? ' checked' : '') + '>' +
+                    'GroupMask ' + escapeHtml(pack.label) + ' · ' + pack.rows.length + '</label>' +
+                    pack.rows.map(function (c) {
+                        var checked = ctaSelected[normCode(c.codigo)] ? ' checked' : '';
                         return '<label class="cc-cta-item"><input type="checkbox" data-cta="1" value="' + escapeHtml(c.codigo) + '"' +
-                            ' data-nombre="' + escapeHtml(c.nombre) + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' + checked + '>' +
+                            ' data-nombre="' + escapeHtml(c.nombre) + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
+                            ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + checked + '>' +
                             '<span class="cc-cta-code">' + escapeHtml(c.codigo) + '</span>' +
                             '<span class="cc-cta-name">' + escapeHtml(c.nombre) + '</span></label>';
                     }).join('') + '</div>';
@@ -1270,6 +1493,7 @@
             boxes.forEach(function (i) { if (i.checked) nOn += 1; });
             var todas = document.getElementById('asig-cta-todas');
             if (todas) todas.checked = boxes.length > 0 && nOn === boxes.length;
+            updateCtaSelCount();
         }
 
         function syncPermisos(perms) {
@@ -1301,10 +1525,14 @@
         function resetDetalleParcial() {
             if (centroSel) centroSel.selectedIndex = 0;
             if (ctaQ) { ctaQ.disabled = true; ctaQ.value = ''; }
+            ctaSelected = {};
+            ctaMask = '';
             var list = document.getElementById('asig-cta-list');
             if (list) list.innerHTML = '<div class="cc-empty">Elige un centro para ver sus cuentas</div>';
             var todas = document.getElementById('asig-cta-todas');
             if (todas) todas.checked = false;
+            fillMaskUi('asig-cta-mask', agrupaciones, cuentas, '', setCtaMask);
+            updateCtaSelCount();
             setStep(cfg.empresa ? 3 : (userId() ? 2 : 1));
         }
 
@@ -1347,14 +1575,31 @@
             loadCuentas();
         });
 
-        if (ctaQ) ctaQ.addEventListener('input', function () { renderCuentas(ctaQ.value); });
+        if (ctaQ) ctaQ.addEventListener('input', function () {
+            syncCtaSelectedFromDom();
+            renderCuentas(ctaQ.value);
+        });
         var todasEl = document.getElementById('asig-cta-todas');
         if (todasEl) todasEl.addEventListener('change', function () {
             var on = this.checked;
             document.querySelectorAll('#asig-cta-list [data-cta]').forEach(function (i) { i.checked = on; });
+            syncCtaSelectedFromDom();
         });
         var listEl = document.getElementById('asig-cta-list');
-        if (listEl) listEl.addEventListener('change', function () { setStep(4); });
+        if (listEl) listEl.addEventListener('change', function (ev) {
+            var t = ev.target;
+            if (t && t.getAttribute('data-cta-mask') != null) {
+                var on = t.checked;
+                listEl.querySelectorAll('[data-cta]').forEach(function (i) {
+                    if (String(i.getAttribute('data-mask') || '') === String(t.getAttribute('data-cta-mask') || '')) {
+                        i.checked = on;
+                    }
+                });
+            }
+            setStep(4);
+            syncCtaSelectedFromDom();
+            renderCuentas(ctaQ ? ctaQ.value : '');
+        });
 
         function recogerPayload() {
             if (!userId()) {
@@ -1366,14 +1611,8 @@
                 return null;
             }
             var opt = centroSel && centroSel.options[centroSel.selectedIndex];
-            var ctas = [];
-            document.querySelectorAll('#asig-cta-list [data-cta]:checked').forEach(function (i) {
-                ctas.push({
-                    codigo: i.value,
-                    nombre: i.getAttribute('data-nombre'),
-                    agrupacion: i.getAttribute('data-grupo')
-                });
-            });
+            syncCtaSelectedFromDom();
+            var ctas = Object.keys(ctaSelected).map(function (k) { return ctaSelected[k]; });
             var perms = [];
             document.querySelectorAll('#asig-permisos input[name="permiso"]:checked').forEach(function (i) {
                 perms.push(i.value);

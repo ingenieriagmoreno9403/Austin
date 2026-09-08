@@ -30,9 +30,14 @@
                         <input type="checkbox" id="asig-edit-todas"> Todas
                     </label>
                 </div>
-                <div class="cc-pick-search">
-                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
-                    <input id="asig-edit-q" class="cc-input" type="search" placeholder="Buscar cuenta…">
+                <div class="cc-grupos-cta-tools">
+                    <select id="asig-edit-mask" class="cc-select">
+                        <option value="">Todos los GroupMask</option>
+                    </select>
+                    <div class="cc-pick-search">
+                        <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+                        <input id="asig-edit-q" class="cc-input" type="search" placeholder="Buscar cuenta…">
+                    </div>
                 </div>
                 <div class="cc-pick-list cc-check-list" id="asig-edit-list" style="max-height:340px">
                     <div class="cc-empty">Cargando cuentas…</div>

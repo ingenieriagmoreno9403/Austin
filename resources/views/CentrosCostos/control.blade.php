@@ -53,24 +53,24 @@
                 <div class="cc-panel-head">
                     <h3><i class="fa-solid fa-sitemap"></i> Empresa y centro</h3>
                 </div>
-                <label class="cc-nav-field">
-                    <span>Empresa <em class="cc-nav-status" id="ctl-emp-status" hidden></em></span>
+                <div class="cc-nav-field">
+                    <label for="ctl-empresa">Empresa <em class="cc-nav-status" id="ctl-emp-status" hidden></em></label>
                     <select id="ctl-empresa" class="cc-select">
                         <option value="">Elige empresa…</option>
                     </select>
-                </label>
-                <label class="cc-nav-field">
-                    <span>Centro de costos <em class="cc-nav-status" id="ctl-cc-status" hidden></em></span>
+                </div>
+                <div class="cc-nav-field">
+                    <label for="ctl-centro">Centro de costos <em class="cc-nav-status" id="ctl-cc-status" hidden></em></label>
                     <select id="ctl-centro" class="cc-select" disabled>
                         <option value="">Elige una empresa primero…</option>
                     </select>
-                </label>
-                <label class="cc-nav-field">
-                    <span>Cuenta <em class="cc-nav-status" id="ctl-cta-status" hidden></em></span>
+                </div>
+                <div class="cc-nav-field">
+                    <label for="ctl-cuenta">Cuenta <em class="cc-nav-status" id="ctl-cta-status" hidden></em></label>
                     <select id="ctl-cuenta" class="cc-select" disabled>
                         <option value="">Elige un centro primero…</option>
                     </select>
-                </label>
+                </div>
                 <div class="cc-nav-tools">
                     <select id="ctl-moneda" class="cc-select" aria-label="Moneda">
                         <option value="MXN">MXN</option>
@@ -117,22 +117,18 @@
                     <div id="ctl-form-body" hidden>
                         <div class="cc-cta-selected">
                             <div class="cc-cta-selected-row">
-                                <div>
-                                    <div class="cc-form-kicker" id="ctl-form-grupo">—</div>
-                                    <div class="cc-cta-names">
+                                <div class="cc-cta-idents">
+                                    <div class="cc-cta-ident is-centro">
+                                        <span class="cc-cta-ident-label">Centro</span>
                                         <h4 id="ctl-form-cc" class="cc-cta-cc">—</h4>
+                                    </div>
+                                    <div class="cc-cta-ident is-cuenta">
+                                        <span class="cc-cta-ident-label">Cuenta</span>
                                         <h4 id="ctl-form-cta">Cuenta</h4>
+                                        <em class="cc-form-kicker" id="ctl-form-grupo">—</em>
                                     </div>
                                 </div>
                                 <span class="cc-badge" id="ctl-form-estado">Pendiente</span>
-                            </div>
-                            <div class="cc-cta-fill">
-                                <div class="cc-cta-fill-top">
-                                    <span>Llenado de la cuenta</span>
-                                    <strong id="ctl-form-avance">—</strong>
-                                </div>
-                                <div class="cc-progress warn" id="ctl-form-avance-wrap"><span id="ctl-form-avance-bar" style="width:0%"></span></div>
-                                <div class="cc-cta-fill-meta" id="ctl-form-avance-meta">0 de 12 meses capturados</div>
                             </div>
                         </div>
                         <div class="cc-cta-compare">
@@ -142,10 +138,18 @@
                                 <span>Real del año anterior</span>
                             </div>
                             <div class="cc-cta-compare-card is-now">
-                                <small>Le pondré {{ $bootstrap['anioPresupuesto'] }}</small>
+                                <small id="ctl-form-ppto-label">Presupuesto</small>
                                 <strong id="ctl-form-ppto">—</strong>
                                 <span id="ctl-form-delta">vs año pasado</span>
                             </div>
+                        </div>
+                        <div class="cc-cta-fill">
+                            <div class="cc-cta-fill-top">
+                                <span>Llenado de la cuenta</span>
+                                <strong id="ctl-form-avance">—</strong>
+                            </div>
+                            <div class="cc-progress warn" id="ctl-form-avance-wrap"><span id="ctl-form-avance-bar" style="width:0%"></span></div>
+                            <div class="cc-cta-fill-meta" id="ctl-form-avance-meta">0 de 12 meses capturados</div>
                         </div>
                         <div class="cc-month-row">
                             <div class="cc-month-grid" id="ctl-month-grid"></div>
@@ -153,17 +157,14 @@
                                 <button type="button" class="cc-btn" id="ctl-copy-year">
                                     <i class="fa-solid fa-clone"></i> Copiar {{ $bootstrap['anioGasto'] }}
                                 </button>
-                                <button type="button" class="cc-btn" id="ctl-clear-year">
-                                    <i class="fa-solid fa-eraser"></i> Limpiar
-                                </button>
                                 <button type="button" class="cc-btn" id="ctl-apply-infl">
                                     <i class="fa-solid fa-percent"></i> + inflación
                                 </button>
-                                <button type="button" class="cc-btn" id="ctl-btn-fijo" onclick="CC.showModal('modalFijo')">
-                                    <i class="fa-solid fa-copy"></i> Gasto fijo
-                                </button>
                                 <button type="button" class="cc-btn" id="ctl-btn-dispersar" onclick="CC.showModal('modalDispersar')">
                                     <i class="fa-solid fa-share-nodes"></i> Dispersar
+                                </button>
+                                <button type="button" class="cc-btn" id="ctl-clear-year">
+                                    <i class="fa-solid fa-eraser"></i> Limpiar
                                 </button>
                                 <button type="button" class="cc-btn" id="ctl-next-pend">
                                     <i class="fa-solid fa-arrow-right"></i> Siguiente pendiente
@@ -286,8 +287,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body row g-3">
-                <div class="col-12"><label class="form-label">Cuenta</label><select id="d-cuenta" class="form-select"></select></div>
-                <div class="col-12"><label class="form-label">Monto total</label><input id="d-monto" class="form-control" type="number" min="0" step="0.01" required></div>
+                <div class="col-12"><label class="form-label" id="d-monto-label">Monto total</label><input id="d-monto" class="form-control" type="number" min="0" step="0.01" required></div>
                 <div class="col-6"><label class="form-label">Desde</label>
                     <select id="d-desde" class="form-select">
                         @foreach(['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'] as $i => $m)
@@ -305,8 +305,10 @@
                 <div class="col-12"><label class="form-label">Método</label>
                     <select id="d-modo" class="form-select">
                         <option value="igual">Partes iguales</option>
+                        <option value="mismo">Gasto fijo</option>
                         <option value="gasto">Proporcional al gasto {{ $bootstrap['anioGasto'] }}</option>
                     </select>
+                    <p class="text-muted mb-0 mt-1" id="d-modo-hint" style="font-size:.82rem">El total se reparte entre los meses del rango.</p>
                 </div>
             </div>
             <div class="modal-footer">
@@ -317,47 +319,7 @@
     </div>
 </div>
 
-<div class="modal fade cc-modal" id="modalFijo" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered">
-        <form class="modal-content" id="form-fijo">
-            <div class="modal-header">
-                <h5 class="modal-title">Programar gasto fijo</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body row g-3">
-                <div class="col-12"><label class="form-label">Cuenta</label><select id="fijo-cuenta" class="form-select"></select></div>
-                <div class="col-12"><label class="form-label">Monto mensual</label><input id="fijo-monto" class="form-control" type="number" min="0" step="0.01" required></div>
-                <p class="text-muted mb-0" style="font-size:.82rem">Se copia el mismo monto a los 12 meses (arrendamientos, licencias, etc.).</p>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cancelar</button>
-                <button type="submit" class="cc-btn cc-btn-ink">Aplicar 12 meses</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<div class="modal fade cc-modal" id="modalIndicadores" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Indicadores económicos</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <table class="cc-table">
-                    <tbody>
-                        <tr><td>Inflación</td><td class="num fw-semibold">4.0 % (Informe Banxico)</td></tr>
-                        <tr><td>Tipo de cambio MXP/USD</td><td class="num fw-semibold">$ 20.00</td></tr>
-                    </tbody>
-                </table>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="cc-btn cc-btn-ink" data-bs-dismiss="modal">OK</button>
-            </div>
-        </div>
-    </div>
-</div>
+@include('CentrosCostos.partials.modal-indicadores')
 @endsection
 
 @section('js')

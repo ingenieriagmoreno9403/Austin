@@ -100,12 +100,20 @@
                         <input type="checkbox" id="asig-cta-todas"> Todas
                     </label>
                 </div>
-                <div class="cc-pick-search">
-                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
-                    <input id="asig-cta-q" class="cc-input" type="search" placeholder="Buscar cuenta…">
+                <div class="cc-grupos-cta-tools">
+                    <select id="asig-cta-mask" class="cc-select">
+                        <option value="">Todos los GroupMask</option>
+                    </select>
+                    <div class="cc-pick-search">
+                        <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+                        <input id="asig-cta-q" class="cc-input" type="search" placeholder="Buscar cuenta…">
+                    </div>
                 </div>
                 <div class="cc-pick-list cc-check-list" id="asig-cta-list">
                     <div class="cc-empty">Elige un centro para ver sus cuentas</div>
+                </div>
+                <div class="cc-asig-foot" id="asig-cta-foot">
+                    <span class="text-muted" style="font-size:.78rem" id="asig-cta-sel">0 seleccionadas</span>
                 </div>
             </div>
         </div>

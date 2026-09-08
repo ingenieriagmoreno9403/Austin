@@ -13,6 +13,9 @@
             <p class="cc-sub">Elige el ciclo que vas a presupuestar. Al abrirlo entras a centros, cuentas, usuarios y permisos de ese periodo.</p>
         </div>
         <div class="cc-header-actions">
+            <a class="cc-btn" href="{{ route('centros.grupos') }}">
+                <i class="fa-solid fa-object-group"></i> Grupos de cuentas
+            </a>
             <button type="button" class="cc-btn cc-btn-ink" onclick="CC.showModal('modalPeriodo')">
                 <i class="fa-solid fa-unlock"></i> Abrir nuevo ciclo
             </button>

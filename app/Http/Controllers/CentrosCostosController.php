@@ -6,6 +6,8 @@ use App\Models\CcAsignacion;
 use App\Models\CcAsignacionCuenta;
 use App\Models\CcAsignacionPermiso;
 use App\Models\CcCiclo;
+use App\Models\CcGrupoCuenta;
+use App\Models\CcGrupoCuentaItem;
 use App\Models\CcTipoPermiso;
 use App\Models\Empresas;
 use App\Models\User;
@@ -68,6 +70,11 @@ class CentrosCostosController extends Controller
     public function analisis()
     {
         return $this->page('analisis', 'CentrosCostos.analisis');
+    }
+
+    public function grupos()
+    {
+        return $this->page('grupos', 'CentrosCostos.grupos');
     }
 
     public function listCiclos(): JsonResponse
@@ -221,11 +228,21 @@ class CentrosCostosController extends Controller
             $counts = $q->pluck('total', 'empresa')->all();
         }
 
-        $empresas = collect($dbs)->map(function ($db) use ($counts) {
+        $gruposCounts = [];
+        if (Schema::hasTable('tbl_cc_grupos_cuenta')) {
+            $gruposCounts = CcGrupoCuenta::query()
+                ->selectRaw('empresa, count(*) as total')
+                ->groupBy('empresa')
+                ->pluck('total', 'empresa')
+                ->all();
+        }
+
+        $empresas = collect($dbs)->map(function ($db) use ($counts, $gruposCounts) {
             return [
                 'codigo' => $db,
                 'nombre' => strtoupper($db),
                 'asignaciones' => (int) ($counts[$db] ?? 0),
+                'grupos' => (int) ($gruposCounts[$db] ?? 0),
             ];
         })->values()->all();
 
@@ -254,24 +271,139 @@ class CentrosCostosController extends Controller
     public function cuentasSap(Request $request): JsonResponse
     {
         $empresa = strtolower((string) $request->get('empresa', 'austin'));
+        $todas = $request->boolean('todas');
+        $groupMask = trim((string) $request->get('group_mask', $request->get('GroupMask', '')));
 
         try {
-            $api = app(AutinApiClient::class);
-            $resCtas = $api->index('cuentas', ['per_page' => 200, 'page' => 1], $empresa);
-            $resGrp = $api->index('agrupaciones-cuentas', ['per_page' => 80, 'page' => 1], $empresa);
-            $cuentas = ! empty($resCtas['ok']) ? $this->normalizarCuentas($resCtas['body']['data'] ?? []) : [];
-            $agrupaciones = ! empty($resGrp['ok']) ? $this->normalizarAgrupaciones($resGrp['body']['data'] ?? []) : [];
-            $cuentas = $this->resolverNombresGrupoCuentas($cuentas, $agrupaciones);
+            $cargadas = $this->cargarCuentasEmpresa($empresa, $todas, $groupMask);
 
             return response()->json([
-                'ok' => ! empty($resCtas['ok']),
-                'cuentas' => $cuentas,
-                'agrupaciones' => $agrupaciones,
-                'mensaje' => $resCtas['message'] ?? null,
+                'ok' => $cargadas['ok'],
+                'cuentas' => $cargadas['cuentas'],
+                'agrupaciones' => $cargadas['agrupaciones'],
+                'mensaje' => $cargadas['mensaje'],
             ]);
         } catch (Throwable $e) {
             return response()->json(['ok' => false, 'cuentas' => [], 'agrupaciones' => [], 'mensaje' => $e->getMessage()], 200);
         }
+    }
+
+    public function listGrupos(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_cc_grupos_cuenta')) {
+            return response()->json(['grupos' => []]);
+        }
+
+        $empresa = strtolower(trim((string) $request->get('empresa', '')));
+        $q = CcGrupoCuenta::query()->with('cuentas')->orderBy('clave');
+        if ($empresa !== '') {
+            $q->where('empresa', $empresa);
+        }
+
+        $rows = $q->get()->map(function (CcGrupoCuenta $g) {
+            return $this->grupoPayload($g);
+        })->values()->all();
+
+        return response()->json(['grupos' => $rows]);
+    }
+
+    public function storeGrupo(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_cc_grupos_cuenta')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de grupos de cuentas.'], 422);
+        }
+
+        $data = $request->validate([
+            'empresa' => 'required|string|max:40',
+            'clave' => 'required|string|max:40',
+            'nombre' => 'required|string|max:180',
+            'cuentas' => 'array',
+            'cuentas.*.codigo' => 'required|string|max:40',
+            'cuentas.*.nombre' => 'nullable|string|max:180',
+        ]);
+
+        $empresa = strtolower(trim($data['empresa']));
+        $clave = strtoupper(trim($data['clave']));
+        $empresasOk = ['austin', 'imsa', 'pitic', 'sydney'];
+        if (! in_array($empresa, $empresasOk, true)) {
+            return response()->json(['message' => 'Empresa no válida.'], 422);
+        }
+
+        $existe = CcGrupoCuenta::query()
+            ->where('empresa', $empresa)
+            ->where('clave', $clave)
+            ->exists();
+        if ($existe) {
+            return response()->json(['message' => 'Ya existe un grupo con esa clave en esta empresa.'], 422);
+        }
+
+        $grupo = CcGrupoCuenta::query()->create([
+            'empresa' => $empresa,
+            'clave' => $clave,
+            'nombre' => trim($data['nombre']),
+            'created_by' => auth()->id(),
+            'updated_by' => auth()->id(),
+        ]);
+        $this->syncGrupoCuentas($grupo, $data['cuentas'] ?? []);
+        $grupo->load('cuentas');
+
+        return response()->json(['ok' => true, 'grupo' => $this->grupoPayload($grupo)]);
+    }
+
+    public function updateGrupo(Request $request, int $id): JsonResponse
+    {
+        $grupo = CcGrupoCuenta::query()->with('cuentas')->find($id);
+        if (! $grupo) {
+            return response()->json(['message' => 'Grupo no encontrado.'], 404);
+        }
+
+        $data = $request->validate([
+            'clave' => 'sometimes|required|string|max:40',
+            'nombre' => 'sometimes|required|string|max:180',
+            'cuentas' => 'sometimes|array',
+            'cuentas.*.codigo' => 'required_with:cuentas|string|max:40',
+            'cuentas.*.nombre' => 'nullable|string|max:180',
+        ]);
+
+        if (isset($data['clave'])) {
+            $clave = strtoupper(trim($data['clave']));
+            $dup = CcGrupoCuenta::query()
+                ->where('empresa', $grupo->empresa)
+                ->where('clave', $clave)
+                ->where('id', '!=', $grupo->id)
+                ->exists();
+            if ($dup) {
+                return response()->json(['message' => 'Ya existe un grupo con esa clave en esta empresa.'], 422);
+            }
+            $grupo->clave = $clave;
+        }
+        if (isset($data['nombre'])) {
+            $grupo->nombre = trim($data['nombre']);
+        }
+        $grupo->updated_by = auth()->id();
+        $grupo->save();
+
+        if (array_key_exists('cuentas', $data)) {
+            $this->syncGrupoCuentas($grupo, $data['cuentas']);
+        }
+        $grupo->load('cuentas');
+
+        return response()->json(['ok' => true, 'grupo' => $this->grupoPayload($grupo)]);
+    }
+
+    public function destroyGrupo(int $id): JsonResponse
+    {
+        $grupo = CcGrupoCuenta::query()->find($id);
+        if (! $grupo) {
+            return response()->json(['message' => 'Grupo no encontrado.'], 404);
+        }
+
+        DB::transaction(function () use ($grupo) {
+            CcGrupoCuentaItem::query()->where('grupo_id', $grupo->id)->delete();
+            $grupo->delete();
+        });
+
+        return response()->json(['ok' => true]);
     }
 
     public function listAsignaciones(string $ciclo): JsonResponse
@@ -604,6 +736,199 @@ class CentrosCostosController extends Controller
     }
 
     /**
+     * @return array{ok: bool, cuentas: array<int, array<string, mixed>>, agrupaciones: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarCuentasEmpresa(string $empresa, bool $todas = false, string $groupMask = ''): array
+    {
+        $api = app(AutinApiClient::class);
+        $cuentas = [];
+        $ok = false;
+        $mensaje = null;
+        $maxPages = $todas ? 40 : 1;
+        $perPage = 200;
+
+        for ($page = 1; $page <= $maxPages; $page++) {
+            $filtros = ['per_page' => $perPage, 'page' => $page];
+            if ($groupMask !== '') {
+                $filtros['GroupMask'] = $groupMask;
+            }
+            $res = $api->index('cuentas', $filtros, $empresa);
+            if (empty($res['ok'])) {
+                if ($page === 1) {
+                    $mensaje = $res['message'] ?? 'Sin conexión a catálogo SAP';
+                }
+                break;
+            }
+            $ok = true;
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+            $batch = $this->normalizarCuentas($body['data'] ?? []);
+            if (! $batch) {
+                break;
+            }
+            $cuentas = array_merge($cuentas, $batch);
+            $pag = $this->paginacionDe($body);
+            $lastPage = $pag['last_page'];
+            if ($lastPage > 0 && $page >= $lastPage) {
+                break;
+            }
+            if ($lastPage < 1 && count($batch) < $perPage) {
+                break;
+            }
+        }
+
+        $agrupaciones = $this->cargarAgrupacionesEmpresa($api, $empresa);
+        $cuentas = $this->resolverNombresGrupoCuentas($cuentas, $agrupaciones);
+        if ($groupMask !== '') {
+            foreach ($cuentas as &$cta) {
+                if (trim((string) ($cta['grupo_id'] ?? '')) === '') {
+                    $cta['grupo_id'] = $groupMask;
+                }
+            }
+            unset($cta);
+        }
+
+        return [
+            'ok' => $ok,
+            'cuentas' => $cuentas,
+            'agrupaciones' => $agrupaciones,
+            'mensaje' => $mensaje,
+        ];
+    }
+
+    /**
+     * @return array{last_page: int, total: int, per_page: int, current_page: int}
+     */
+    protected function paginacionDe(array $body): array
+    {
+        $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
+
+        return [
+            'last_page' => (int) ($meta['last_page'] ?? $body['last_page'] ?? $meta['lastPage'] ?? 0),
+            'total' => (int) ($meta['total'] ?? $body['total'] ?? 0),
+            'per_page' => (int) ($meta['per_page'] ?? $body['per_page'] ?? 0),
+            'current_page' => (int) ($meta['current_page'] ?? $body['current_page'] ?? 0),
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    protected function cargarAgrupacionesEmpresa(AutinApiClient $api, string $empresa): array
+    {
+        $rows = [];
+        for ($page = 1; $page <= 5; $page++) {
+            $res = $api->index('agrupaciones-cuentas', ['per_page' => 100, 'page' => $page], $empresa);
+            if (empty($res['ok'])) {
+                break;
+            }
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+            $batch = $this->normalizarAgrupaciones($body['data'] ?? []);
+            if (! $batch) {
+                break;
+            }
+            $rows = array_merge($rows, $batch);
+            $pag = $this->paginacionDe($body);
+            if ($pag['last_page'] > 0 && $page >= $pag['last_page']) {
+                break;
+            }
+            if ($pag['last_page'] < 1 && count($batch) < 100) {
+                break;
+            }
+        }
+
+        return $this->completarAgrupaciones($rows);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $agrupaciones
+     * @return array<int, array<string, mixed>>
+     */
+    protected function completarAgrupaciones(array $agrupaciones): array
+    {
+        $clases = [
+            '1' => 'Activo',
+            '2' => 'Pasivo',
+            '3' => 'Capital',
+            '4' => 'Ingresos',
+            '5' => 'Costo de ventas',
+            '6' => 'Gastos',
+            '7' => 'Otros ingresos y gastos',
+            '8' => 'Otros',
+            '9' => 'GroupMask 9',
+            '10' => 'GroupMask 10',
+        ];
+        $byId = [];
+        foreach ($agrupaciones as $g) {
+            $id = trim((string) ($g['id'] ?? ''));
+            if ($id === '') {
+                continue;
+            }
+            $nom = trim((string) ($g['nombre'] ?? ''));
+            $byId[$id] = [
+                'id' => $id,
+                'nombre' => ($nom !== '' && $nom !== $id) ? $nom : ($clases[$id] ?? $id),
+            ];
+        }
+        for ($i = 1; $i <= 10; $i++) {
+            $id = (string) $i;
+            if (! isset($byId[$id])) {
+                $byId[$id] = ['id' => $id, 'nombre' => $clases[$id]];
+            }
+        }
+        uksort($byId, function ($a, $b) {
+            $na = is_numeric($a) ? (int) $a : PHP_INT_MAX;
+            $nb = is_numeric($b) ? (int) $b : PHP_INT_MAX;
+            if ($na !== $nb && ($na < PHP_INT_MAX || $nb < PHP_INT_MAX)) {
+                return $na <=> $nb;
+            }
+
+            return strcasecmp((string) $a, (string) $b);
+        });
+
+        return array_values($byId);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $cuentas
+     */
+    protected function syncGrupoCuentas(CcGrupoCuenta $grupo, array $cuentas): void
+    {
+        CcGrupoCuentaItem::query()->where('grupo_id', $grupo->id)->delete();
+        $seen = [];
+        foreach ($cuentas as $cta) {
+            $codigo = trim((string) ($cta['codigo'] ?? $cta['cuenta_codigo'] ?? ''));
+            if ($codigo === '' || isset($seen[$codigo])) {
+                continue;
+            }
+            $seen[$codigo] = true;
+            CcGrupoCuentaItem::query()->create([
+                'grupo_id' => $grupo->id,
+                'cuenta_codigo' => $codigo,
+                'cuenta_nombre' => $cta['nombre'] ?? $cta['cuenta_nombre'] ?? null,
+            ]);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function grupoPayload(CcGrupoCuenta $g): array
+    {
+        return [
+            'id' => $g->id,
+            'empresa' => $g->empresa,
+            'clave' => $g->clave,
+            'nombre' => $g->nombre,
+            'cuentas' => $g->cuentas->map(function (CcGrupoCuentaItem $c) {
+                return [
+                    'codigo' => $c->cuenta_codigo,
+                    'nombre' => $c->cuenta_nombre,
+                ];
+            })->values()->all(),
+        ];
+    }
+
+    /**
      * @param  array<int, mixed>  $rows
      * @return array<int, array<string, mixed>>
      */
@@ -684,6 +1009,8 @@ class CentrosCostosController extends Controller
             '6' => 'Gastos',
             '7' => 'Otros ingresos y gastos',
             '8' => 'Otros',
+            '9' => 'GroupMask 9',
+            '10' => 'GroupMask 10',
         ];
 
         foreach ($cuentas as &$c) {

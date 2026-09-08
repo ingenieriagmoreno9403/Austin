@@ -1183,6 +1183,11 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     });
 
     Route::get('/AdminCentros', [CentrosCostosController::class, 'admin'])->name('centros.admin');
+    Route::get('/AdminCentros/grupos', [CentrosCostosController::class, 'grupos'])->name('centros.grupos');
+    Route::get('/CentrosCostos/api/grupos', [CentrosCostosController::class, 'listGrupos'])->name('centros.api.grupos');
+    Route::post('/CentrosCostos/api/grupos', [CentrosCostosController::class, 'storeGrupo'])->name('centros.api.grupos.store');
+    Route::put('/CentrosCostos/api/grupos/{id}', [CentrosCostosController::class, 'updateGrupo'])->name('centros.api.grupos.update');
+    Route::delete('/CentrosCostos/api/grupos/{id}', [CentrosCostosController::class, 'destroyGrupo'])->name('centros.api.grupos.destroy');
     Route::get('/AdminCentros/{ciclo}/asignar/{empresa?}', [CentrosCostosController::class, 'asignar'])
         ->where('empresa', 'austin|imsa|pitic|sydney')
         ->name('centros.asignar');
