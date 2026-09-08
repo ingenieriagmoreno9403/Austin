@@ -5,9 +5,11 @@ namespace App\Http\Controllers;
 use App\Models\CcAsignacion;
 use App\Models\CcAsignacionCuenta;
 use App\Models\CcAsignacionPermiso;
+use App\Models\CcCapturaCentro;
 use App\Models\CcCiclo;
 use App\Models\CcGrupoCuenta;
 use App\Models\CcGrupoCuentaItem;
+use App\Models\CcPresupuesto;
 use App\Models\CcTipoPermiso;
 use App\Models\Empresas;
 use App\Models\User;
@@ -15,13 +17,14 @@ use App\Services\AutinApiClient;
 use App\Traits\MenuTrait;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 
 /**
- * Vistas de centros de costo / presupuesto 2027.
- * Catálogo SAP vía AutinApi; la captura de presupuesto vive en la vista (sin persistencia aún).
+ * Vistas de centros de costo / presupuesto.
+ * Catálogo SAP vía AutinApi; la captura mensual se guarda en tbl_cc_presupuestos.
  */
 class CentrosCostosController extends Controller
 {
@@ -69,7 +72,9 @@ class CentrosCostosController extends Controller
 
     public function analisis()
     {
-        return $this->page('analisis', 'CentrosCostos.analisis');
+        return $this->page('analisis', 'CentrosCostos.analisis', [
+            'detalleUrl' => route('centros.detalle'),
+        ]);
     }
 
     public function grupos()
@@ -180,6 +185,12 @@ class CentrosCostosController extends Controller
                     CcAsignacionPermiso::query()->whereIn('asignacion_id', $ids)->delete();
                 }
                 CcAsignacion::query()->whereIn('id', $ids)->delete();
+            }
+            if (Schema::hasTable('tbl_cc_presupuestos')) {
+                CcPresupuesto::query()->where('ciclo_codigo', $row->codigo)->delete();
+            }
+            if (Schema::hasTable('tbl_cc_captura_centros')) {
+                CcCapturaCentro::query()->where('ciclo_codigo', $row->codigo)->delete();
             }
             $row->delete();
         });
@@ -592,6 +603,320 @@ class CentrosCostosController extends Controller
         return response()->json($this->cargarCatalogo($api, $perPage, $empresa));
     }
 
+    public function gastoReal(Request $request): JsonResponse
+    {
+        $empresa = strtoupper(trim((string) $request->get('empresa', '')));
+        $cc = trim((string) $request->get('cc', $request->get('CC', '')));
+        $year = (int) $request->get('year', $request->get('anio', 0));
+
+        $alias = [
+            'ABSA' => 'AUSTIN',
+        ];
+        if (isset($alias[$empresa])) {
+            $empresa = $alias[$empresa];
+        }
+
+        if ($empresa === '' || $cc === '') {
+            return response()->json(['ok' => false, 'por_cuenta' => (object) [], 'mensaje' => 'Falta empresa o centro.'], 422);
+        }
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+
+        $cacheKey = 'cc.gasto-real.' . $empresa . '.' . $cc . '.' . $year;
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['ok'])) {
+            return response()->json($cached);
+        }
+
+        try {
+            $payload = $this->cargarGastoRealCentro($empresa, $cc, $year);
+            if (! empty($payload['ok'])) {
+                Cache::put($cacheKey, $payload, 900);
+            }
+        } catch (Throwable $e) {
+            return response()->json([
+                'ok' => false,
+                'year' => $year,
+                'por_cuenta' => (object) [],
+                'mensaje' => $e->getMessage(),
+            ], 200);
+        }
+
+        return response()->json($payload);
+    }
+
+    public function captura(Request $request): JsonResponse
+    {
+        $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
+        if ($ciclo === '') {
+            return response()->json(['message' => 'Falta el ciclo.'], 422);
+        }
+
+        $budgets = [];
+        if (Schema::hasTable('tbl_cc_presupuestos')) {
+            CcPresupuesto::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (CcPresupuesto $row) use (&$budgets) {
+                $key = $this->capturaBudgetKey($row->empresa, $row->centro_codigo, $row->cuenta_codigo);
+                $budgets[$key] = $row->meses();
+            });
+        }
+
+        $overlays = [];
+        if (Schema::hasTable('tbl_cc_captura_centros')) {
+            CcCapturaCentro::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (CcCapturaCentro $row) use (&$overlays) {
+                $key = strtoupper(trim((string) $row->empresa)).'|'.trim((string) $row->centro_codigo);
+                $overlays[$key] = [
+                    'estado' => $row->estado ?: 'en_proceso',
+                    'fecha' => $row->updated_at ? $row->updated_at->format('d/m/Y') : null,
+                ];
+            });
+        }
+
+        return response()->json([
+            'ok' => true,
+            'ciclo' => $ciclo,
+            'budgets' => (object) $budgets,
+            'overlays' => (object) $overlays,
+        ]);
+    }
+
+    public function guardarPresupuesto(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_cc_presupuestos')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de presupuestos.'], 422);
+        }
+
+        $data = $request->validate([
+            'ciclo' => 'required|string|max:40',
+            'empresa' => 'required|string|max:40',
+            'centro' => 'required|string|max:40',
+            'cuenta' => 'required|string|max:40',
+            'cuenta_nombre' => 'nullable|string|max:180',
+            'meses' => 'required|array|size:12',
+            'meses.*' => 'numeric',
+        ]);
+
+        $ciclo = strtoupper(trim($data['ciclo']));
+        $empresa = strtoupper(trim($data['empresa']));
+        $centro = trim($data['centro']);
+        $cuenta = trim($data['cuenta']);
+
+        if (! $this->puedeCapturarCentro($ciclo, $empresa, $centro)) {
+            return response()->json(['message' => 'No tienes permiso de captura en este centro.'], 403);
+        }
+
+        $row = CcPresupuesto::query()->firstOrNew([
+            'ciclo_codigo' => $ciclo,
+            'empresa' => $empresa,
+            'centro_codigo' => $centro,
+            'cuenta_codigo' => $cuenta,
+        ]);
+        $row->setMeses($data['meses']);
+        if (! empty($data['cuenta_nombre'])) {
+            $row->cuenta_nombre = $data['cuenta_nombre'];
+        }
+        $row->updated_by = auth()->id();
+        $row->save();
+
+        return response()->json([
+            'ok' => true,
+            'key' => $this->capturaBudgetKey($empresa, $centro, $cuenta),
+            'meses' => $row->meses(),
+        ]);
+    }
+
+    public function guardarCapturaCentro(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_cc_captura_centros')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de captura.'], 422);
+        }
+
+        $data = $request->validate([
+            'ciclo' => 'required|string|max:40',
+            'empresa' => 'required|string|max:40',
+            'centro' => 'required|string|max:40',
+            'estado' => 'required|in:abierto,en_proceso,terminado,en_revision,aceptado,rechazado',
+        ]);
+
+        $ciclo = strtoupper(trim($data['ciclo']));
+        $empresa = strtoupper(trim($data['empresa']));
+        $centro = trim($data['centro']);
+
+        if (! $this->puedeCapturarCentro($ciclo, $empresa, $centro)) {
+            return response()->json(['message' => 'No tienes permiso de captura en este centro.'], 403);
+        }
+
+        $row = CcCapturaCentro::query()->firstOrNew([
+            'ciclo_codigo' => $ciclo,
+            'empresa' => $empresa,
+            'centro_codigo' => $centro,
+        ]);
+        $row->estado = $data['estado'];
+        $row->updated_by = auth()->id();
+        $row->save();
+
+        return response()->json([
+            'ok' => true,
+            'estado' => $row->estado,
+            'fecha' => $row->updated_at ? $row->updated_at->format('d/m/Y') : now()->format('d/m/Y'),
+        ]);
+    }
+
+    protected function capturaBudgetKey(string $empresa, string $centro, string $cuenta): string
+    {
+        return strtoupper(trim($empresa)).'|'.trim($centro).'|'.trim($cuenta);
+    }
+
+    protected function puedeCapturarCentro(string $ciclo, string $empresa, string $centro): bool
+    {
+        if (! Schema::hasTable('tbl_cc_asignaciones')) {
+            return false;
+        }
+
+        $asigs = CcAsignacion::query()
+            ->with('permisos.tipo')
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
+            ->where('user_id', auth()->id())
+            ->whereRaw('UPPER(empresa) = ?', [strtoupper($empresa)])
+            ->where('centro_codigo', $centro)
+            ->get();
+
+        foreach ($asigs as $a) {
+            $claves = $a->permisos->map(function ($p) {
+                return $p->tipo->clave ?? null;
+            })->filter()->all();
+            if (in_array('capturar', $claves, true) || in_array('editar', $claves, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array{ok: bool, year: int, por_cuenta: array<string, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year): array
+    {
+        $api = app(AutinApiClient::class);
+        $porCuenta = [];
+        $ok = false;
+        $mensaje = null;
+        $perPage = 200;
+        $maxPages = 20;
+
+        for ($page = 1; $page <= $maxPages; $page++) {
+            $res = $api->gastoReal([
+                'Empresa' => $empresa,
+                'CC' => $cc,
+                'year' => $year,
+                'fecha_desde' => $year . '-01-01',
+                'fecha_hasta' => $year . '-12-31',
+                'per_page' => $perPage,
+                'page' => $page,
+            ]);
+
+            if (empty($res['ok'])) {
+                if ($page === 1) {
+                    $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
+                }
+                break;
+            }
+
+            $ok = true;
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+            $rows = $body['data'] ?? [];
+            if (! is_array($rows) || ! $rows) {
+                break;
+            }
+
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $rowCc = (string) ($row['CC'] ?? $row['PrcCode'] ?? '');
+                if (! $this->mismoCentroCodigo($rowCc, $cc)) {
+                    continue;
+                }
+                $codigo = trim((string) ($row['Cuenta'] ?? $row['FormatCode'] ?? $row['AcctCode'] ?? ''));
+                if ($codigo === '') {
+                    continue;
+                }
+                $fecha = (string) ($row['Fecha'] ?? $row['fecha'] ?? '');
+                $ts = strtotime(substr($fecha, 0, 19));
+                if ($ts && (int) date('Y', $ts) !== $year) {
+                    continue;
+                }
+                $mes = $this->mesDeFecha($fecha);
+                if ($mes < 0) {
+                    continue;
+                }
+                $importe = (float) ($row['Importe'] ?? $row['importe'] ?? 0);
+                $nombre = trim((string) ($row['DescCuenta'] ?? $row['AcctName'] ?? ''));
+                $key = $this->codigoCuentaKey($codigo);
+                if (! isset($porCuenta[$key])) {
+                    $porCuenta[$key] = [
+                        'codigo' => $codigo,
+                        'nombre' => $nombre,
+                        'gasto' => array_fill(0, 12, 0.0),
+                    ];
+                } elseif ($nombre !== '' && $porCuenta[$key]['nombre'] === '') {
+                    $porCuenta[$key]['nombre'] = $nombre;
+                }
+                $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $importe, 2);
+            }
+
+            $pag = $this->paginacionDe($body);
+            $lastPage = (int) ($pag['last_page'] ?? 0);
+            if ($lastPage > 0 && $page >= $lastPage) {
+                break;
+            }
+            if ($lastPage < 1 && count($rows) < $perPage) {
+                break;
+            }
+        }
+
+        return [
+            'ok' => $ok,
+            'year' => $year,
+            'por_cuenta' => $porCuenta,
+            'mensaje' => $mensaje,
+        ];
+    }
+
+    protected function mismoCentroCodigo(string $a, string $b): bool
+    {
+        $a = strtoupper(trim($a));
+        $b = strtoupper(trim($b));
+        if ($a === $b) {
+            return true;
+        }
+        $na = ltrim($a, '0');
+        $nb = ltrim($b, '0');
+
+        return $na !== '' && $na === $nb;
+    }
+
+    protected function codigoCuentaKey(string $codigo): string
+    {
+        $digits = preg_replace('/\D+/', '', $codigo);
+
+        return $digits !== '' ? $digits : $codigo;
+    }
+
+    protected function mesDeFecha(string $fecha): int
+    {
+        if ($fecha === '') {
+            return -1;
+        }
+        $ts = strtotime(substr($fecha, 0, 10));
+        if (! $ts) {
+            return -1;
+        }
+
+        return ((int) date('n', $ts)) - 1;
+    }
+
     /**
      * @param  array<string, mixed>  $extra
      */
@@ -650,6 +975,7 @@ class CentrosCostosController extends Controller
             'anioPresupuesto' => 2027,
             'sapBase' => url('/Sistemas/AutinApi'),
             'catalogoUrl' => route('centros.catalogo'),
+            'gastoUrl' => route('centros.api.gasto_real'),
             'sapOk' => false,
             'sapMensaje' => null,
             'empresasSap' => [],

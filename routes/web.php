@@ -1209,6 +1209,10 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/ControlCentros/detalle', [CentrosCostosController::class, 'detalle'])->name('centros.detalle');
     Route::get('/AnalisisProgreso', [CentrosCostosController::class, 'analisis'])->name('centros.analisis');
     Route::get('/CentrosCostos/api/catalogo', [CentrosCostosController::class, 'catalogo'])->name('centros.catalogo');
+    Route::get('/CentrosCostos/api/gasto-real', [CentrosCostosController::class, 'gastoReal'])->name('centros.api.gasto_real');
+    Route::get('/CentrosCostos/api/captura', [CentrosCostosController::class, 'captura'])->name('centros.api.captura');
+    Route::put('/CentrosCostos/api/captura/presupuesto', [CentrosCostosController::class, 'guardarPresupuesto'])->name('centros.api.captura.presupuesto');
+    Route::put('/CentrosCostos/api/captura/centro', [CentrosCostosController::class, 'guardarCapturaCentro'])->name('centros.api.captura.centro');
 
    
   });
