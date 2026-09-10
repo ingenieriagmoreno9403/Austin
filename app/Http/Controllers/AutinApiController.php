@@ -38,6 +38,7 @@ class AutinApiController extends Controller
             'centros-costo' => 'Centros de costo (todas las empresas)',
             'cuentas' => 'Cuentas (todas las empresas)',
             'gasto-real' => 'Gasto real (histórico / GroupMask)',
+            'ventas' => 'Ventas y notas de crédito (OINV + ORIN)',
         ];
         $defaultDb = $api->defaultDatabase();
         $apiBaseUrl = rtrim((string) config('services.autin_api.base_url'), '/');
@@ -75,6 +76,14 @@ class AutinApiController extends Controller
                 'proxy' => $proxyBaseUrl . '/gasto-real',
                 'remoto' => $apiBaseUrl . '/gasto-real',
                 'descripcion' => 'Gasto real histórico. Filtros: Empresa, CC, Cuenta, DescCuenta, year, GroupMask, fecha_desde, fecha_hasta, per_page, page.',
+            ],
+            [
+                'grupo' => 'Global (todas las empresas)',
+                'method' => 'GET',
+                'path' => '/ventas',
+                'proxy' => $proxyBaseUrl . '/ventas',
+                'remoto' => $apiBaseUrl . '/ventas',
+                'descripcion' => 'Facturas (VENTA) y notas de crédito (NC). Filtros: year, Empresa (AUSTIN/PITIC/SYDNEY/IMSA/BACHIMBA), Tipo_Doc, ItemCode, CardCode, CardName, U_LINEA_QV, fecha_desde, fecha_hasta, per_page, page.',
             ],
             [
                 'grupo' => 'Por empresa',
@@ -139,6 +148,20 @@ class AutinApiController extends Controller
             'page' => 'Página',
         ];
 
+        $ventasFilters = [
+            'year' => 'Año (ej. 2026)',
+            'Empresa' => 'AUSTIN, PITIC, SYDNEY, IMSA o BACHIMBA',
+            'Tipo_Doc' => 'VENTA o NC',
+            'ItemCode' => 'Código de artículo',
+            'CardCode' => 'Código de cliente',
+            'CardName' => 'Nombre de cliente (texto)',
+            'U_LINEA_QV' => 'Línea (ej. ANFO)',
+            'fecha_desde' => 'Fecha inicio (YYYY/MM/DD)',
+            'fecha_hasta' => 'Fecha fin (YYYY/MM/DD)',
+            'per_page' => 'Registros por página',
+            'page' => 'Página',
+        ];
+
         return view('AutinApi.index', compact(
             'varpantallas',
             'varsubmenus',
@@ -150,7 +173,8 @@ class AutinApiController extends Controller
             'apiBaseUrl',
             'proxyBaseUrl',
             'endpoints',
-            'gastoRealFilters'
+            'gastoRealFilters',
+            'ventasFilters'
         ));
     }
 
@@ -178,6 +202,13 @@ class AutinApiController extends Controller
     public function gastoReal(Request $request, AutinApiClient $api): JsonResponse
     {
         $result = $api->gastoReal($request->except(['_token']));
+
+        return $this->jsonFromApi($result);
+    }
+
+    public function ventas(Request $request, AutinApiClient $api): JsonResponse
+    {
+        $result = $api->ventas($request->except(['_token']));
 
         return $this->jsonFromApi($result);
     }

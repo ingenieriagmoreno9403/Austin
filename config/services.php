@@ -38,12 +38,13 @@ return [
     | en pantallas que consultan centros de costo, cuentas SAP, etc.
     */
     'autin_api' => [
-        'base_url' => env('AUTIN_API_BASE_URL', 'http://187.237.178.149/api'),
+        // Si la variable existe pero viene vacía, usamos el default (útil en hosting).
+        'base_url' => env('AUTIN_API_BASE_URL') ?: 'http://187.237.178.149/api',
         'username' => env('AUTIN_API_USER'),
         'password' => env('AUTIN_API_PASSWORD'),
-        'default_db' => env('AUTIN_API_DEFAULT_DB', 'austin'),
-        'timeout' => env('AUTIN_API_TIMEOUT', 30),
-        'connect_timeout' => env('AUTIN_API_CONNECT_TIMEOUT', 10),
+        'default_db' => env('AUTIN_API_DEFAULT_DB') ?: 'austin',
+        'timeout' => (float) (env('AUTIN_API_TIMEOUT') ?: 30),
+        'connect_timeout' => (float) (env('AUTIN_API_CONNECT_TIMEOUT') ?: 10),
     ],
 
 ];

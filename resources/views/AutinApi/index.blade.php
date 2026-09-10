@@ -132,7 +132,7 @@
             </table>
         </div>
         <p class="sap-meta mt-3 mb-0">
-            <strong>Global:</strong> <code>/cuentas</code> · <code>/centros-costo</code> · <code>/gasto-real</code>
+            <strong>Global:</strong> <code>/cuentas</code> · <code>/centros-costo</code> · <code>/gasto-real</code> · <code>/ventas</code>
             &nbsp;|&nbsp;
             <strong>Por empresa:</strong> <code>{database}</code> = austin | imsa | pitic | sydney ·
             <code>{resource}</code> = centros-costo | cuentas | agrupaciones-cuentas | transacciones
@@ -244,6 +244,75 @@
                 </div>
             </div>
 
+            <div id="sapVentasFilters" class="col-12" style="display:none;">
+                <div class="border rounded-3 p-3 bg-light">
+                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                        <strong class="text-marino"><i class="fas fa-file-invoice-dollar me-1"></i> Filtros ventas</strong>
+                        <span class="sap-meta mb-0">Opcionales · proxy <code>/Sistemas/AutinApi/ventas</code></span>
+                    </div>
+                    <p class="sap-meta mb-2">
+                        Facturas (<code>VENTA</code>) y notas de crédito (<code>NC</code>).
+                        En IMSA, clientes con CardCode que inicia en <code>P</code> aparecen como empresa <code>BACHIMBA</code>.
+                    </p>
+                    <div class="row g-2">
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">Empresa</label>
+                            <select id="ventasEmpresa" class="form-select form-select-sm">
+                                <option value="">Todas</option>
+                                @foreach($databases as $db)
+                                    <option value="{{ strtoupper($db) }}">{{ strtoupper($db) }}</option>
+                                @endforeach
+                                <option value="BACHIMBA">BACHIMBA</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">Tipo_Doc</label>
+                            <select id="ventasTipoDoc" class="form-select form-select-sm">
+                                <option value="">Todos</option>
+                                <option value="VENTA">VENTA</option>
+                                <option value="NC">NC</option>
+                            </select>
+                        </div>
+                        <div class="col-md-1">
+                            <label class="form-label small mb-1">year</label>
+                            <input type="number" id="ventasYear" class="form-control form-control-sm" placeholder="2026" min="2000" max="2100">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">ItemCode</label>
+                            <input type="text" id="ventasItemCode" class="form-control form-control-sm" placeholder="AUSCA">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">CardCode</label>
+                            <input type="text" id="ventasCardCode" class="form-control form-control-sm" placeholder="A005">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">CardName</label>
+                            <input type="text" id="ventasCardName" class="form-control form-control-sm" placeholder="MINERA">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">U_LINEA_QV</label>
+                            <input type="text" id="ventasLinea" class="form-control form-control-sm" placeholder="ANFO">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">fecha_desde</label>
+                            <input type="date" id="ventasFechaDesde" class="form-control form-control-sm">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">fecha_hasta</label>
+                            <input type="date" id="ventasFechaHasta" class="form-control form-control-sm">
+                        </div>
+                        <div class="col-md-4 d-flex align-items-end">
+                            <div class="sap-meta">
+                                Ejemplos:
+                                <code>?Empresa=IMSA&amp;per_page=50</code> ·
+                                <code>?Empresa=AUSTIN&amp;Tipo_Doc=NC</code> ·
+                                <code>?Empresa=BACHIMBA</code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="col-12 d-flex gap-2 flex-wrap">
                 <button type="submit" class="btn btn-primary" id="sapBtnLoad">
                     <i class="fas fa-search me-1"></i> Consultar
@@ -253,6 +322,9 @@
                 </button>
                 <button type="button" class="btn btn-outline-primary" id="sapBtnGastoQuick">
                     <i class="fas fa-bolt me-1"></i> Abrir gasto-real
+                </button>
+                <button type="button" class="btn btn-outline-primary" id="sapBtnVentasQuick">
+                    <i class="fas fa-file-invoice-dollar me-1"></i> Abrir ventas
                 </button>
             </div>
         </form>
@@ -297,14 +369,23 @@
             && document.getElementById('sapResource').value === 'gasto-real';
     }
 
+    function isVentas() {
+        return document.getElementById('sapScope').value === 'global'
+            && document.getElementById('sapResource').value === 'ventas';
+    }
+
     function toggleFilters() {
         const gasto = isGastoReal();
+        const ventas = isVentas();
+        const especial = gasto || ventas;
+
         document.getElementById('sapGastoRealFilters').style.display = gasto ? '' : 'none';
-        document.getElementById('sapGenericCodeWrap').style.display = gasto ? 'none' : '';
-        document.getElementById('sapGenericNameWrap').style.display = gasto ? 'none' : '';
-        // Empresa genérica solo en globales que no son gasto-real
+        document.getElementById('sapVentasFilters').style.display = ventas ? '' : 'none';
+        document.getElementById('sapGenericCodeWrap').style.display = especial ? 'none' : '';
+        document.getElementById('sapGenericNameWrap').style.display = especial ? 'none' : '';
+
         const scope = document.getElementById('sapScope').value;
-        document.getElementById('sapEmpresaFilterWrap').style.display = (scope === 'global' && !gasto) ? '' : 'none';
+        document.getElementById('sapEmpresaFilterWrap').style.display = (scope === 'global' && !especial) ? '' : 'none';
         document.getElementById('sapDatabaseWrap').style.display = scope === 'empresa' ? '' : 'none';
     }
 
@@ -342,6 +423,12 @@
         }
     }
 
+    /** Convierte YYYY-MM-DD (input date) a YYYY/MM/DD (API ventas). */
+    function toSlashDate(value) {
+        if (!value) return '';
+        return String(value).replace(/-/g, '/');
+    }
+
     function buildRequest() {
         const scope = document.getElementById('sapScope').value;
         const resource = document.getElementById('sapResource').value;
@@ -367,6 +454,16 @@
                 setParam(params, 'GroupMask', document.getElementById('gastoGroupMask').value);
                 setParam(params, 'fecha_desde', document.getElementById('gastoFechaDesde').value);
                 setParam(params, 'fecha_hasta', document.getElementById('gastoFechaHasta').value);
+            } else if (resource === 'ventas') {
+                setParam(params, 'Empresa', document.getElementById('ventasEmpresa').value);
+                setParam(params, 'Tipo_Doc', document.getElementById('ventasTipoDoc').value);
+                setParam(params, 'year', document.getElementById('ventasYear').value);
+                setParam(params, 'ItemCode', document.getElementById('ventasItemCode').value);
+                setParam(params, 'CardCode', document.getElementById('ventasCardCode').value);
+                setParam(params, 'CardName', document.getElementById('ventasCardName').value);
+                setParam(params, 'U_LINEA_QV', document.getElementById('ventasLinea').value);
+                setParam(params, 'fecha_desde', toSlashDate(document.getElementById('ventasFechaDesde').value));
+                setParam(params, 'fecha_hasta', toSlashDate(document.getElementById('ventasFechaHasta').value));
             } else {
                 if (empresaFiltro) params.set('Empresa', empresaFiltro);
                 if (resource === 'centros-costo') {
@@ -502,6 +599,18 @@
         toggleFilters();
         if (!document.getElementById('gastoYear').value) {
             document.getElementById('gastoYear').value = String(new Date().getFullYear());
+        }
+        currentPage = 1;
+        loadData();
+    });
+
+    document.getElementById('sapBtnVentasQuick').addEventListener('click', function () {
+        document.getElementById('sapScope').value = 'global';
+        fillResources();
+        document.getElementById('sapResource').value = 'ventas';
+        toggleFilters();
+        if (!document.getElementById('ventasYear').value) {
+            document.getElementById('ventasYear').value = String(new Date().getFullYear());
         }
         currentPage = 1;
         loadData();

@@ -118,6 +118,20 @@ class AutinApiClient
     }
 
     /**
+     * Ventas y notas de crédito (OINV + ORIN) de AUSTIN/PITIC/SYDNEY/IMSA.
+     * En IMSA, CardCode que empieza con P se reporta como Empresa=BACHIMBA.
+     * Filtros: year, Empresa, Tipo_Doc, ItemCode, CardCode, CardName, U_LINEA_QV,
+     * fecha_desde, fecha_hasta, per_page, page.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, status: int, body: array|null, message: string|null}
+     */
+    public function ventas(array $filters = []): array
+    {
+        return $this->request('GET', 'ventas', $filters);
+    }
+
+    /**
      * @return array{ok: bool, status: int, body: array|null, message: string|null}
      */
     public function catalogos(?string $database = null): array
