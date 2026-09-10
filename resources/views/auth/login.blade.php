@@ -1,4 +1,4 @@
-@extends('layouts.appfront')
+@extends('layouts.login')
 @section('content')
 <div class="ap-login">
     <aside class="ap-login-brand">
@@ -9,7 +9,7 @@
             <span class="ap-grid"></span>
         </div>
         <p class="ap-login-brand-kicker">Used in 1833 · &amp; ever since</p>
-        <img class="ap-login-brand-logo" src="{{ asset('Images/AUSTIN_POWDER.png') }}" alt="Austin Powder">
+        <img class="ap-login-brand-logo" src="{{ asset('Images/AUSTIN_POWDER.png') }}" width="300" height="190" alt="Austin Powder">
         <div class="ap-login-brand-foot">
             <strong>Austin Powder</strong>
             <span>MBNTAS ERP</span>
@@ -18,7 +18,6 @@
 
     <section class="ap-login-panel">
         <div class="ap-login-card">
-            <img class="ap-login-mark" src="{{ asset('Images/AUSTIN_POWDER.png') }}" alt="">
             <p class="ap-login-kicker">Austin Powder</p>
             <h1>Ingresar</h1>
             <p class="ap-login-sub">Usa tu correo y contraseña para entrar al sistema.</p>
