@@ -75,7 +75,7 @@ class AutinApiController extends Controller
                 'path' => '/gasto-real',
                 'proxy' => $proxyBaseUrl . '/gasto-real',
                 'remoto' => $apiBaseUrl . '/gasto-real',
-                'descripcion' => 'Gasto real histórico. Filtros: Empresa, CC, Cuenta, DescCuenta, year, GroupMask, fecha_desde, fecha_hasta, per_page, page.',
+                'descripcion' => 'Gasto real histórico. Filtros: Empresa, CC, Cuenta, DescCuenta, DEPTO, year, GroupMask, fecha_desde, fecha_hasta, per_page, page. Campos nuevos: DEPTO (ej. MfgOverhead, AdminExp).',
             ],
             [
                 'grupo' => 'Global (todas las empresas)',
@@ -140,6 +140,7 @@ class AutinApiController extends Controller
             'CC' => 'Centro de costo',
             'Cuenta' => 'Código de cuenta',
             'DescCuenta' => 'Descripción de cuenta (texto)',
+            'DEPTO' => 'Departamento (ej. AdminExp, MfgOverhead)',
             'year' => 'Año (ej. 2026)',
             'GroupMask' => 'Máscara de agrupación (ej. 6)',
             'fecha_desde' => 'Fecha inicio (YYYY-MM-DD)',

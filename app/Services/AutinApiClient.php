@@ -107,7 +107,7 @@ class AutinApiClient
 
     /**
      * Gasto real histórico (consulta global AutinApi).
-     * Filtros: Empresa, CC, Cuenta, DescCuenta, year, GroupMask, fecha_desde, fecha_hasta, per_page, page.
+     * Filtros: Empresa, CC, Cuenta, DescCuenta, DEPTO, year, GroupMask, fecha_desde, fecha_hasta, per_page, page.
      *
      * @param  array<string, mixed>  $filters
      * @return array{ok: bool, status: int, body: array|null, message: string|null}

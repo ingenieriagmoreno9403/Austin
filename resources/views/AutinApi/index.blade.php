@@ -225,6 +225,10 @@
                             <label class="form-label small mb-1">GroupMask</label>
                             <input type="text" id="gastoGroupMask" class="form-control form-control-sm" placeholder="6" value="6">
                         </div>
+                        <div class="col-md-2">
+                            <label class="form-label small mb-1">DEPTO</label>
+                            <input type="text" id="gastoDepto" class="form-control form-control-sm" placeholder="AdminExp">
+                        </div>
                         <div class="col-md-3">
                             <label class="form-label small mb-1">fecha_desde</label>
                             <input type="date" id="gastoFechaDesde" class="form-control form-control-sm">
@@ -237,7 +241,9 @@
                             <div class="sap-meta">
                                 Ejemplos:
                                 <code>?Empresa=IMSA&amp;per_page=50</code> ·
-                                <code>?Empresa=AUSTIN&amp;CC=04&amp;year=2026</code>
+                                <code>?Empresa=AUSTIN&amp;CC=04&amp;year=2026</code> ·
+                                <code>?DEPTO=AdminExp</code>
+                                <br>Campos: CC, DescripcionCC, <strong>DEPTO</strong> (ej. MfgOverhead, AdminExp)
                             </div>
                         </div>
                     </div>
@@ -452,6 +458,7 @@
                 setParam(params, 'DescCuenta', document.getElementById('gastoDescCuenta').value);
                 setParam(params, 'year', document.getElementById('gastoYear').value);
                 setParam(params, 'GroupMask', document.getElementById('gastoGroupMask').value);
+                setParam(params, 'DEPTO', document.getElementById('gastoDepto').value);
                 setParam(params, 'fecha_desde', document.getElementById('gastoFechaDesde').value);
                 setParam(params, 'fecha_hasta', document.getElementById('gastoFechaHasta').value);
             } else if (resource === 'ventas') {
