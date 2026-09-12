@@ -1,0 +1,86 @@
+@extends('layouts.app')
+
+@section('css')
+<link href="{{ asset('css/centros-costos.css') }}" rel="stylesheet">
+@endsection
+
+@section('content')
+<div class="cc-page">
+    <div class="cc-header">
+        <div>
+            <div class="cc-kicker" id="cc-page-kicker">Detalle del cliente</div>
+            <h1 class="cc-title" id="cc-page-title">Cliente</h1>
+        </div>
+        <div class="cc-header-actions">
+            <label class="cc-header-moneda-wrap">
+                <span>Ver en</span>
+                <select id="ctl-moneda" class="cc-select cc-header-ciclo cc-header-moneda" aria-label="Ver valores en MXN o USD">
+                    <option value="MXN">MXN</option>
+                    <option value="USD">USD</option>
+                </select>
+            </label>
+            <button type="button" class="cc-btn" onclick="CC.showModal('modalIndicadores')">
+                <i class="fa-solid fa-circle-info"></i> Indicadores
+            </button>
+            <a class="cc-btn" href="{{ route('pv.control', ['vista' => 'visor']) }}">
+                <i class="fa-solid fa-arrow-left"></i> Volver al visor
+            </a>
+        </div>
+    </div>
+    <div class="cc-detalle-facts" id="cc-detalle-facts"></div>
+
+    <select id="ctl-ciclo" hidden></select>
+    <input type="hidden" id="ctl-empresa" value="{{ $bootstrap['empresaInicial'] ?? '' }}">
+    <input type="hidden" id="ctl-centro" value="{{ $bootstrap['centroInicial'] ?? '' }}">
+
+    <div class="cc-panel cc-captura-results">
+        <div class="cc-panel-head">
+            <h3><i class="fa-solid fa-table"></i> Detalle por producto y mes</h3>
+            <div class="cc-panel-head-tools">
+                <div class="cc-scope-toggle" id="ctl-scope-tabla" data-for="tabla" role="group" aria-label="Filtro del detalle">
+                    <button type="button" data-scope-val="cuenta">Este producto</button>
+                    <button type="button" data-scope-val="centro" class="is-on">Todo el cliente</button>
+                </div>
+                <label class="cc-scope-check" id="ctl-chart-todas-wrap">
+                    <input type="checkbox" id="ctl-chart-todas"> Ver todas
+                </label>
+                <div class="cc-legend">
+                    <span><i style="background:#fffbeb"></i> Sin capturar</span>
+                    <span><i style="background:#ecfdf5"></i> Capturado</span>
+                    <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                </div>
+            </div>
+        </div>
+        <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Elige una fila para verla en la gráfica, o marca Ver todas para el cliente completo.</p>
+        <div class="cc-table-wrap">
+            <table class="cc-table">
+                <thead id="det-thead"></thead>
+                <tbody id="det-tbody" class="is-readonly is-selectable"></tbody>
+            </table>
+        </div>
+        <div class="cc-sticky-totales">
+            <div>Total venta {{ $bootstrap['anioGasto'] }} <strong id="det-tot-gasto">—</strong></div>
+            <div>Total proyección {{ $bootstrap['anioPresupuesto'] }} <strong id="det-tot-ppto">—</strong></div>
+            <div>Productos pendientes <strong id="det-pend">—</strong></div>
+        </div>
+    </div>
+
+    <div class="cc-panel cc-captura-chart">
+        <div class="cc-panel-head">
+            <h3><i class="fa-solid fa-chart-column"></i> Contraste mes a mes</h3>
+            <span class="text-muted" style="font-size:.78rem" id="det-chart-hint">Venta {{ $bootstrap['anioGasto'] }} vs proyección {{ $bootstrap['anioPresupuesto'] }}</span>
+        </div>
+        <div class="cc-chart"><canvas id="chart-detalle"></canvas></div>
+    </div>
+</div>
+
+@include('ProyeccionesVentas.partials.modal-indicadores')
+@endsection
+
+@section('js')
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="{{ asset('js/proyecciones-ventas.js') }}"></script>
+<script>
+    CC.boot(Object.assign(@json($bootstrap), { page: 'detalle' }));
+</script>
+@endsection

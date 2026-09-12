@@ -8,13 +8,13 @@
 <div class="cc-page">
     <div class="cc-header">
         <div>
-            <div class="cc-kicker" id="cc-page-kicker">Captura mensual · Gasto {{ $bootstrap['anioGasto'] }} vs ppto {{ $bootstrap['anioPresupuesto'] }}</div>
-            <h1 class="cc-title" id="cc-page-title">Captura e Indicadores</h1>
-            <p class="cc-sub" id="cc-page-sub">Elige presupuesto, empresa y centro. Captura cuenta por cuenta y ve cómo se arma el detalle y el contraste mensual.</p>
+            <div class="cc-kicker" id="cc-page-kicker">Captura mensual · Venta {{ $bootstrap['anioGasto'] }} vs proyección {{ $bootstrap['anioPresupuesto'] }}</div>
+            <h1 class="cc-title" id="cc-page-title">Captura de proyecciones</h1>
+            <p class="cc-sub" id="cc-page-sub">Elige ciclo, empresa y cliente. Captura la cantidad a vender por producto y contrástala con la venta real.</p>
         </div>
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
-            <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
+            <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Ciclo"></select>
             <div id="ctl-import-tools" class="cc-import-tools" hidden>
                 <button type="button" class="cc-btn" id="ctl-plantilla">
                     <i class="fa-solid fa-file-arrow-down"></i> Plantilla
@@ -32,18 +32,18 @@
 
     <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
         <button type="button" class="is-active" data-vista="captura">
-            <i class="fa-solid fa-pen-to-square me-1"></i> Captura de presupuestos
+            <i class="fa-solid fa-pen-to-square me-1"></i> Captura de proyecciones
         </button>
         <button type="button" data-vista="visor">
-            <i class="fa-solid fa-table me-1"></i> Visor de centros
+            <i class="fa-solid fa-table me-1"></i> Visor de clientes
         </button>
     </nav>
 
     <div id="ctl-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
             <i class="fa-solid fa-user-lock"></i>
-            No tienes centros de costo asignados en ningún ciclo.
-            Pide a contabilidad que te asigne usuario, centro, cuentas y permiso de captura.
+            No tienes clientes asignados en ningún ciclo.
+            Pide que te asignen usuario, cliente, productos y permiso de captura.
         </div>
     </div>
 
@@ -54,13 +54,13 @@
                 <strong id="visor-avance">—</strong>
             </div>
             <div class="cc-progress warn" id="visor-avance-wrap"><span id="visor-avance-bar" style="width:0%"></span></div>
-            <div class="cc-visor-progress-meta" id="visor-avance-meta">Elige un presupuesto para ver el avance</div>
+            <div class="cc-visor-progress-meta" id="visor-avance-meta">Elige un ciclo para ver el avance</div>
         </div>
         <div id="vista-captura">
         <div class="cc-captura-layout">
             <aside class="cc-panel cc-captura-nav">
                 <div class="cc-panel-head">
-                    <h3><i class="fa-solid fa-sitemap"></i> Empresa y centro</h3>
+                    <h3><i class="fa-solid fa-sitemap"></i> Empresa y cliente</h3>
                 </div>
                 <div class="cc-nav-field">
                     <label for="ctl-empresa">Empresa <em class="cc-nav-status" id="ctl-emp-status" hidden></em></label>
@@ -69,15 +69,15 @@
                     </select>
                 </div>
                 <div class="cc-nav-field">
-                    <label for="ctl-centro">Centro de costos <em class="cc-nav-status" id="ctl-cc-status" hidden></em></label>
+                    <label for="ctl-centro">Cliente <em class="cc-nav-status" id="ctl-cc-status" hidden></em></label>
                     <select id="ctl-centro" class="cc-select" disabled>
                         <option value="">Elige una empresa primero…</option>
                     </select>
                 </div>
                 <div class="cc-nav-field">
-                    <label for="ctl-cuenta">Cuenta <em class="cc-nav-status" id="ctl-cta-status" hidden></em></label>
+                    <label for="ctl-cuenta">Producto <em class="cc-nav-status" id="ctl-cta-status" hidden></em></label>
                     <select id="ctl-cuenta" class="cc-select" disabled>
-                        <option value="">Elige un centro primero…</option>
+                        <option value="">Elige un cliente primero…</option>
                     </select>
                 </div>
                 <div class="cc-nav-tools">
@@ -91,24 +91,24 @@
                 </div>
                 <div class="cc-nav-progress">
                     <div class="cc-nav-progress-top">
-                        <div class="cc-nav-pend-label">Progreso del presupuesto</div>
+                        <div class="cc-nav-pend-label">Progreso de la proyección</div>
                         <strong id="kpi-ctl-avance">—</strong>
                     </div>
                     <div class="cc-progress warn" id="ctl-avance-wrap"><span id="ctl-avance-bar" style="width:0%"></span></div>
-                    <div class="cc-nav-pend-sub" id="ctl-progress-meta">0 de 0 cuentas capturadas</div>
+                    <div class="cc-nav-pend-sub" id="ctl-progress-meta">0 de 0 productos capturados</div>
                 </div>
                 <div class="cc-nav-pend" id="ctl-nav-pend">
-                    <div class="cc-nav-pend-label">Cuentas pendientes</div>
+                    <div class="cc-nav-pend-label">Productos pendientes</div>
                     <div class="cc-nav-pend-value" id="ctl-nav-pend-n">—</div>
-                    <div class="cc-nav-pend-sub" id="ctl-nav-pend-sub">Elige un centro para ver cuántas cuentas faltan por presupuestar</div>
+                    <div class="cc-nav-pend-sub" id="ctl-nav-pend-sub">Elige un cliente para ver cuántos productos faltan por proyectar</div>
                 </div>
                 <div class="cc-nav-stats">
                     <div class="cc-nav-stat">
-                        <small>Gasto {{ $bootstrap['anioGasto'] }}</small>
+                        <small>Venta {{ $bootstrap['anioGasto'] }}</small>
                         <strong id="kpi-ctl-gasto">—</strong>
                     </div>
                     <div class="cc-nav-stat">
-                        <small>Ppto {{ $bootstrap['anioPresupuesto'] }}</small>
+                        <small>Proy. {{ $bootstrap['anioPresupuesto'] }}</small>
                         <strong id="kpi-ctl-ppto">—</strong>
                     </div>
                 </div>
@@ -120,7 +120,7 @@
                 <div class="cc-captura-form-center">
                     <div id="ctl-form-empty" class="cc-empty cc-captura-form-empty">
                         <i class="fa-solid fa-list"></i>
-                        Elige empresa, centro y cuenta a la izquierda para capturar el presupuesto.
+                        Elige empresa, cliente y producto a la izquierda para capturar la proyección.
                     </div>
 
                     <div id="ctl-form-body" hidden>
@@ -128,13 +128,13 @@
                             <div class="cc-cta-selected-row">
                                 <div class="cc-cta-idents">
                                     <div class="cc-cta-ident is-centro">
-                                        <span class="cc-cta-ident-label">Centro</span>
+                                        <span class="cc-cta-ident-label">Cliente</span>
                                         <h4 id="ctl-form-cc" class="cc-cta-cc">—</h4>
                                     </div>
                                     <div class="cc-cta-ident is-cuenta">
-                                        <span class="cc-cta-ident-label">Cuenta</span>
-                                        <h4 id="ctl-form-cta">Cuenta</h4>
-                                        <em class="cc-form-kicker" id="ctl-form-grupo">—</em>
+                                        <span class="cc-cta-ident-label">Producto</span>
+                                        <h4 id="ctl-form-cta">Producto</h4>
+                                        <em class="cc-form-kicker" id="ctl-form-grupo" hidden>—</em>
                                     </div>
                                 </div>
                                 <span class="cc-badge" id="ctl-form-estado">Pendiente</span>
@@ -142,32 +142,40 @@
                         </div>
                         <div class="cc-cta-compare">
                             <div class="cc-cta-compare-card">
-                                <small>Se gastó {{ $bootstrap['anioGasto'] }}</small>
+                                <small>Se vendió {{ $bootstrap['anioGasto'] }}</small>
                                 <strong id="ctl-form-gasto">—</strong>
-                                <span>Real del año anterior</span>
+                                <span>Cantidad vendida el año anterior</span>
                             </div>
                             <div class="cc-cta-compare-card is-now">
-                                <small id="ctl-form-ppto-label">Presupuesto</small>
+                                <small id="ctl-form-ppto-label">Proyección</small>
                                 <strong id="ctl-form-ppto">—</strong>
-                                <span id="ctl-form-delta">vs año pasado</span>
+                                <span id="ctl-form-delta">vs venta real</span>
                             </div>
                         </div>
                         <div class="cc-cta-fill mb-4">
                             <div class="cc-cta-fill-top">
-                                <span>Llenado de la cuenta</span>
+                                <span>Llenado del producto</span>
                                 <strong id="ctl-form-avance">—</strong>
                             </div>
                             <div class="cc-progress warn" id="ctl-form-avance-wrap"><span id="ctl-form-avance-bar" style="width:0%"></span></div>
                             <div class="cc-cta-fill-meta" id="ctl-form-avance-meta">0 de 12 meses capturados</div>
+                        </div>
+                        <div class="cc-ajuste-row">
+                            <div class="cc-ajuste-copy">
+                                <label for="ctl-ajuste-pct">Sugerir % sobre la venta real</label>
+                                <p>Se aplica a la cantidad vendida del año anterior. Puede ser negativo.</p>
+                            </div>
+                            <div class="cc-ajuste-ctrl">
+                                <input id="ctl-ajuste-pct" type="number" step="0.1" placeholder="-30" aria-label="Porcentaje de ajuste">
+                                <span>%</span>
+                                <button type="button" class="cc-btn cc-btn-ink" id="ctl-apply-infl">Aplicar</button>
+                            </div>
                         </div>
                         <div class="cc-month-row">
                             <div class="cc-month-grid" id="ctl-month-grid"></div>
                             <div class="cc-captura-quick">
                                 <button type="button" class="cc-btn" id="ctl-copy-year">
                                     <i class="fa-solid fa-clone"></i> Copiar {{ $bootstrap['anioGasto'] }}
-                                </button>
-                                <button type="button" class="cc-btn" id="ctl-apply-infl">
-                                    <i class="fa-solid fa-percent"></i> + inflación
                                 </button>
                                 <button type="button" class="cc-btn" id="ctl-btn-dispersar" onclick="CC.showModal('modalDispersar')">
                                     <i class="fa-solid fa-share-nodes"></i> Dispersar
@@ -195,11 +203,11 @@
 
         <div class="cc-panel cc-captura-results">
             <div class="cc-panel-head">
-                <h3><i class="fa-solid fa-table"></i> Detalle por cuenta y mes</h3>
+                <h3><i class="fa-solid fa-table"></i> Detalle por producto y mes</h3>
                 <div class="cc-panel-head-tools">
                     <div class="cc-scope-toggle" id="ctl-scope-tabla" data-for="tabla" role="group" aria-label="Filtro del detalle">
-                        <button type="button" data-scope-val="cuenta" class="is-on">Esta cuenta</button>
-                        <button type="button" data-scope-val="centro">Todo el centro</button>
+                        <button type="button" data-scope-val="cuenta" class="is-on">Este producto</button>
+                        <button type="button" data-scope-val="centro">Todo el cliente</button>
                     </div>
                     <label class="cc-scope-check" id="ctl-chart-todas-wrap" hidden>
                         <input type="checkbox" id="ctl-chart-todas"> Ver todas
@@ -211,7 +219,7 @@
                     </div>
                 </div>
             </div>
-            <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Se muestra la cuenta en la que estás trabajando. Cambia a Todo el centro para ver todas las cuentas.</p>
+            <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Se muestra el producto en el que estás trabajando. Cambia a Todo el cliente para ver todos los productos.</p>
             <div class="cc-table-wrap">
                 <table class="cc-table">
                     <thead id="ctl-thead"></thead>
@@ -219,16 +227,16 @@
                 </table>
             </div>
             <div class="cc-sticky-totales">
-                <div>Total gasto {{ $bootstrap['anioGasto'] }} <strong id="ctl-tot-gasto">—</strong></div>
-                <div>Total ppto {{ $bootstrap['anioPresupuesto'] }} <strong id="ctl-tot-ppto">—</strong></div>
-                <div>Cuentas pendientes <strong id="ctl-pend">—</strong></div>
+                <div>Total venta {{ $bootstrap['anioGasto'] }} <strong id="ctl-tot-gasto">—</strong></div>
+                <div>Total proyección {{ $bootstrap['anioPresupuesto'] }} <strong id="ctl-tot-ppto">—</strong></div>
+                <div>Productos pendientes <strong id="ctl-pend">—</strong></div>
             </div>
         </div>
 
         <div class="cc-panel cc-captura-chart">
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-chart-column"></i> Contraste mes a mes</h3>
-                <span class="text-muted" style="font-size:.78rem" id="ctl-chart-hint">Gasto {{ $bootstrap['anioGasto'] }} vs presupuesto {{ $bootstrap['anioPresupuesto'] }}</span>
+                <span class="text-muted" style="font-size:.78rem" id="ctl-chart-hint">Venta {{ $bootstrap['anioGasto'] }} vs proyección {{ $bootstrap['anioPresupuesto'] }}</span>
             </div>
             <div class="cc-chart"><canvas id="chart-control"></canvas></div>
         </div>
@@ -237,15 +245,15 @@
         <div id="vista-visor" hidden>
             <div class="cc-visor-kpis">
                 <div class="cc-visor-kpi">
-                    <small>Centros</small>
+                    <small>Clientes</small>
                     <strong id="visor-kpi-n">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
-                    <small>Tot Gasto</small>
+                    <small>Tot Venta</small>
                     <strong id="visor-kpi-gasto">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
-                    <small>Tot Presupuesto</small>
+                    <small>Tot Proyección</small>
                     <strong id="visor-kpi-ppto">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
@@ -255,13 +263,13 @@
             </div>
             <div class="cc-panel cc-visor-panel">
                 <div class="cc-panel-head">
-                    <h3><i class="fa-solid fa-building"></i> Centros de costos</h3>
+                    <h3><i class="fa-solid fa-building"></i> Clientes</h3>
                     <button type="button" class="cc-btn" id="visor-filtro-btn">
                         <i class="fa-solid fa-filter"></i> Filtro
                     </button>
                 </div>
                 <div class="cc-visor-filters" id="visor-filters" hidden>
-                    <input id="visor-q" class="cc-input" type="search" placeholder="Buscar empresa, centro o usuario…">
+                    <input id="visor-q" class="cc-input" type="search" placeholder="Buscar empresa, cliente o usuario…">
                     <select id="visor-empresa" class="cc-select"></select>
                     <select id="visor-depto" class="cc-select"></select>
                     <select id="visor-estado" class="cc-select"></select>
@@ -272,10 +280,10 @@
                             <tr>
                                 <th></th>
                                 <th>Empresa</th>
-                                <th>Centro de Costos</th>
+                                <th>Cliente</th>
                                 <th>Departamento</th>
-                                <th class="num">Tot Gasto</th>
-                                <th class="num">Tot Pres</th>
+                                <th class="num">Tot Venta</th>
+                                <th class="num">Tot Proy.</th>
                                 <th>Usuario</th>
                                 <th>Fecha Modif</th>
                                 <th>Progreso</th>
@@ -317,8 +325,8 @@
                 <div class="col-12"><label class="form-label">Método</label>
                     <select id="d-modo" class="form-select">
                         <option value="igual">Partes iguales</option>
-                        <option value="mismo">Gasto fijo</option>
-                        <option value="gasto">Proporcional al gasto {{ $bootstrap['anioGasto'] }}</option>
+                        <option value="mismo">Cantidad fija</option>
+                        <option value="gasto">Proporcional a la venta {{ $bootstrap['anioGasto'] }}</option>
                     </select>
                     <p class="text-muted mb-0 mt-1" id="d-modo-hint" style="font-size:.82rem">El total se reparte entre los meses del rango.</p>
                 </div>
@@ -331,12 +339,12 @@
     </div>
 </div>
 
-@include('CentrosCostos.partials.modal-indicadores')
+@include('ProyeccionesVentas.partials.modal-indicadores')
 @endsection
 
 @section('js')
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="{{ asset('js/centros-costos.js') }}?v={{ (int) @filemtime(public_path('js/centros-costos.js')) }}"></script>
+<script src="{{ asset('js/proyecciones-ventas.js') }}?v={{ (int) @filemtime(public_path('js/proyecciones-ventas.js')) }}"></script>
 <script>
     CC.boot(Object.assign(@json($bootstrap), { page: 'control' }));
 </script>

@@ -13,7 +13,7 @@
     }
 
     var SIN_CENTRO_CODIGO = 'SIN_CC';
-    var SIN_CENTRO_NOMBRE = 'Sin centro de costos';
+    var SIN_CENTRO_NOMBRE = 'Sin cliente';
 
     function isSinCentro(codigo) {
         return String(codigo || '').replace(/\s+/g, '').toUpperCase() === SIN_CENTRO_CODIGO;
@@ -37,6 +37,25 @@
         var nom = String(nombre || '').trim();
         if (code && nom && nom !== code) return code + ' — ' + nom;
         return nom || code || '—';
+    }
+
+    function foldText(s) {
+        return String(s || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function matchQuery(haystack, q) {
+        var query = foldText(q);
+        if (!query) return true;
+        var hay = foldText(haystack);
+        return query.split(' ').every(function (tok) {
+            return tok === '' || hay.indexOf(tok) !== -1;
+        });
     }
 
     function permNombre(clave) {
@@ -191,7 +210,7 @@
     var CCAsig = {};
 
     var PERMS_FALLBACK = [
-        { clave: 'capturar', nombre: 'Capturar', descripcion: 'Puede capturar presupuesto mientras el budget esté Abierto' },
+        { clave: 'capturar', nombre: 'Capturar', descripcion: 'Puede capturar proyección mientras el ciclo esté Abierto' },
         { clave: 'editar', nombre: 'Editar', descripcion: 'Puede modificar montos cuando el ciclo está En revisión o Cerrado' },
         { clave: 'revisar', nombre: 'Revisar', descripcion: 'Puede consultar y revisar sin editar' }
     ];
@@ -213,7 +232,7 @@
     };
 
     function loadEmpresasKpi() {
-        getJSON('/CentrosCostos/api/empresas?ciclo=' + encodeURIComponent(CCAsig.ciclo || '')).then(function (json) {
+        getJSON('/ProyeccionesVentas/api/empresas?ciclo=' + encodeURIComponent(CCAsig.ciclo || '')).then(function (json) {
             CCAsig._empresas = json.empresas && json.empresas.length ? json.empresas : EMPRESAS_FALLBACK;
             renderAsigKpis();
         }).catch(function () {
@@ -224,7 +243,7 @@
 
     function reloadTabla() {
         var ciclo = CCAsig.ciclo;
-        getJSON('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones').then(function (json) {
+        getJSON('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones').then(function (json) {
             CCAsig._rows = json.asignaciones || [];
             renderTablaFiltrada();
             renderAsigKpis();
@@ -250,8 +269,7 @@
     }
 
     function matchFiltro(haystack, q) {
-        if (!q) return true;
-        return String(haystack || '').toLowerCase().indexOf(q) !== -1;
+        return matchQuery(haystack, q);
     }
 
     function isPrincipal(r) {
@@ -311,10 +329,10 @@
 
     function hintUsuarios(total, done) {
         if (!total) return 'Sin usuarios en el catálogo';
-        if (!done) return 'De ' + total + ' usuarios, ninguno tiene centros de costos todavía';
-        if (done === 1) return 'De ' + total + ' usuarios, 1 ya tiene centros de costos';
-        if (done >= total) return 'Los ' + total + ' usuarios ya tienen centros de costos';
-        return 'De ' + total + ' usuarios, ' + done + ' ya tienen centros de costos';
+        if (!done) return 'De ' + total + ' usuarios, ninguno tiene clientes todavía';
+        if (done === 1) return 'De ' + total + ' usuarios, 1 ya tiene clientes';
+        if (done >= total) return 'Los ' + total + ' usuarios ya tienen clientes';
+        return 'De ' + total + ' usuarios, ' + done + ' ya tienen clientes';
     }
 
     function renderAsigKpis() {
@@ -339,8 +357,8 @@
         setKpiText('kpi-asig-emp-hint', hintDe(empTot, empDone, 'empresas'));
         setKpi('kpi-asig-cc', String(ccDone));
         setKpiText('kpi-asig-cc-hint', ccDone === 1
-            ? '1 centro de costo ya tiene asignación'
-            : ccDone + ' centros de costo ya tienen asignación');
+            ? '1 cliente ya tiene asignación'
+            : ccDone + ' clientes ya tienen asignación');
         setKpi('kpi-asig-user', ratioHtml(userDone, userTot));
         setKpiText('kpi-asig-user-hint', hintUsuarios(userTot, userDone));
     }
@@ -402,7 +420,7 @@
                     '<span><span class="fw-semibold">' + escapeHtml(r.usuario) + '</span>' +
                     (r.email ? '<span class="text-muted" style="font-size:.75rem;margin-left:.4rem">' + escapeHtml(r.email) + '</span>' : '') +
                     '</span>' +
-                    '<span class="cc-asig-group-n">' + n + (n === 1 ? ' centro' : ' centros') + '</span>' +
+                    '<span class="cc-asig-group-n">' + n + (n === 1 ? ' cliente' : ' clientes') + '</span>' +
                     '</div></td></tr>');
             }
             var nRev = extrasDe(r).length;
@@ -507,7 +525,7 @@
     }
 
     function asigUrl(id) {
-        return '/AdminCentros/' + encodeURIComponent(CCAsig.ciclo) + '/asignaciones/' + id;
+        return '/Ventas/Asignaciones/' + encodeURIComponent(CCAsig.ciclo) + '/asignaciones/' + id;
     }
 
     function permChecksHtml(prefix, selected) {
@@ -536,8 +554,8 @@
         var title = document.getElementById('asig-ver-title');
         if (title) title.textContent = 'Ver · ' + etiquetaCentro(row.centro_codigo, row.centro_nombre);
         var cuentas = (p.cuentas || row.cuentas || []).map(function (c) {
-            return '<li><span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span> ' + escapeHtml(c.nombre || '') + '</li>';
-        }).join('') || '<li class="text-muted">Sin cuentas</li>';
+            return '<li><span class="cc-cta-name">' + escapeHtml(c.nombre || '') + '</span> <span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></li>';
+        }).join('') || '<li class="text-muted">Sin productos</li>';
         var extrasHtml = extras.length
             ? extras.map(function (x) {
                 return '<div class="cc-user" style="margin-bottom:.35rem">' +
@@ -549,10 +567,10 @@
             '<div class="cc-context">' +
             '<div class="cc-context-item"><small>Usuario a cargo</small><strong>' + escapeHtml(p.usuario || '—') + '</strong></div>' +
             '<div class="cc-context-item"><small>Empresa</small><strong>' + String(row.empresa || '').toUpperCase() + '</strong></div>' +
-            '<div class="cc-context-item"><small>Centro</small><strong>' + escapeHtml(etiquetaCentro(row.centro_codigo, row.centro_nombre)) + '</strong></div>' +
+            '<div class="cc-context-item"><small>Cliente</small><strong>' + escapeHtml(etiquetaCentro(row.centro_codigo, row.centro_nombre)) + '</strong></div>' +
             '<div class="cc-context-item"><small>Permisos del responsable</small><span>' + permBadges(p.permisos) + '</span></div>' +
             '</div>' +
-            '<div class="cc-form-kicker">Cuentas</div>' +
+            '<div class="cc-form-kicker">Productos</div>' +
             '<ul class="cc-ver-cuentas">' + cuentas + '</ul>' +
             '<div class="cc-form-kicker">Otros usuarios</div>' + extrasHtml;
         showModal('modalAsigVer');
@@ -567,8 +585,8 @@
         var p = principalDe(row);
         var title = document.getElementById('asig-edit-title');
         var sub = document.getElementById('asig-edit-sub');
-        if (title) title.textContent = 'Editar cuentas · ' + etiquetaCentro(row.centro_codigo, row.centro_nombre);
-        if (sub) sub.textContent = String(row.empresa || '').toUpperCase() + ' · ' + (p.usuario || row.usuario) + ' a cargo. Las cuentas se replican a quienes tengan acceso.';
+        if (title) title.textContent = 'Editar productos · ' + etiquetaCentro(row.centro_codigo, row.centro_nombre);
+        if (sub) sub.textContent = String(row.empresa || '').toUpperCase() + ' · ' + (p.usuario || row.usuario) + ' a cargo. Los productos se replican a quienes tengan acceso.';
         CCAsig._editSelected = {};
         (p.cuentas || row.cuentas || []).forEach(function (c) {
             CCAsig._editSelected[String(c.codigo)] = {
@@ -580,7 +598,7 @@
         var qEl = document.getElementById('asig-edit-q');
         if (qEl) qEl.value = '';
         var list = document.getElementById('asig-edit-list');
-        if (list) list.innerHTML = '<div class="cc-empty">Cargando cuentas SAP…</div>';
+        if (list) list.innerHTML = '<div class="cc-empty">Cargando productos SAP…</div>';
         CCAsig._editMask = '';
         CCAsig._editGrupo = '';
         var maskSel = document.getElementById('asig-edit-mask');
@@ -589,11 +607,13 @@
         if (grupoSel) grupoSel.value = '';
         showModal('modalAsigEditar');
         loadGruposEditar(row.empresa);
-        loadCuentasEditar(row.empresa, qEl ? qEl.value : '');
+        loadCuentasEditar(row.empresa, qEl ? qEl.value : '', row.centro_codigo);
     }
 
-    function loadCuentasEditar(empresa, q) {
-        var key = String(empresa || '').toLowerCase();
+    function loadCuentasEditar(empresa, q, cliente) {
+        var year = Number((window.CC && CC.state && (CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia))) || new Date().getFullYear());
+        var card = String(cliente || (CCAsig._activo && CCAsig._activo.centro_codigo) || '').trim();
+        var key = String(empresa || '').toLowerCase() + '|' + year + '|' + card.toUpperCase();
         var apply = function (rows, groups) {
             CCAsig._editCuentasAll = rows || [];
             CCAsig._editCuentas = CCAsig._editCuentasAll;
@@ -611,7 +631,10 @@
             apply(CCAsig._cuentasCache[key], CCAsig._editAgrupaciones || []);
             return;
         }
-        getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(key)).then(function (json) {
+        getJSON('/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(String(empresa || '').toLowerCase()) +
+            '&year=' + encodeURIComponent(year) +
+            '&cliente=' + encodeURIComponent(card) +
+            '&cc=' + encodeURIComponent(card)).then(function (json) {
             CCAsig._cuentasCache[key] = json.cuentas || [];
             apply(CCAsig._cuentasCache[key], json.agrupaciones || []);
         }).catch(function () {
@@ -620,22 +643,8 @@
     }
 
     function loadGruposEditar(empresa) {
-        var key = String(empresa || '').toLowerCase();
-        var apply = function (rows) {
-            CCAsig._editGrupos = rows || [];
-            fillGrupoUi('asig-edit-grupo', CCAsig._editGrupos, CCAsig._editGrupo || '', setEditGrupo);
-        };
-        CCAsig._gruposCache = CCAsig._gruposCache || {};
-        if (CCAsig._gruposCache[key]) {
-            apply(CCAsig._gruposCache[key]);
-            return;
-        }
-        getJSON('/CentrosCostos/api/grupos?empresa=' + encodeURIComponent(key)).then(function (json) {
-            CCAsig._gruposCache[key] = json.grupos || [];
-            apply(CCAsig._gruposCache[key]);
-        }).catch(function () {
-            apply([]);
-        });
+        CCAsig._editGrupos = [];
+        fillGrupoUi('asig-edit-grupo', [], CCAsig._editGrupo || '', setEditGrupo);
     }
 
     function setEditGrupo(id) {
@@ -670,7 +679,7 @@
         }
         var box = document.getElementById('asig-edit-list');
         if (box) box.innerHTML = '<div class="cc-empty">Cargando GroupMask ' + escapeHtml(CCAsig._editMask) + '…</div>';
-        getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(empresa) +
+        getJSON('/ProyeccionesVentas/api/cuentas?todas=1&empresa=' + encodeURIComponent(empresa) +
             '&group_mask=' + encodeURIComponent(CCAsig._editMask)).then(function (json) {
             if (String(CCAsig._editMask) !== String(mask || '')) return;
             CCAsig._cuentasCache[key] = json.cuentas || [];
@@ -692,31 +701,21 @@
         var mask = String(CCAsig._editMask || '');
         var grupoMap = grupoCuentaMap(CCAsig._editGrupos || [], CCAsig._editGrupo || '');
         var rows = filterRowsByGrupo(CCAsig._editCuentas || [], grupoMap).filter(function (c) {
-            return ((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || '') + ' ' + (c.grupo || '') + ' ' + (c.grupo_id || '')).toLowerCase().indexOf(q) !== -1;
+            return matchQuery((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || ''), q);
         });
         if (!rows.length) {
-            box.innerHTML = '<div class="cc-empty">' + (CCAsig._editGrupo ? 'Sin cuentas en este grupo' : (mask ? 'Sin cuentas para este GroupMask' : 'Sin cuentas para este catálogo')) + '</div>';
+            box.innerHTML = '<div class="cc-empty">Sin productos para este catálogo</div>';
             return;
         }
         var sel = CCAsig._editSelected || {};
-        var groups = groupByMask(rows);
-        box.innerHTML = Object.keys(groups).map(function (key) {
-            var pack = groups[key];
-            var nOn = 0;
-            pack.rows.forEach(function (c) { if (sel[String(c.codigo)]) nOn += 1; });
-            var allOn = pack.rows.length > 0 && nOn === pack.rows.length;
-            return '<div class="cc-cta-group">' +
-                '<label class="cc-cta-group-h cc-cta-mask-h"><input type="checkbox" data-edit-mask="' + escapeHtml(pack.id) + '"' + (allOn ? ' checked' : '') + '>' +
-                'GroupMask ' + escapeHtml(pack.label) + ' · ' + pack.rows.length + '</label>' +
-                pack.rows.map(function (c) {
+        box.innerHTML = '<div class="cc-cta-group">' + rows.map(function (c) {
                     var on = !!sel[String(c.codigo)];
                     return '<label class="cc-cta-item"><input type="checkbox" data-edit-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                         ' data-nombre="' + escapeHtml(c.nombre || '') + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
                         ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + (on ? ' checked' : '') + '>' +
-                        '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span>' +
-                        '<span class="cc-cta-name">' + escapeHtml(c.nombre || '') + '</span></label>';
+                        '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
+                        '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                 }).join('') + '</div>';
-        }).join('');
         var todas = document.getElementById('asig-edit-todas');
         if (todas) {
             var nOn = 0;
@@ -893,7 +892,7 @@
             form.addEventListener('submit', function (e) {
                 e.preventDefault();
                 var ids = (CCAsig._importarUsers || []).map(function (u) { return u.id; });
-                sendJSON('/AdminCentros/' + encodeURIComponent(CCAsig.ciclo) + '/importar-usuarios', 'PUT', { user_ids: ids })
+                sendJSON('/Ventas/Asignaciones/' + encodeURIComponent(CCAsig.ciclo) + '/importar-usuarios', 'PUT', { user_ids: ids })
                     .then(function (json) {
                         CCAsig._importarUsers = json.usuarios || [];
                         renderImportarUsers();
@@ -908,7 +907,7 @@
     }
 
     function importarUrl() {
-        return '/AdminCentros/' + encodeURIComponent(CCAsig.ciclo) + '/importar-usuarios';
+        return '/Ventas/Asignaciones/' + encodeURIComponent(CCAsig.ciclo) + '/importar-usuarios';
     }
 
     function openImportarUsuarios() {
@@ -1056,7 +1055,7 @@
             syncEditSelectedFromDom();
             var cuentas = Object.keys(CCAsig._editSelected || {}).map(function (k) { return CCAsig._editSelected[k]; });
             if (!cuentas.length) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Sin cuentas', text: 'Selecciona al menos una cuenta.' });
+                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Sin productos', text: 'Selecciona al menos un producto.' });
                 return;
             }
             var btn = document.getElementById('asig-edit-guardar');
@@ -1064,7 +1063,7 @@
             var target = isPrincipal(CCAsig._activo) ? CCAsig._activo : principalDe(CCAsig._activo);
             sendJSON(asigUrl(target.id), 'PUT', { cuentas: cuentas }).then(function () {
                 hideModal('modalAsigEditar');
-                toast('success', 'Cuentas actualizadas');
+                toast('success', 'Productos actualizados');
                 reloadTabla();
             }).catch(function (err) {
                 toast('error', 'No se guardó', err.message);
@@ -1370,7 +1369,7 @@
                 return '<article class="cc-ciclo-card is-pickable' + (on ? ' is-on' : '') + (n ? ' has-asig' : '') + '" data-emp="' + escapeHtml(e.codigo) + '" data-nombre="' + escapeHtml(e.nombre) + '" role="button" tabindex="0">' +
                     '<div class="top"><div><div class="code">SAP</div><h3>' + escapeHtml(e.nombre) + '</h3></div>' +
                     '<span class="cc-badge ' + badgeCls + '" data-asig-n>' + (n ? (n + (n === 1 ? ' centro' : ' centros')) : 'Sin asignar') + '</span></div>' +
-                    '<div class="cc-ciclo-obs">Centros de costo y cuentas de ' + escapeHtml(e.nombre) + ' vía AutinApi.</div>' +
+                    '<div class="cc-ciclo-obs">Clientes y productos de ' + escapeHtml(e.nombre) + ' vía AutinApi.</div>' +
                     '<div class="actions"><span class="text-muted" style="font-size:.75rem">' + (n ? 'Ya tiene centros en resultados' : 'Clic en cualquier parte') + '</span>' +
                     '<span class="cc-btn ' + pickCls + ' cc-card-pick">' + pickLabel + '</span></div></article>';
             }).join('');
@@ -1407,7 +1406,7 @@
             }
             box.hidden = false;
             if (!saved.length) {
-                tb.innerHTML = '<tr><td colspan="5"><div class="cc-empty">Aún no hay centros en la tabla. Elige empresa, centro y cuentas y pulsa Agregar a resultados.</div></td></tr>';
+                tb.innerHTML = '<tr><td colspan="5"><div class="cc-empty">Aún no hay clientes en la tabla. Elige empresa, cliente y productos y pulsa Agregar a resultados.</div></td></tr>';
                 if (meta) meta.textContent = '';
                 return;
             }
@@ -1425,8 +1424,8 @@
                 return '<tr class="' + cls.join(' ') + '" data-emp="' + escapeHtml(a.empresa) + '" data-key="' + escapeHtml(key) + '">' +
                     '<td><strong>' + escapeHtml(empresaNombre(a.empresa)) + '</strong></td>' +
                     '<td><div class="fw-semibold">' + escapeHtml(isSinCentro(a.centro_codigo) ? SIN_CENTRO_NOMBRE : a.centro_codigo) + '</div>' +
-                    '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(isSinCentro(a.centro_codigo) ? 'Cuentas sin afiliar a un centro' : (a.centro_nombre || '')) + '</div></td>' +
-                    '<td>' + nCtas + (nCtas === 1 ? ' cuenta' : ' cuentas') + '</td>' +
+                    '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(isSinCentro(a.centro_codigo) ? 'Productos sin cliente' : (a.centro_nombre || '')) + '</div></td>' +
+                    '<td>' + nCtas + (nCtas === 1 ? ' producto' : ' productos') + '</td>' +
                     '<td>' + permBadges(a.permisos) + '</td>' +
                     '<td><button type="button" class="cc-icon-btn" data-del="' + escapeHtml(a.id) + '" data-emp="' + escapeHtml(a.empresa) + '" data-cc="' + escapeHtml(a.centro_codigo) + '" title="Quitar"><i class="fa-solid fa-trash"></i></button></td>' +
                     '</tr>';
@@ -1450,7 +1449,7 @@
             markEmpresaCard(cfg.empresa);
             fillCentros(ccQ ? ccQ.value : '');
             if (isTempId(id) || isTempId(row.id)) return;
-            fetch('/AdminCentros/' + encodeURIComponent(cfg.ciclo) + '/asignaciones/' + row.id, {
+            fetch('/Ventas/Asignaciones/' + encodeURIComponent(cfg.ciclo) + '/asignaciones/' + row.id, {
                 method: 'DELETE',
                 headers: { 'X-CSRF-TOKEN': csrf, Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).catch(function () { /* la fila ya salió de la tabla */ });
@@ -1461,7 +1460,7 @@
                 saved = [];
                 return Promise.resolve([]);
             }
-            var url = (cfg.listUrl || ('/AdminCentros/' + encodeURIComponent(cfg.ciclo) + '/asignaciones'))
+            var url = (cfg.listUrl || ('/Ventas/Asignaciones/' + encodeURIComponent(cfg.ciclo) + '/asignaciones'))
                 + '?user_id=' + encodeURIComponent(userId());
             return getJSON(url)
                 .then(function (json) {
@@ -1484,7 +1483,7 @@
             var kicker = document.getElementById('asig-kicker');
             var title = document.getElementById('asig-cc-title');
             if (kicker) kicker.textContent = cfg.ciclo + ' · ' + userName() + ' · ' + nom;
-            if (title) title.innerHTML = '<i class="fa-solid fa-sitemap"></i> 3. Centro de costos (' + nom + ')';
+            if (title) title.innerHTML = '<i class="fa-solid fa-sitemap"></i> 3. Cliente (' + nom + ')';
             if (detBox) detBox.hidden = false;
             markEmpresaCard(cfg.empresa);
             renderResumen();
@@ -1502,7 +1501,7 @@
             ctaMask = '';
             ctaGrupo = '';
             if (centroSel) {
-                centroSel.innerHTML = '<option value="">Cargando centros…</option>';
+                centroSel.innerHTML = '<option value="">Cargando clientes…</option>';
                 centroSel.disabled = false;
             }
             var ccList = document.getElementById('asig-cc-list');
@@ -1510,7 +1509,7 @@
             if (ccQ) { ccQ.disabled = false; ccQ.value = ''; }
             if (ctaQ) { ctaQ.disabled = true; ctaQ.value = ''; }
             var list = document.getElementById('asig-cta-list');
-            if (list) list.innerHTML = '<div class="cc-empty">Elige un centro (o Sin centro de costos) para ver las cuentas</div>';
+            if (list) list.innerHTML = '<div class="cc-empty">Elige un cliente para ver los productos</div>';
             fillMaskUi('asig-cta-mask', [], [], '', setCtaMask);
             fillGrupoUi('asig-cta-grupo', [], '', setCtaGrupo);
             loadCentros();
@@ -1522,13 +1521,13 @@
             var hint = document.getElementById('asig-emp-hint');
             if (hint) {
                 hint.textContent = userId()
-                    ? 'Elige la empresa. Luego el centro. Puedes cambiar de empresa cuando quieras; lo guardado se acumula abajo.'
+                    ? 'Elige la empresa. Luego el cliente. Puedes cambiar de empresa cuando quieras; lo guardado se acumula abajo.'
                     : 'Elige un usuario para habilitar las empresas.';
             }
         }
 
         function loadEmpresas() {
-            getJSON('/CentrosCostos/api/empresas?ciclo=' + encodeURIComponent(cfg.ciclo)).then(function (json) {
+            getJSON('/ProyeccionesVentas/api/empresas?ciclo=' + encodeURIComponent(cfg.ciclo)).then(function (json) {
                 empresas = json.empresas || [];
                 renderEmpresaCards();
                 var flag = document.getElementById('sap-flag');
@@ -1543,81 +1542,91 @@
             });
         }
 
+        function anioRef() {
+            return Number((window.CC && CC.state && (CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia))) || new Date().getFullYear());
+        }
+
         function loadCentros() {
             var meta = document.getElementById('asig-cc-meta');
-            if (meta) meta.textContent = 'Cargando centros SAP…';
-            var key = cfg.empresa;
+            if (meta) meta.textContent = 'Cargando clientes SAP…';
+            var year = anioRef();
+            var key = String(cfg.empresa || '').toLowerCase() + '|' + year;
             var apply = function (rows, mensaje) {
                 centros = rows || [];
+                syncCentroSelect(centros);
                 fillCentros(ccQ ? ccQ.value : '');
                 if (meta) {
                     meta.textContent = centros.length
-                        ? (centros.length + ' centros en ' + String(cfg.empresa).toUpperCase() + (savedDeEmpresa(cfg.empresa).length ? ' · ' + savedDeEmpresa(cfg.empresa).length + ' ya asignados' : ''))
-                        : (mensaje || 'Sin centros en AutinApi');
+                        ? (centros.length + ' clientes en ' + String(cfg.empresa).toUpperCase() + (savedDeEmpresa(cfg.empresa).length ? ' · ' + savedDeEmpresa(cfg.empresa).length + ' ya asignados' : ''))
+                        : (mensaje || 'Sin clientes en AutinApi');
                 }
             };
             if (cacheCentros[key]) {
                 apply(cacheCentros[key], null);
                 return;
             }
-            getJSON('/CentrosCostos/api/centros?empresa=' + encodeURIComponent(cfg.empresa) + '&per_page=200').then(function (json) {
-                cacheCentros[key] = json.centros || [];
-                apply(cacheCentros[key], json.mensaje);
+            getJSON('/ProyeccionesVentas/api/centros?empresa=' + encodeURIComponent(cfg.empresa) + '&year=' + encodeURIComponent(year)).then(function (json) {
+                var rows = json.centros || [];
+                if (json.ok && rows.length) cacheCentros[key] = rows;
+                apply(rows, json.mensaje);
+            }).catch(function () {
+                apply([], 'No se pudieron cargar los clientes');
             });
+        }
+
+        function syncCentroSelect(rows) {
+            if (!centroSel) return;
+            var keep = centroSel.value;
+            centroSel.innerHTML = '<option value="">Elige un cliente…</option>' + (rows || []).map(function (c) {
+                return '<option value="' + escapeHtml(c.codigo) + '" data-nombre="' + escapeHtml(c.nombre || '') + '">' +
+                    escapeHtml((c.nombre || c.codigo) + ' · ' + c.codigo) + '</option>';
+            }).join('');
+            if (keep) centroSel.value = keep;
         }
 
         function fillCentros(q) {
             if (!centroSel) return;
             var list = document.getElementById('asig-cc-list');
-            var keep = centroSel.value;
-            q = (q || '').toLowerCase().trim();
-            var none = { codigo: SIN_CENTRO_CODIGO, nombre: SIN_CENTRO_NOMBRE };
-            var noneHay = (none.codigo + ' ' + none.nombre + ' sin centro de costos').toLowerCase();
-            var showNone = !q || noneHay.indexOf(q) !== -1;
+            var meta = document.getElementById('asig-cc-meta');
+            q = String(q || '');
+            var current = String(centroSel.value || '');
             var rows = centros.filter(function (c) {
                 if (isSinCentro(c.codigo)) return false;
-                return ((c.codigo || '') + ' ' + (c.nombre || '')).toLowerCase().indexOf(q) !== -1;
+                return matchQuery((c.codigo || '') + ' ' + (c.nombre || ''), q);
             });
-            var opts = '';
-            if (showNone) {
-                opts += '<option value="' + escapeHtml(none.codigo) + '" data-nombre="' + escapeHtml(none.nombre) + '">' +
-                    escapeHtml(none.nombre) + '</option>';
-            }
-            opts += rows.map(function (c) {
-                return '<option value="' + escapeHtml(c.codigo) + '" data-nombre="' + escapeHtml(c.nombre) + '">' +
-                    escapeHtml(c.codigo) + '</option>';
-            }).join('');
-            centroSel.innerHTML = '<option value="">Elige un centro…</option>' + opts;
-            if (keep && ((showNone && String(keep) === String(none.codigo)) || rows.some(function (c) { return String(c.codigo) === String(keep); }))) {
-                centroSel.value = keep;
+            if (current) {
+                var selected = centros.filter(function (c) { return String(c.codigo) === current; })[0];
+                if (selected && !rows.some(function (r) { return String(r.codigo) === current; })) {
+                    rows.unshift(selected);
+                }
             }
             if (!list) return;
-            if (!showNone && !rows.length) {
-                list.innerHTML = '<div class="cc-empty">' + (centros.length ? 'Sin coincidencias' : 'Elige una empresa para ver centros') + '</div>';
+            if (!centros.length) {
+                list.innerHTML = '<div class="cc-empty">Elige una empresa para ver clientes</div>';
                 return;
             }
-            var current = centroSel.value;
-            var html = '';
-            if (showNone) {
-                var noneDone = centroYaAsignado(cfg.empresa, none.codigo);
-                var noneOn = current !== '' && String(current) === String(none.codigo);
-                html += '<button type="button" class="cc-cc-item is-none' + (noneDone ? ' is-done' : '') + (noneOn ? ' is-on' : '') + '" role="option" data-codigo="' + escapeHtml(none.codigo) + '" data-nombre="' + escapeHtml(none.nombre) + '" aria-selected="' + (noneOn ? 'true' : 'false') + '">' +
-                    '<span><span class="cc-cc-code">SIN CC</span>' +
-                    '<span class="cc-cc-name">' + escapeHtml(none.nombre) + '</span></span>' +
-                    (noneDone ? '<span class="cc-badge cc-badge-done">Asignado</span>' : '') +
-                    '</button>';
+            if (!rows.length) {
+                list.innerHTML = '<div class="cc-empty">Sin coincidencias para “' + escapeHtml(q.trim()) + '”</div>';
+                if (meta && q.trim()) {
+                    meta.textContent = '0 de ' + centros.length + ' clientes';
+                }
+                return;
             }
-            html += rows.map(function (c) {
+            if (meta) {
+                meta.textContent = q.trim()
+                    ? (rows.length + ' de ' + centros.length + ' clientes')
+                    : (centros.length + ' clientes en ' + String(cfg.empresa || '').toUpperCase() + (savedDeEmpresa(cfg.empresa).length ? ' · ' + savedDeEmpresa(cfg.empresa).length + ' ya asignados' : ''));
+            }
+            list.innerHTML = rows.map(function (c) {
                 var done = centroYaAsignado(cfg.empresa, c.codigo);
-                var on = current !== '' && String(c.codigo) === String(current);
+                var on = current !== '' && String(c.codigo) === current;
                 var cls = 'cc-cc-item' + (done ? ' is-done' : '') + (on ? ' is-on' : '');
-                return '<button type="button" class="' + cls + '" role="option" data-codigo="' + escapeHtml(c.codigo) + '" data-nombre="' + escapeHtml(c.nombre) + '" aria-selected="' + (on ? 'true' : 'false') + '">' +
-                    '<span><span class="cc-cc-code">' + escapeHtml(c.codigo) + '</span>' +
-                    '<span class="cc-cc-name">' + escapeHtml(c.nombre) + '</span></span>' +
+                return '<button type="button" class="' + cls + '" role="option" data-codigo="' + escapeHtml(c.codigo) + '" data-nombre="' + escapeHtml(c.nombre || '') + '" aria-selected="' + (on ? 'true' : 'false') + '">' +
+                    '<span><span class="cc-cc-code">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
+                    '<span class="cc-cc-name">' + escapeHtml(c.codigo) + '</span></span>' +
                     (done ? '<span class="cc-badge cc-badge-done">Asignado</span>' : '') +
                     '</button>';
             }).join('');
-            list.innerHTML = html;
             list.querySelectorAll('.cc-cc-item').forEach(function (btn) {
                 btn.addEventListener('click', function () {
                     pickCentro(btn.getAttribute('data-codigo'), btn.getAttribute('data-nombre'));
@@ -1685,25 +1694,8 @@
         }
 
         function loadGrupos() {
-            var key = String(cfg.empresa || '').toLowerCase();
-            var apply = function (rows) {
-                grupos = rows || [];
-                fillGrupoUi('asig-cta-grupo', grupos, ctaGrupo, setCtaGrupo);
-            };
-            if (!key) {
-                apply([]);
-                return;
-            }
-            if (cacheGrupos[key]) {
-                apply(cacheGrupos[key]);
-                return;
-            }
-            getJSON('/CentrosCostos/api/grupos?empresa=' + encodeURIComponent(key)).then(function (json) {
-                cacheGrupos[key] = json.grupos || [];
-                apply(cacheGrupos[key]);
-            }).catch(function () {
-                apply([]);
-            });
+            grupos = [];
+            fillGrupoUi('asig-cta-grupo', [], '', setCtaGrupo);
         }
 
         function setCtaMask(mask) {
@@ -1723,7 +1715,7 @@
             }
             var box = document.getElementById('asig-cta-list');
             if (box) box.innerHTML = '<div class="cc-empty">Cargando GroupMask ' + escapeHtml(ctaMask) + '…</div>';
-            getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(cfg.empresa) +
+            getJSON('/ProyeccionesVentas/api/cuentas?todas=1&empresa=' + encodeURIComponent(cfg.empresa) +
                 '&group_mask=' + encodeURIComponent(ctaMask)).then(function (json) {
                 if (String(ctaMask) !== String(mask || '')) return;
                 cacheCuentas[key] = json.cuentas || [];
@@ -1763,8 +1755,14 @@
 
         function loadCuentas() {
             var box = document.getElementById('asig-cta-list');
-            box.innerHTML = '<div class="cc-empty">Cargando cuentas SAP…</div>';
-            var key = cfg.empresa;
+            var cliente = centroSel ? String(centroSel.value || '').trim() : '';
+            if (!cliente) {
+                box.innerHTML = '<div class="cc-empty">Elige un cliente para ver sus productos (ItemName)</div>';
+                return;
+            }
+            var year = anioRef();
+            box.innerHTML = '<div class="cc-empty">Cargando productos de OINV + ORIN…</div>';
+            var key = String(cfg.empresa || '').toLowerCase() + '|' + year + '|' + cliente.toUpperCase();
             var apply = function (rows, groups) {
                 cuentas = rows || [];
                 if (groups && groups.length) agrupaciones = groups;
@@ -1780,9 +1778,14 @@
                 apply(cacheCuentas[key], agrupaciones);
                 return;
             }
-            getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(cfg.empresa)).then(function (json) {
+            getJSON('/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(cfg.empresa) +
+                '&year=' + encodeURIComponent(year) +
+                '&cliente=' + encodeURIComponent(cliente) +
+                '&cc=' + encodeURIComponent(cliente)).then(function (json) {
                 cacheCuentas[key] = json.cuentas || [];
                 apply(cacheCuentas[key], json.agrupaciones || []);
+            }).catch(function () {
+                apply([], []);
             });
         }
 
@@ -1792,33 +1795,23 @@
             var mask = String(ctaMask || '');
             var grupoMap = grupoCuentaMap(grupos, ctaGrupo);
             var rows = filterRowsByGrupo(cuentas, grupoMap).filter(function (c) {
-                return ((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || '') + ' ' + (c.grupo || '') + ' ' + (c.grupo_id || '')).toLowerCase().indexOf(q) !== -1;
+                return matchQuery((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || ''), q);
             });
             if (!rows.length) {
-                box.innerHTML = '<div class="cc-empty">' + (ctaGrupo ? 'Sin cuentas en este grupo' : (mask ? 'Sin cuentas para este GroupMask' : 'Sin cuentas para este catálogo')) + '</div>';
+                box.innerHTML = '<div class="cc-empty">Sin productos para este catálogo</div>';
                 updateCtaSelCount();
                 return;
             }
             var current = centroSel ? centroSel.value : '';
             var prev = asignacionDeCentro(cfg.empresa, current);
-            var groups = groupByMask(rows);
-            box.innerHTML = Object.keys(groups).map(function (key) {
-                var pack = groups[key];
-                var nOn = 0;
-                pack.rows.forEach(function (c) { if (ctaSelected[normCode(c.codigo)]) nOn += 1; });
-                var allOn = pack.rows.length > 0 && nOn === pack.rows.length;
-                return '<div class="cc-cta-group">' +
-                    '<label class="cc-cta-group-h cc-cta-mask-h"><input type="checkbox" data-cta-mask="' + escapeHtml(pack.id) + '"' + (allOn ? ' checked' : '') + '>' +
-                    'GroupMask ' + escapeHtml(pack.label) + ' · ' + pack.rows.length + '</label>' +
-                    pack.rows.map(function (c) {
+            box.innerHTML = '<div class="cc-cta-group">' + rows.map(function (c) {
                         var checked = ctaSelected[normCode(c.codigo)] ? ' checked' : '';
                         return '<label class="cc-cta-item"><input type="checkbox" data-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                             ' data-nombre="' + escapeHtml(c.nombre) + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
                             ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + checked + '>' +
-                            '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span>' +
-                            '<span class="cc-cta-name">' + escapeHtml(c.nombre) + '</span></label>';
+                            '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
+                            '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                     }).join('') + '</div>';
-            }).join('');
             syncPermisos(prev ? prev.permisos : null);
             var boxes = box.querySelectorAll('[data-cta]');
             var nOn = 0;
@@ -1861,7 +1854,7 @@
             ctaMask = '';
             ctaGrupo = '';
             var list = document.getElementById('asig-cta-list');
-            if (list) list.innerHTML = '<div class="cc-empty">Elige un centro (o Sin centro de costos) para ver las cuentas</div>';
+            if (list) list.innerHTML = '<div class="cc-empty">Elige un cliente para ver los productos</div>';
             var todas = document.getElementById('asig-cta-todas');
             if (todas) todas.checked = false;
             fillMaskUi('asig-cta-mask', agrupaciones, cuentas, '', setCtaMask);
@@ -1900,7 +1893,12 @@
 
         if (userSel) userSel.addEventListener('change', onUserChanged);
 
-        if (ccQ) ccQ.addEventListener('input', function () { fillCentros(ccQ.value); });
+        if (ccQ) {
+            var onCcSearch = function () { fillCentros(ccQ.value); };
+            ccQ.addEventListener('input', onCcSearch);
+            ccQ.addEventListener('search', onCcSearch);
+            ccQ.addEventListener('keyup', onCcSearch);
+        }
 
         if (centroSel) centroSel.addEventListener('change', function () {
             if (!centroSel.value) return;
@@ -1960,7 +1958,7 @@
                 permisos: perms
             };
             if (!payload.centro_codigo) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta el centro', text: 'Elige un centro de costos o la opción Sin centro de costos.' });
+                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta el cliente', text: 'Elige un cliente o la opción Sin cliente.' });
                 return null;
             }
             if (isSinCentro(payload.centro_codigo)) {
@@ -1968,7 +1966,7 @@
                 payload.centro_nombre = SIN_CENTRO_NOMBRE;
             }
             if (!ctas.length) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Sin cuentas', text: 'Selecciona al menos una cuenta.' });
+                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Sin productos', text: 'Selecciona al menos un producto.' });
                 return null;
             }
             return payload;
@@ -2057,7 +2055,7 @@
                 return;
             }
             var goCiclo = function () {
-                window.location.href = cfg.cicloUrl || ('/AdminCentros/' + encodeURIComponent(cfg.ciclo));
+                window.location.href = cfg.cicloUrl || ('/Ventas/Asignaciones/' + encodeURIComponent(cfg.ciclo));
             };
             if (window.Swal) {
                 Swal.fire({

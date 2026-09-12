@@ -2,17 +2,15 @@
 
 namespace App\Http\Controllers;
 
-use App\Exports\CcCapturaPlantillaExport;
-use App\Models\CcAsignacion;
-use App\Models\CcAsignacionCuenta;
-use App\Models\CcAsignacionPermiso;
-use App\Models\CcCapturaCentro;
-use App\Models\CcCiclo;
-use App\Models\CcGrupoCuenta;
-use App\Models\CcGrupoCuentaItem;
-use App\Models\CcPresupuesto;
-use App\Models\CcTipoPermiso;
-use App\Models\CcUsuarioPermiso;
+use App\Exports\PvCapturaPlantillaExport;
+use App\Models\PvAsignacion;
+use App\Models\PvAsignacionProducto;
+use App\Models\PvAsignacionPermiso;
+use App\Models\PvCapturaCentro;
+use App\Models\PvCiclo;
+use App\Models\PvPresupuesto;
+use App\Models\PvTipoPermiso;
+use App\Models\PvUsuarioPermiso;
 use App\Models\Empresas;
 use App\Models\User;
 use App\Services\AutinApiClient;
@@ -22,23 +20,22 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 use Throwable;
 
 /**
- * Vistas de centros de costo / presupuesto.
- * Catálogo SAP vía AutinApi; la captura mensual se guarda en tbl_cc_presupuestos.
+ * Proyecciones de ventas: empresas > clientes > productos.
+ * Captura de cantidades en tbl_pv_proyecciones.
  */
-class CentrosCostosController extends Controller
+class ProyeccionesVentasController extends Controller
 {
     use MenuTrait;
 
     /** @var array<string, bool> */
-    protected $ccUserPermCache = [];
+    protected $pvUserPermCache = [];
 
     /** @var array<string, string> */
-    protected $ccCicloEstadoCache = [];
+    protected $pvCicloEstadoCache = [];
 
     public function __construct()
     {
@@ -47,12 +44,12 @@ class CentrosCostosController extends Controller
 
     public function admin()
     {
-        return $this->page('admin', 'CentrosCostos.admin');
+        return $this->page('admin', 'ProyeccionesVentas.admin');
     }
 
     public function ciclo(string $ciclo)
     {
-        return $this->page('admin-ciclo', 'CentrosCostos.ciclo', [
+        return $this->page('admin-ciclo', 'ProyeccionesVentas.ciclo', [
             'cicloCodigo' => $ciclo,
             'permisosCatalogo' => $this->permisosCatalogoAsignacion(),
         ]);
@@ -60,19 +57,19 @@ class CentrosCostosController extends Controller
 
     public function control(Request $request)
     {
-        return $this->page('control', 'CentrosCostos.control', [
+        return $this->page('control', 'ProyeccionesVentas.control', [
             'centroInicial' => (string) $request->get('cc', ''),
             'empresaInicial' => (string) $request->get('empresa', ''),
             'cicloInicial' => (string) $request->get('ciclo', ''),
             'vistaInicial' => (string) $request->get('vista', ''),
-            'detalleUrl' => route('centros.detalle'),
+            'detalleUrl' => route('pv.detalle'),
             'misAsignaciones' => $this->misAsignacionesList(''),
         ]);
     }
 
     public function detalle(Request $request)
     {
-        return $this->page('detalle', 'CentrosCostos.detalle', [
+        return $this->page('detalle', 'ProyeccionesVentas.detalle', [
             'centroInicial' => (string) $request->get('cc', ''),
             'empresaInicial' => (string) $request->get('empresa', ''),
             'cicloInicial' => (string) $request->get('ciclo', ''),
@@ -82,14 +79,9 @@ class CentrosCostosController extends Controller
 
     public function analisis()
     {
-        return $this->page('analisis', 'CentrosCostos.analisis', [
-            'detalleUrl' => route('centros.detalle'),
+        return $this->page('analisis', 'ProyeccionesVentas.analisis', [
+            'detalleUrl' => route('pv.detalle'),
         ]);
-    }
-
-    public function grupos()
-    {
-        return $this->page('grupos', 'CentrosCostos.grupos');
     }
 
     public function listCiclos(): JsonResponse
@@ -99,7 +91,7 @@ class CentrosCostosController extends Controller
 
     public function storeCiclo(Request $request): JsonResponse
     {
-        if (! Schema::hasTable('tbl_cc_ciclos')) {
+        if (! Schema::hasTable('tbl_pv_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
 
@@ -113,13 +105,12 @@ class CentrosCostosController extends Controller
             'capturaHasta' => 'nullable|date',
             'revisionDesde' => 'nullable|date',
             'estado' => 'nullable|in:abierto,en_revision,cerrado,en_proceso,terminado',
-            'inflacion' => 'nullable|numeric',
             'tipoCambio' => 'nullable|numeric',
             'observaciones' => 'nullable|string',
         ]);
 
         $codigo = strtoupper(trim($data['codigo']));
-        $ciclo = CcCiclo::query()->firstOrNew(['codigo' => $codigo]);
+        $ciclo = PvCiclo::query()->firstOrNew(['codigo' => $codigo]);
         $nuevo = ! $ciclo->exists;
         $ciclo->fill([
             'nombre' => $data['nombre'],
@@ -130,7 +121,6 @@ class CentrosCostosController extends Controller
             'captura_hasta' => $data['capturaHasta'] ?: null,
             'revision_desde' => $data['revisionDesde'] ?: null,
             'estado' => $this->normalizeCicloEstado($data['estado'] ?? 'abierto'),
-            'inflacion' => $data['inflacion'] ?? 0,
             'tipo_cambio' => $data['tipoCambio'] ?? 0,
             'observaciones' => $data['observaciones'] ?? null,
             'updated_by' => auth()->id(),
@@ -149,7 +139,7 @@ class CentrosCostosController extends Controller
 
     public function updateCicloEstado(Request $request, string $ciclo): JsonResponse
     {
-        if (! Schema::hasTable('tbl_cc_ciclos')) {
+        if (! Schema::hasTable('tbl_pv_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
 
@@ -157,7 +147,7 @@ class CentrosCostosController extends Controller
             'estado' => 'required|in:abierto,en_revision,cerrado,en_proceso,terminado',
         ]);
 
-        $row = CcCiclo::query()->where('codigo', $ciclo)->first();
+        $row = PvCiclo::query()->where('codigo', $ciclo)->first();
         if (! $row) {
             return response()->json(['message' => 'Ciclo no encontrado.'], 404);
         }
@@ -174,11 +164,11 @@ class CentrosCostosController extends Controller
 
     public function destroyCiclo(string $ciclo): JsonResponse
     {
-        if (! Schema::hasTable('tbl_cc_ciclos')) {
+        if (! Schema::hasTable('tbl_pv_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
 
-        $row = CcCiclo::query()->where('codigo', $ciclo)->first();
+        $row = PvCiclo::query()->where('codigo', $ciclo)->first();
         if (! $row) {
             return response()->json(['message' => 'Ciclo no encontrado.'], 404);
         }
@@ -186,21 +176,21 @@ class CentrosCostosController extends Controller
         $stats = $this->cicloStats($row->codigo);
 
         DB::transaction(function () use ($row) {
-            $ids = CcAsignacion::query()->where('ciclo_codigo', $row->codigo)->pluck('id');
+            $ids = PvAsignacion::query()->where('ciclo_codigo', $row->codigo)->pluck('id');
             if ($ids->isNotEmpty()) {
-                if (Schema::hasTable('tbl_cc_asignacion_cuentas')) {
-                    CcAsignacionCuenta::query()->whereIn('asignacion_id', $ids)->delete();
+                if (Schema::hasTable('tbl_pv_asignacion_productos')) {
+                    PvAsignacionProducto::query()->whereIn('asignacion_id', $ids)->delete();
                 }
-                if (Schema::hasTable('tbl_cc_asignacion_permisos')) {
-                    CcAsignacionPermiso::query()->whereIn('asignacion_id', $ids)->delete();
+                if (Schema::hasTable('tbl_pv_asignacion_permisos')) {
+                    PvAsignacionPermiso::query()->whereIn('asignacion_id', $ids)->delete();
                 }
-                CcAsignacion::query()->whereIn('id', $ids)->delete();
+                PvAsignacion::query()->whereIn('id', $ids)->delete();
             }
-            if (Schema::hasTable('tbl_cc_presupuestos')) {
-                CcPresupuesto::query()->where('ciclo_codigo', $row->codigo)->delete();
+            if (Schema::hasTable('tbl_pv_proyecciones')) {
+                PvPresupuesto::query()->where('ciclo_codigo', $row->codigo)->delete();
             }
-            if (Schema::hasTable('tbl_cc_captura_centros')) {
-                CcCapturaCentro::query()->where('ciclo_codigo', $row->codigo)->delete();
+            if (Schema::hasTable('tbl_pv_captura_clientes')) {
+                PvCapturaCentro::query()->where('ciclo_codigo', $row->codigo)->delete();
             }
             $row->delete();
         });
@@ -217,14 +207,20 @@ class CentrosCostosController extends Controller
         $empresa = strtolower(trim((string) $empresa));
         $empresasOk = ['austin', 'imsa', 'pitic', 'sydney'];
         if ($empresa !== '' && ! in_array($empresa, $empresasOk, true)) {
-            return redirect()->route('centros.asignar', $ciclo);
+            return redirect()->route('pv.asignar', $ciclo);
         }
 
-        return $this->page('asignacion', 'CentrosCostos.asignacion', [
+        $cicloRow = Schema::hasTable('tbl_pv_ciclos')
+            ? PvCiclo::query()->where('codigo', $ciclo)->first()
+            : null;
+
+        return $this->page('asignacion', 'ProyeccionesVentas.asignacion', [
             'cicloCodigo' => $ciclo,
             'empresaCodigo' => $empresa,
             'empresaNombre' => $empresa !== '' ? strtoupper($empresa) : '',
             'permisosCatalogo' => $this->permisosCatalogoAsignacion(),
+            'anioGasto' => $cicloRow ? (int) $cicloRow->anio_referencia : null,
+            'anioPresupuesto' => $cicloRow ? (int) $cicloRow->anio_presupuesto : null,
         ]);
     }
 
@@ -239,8 +235,8 @@ class CentrosCostosController extends Controller
 
         $ciclo = (string) $request->get('ciclo', '');
         $counts = [];
-        if (Schema::hasTable('tbl_cc_asignaciones')) {
-            $q = CcAsignacion::query()
+        if (Schema::hasTable('tbl_pv_asignaciones')) {
+            $q = PvAsignacion::query()
                 ->selectRaw('empresa, count(*) as total')
                 ->groupBy('empresa');
             if ($ciclo !== '') {
@@ -249,21 +245,11 @@ class CentrosCostosController extends Controller
             $counts = $q->pluck('total', 'empresa')->all();
         }
 
-        $gruposCounts = [];
-        if (Schema::hasTable('tbl_cc_grupos_cuenta')) {
-            $gruposCounts = CcGrupoCuenta::query()
-                ->selectRaw('empresa, count(*) as total')
-                ->groupBy('empresa')
-                ->pluck('total', 'empresa')
-                ->all();
-        }
-
-        $empresas = collect($dbs)->map(function ($db) use ($counts, $gruposCounts) {
+        $empresas = collect($dbs)->map(function ($db) use ($counts) {
             return [
                 'codigo' => $db,
                 'nombre' => strtoupper($db),
                 'asignaciones' => (int) ($counts[$db] ?? 0),
-                'grupos' => (int) ($gruposCounts[$db] ?? 0),
             ];
         })->values()->all();
 
@@ -273,16 +259,18 @@ class CentrosCostosController extends Controller
     public function centrosSap(Request $request): JsonResponse
     {
         $empresa = strtolower((string) $request->get('empresa', 'austin'));
+        $year = (int) $request->get('year', date('Y'));
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(120);
+        }
 
         try {
-            $api = app(AutinApiClient::class);
-            $res = $api->index('centros-costo', ['per_page' => 200, 'page' => 1], $empresa);
-            $centros = ! empty($res['ok']) ? $this->normalizarCentros($res['body']['data'] ?? []) : [];
+            $pack = $this->cargarClientesEmpresa($empresa, $year);
 
             return response()->json([
-                'ok' => ! empty($res['ok']),
-                'centros' => $centros,
-                'mensaje' => $res['message'] ?? null,
+                'ok' => $pack['ok'],
+                'centros' => $pack['clientes'],
+                'mensaje' => $pack['mensaje'],
             ]);
         } catch (Throwable $e) {
             return response()->json(['ok' => false, 'centros' => [], 'mensaje' => $e->getMessage()], 200);
@@ -292,16 +280,19 @@ class CentrosCostosController extends Controller
     public function cuentasSap(Request $request): JsonResponse
     {
         $empresa = strtolower((string) $request->get('empresa', 'austin'));
-        $todas = $request->boolean('todas');
-        $groupMask = trim((string) $request->get('group_mask', $request->get('GroupMask', '')));
+        $cliente = trim((string) $request->get('cliente', $request->get('cc', '')));
+        $year = (int) $request->get('year', date('Y'));
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(120);
+        }
 
         try {
-            $cargadas = $this->cargarCuentasEmpresa($empresa, $todas, $groupMask);
+            $cargadas = $this->cargarProductosCliente($empresa, $cliente, $year);
 
             return response()->json([
                 'ok' => $cargadas['ok'],
-                'cuentas' => $cargadas['cuentas'],
-                'agrupaciones' => $cargadas['agrupaciones'],
+                'cuentas' => $cargadas['productos'],
+                'agrupaciones' => [],
                 'mensaje' => $cargadas['mensaje'],
             ]);
         } catch (Throwable $e) {
@@ -309,141 +300,15 @@ class CentrosCostosController extends Controller
         }
     }
 
-    public function listGrupos(Request $request): JsonResponse
-    {
-        if (! Schema::hasTable('tbl_cc_grupos_cuenta')) {
-            return response()->json(['grupos' => []]);
-        }
-
-        $empresa = strtolower(trim((string) $request->get('empresa', '')));
-        $q = CcGrupoCuenta::query()->with('cuentas')->orderBy('nombre')->orderBy('clave');
-        if ($empresa !== '') {
-            $q->where('empresa', $empresa);
-        }
-
-        $rows = $q->get()->map(function (CcGrupoCuenta $g) {
-            return $this->grupoPayload($g);
-        })->values()->all();
-
-        return response()->json(['grupos' => $rows]);
-    }
-
-    public function storeGrupo(Request $request): JsonResponse
-    {
-        if (! Schema::hasTable('tbl_cc_grupos_cuenta')) {
-            return response()->json(['message' => 'Falta ejecutar la migración de grupos de cuentas.'], 422);
-        }
-
-        $data = $request->validate([
-            'empresa' => 'required|string|max:40',
-            'clave' => 'nullable|string|max:40',
-            'nombre' => 'required|string|max:180',
-            'cuentas' => 'required|array|min:1',
-            'cuentas.*.codigo' => 'required|string|max:40',
-            'cuentas.*.nombre' => 'nullable|string|max:180',
-        ]);
-
-        $empresa = strtolower(trim($data['empresa']));
-        $empresasOk = ['austin', 'imsa', 'pitic', 'sydney'];
-        if (! in_array($empresa, $empresasOk, true)) {
-            return response()->json(['message' => 'Empresa no válida.'], 422);
-        }
-
-        $clave = strtoupper(trim((string) ($data['clave'] ?? '')));
-        if ($clave === '') {
-            $clave = $this->claveDesdeNombre($data['nombre'], $empresa);
-        } else {
-            $existe = CcGrupoCuenta::query()
-                ->where('empresa', $empresa)
-                ->where('clave', $clave)
-                ->exists();
-            if ($existe) {
-                return response()->json(['message' => 'Ya existe un grupo con esa clave en esta empresa.'], 422);
-            }
-        }
-
-        $grupo = DB::transaction(function () use ($empresa, $clave, $data) {
-            $grupo = CcGrupoCuenta::query()->create([
-                'empresa' => $empresa,
-                'clave' => $clave,
-                'nombre' => trim($data['nombre']),
-                'created_by' => auth()->id(),
-                'updated_by' => auth()->id(),
-            ]);
-            $this->syncGrupoCuentas($grupo, $data['cuentas'] ?? []);
-            $grupo->load('cuentas');
-
-            return $grupo;
-        });
-
-        return response()->json(['ok' => true, 'grupo' => $this->grupoPayload($grupo)]);
-    }
-
-    public function updateGrupo(Request $request, int $id): JsonResponse
-    {
-        $grupo = CcGrupoCuenta::query()->with('cuentas')->find($id);
-        if (! $grupo) {
-            return response()->json(['message' => 'Grupo no encontrado.'], 404);
-        }
-
-        $data = $request->validate([
-            'clave' => 'sometimes|required|string|max:40',
-            'nombre' => 'sometimes|required|string|max:180',
-            'cuentas' => 'sometimes|array|min:1',
-            'cuentas.*.codigo' => 'required_with:cuentas|string|max:40',
-            'cuentas.*.nombre' => 'nullable|string|max:180',
-        ]);
-
-        if (isset($data['clave'])) {
-            $clave = strtoupper(trim($data['clave']));
-            $dup = CcGrupoCuenta::query()
-                ->where('empresa', $grupo->empresa)
-                ->where('clave', $clave)
-                ->where('id', '!=', $grupo->id)
-                ->exists();
-            if ($dup) {
-                return response()->json(['message' => 'Ya existe un grupo con esa clave en esta empresa.'], 422);
-            }
-            $grupo->clave = $clave;
-        }
-        if (isset($data['nombre'])) {
-            $grupo->nombre = trim($data['nombre']);
-        }
-        $grupo->updated_by = auth()->id();
-        $grupo->save();
-
-        if (array_key_exists('cuentas', $data)) {
-            $this->syncGrupoCuentas($grupo, $data['cuentas']);
-        }
-        $grupo->load('cuentas');
-
-        return response()->json(['ok' => true, 'grupo' => $this->grupoPayload($grupo)]);
-    }
-
-    public function destroyGrupo(int $id): JsonResponse
-    {
-        $grupo = CcGrupoCuenta::query()->find($id);
-        if (! $grupo) {
-            return response()->json(['message' => 'Grupo no encontrado.'], 404);
-        }
-
-        DB::transaction(function () use ($grupo) {
-            CcGrupoCuentaItem::query()->where('grupo_id', $grupo->id)->delete();
-            $grupo->delete();
-        });
-
-        return response()->json(['ok' => true]);
-    }
-
     public function listAsignaciones(string $ciclo): JsonResponse
     {
-        if (! Schema::hasTable('tbl_cc_asignaciones')) {
+        if (! Schema::hasTable('tbl_pv_asignaciones')) {
             return response()->json(['asignaciones' => []]);
         }
 
         $empresa = request('empresa');
         $userId = (int) request('user_id', 0);
-        $q = CcAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
+        $q = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
             ->where('ciclo_codigo', $ciclo);
         if ($empresa) {
             $q->where('empresa', strtolower($empresa));
@@ -452,7 +317,7 @@ class CentrosCostosController extends Controller
             $q->where('user_id', $userId);
         }
 
-        $rows = $q->orderByDesc('id')->get()->map(function (CcAsignacion $a) {
+        $rows = $q->orderByDesc('id')->get()->map(function (PvAsignacion $a) {
             return $this->asignacionPayload($a);
         })->values()->all();
 
@@ -461,7 +326,7 @@ class CentrosCostosController extends Controller
 
     public function storeAsignacion(Request $request, string $ciclo): JsonResponse
     {
-        if (! Schema::hasTable('tbl_cc_asignaciones')) {
+        if (! Schema::hasTable('tbl_pv_asignaciones')) {
             return response()->json(['message' => 'Falta ejecutar migraciones de asignaciones.'], 422);
         }
 
@@ -471,7 +336,7 @@ class CentrosCostosController extends Controller
             'centro_codigo' => 'required|string|max:40',
             'centro_nombre' => 'nullable|string|max:180',
             'cuentas' => 'array',
-            'cuentas.*.codigo' => 'required|string|max:40',
+            'cuentas.*.codigo' => 'required|string|max:80',
             'cuentas.*.nombre' => 'nullable|string|max:180',
             'cuentas.*.agrupacion' => 'nullable|string|max:80',
             'permisos' => 'array',
@@ -479,11 +344,11 @@ class CentrosCostosController extends Controller
         ]);
 
         $empresa = strtolower($data['empresa']);
-        $asig = CcAsignacion::query()->firstOrNew([
+        $asig = PvAsignacion::query()->firstOrNew([
             'ciclo_codigo' => $ciclo,
             'empresa' => $empresa,
             'user_id' => $data['user_id'],
-            'centro_codigo' => $data['centro_codigo'],
+            'cliente_codigo' => $data['centro_codigo'],
         ]);
         $asig->centro_nombre = $data['centro_nombre'] ?? $asig->centro_nombre;
         $nuevo = ! $asig->exists;
@@ -507,7 +372,7 @@ class CentrosCostosController extends Controller
 
     public function updateAsignacion(Request $request, string $ciclo, int $id): JsonResponse
     {
-        $asig = CcAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
+        $asig = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
             ->where('ciclo_codigo', $ciclo)
             ->where('id', $id)
             ->first();
@@ -517,7 +382,7 @@ class CentrosCostosController extends Controller
 
         $data = $request->validate([
             'cuentas' => 'sometimes|array',
-            'cuentas.*.codigo' => 'required_with:cuentas|string|max:40',
+            'cuentas.*.codigo' => 'required_with:cuentas|string|max:80',
             'cuentas.*.nombre' => 'nullable|string|max:180',
             'cuentas.*.agrupacion' => 'nullable|string|max:80',
             'permisos' => 'sometimes|array',
@@ -548,17 +413,17 @@ class CentrosCostosController extends Controller
 
     public function destroyAsignacion(string $ciclo, int $id): JsonResponse
     {
-        $asig = CcAsignacion::query()->where('ciclo_codigo', $ciclo)->where('id', $id)->first();
+        $asig = PvAsignacion::query()->where('ciclo_codigo', $ciclo)->where('id', $id)->first();
         if (! $asig) {
             return response()->json(['message' => 'Asignación no encontrada'], 404);
         }
 
         DB::transaction(function () use ($asig) {
             if ($this->asigHasRolColumns() && $asig->es_principal) {
-                $extras = CcAsignacion::query()
+                $extras = PvAsignacion::query()
                     ->where('ciclo_codigo', $asig->ciclo_codigo)
                     ->where('empresa', $asig->empresa)
-                    ->where('centro_codigo', $asig->centro_codigo)
+                    ->where('cliente_codigo', $asig->centro_codigo)
                     ->where('id', '!=', $asig->id)
                     ->get();
                 foreach ($extras as $extra) {
@@ -593,7 +458,7 @@ class CentrosCostosController extends Controller
                 $this->syncPermisoUsuario($ciclo, $uid, 'importar', false);
             }
         }
-        $this->ccUserPermCache = [];
+        $this->pvUserPermCache = [];
 
         return response()->json([
             'ok' => true,
@@ -613,19 +478,19 @@ class CentrosCostosController extends Controller
      */
     protected function misAsignacionesList(string $ciclo = ''): array
     {
-        if (! Schema::hasTable('tbl_cc_asignaciones')) {
+        if (! Schema::hasTable('tbl_pv_asignaciones')) {
             return [];
         }
 
-        $q = CcAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
+        $q = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
             ->where('user_id', auth()->id());
         if ($ciclo !== '') {
             $q->where('ciclo_codigo', $ciclo);
         }
 
-        return $q->orderBy('ciclo_codigo')->orderBy('empresa')->orderBy('centro_codigo')
+        return $q->orderBy('ciclo_codigo')->orderBy('empresa')->orderBy('cliente_codigo')
             ->get()
-            ->map(function (CcAsignacion $a) {
+            ->map(function (PvAsignacion $a) {
                 return $this->asignacionPayload($a);
             })->values()->all();
     }
@@ -665,13 +530,13 @@ class CentrosCostosController extends Controller
         }
 
         if ($empresa === '' || $cc === '') {
-            return response()->json(['ok' => false, 'por_cuenta' => (object) [], 'mensaje' => 'Falta empresa o centro.'], 422);
+            return response()->json(['ok' => false, 'por_cuenta' => (object) [], 'mensaje' => 'Falta empresa o cliente.'], 422);
         }
         if ($year < 2000 || $year > 2100) {
             $year = (int) date('Y');
         }
 
-        $cacheKey = 'cc.gasto-real.' . $empresa . '.' . $cc . '.' . $year;
+        $cacheKey = 'pv.venta-real.' . $empresa . '.' . $cc . '.' . $year;
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok'])) {
             return response()->json($cached);
@@ -703,13 +568,17 @@ class CentrosCostosController extends Controller
 
         $budgets = [];
         $completados = [];
-        if (Schema::hasTable('tbl_cc_presupuestos')) {
-            $hasDone = Schema::hasColumn('tbl_cc_presupuestos', 'completado');
-            CcPresupuesto::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (CcPresupuesto $row) use (&$budgets, &$completados, $hasDone) {
+        $costos = [];
+        $ajustes = [];
+        if (Schema::hasTable('tbl_pv_proyecciones')) {
+            $hasDone = Schema::hasColumn('tbl_pv_proyecciones', 'completado');
+            PvPresupuesto::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (PvPresupuesto $row) use (&$budgets, &$completados, &$costos, &$ajustes, $hasDone) {
                 $meses = $row->meses();
                 $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
                 foreach ($this->clavesCuentaCaptura($row->empresa, $row->centro_codigo, $row->cuenta_codigo) as $key) {
                     $budgets[$key] = $meses;
+                    $costos[$key] = (float) ($row->costo_unitario ?? 0);
+                    $ajustes[$key] = (float) ($row->ajuste_pct ?? 0);
                     if ($done) {
                         $completados[$key] = true;
                     }
@@ -718,8 +587,8 @@ class CentrosCostosController extends Controller
         }
 
         $overlays = [];
-        if (Schema::hasTable('tbl_cc_captura_centros')) {
-            CcCapturaCentro::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (CcCapturaCentro $row) use (&$overlays) {
+        if (Schema::hasTable('tbl_pv_captura_clientes')) {
+            PvCapturaCentro::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (PvCapturaCentro $row) use (&$overlays) {
                 $key = strtoupper(trim((string) $row->empresa)).'|'.trim((string) $row->centro_codigo);
                 $overlays[$key] = [
                     'estado' => $row->estado ?: 'en_proceso',
@@ -733,13 +602,15 @@ class CentrosCostosController extends Controller
             'ciclo' => $ciclo,
             'budgets' => (object) $budgets,
             'completados' => (object) $completados,
+            'costos' => (object) $costos,
+            'ajustes' => (object) $ajustes,
             'overlays' => (object) $overlays,
         ]);
     }
 
     public function guardarPresupuesto(Request $request): JsonResponse
     {
-        if (! Schema::hasTable('tbl_cc_presupuestos')) {
+        if (! Schema::hasTable('tbl_pv_proyecciones')) {
             return response()->json(['message' => 'Falta ejecutar la migración de presupuestos.'], 422);
         }
 
@@ -747,11 +618,14 @@ class CentrosCostosController extends Controller
             'ciclo' => 'required|string|max:40',
             'empresa' => 'required|string|max:40',
             'centro' => 'required|string|max:40',
-            'cuenta' => 'required|string|max:40',
+            'cuenta' => 'required|string|max:80',
             'cuenta_nombre' => 'nullable|string|max:180',
             'meses' => 'required|array|size:12',
             'meses.*' => 'nullable|numeric',
             'completado' => 'nullable|boolean',
+            'ajuste_pct' => 'nullable|numeric',
+            'costo_unitario' => 'nullable|numeric',
+            'moneda' => 'nullable|string|max:8',
         ]);
 
         $ciclo = strtoupper(trim($data['ciclo']));
@@ -764,17 +638,26 @@ class CentrosCostosController extends Controller
             return response()->json(['message' => $motivo], 403);
         }
 
-        $row = CcPresupuesto::query()->firstOrNew([
+        $row = PvPresupuesto::query()->firstOrNew([
             'ciclo_codigo' => $ciclo,
             'empresa' => $empresa,
-            'centro_codigo' => $centro,
-            'cuenta_codigo' => $cuenta,
+            'cliente_codigo' => $centro,
+            'producto_codigo' => $cuenta,
         ]);
         $row->setMeses($data['meses']);
         if (! empty($data['cuenta_nombre'])) {
             $row->cuenta_nombre = $data['cuenta_nombre'];
         }
-        if (Schema::hasColumn('tbl_cc_presupuestos', 'completado')) {
+        if (array_key_exists('ajuste_pct', $data) && $data['ajuste_pct'] !== null) {
+            $row->ajuste_pct = (float) $data['ajuste_pct'];
+        }
+        if (array_key_exists('costo_unitario', $data) && $data['costo_unitario'] !== null) {
+            $row->costo_unitario = (float) $data['costo_unitario'];
+        }
+        if (! empty($data['moneda'])) {
+            $row->moneda = strtoupper(trim((string) $data['moneda']));
+        }
+        if (Schema::hasColumn('tbl_pv_proyecciones', 'completado')) {
             $filled = count(array_filter($row->meses(), function ($v) {
                 return $v !== null;
             })) === 12;
@@ -792,12 +675,14 @@ class CentrosCostosController extends Controller
             'key' => $this->capturaBudgetKey($empresa, $centro, $cuenta),
             'meses' => $row->meses(),
             'completado' => (bool) ($row->completado ?? false),
+            'ajuste_pct' => (float) ($row->ajuste_pct ?? 0),
+            'costo_unitario' => (float) ($row->costo_unitario ?? 0),
         ]);
     }
 
     public function guardarCapturaCentro(Request $request): JsonResponse
     {
-        if (! Schema::hasTable('tbl_cc_captura_centros')) {
+        if (! Schema::hasTable('tbl_pv_captura_clientes')) {
             return response()->json(['message' => 'Falta ejecutar la migración de captura.'], 422);
         }
 
@@ -817,10 +702,10 @@ class CentrosCostosController extends Controller
             return response()->json(['message' => $motivo], 403);
         }
 
-        $row = CcCapturaCentro::query()->firstOrNew([
+        $row = PvCapturaCentro::query()->firstOrNew([
             'ciclo_codigo' => $ciclo,
             'empresa' => $empresa,
-            'centro_codigo' => $centro,
+            'cliente_codigo' => $centro,
         ]);
         $row->estado = $data['estado'];
         $row->updated_by = auth()->id();
@@ -845,16 +730,16 @@ class CentrosCostosController extends Controller
 
     protected function motivoBloqueoCaptura(string $ciclo, string $empresa, string $centro): ?string
     {
-        if (! Schema::hasTable('tbl_cc_asignaciones')) {
+        if (! Schema::hasTable('tbl_pv_asignaciones')) {
             return 'No tienes permiso de captura en este centro.';
         }
 
-        $asigs = CcAsignacion::query()
+        $asigs = PvAsignacion::query()
             ->with('permisos.tipo')
             ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
             ->where('user_id', auth()->id())
             ->whereRaw('UPPER(empresa) = ?', [strtoupper($empresa)])
-            ->where('centro_codigo', $centro)
+            ->where('cliente_codigo', $centro)
             ->get();
 
         if ($asigs->isEmpty()) {
@@ -902,14 +787,14 @@ class CentrosCostosController extends Controller
         if ($key === '') {
             return 'abierto';
         }
-        if (! isset($this->ccCicloEstadoCache[$key])) {
-            $raw = Schema::hasTable('tbl_cc_ciclos')
-                ? CcCiclo::query()->whereRaw('UPPER(codigo) = ?', [$key])->value('estado')
+        if (! isset($this->pvCicloEstadoCache[$key])) {
+            $raw = Schema::hasTable('tbl_pv_ciclos')
+                ? PvCiclo::query()->whereRaw('UPPER(codigo) = ?', [$key])->value('estado')
                 : 'abierto';
-            $this->ccCicloEstadoCache[$key] = $this->normalizeCicloEstado($raw);
+            $this->pvCicloEstadoCache[$key] = $this->normalizeCicloEstado($raw);
         }
 
-        return $this->ccCicloEstadoCache[$key];
+        return $this->pvCicloEstadoCache[$key];
     }
 
     public function plantillaCaptura(Request $request)
@@ -929,12 +814,12 @@ class CentrosCostosController extends Controller
         $built = $this->filasPlantillaCaptura($ciclo);
         $filename = 'plantilla_captura_'.$ciclo.'_'.now()->format('Ymd').'.xlsx';
 
-        return Excel::download(new CcCapturaPlantillaExport($built['headings'], $built['rows'], $built['captured'] ?? []), $filename);
+        return Excel::download(new PvCapturaPlantillaExport($built['headings'], $built['rows'], $built['captured'] ?? []), $filename);
     }
 
     public function importarCaptura(Request $request): JsonResponse
     {
-        if (! Schema::hasTable('tbl_cc_presupuestos')) {
+        if (! Schema::hasTable('tbl_pv_proyecciones')) {
             return response()->json(['message' => 'Falta ejecutar la migración de presupuestos.'], 422);
         }
 
@@ -1029,17 +914,17 @@ class CentrosCostosController extends Controller
                 }
                 $meses = array_slice($meses, 0, 12);
 
-                $rec = CcPresupuesto::query()->firstOrNew([
+                $rec = PvPresupuesto::query()->firstOrNew([
                     'ciclo_codigo' => $ciclo,
                     'empresa' => $empresa,
-                    'centro_codigo' => $centro,
-                    'cuenta_codigo' => $info['cuenta'],
+                    'cliente_codigo' => $centro,
+                    'producto_codigo' => $info['cuenta'],
                 ]);
                 $rec->setMeses($meses);
                 if (! empty($info['nombre'])) {
                     $rec->cuenta_nombre = $info['nombre'];
                 }
-                if (Schema::hasColumn('tbl_cc_presupuestos', 'completado')) {
+                if (Schema::hasColumn('tbl_pv_proyecciones', 'completado')) {
                     $rec->completado = $this->mesesTodosLlenos($meses);
                 }
                 $rec->updated_by = auth()->id();
@@ -1085,22 +970,22 @@ class CentrosCostosController extends Controller
     protected function filasPlantillaCaptura(string $ciclo): array
     {
         $meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-        $headings = array_merge(['empresa', 'centro_de_costo', 'centro_nombre', 'cuenta', 'cuenta_nombre'], $meses);
+        $headings = array_merge(['empresa', 'cliente', 'cliente_nombre', 'producto', 'producto_nombre'], $meses);
         $rows = [];
         $captured = [];
 
-        $asigs = CcAsignacion::query()->with(['cuentas', 'permisos.tipo'])
+        $asigs = PvAsignacion::query()->with(['cuentas', 'permisos.tipo'])
             ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
             ->where('user_id', auth()->id())
             ->orderBy('empresa')
-            ->orderBy('centro_codigo')
+            ->orderBy('cliente_codigo')
             ->get();
 
         $pptoMap = [];
-        $hasDone = Schema::hasTable('tbl_cc_presupuestos') && Schema::hasColumn('tbl_cc_presupuestos', 'completado');
-        if (Schema::hasTable('tbl_cc_presupuestos')) {
-            CcPresupuesto::query()->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])->get()
-                ->each(function (CcPresupuesto $row) use (&$pptoMap, $hasDone) {
+        $hasDone = Schema::hasTable('tbl_pv_proyecciones') && Schema::hasColumn('tbl_pv_proyecciones', 'completado');
+        if (Schema::hasTable('tbl_pv_proyecciones')) {
+            PvPresupuesto::query()->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])->get()
+                ->each(function (PvPresupuesto $row) use (&$pptoMap, $hasDone) {
                     $info = [
                         'meses' => $row->meses(),
                         'completado' => $hasDone && ! empty($row->completado),
@@ -1287,7 +1172,7 @@ class CentrosCostosController extends Controller
     {
         $out = [];
         $estado = $this->cicloEstado($ciclo);
-        $asigs = CcAsignacion::query()->with(['cuentas', 'permisos.tipo'])
+        $asigs = PvAsignacion::query()->with(['cuentas', 'permisos.tipo'])
             ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
             ->where('user_id', auth()->id())
             ->get();
@@ -1331,9 +1216,9 @@ class CentrosCostosController extends Controller
         $maxPages = 20;
 
         for ($page = 1; $page <= $maxPages; $page++) {
-            $res = $api->gastoReal([
-                'Empresa' => $empresa,
-                'CC' => $cc,
+            $res = $api->ventas([
+                'Empresa' => strtoupper($empresa),
+                'CardCode' => $cc,
                 'year' => $year,
                 'fecha_desde' => $year . '-01-01',
                 'fecha_hasta' => $year . '-12-31',
@@ -1343,7 +1228,7 @@ class CentrosCostosController extends Controller
 
             if (empty($res['ok'])) {
                 if ($page === 1) {
-                    $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
+                    $mensaje = $res['message'] ?? 'Sin conexión a ventas SAP';
                 }
                 break;
             }
@@ -1359,15 +1244,15 @@ class CentrosCostosController extends Controller
                 if (! is_array($row)) {
                     continue;
                 }
-                $rowCc = (string) ($row['CC'] ?? $row['PrcCode'] ?? '');
-                if (! $this->mismoCentroCodigo($rowCc, $cc)) {
+                $rowCc = (string) ($row['CardCode'] ?? $row['Cardcode'] ?? $row['CC'] ?? '');
+                if ($cc !== '' && ! $this->mismoCentroCodigo($rowCc, $cc)) {
                     continue;
                 }
-                $codigo = trim((string) ($row['Cuenta'] ?? $row['FormatCode'] ?? $row['AcctCode'] ?? ''));
+                $codigo = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
                 if ($codigo === '') {
                     continue;
                 }
-                $fecha = (string) ($row['Fecha'] ?? $row['fecha'] ?? '');
+                $fecha = (string) ($row['DocDate'] ?? $row['Fecha'] ?? $row['fecha'] ?? $row['TaxDate'] ?? '');
                 $ts = strtotime(substr($fecha, 0, 19));
                 if ($ts && (int) date('Y', $ts) !== $year) {
                     continue;
@@ -1376,19 +1261,41 @@ class CentrosCostosController extends Controller
                 if ($mes < 0) {
                     continue;
                 }
-                $importe = (float) ($row['Importe'] ?? $row['importe'] ?? 0);
-                $nombre = trim((string) ($row['DescCuenta'] ?? $row['AcctName'] ?? ''));
+                $qty = $this->cantidadVenta($row);
+                $importe = $this->importeVenta($row, ['LineTotal', 'linetotal', 'GTotal']);
+                $importeUsd = $this->importeVenta($row, ['LineTotalUSD', 'LineTotalUsd', 'LineTotalFC', 'TotalFrgn']);
+                $price = $this->numeroVenta($row, ['Price', 'Precio', 'UnitPrice', 'PriceBefDi']);
+                $costo = $this->costoVenta($row);
+                $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
                 $key = $this->codigoCuentaKey($codigo);
                 if (! isset($porCuenta[$key])) {
                     $porCuenta[$key] = [
                         'codigo' => $codigo,
                         'nombre' => $nombre,
                         'gasto' => array_fill(0, 12, 0.0),
+                        'importe' => array_fill(0, 12, 0.0),
+                        'importe_usd' => array_fill(0, 12, 0.0),
+                        'precio_w' => array_fill(0, 12, 0.0),
+                        'precio_q' => array_fill(0, 12, 0.0),
+                        'costo' => $costo,
                     ];
                 } elseif ($nombre !== '' && $porCuenta[$key]['nombre'] === '') {
                     $porCuenta[$key]['nombre'] = $nombre;
                 }
-                $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $importe, 2);
+                $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $qty, 4);
+                $porCuenta[$key]['importe'][$mes] = round($porCuenta[$key]['importe'][$mes] + $importe, 2);
+                $porCuenta[$key]['importe_usd'][$mes] = round($porCuenta[$key]['importe_usd'][$mes] + $importeUsd, 2);
+                $peso = abs($qty);
+                if ($price == 0.0 && abs($qty) > 0.0001) {
+                    $price = $importe / $qty;
+                }
+                if ($peso > 0 && $price != 0.0) {
+                    $porCuenta[$key]['precio_w'][$mes] += $peso * $price;
+                    $porCuenta[$key]['precio_q'][$mes] += $peso;
+                }
+                if ($costo > 0) {
+                    $porCuenta[$key]['costo'] = $costo;
+                }
             }
 
             $pag = $this->paginacionDe($body);
@@ -1400,6 +1307,19 @@ class CentrosCostosController extends Controller
                 break;
             }
         }
+
+        foreach ($porCuenta as &$item) {
+            $precio = [];
+            for ($m = 0; $m < 12; $m++) {
+                $den = (float) ($item['precio_q'][$m] ?? 0);
+                $precio[$m] = $den > 0
+                    ? round(((float) $item['precio_w'][$m]) / $den, 4)
+                    : 0.0;
+            }
+            $item['precio'] = $precio;
+            unset($item['precio_w'], $item['precio_q']);
+        }
+        unset($item);
 
         return [
             'ok' => $ok,
@@ -1499,8 +1419,8 @@ class CentrosCostosController extends Controller
             'anioGasto' => 2026,
             'anioPresupuesto' => 2027,
             'sapBase' => url('/Sistemas/AutinApi'),
-            'catalogoUrl' => route('centros.catalogo'),
-            'gastoUrl' => route('centros.api.gasto_real'),
+            'catalogoUrl' => route('pv.catalogo'),
+            'gastoUrl' => route('pv.api.gasto_real'),
             'sapOk' => false,
             'sapMensaje' => null,
             'empresasSap' => [],
@@ -1511,8 +1431,8 @@ class CentrosCostosController extends Controller
             'empresasLocales' => $empresasLocales,
             'ciclos' => $this->ciclosPayload(),
             'periodoDefault' => [
-                'codigo' => 'BGT-2027',
-                'nombre' => 'Presupuesto 2027',
+                'codigo' => 'PRY-2027',
+                'nombre' => 'Proyección de ventas 2027',
                 'anioReferencia' => 2026,
                 'anio' => 2027,
                 'inicio' => '2026-10-01',
@@ -1520,7 +1440,7 @@ class CentrosCostosController extends Controller
                 'capturaHasta' => '2026-10-31',
                 'revisionDesde' => '2026-11-01',
                 'estado' => 'abierto',
-                'inflacion' => 4.0,
+                'inflacion' => 0,
                 'tipoCambio' => 20.0,
                 'observaciones' => '',
                 'fuente' => 'Informe Banxico',
@@ -1533,117 +1453,422 @@ class CentrosCostosController extends Controller
      */
     protected function cargarCatalogo(AutinApiClient $api, int $perPage = 80, ?string $empresa = null): array
     {
-        $centros = [];
-        $cuentas = [];
-        $agrupaciones = [];
-        $empresas = [];
-        $sapOk = false;
-        $sapMensaje = null;
+        $year = (int) date('Y');
+        $emp = $empresa ? strtolower($empresa) : null;
+        $pack = $this->cargarVentasCatalogo($emp, $year, max(8, (int) ceil($perPage / 25)));
 
-        try {
-            $filtrosCentro = ['per_page' => $perPage, 'page' => 1];
-            $filtrosCuenta = ['per_page' => min($perPage, 120), 'page' => 1];
-            if ($empresa) {
-                $filtrosCentro['Empresa'] = strtoupper($empresa);
-                $filtrosCuenta['Empresa'] = strtoupper($empresa);
-            }
+        return [
+            'centros' => $pack['clientes'],
+            'cuentas' => $pack['productos'],
+            'agrupaciones' => [],
+            'empresas' => $pack['empresas'],
+            'sapOk' => $pack['ok'],
+            'sapMensaje' => $pack['mensaje'],
+        ];
+    }
 
-            $resCentros = $api->centrosCostoGlobal($filtrosCentro);
-            $resCuentas = $api->cuentasGlobal($filtrosCuenta);
-
-            if (! empty($resCentros['ok'])) {
-                $sapOk = true;
-                $centros = $this->normalizarCentros($resCentros['body']['data'] ?? []);
-            } else {
-                $sapMensaje = $resCentros['message'] ?? 'Sin conexión a catálogo SAP';
-            }
-
-            if (! empty($resCuentas['ok'])) {
-                $sapOk = true;
-                $cuentas = $this->normalizarCuentas($resCuentas['body']['data'] ?? []);
-            } elseif (! $sapMensaje) {
-                $sapMensaje = $resCuentas['message'] ?? null;
-            }
-
-            $empresas = collect(array_merge(
-                array_column($centros, 'empresa'),
-                array_column($cuentas, 'empresa')
-            ))
-                ->filter()
-                ->unique()
-                ->values()
-                ->all();
-
-            $db = strtolower((string) ($empresa ?: $api->defaultDatabase()));
-            $resGrupos = $api->index('agrupaciones-cuentas', ['per_page' => 50], $db);
-            if (! empty($resGrupos['ok'])) {
-                $agrupaciones = $this->normalizarAgrupaciones($resGrupos['body']['data'] ?? []);
-            }
-        } catch (Throwable $e) {
-            $sapMensaje = $e->getMessage();
+    /**
+     * @return array<int, string>
+     */
+    protected function empresasFiltroVentas(string $empresa): array
+    {
+        $empresa = strtolower(trim($empresa));
+        $out = [strtoupper($empresa)];
+        if ($empresa === 'imsa') {
+            $out[] = 'BACHIMBA';
         }
 
-        return compact('centros', 'cuentas', 'agrupaciones', 'empresas', 'sapOk', 'sapMensaje');
+        return $out;
+    }
+
+    /**
+     * Líneas de OINV + ORIN (AutinApi /ventas).
+     *
+     * @param  array<string, mixed>  $extra
+     * @return array{ok: bool, rows: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function filasVentasEmpresa(string $empresa, int $year, array $extra = []): array
+    {
+        $api = app(AutinApiClient::class);
+        $rows = [];
+        $ok = false;
+        $mensaje = null;
+        foreach ($this->empresasFiltroVentas($empresa) as $empFiltro) {
+            $pack = $api->ventasTodasPaginas(array_merge([
+                'year' => $year,
+                'Empresa' => $empFiltro,
+            ], $extra), 30, 6);
+            if (empty($pack['ok'])) {
+                if (! $ok) {
+                    $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
+                }
+                continue;
+            }
+            $ok = true;
+            foreach ($pack['rows'] as $row) {
+                if (is_array($row)) {
+                    $rows[] = $row;
+                }
+            }
+        }
+
+        return ['ok' => $ok, 'rows' => $rows, 'mensaje' => $mensaje];
+    }
+
+    /**
+     * Productos (ItemCode / ItemName) vendidos a un cliente (CardCode) en OINV + ORIN.
+     *
+     * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarProductosCliente(string $empresa, string $cliente, int $year): array
+    {
+        $empresa = strtolower(trim($empresa));
+        $cliente = trim($cliente);
+        if ($year < 2000) {
+            $year = (int) date('Y');
+        }
+        if ($cliente === '') {
+            return [
+                'ok' => true,
+                'productos' => [],
+                'mensaje' => 'Elige un cliente para ver sus productos (ItemName).',
+            ];
+        }
+
+        $cacheKey = 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['productos'])) {
+            return $cached;
+        }
+
+        $pack = $this->filasVentasEmpresa($empresa, $year, ['CardCode' => $cliente]);
+        $map = [];
+        foreach ($pack['rows'] as $row) {
+            $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+            if ($item === '') {
+                continue;
+            }
+            $itemName = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? $row['Itemname'] ?? ''));
+            $linea = trim((string) ($row['U_LINEA_QV'] ?? $row['Linea'] ?? $row['linea'] ?? ''));
+            $key = strtoupper($item);
+            if (! isset($map[$key])) {
+                $map[$key] = [
+                    'codigo' => $item,
+                    'nombre' => $itemName !== '' ? $itemName : $item,
+                    'empresa' => $empresa,
+                    'grupo' => $linea,
+                    'grupo_id' => $linea,
+                    'costo' => $this->costoVenta($row),
+                ];
+            } else {
+                $costo = $this->costoVenta($row);
+                if ($costo > 0) {
+                    $map[$key]['costo'] = $costo;
+                }
+                if ($map[$key]['nombre'] === $item && $itemName !== '') {
+                    $map[$key]['nombre'] = $itemName;
+                }
+            }
+        }
+
+        $productos = array_values($map);
+        usort($productos, function ($a, $b) {
+            return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
+                ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
+        });
+
+        $payload = [
+            'ok' => ! empty($pack['ok']),
+            'productos' => $productos,
+            'mensaje' => ! empty($pack['ok'])
+                ? ($productos ? null : 'Este cliente no tiene productos en ventas '.$year)
+                : ($pack['mensaje'] ?? 'Sin productos SAP'),
+        ];
+        if (! empty($payload['ok']) && $productos) {
+            Cache::put($cacheKey, $payload, 1800);
+        }
+
+        return $payload;
     }
 
     /**
      * @return array{ok: bool, cuentas: array<int, array<string, mixed>>, agrupaciones: array<int, array<string, mixed>>, mensaje: string|null}
      */
-    protected function cargarCuentasEmpresa(string $empresa, bool $todas = false, string $groupMask = ''): array
+    protected function cargarCuentasEmpresa(string $empresa, bool $todas = false, string $groupMask = '', string $cliente = '', int $year = 0): array
     {
+        if ($year < 2000) {
+            $year = (int) date('Y');
+        }
+        $pack = $this->cargarProductosCliente($empresa, $cliente, $year);
+
+        return [
+            'ok' => $pack['ok'],
+            'cuentas' => $pack['productos'],
+            'agrupaciones' => [],
+            'mensaje' => $pack['mensaje'],
+        ];
+    }
+
+    /**
+     * Clientes SAP de la empresa (CardCode únicos en ventas del año de referencia).
+     *
+     * @return array{ok: bool, clientes: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarClientesEmpresa(string $empresa, int $year): array
+    {
+        $empresa = strtolower(trim($empresa));
+        if ($year < 2000) {
+            $year = (int) date('Y');
+        }
+        $cacheKey = 'pv.clientes.'.$empresa.'.'.$year;
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['clientes'])) {
+            return $cached;
+        }
+
+        $empresasFiltro = $this->empresasFiltroVentas($empresa);
         $api = app(AutinApiClient::class);
-        $cuentas = [];
+        $map = [];
         $ok = false;
         $mensaje = null;
-        $maxPages = $todas ? 40 : 1;
+
+        foreach ($empresasFiltro as $empFiltro) {
+            $pack = $api->ventasTodasPaginas([
+                'year' => $year,
+                'Empresa' => $empFiltro,
+            ], 30, 6);
+            if (empty($pack['ok'])) {
+                if (! $ok) {
+                    $mensaje = $pack['message'] ?? 'Sin clientes SAP';
+                }
+                continue;
+            }
+            $ok = true;
+            foreach ($pack['rows'] as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
+                if ($card === '') {
+                    continue;
+                }
+                $name = trim((string) ($row['CardName'] ?? $row['Cardname'] ?? ''));
+                $key = strtoupper($card);
+                if (! isset($map[$key])) {
+                    $map[$key] = [
+                        'codigo' => $card,
+                        'nombre' => $name !== '' ? $name : $card,
+                        'empresa' => $empresa,
+                        'activo' => true,
+                        'departamento' => '',
+                    ];
+                } elseif (($map[$key]['nombre'] === $map[$key]['codigo']) && $name !== '') {
+                    $map[$key]['nombre'] = $name;
+                }
+            }
+        }
+
+        $clientes = array_values($map);
+        usort($clientes, function ($a, $b) {
+            return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
+                ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
+        });
+
+        $payload = [
+            'ok' => $ok,
+            'clientes' => $clientes,
+            'mensaje' => $ok ? ($clientes ? null : 'No hay clientes con venta en '.$year) : $mensaje,
+        ];
+        if ($ok && $clientes) {
+            Cache::put($cacheKey, $payload, 1800);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @return array{ok: bool, clientes: array<int, array<string, mixed>>, productos: array<int, array<string, mixed>>, agrupaciones: array<int, array<string, mixed>>, empresas: array<int, string>, mensaje: string|null}
+     */
+    protected function cargarVentasCatalogo(?string $empresa, int $year, int $maxPages = 12, string $cliente = ''): array
+    {
+        $cacheKey = 'pv.cat.'.$year.'.'.strtolower((string) $empresa).'.'.md5($cliente).'.'.$maxPages;
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['ok'])) {
+            return $cached;
+        }
+
+        $api = app(AutinApiClient::class);
+        $clientes = [];
+        $productos = [];
+        $empresas = [];
+        $ok = false;
+        $mensaje = null;
         $perPage = 200;
 
         for ($page = 1; $page <= $maxPages; $page++) {
-            $filtros = ['per_page' => $perPage, 'page' => $page];
-            if ($groupMask !== '') {
-                $filtros['GroupMask'] = $groupMask;
+            $filtros = [
+                'year' => $year,
+                'per_page' => $perPage,
+                'page' => $page,
+            ];
+            if ($empresa) {
+                $filtros['Empresa'] = strtoupper($empresa);
             }
-            $res = $api->index('cuentas', $filtros, $empresa);
+            if ($cliente !== '') {
+                $filtros['CardCode'] = $cliente;
+            }
+            $res = $api->ventas($filtros);
             if (empty($res['ok'])) {
                 if ($page === 1) {
-                    $mensaje = $res['message'] ?? 'Sin conexión a catálogo SAP';
+                    $mensaje = $res['message'] ?? 'Sin conexión a ventas SAP';
                 }
                 break;
             }
             $ok = true;
             $body = is_array($res['body'] ?? null) ? $res['body'] : [];
-            $batch = $this->normalizarCuentas($body['data'] ?? []);
-            if (! $batch) {
+            $rows = $body['data'] ?? [];
+            if (! is_array($rows) || ! $rows) {
                 break;
             }
-            $cuentas = array_merge($cuentas, $batch);
-            $pag = $this->paginacionDe($body);
-            $lastPage = $pag['last_page'];
-            if ($lastPage > 0 && $page >= $lastPage) {
-                break;
-            }
-            if ($lastPage < 1 && count($batch) < $perPage) {
-                break;
-            }
-        }
-
-        $agrupaciones = $this->cargarAgrupacionesEmpresa($api, $empresa);
-        $cuentas = $this->resolverNombresGrupoCuentas($cuentas, $agrupaciones);
-        if ($groupMask !== '') {
-            foreach ($cuentas as &$cta) {
-                if (trim((string) ($cta['grupo_id'] ?? '')) === '') {
-                    $cta['grupo_id'] = $groupMask;
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $emp = strtolower(trim((string) ($row['Empresa'] ?? $row['empresa'] ?? $empresa ?? '')));
+                if ($emp !== '') {
+                    $empresas[$emp] = $emp;
+                }
+                $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
+                $cardName = trim((string) ($row['CardName'] ?? $row['Cardname'] ?? ''));
+                if ($card !== '') {
+                    $ck = strtoupper($emp).'|'.strtoupper($card);
+                    if (! isset($clientes[$ck])) {
+                        $clientes[$ck] = [
+                            'codigo' => $card,
+                            'nombre' => $cardName !== '' ? $cardName : $card,
+                            'empresa' => $emp,
+                            'activo' => true,
+                            'departamento' => '',
+                        ];
+                    }
+                }
+                $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+                if ($item === '') {
+                    continue;
+                }
+                $itemName = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? $row['Itemname'] ?? ''));
+                $linea = trim((string) ($row['U_LINEA_QV'] ?? $row['Linea'] ?? $row['linea'] ?? ''));
+                $pk = strtoupper($emp).'|'.strtoupper($item);
+                if (! isset($productos[$pk])) {
+                    $productos[$pk] = [
+                        'codigo' => $item,
+                        'nombre' => $itemName !== '' ? $itemName : $item,
+                        'empresa' => $emp,
+                        'grupo' => $linea,
+                        'grupo_id' => $linea,
+                        'costo' => $this->costoVenta($row),
+                    ];
+                } else {
+                    $costo = $this->costoVenta($row);
+                    if ($costo > 0) {
+                        $productos[$pk]['costo'] = $costo;
+                    }
+                    if ($productos[$pk]['nombre'] === $item && $itemName !== '') {
+                        $productos[$pk]['nombre'] = $itemName;
+                    }
                 }
             }
-            unset($cta);
+            $pag = $this->paginacionDe($body);
+            if ($pag['last_page'] > 0 && $page >= $pag['last_page']) {
+                break;
+            }
+            if ($pag['last_page'] < 1 && count($rows) < $perPage) {
+                break;
+            }
         }
 
-        return [
+        $payload = [
             'ok' => $ok,
-            'cuentas' => $cuentas,
-            'agrupaciones' => $agrupaciones,
+            'clientes' => array_values($clientes),
+            'productos' => array_values($productos),
+            'agrupaciones' => [],
+            'empresas' => array_values($empresas),
             'mensaje' => $mensaje,
         ];
+        if ($ok) {
+            Cache::put($cacheKey, $payload, 600);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    protected function cantidadVenta(array $row): float
+    {
+        $qty = $this->numeroVenta($row, ['Quantity', 'Cantidad', 'Qty', 'quantity']);
+        if ($this->signoDocVenta($row) < 0) {
+            return -1 * abs($qty);
+        }
+
+        return $qty;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @param  array<int, string>  $keys
+     */
+    protected function importeVenta(array $row, array $keys): float
+    {
+        $v = $this->numeroVenta($row, $keys);
+        if ($this->signoDocVenta($row) < 0) {
+            return -1 * abs($v);
+        }
+
+        return $v;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    protected function signoDocVenta(array $row): float
+    {
+        $tipo = strtoupper(trim((string) ($row['Tipo_Doc'] ?? $row['DocType'] ?? $row['tipo'] ?? 'VENTA')));
+        if (in_array($tipo, ['NC', 'NOTA', 'CREDIT', 'C'], true)) {
+            return -1.0;
+        }
+
+        return 1.0;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @param  array<int, string>  $keys
+     */
+    protected function numeroVenta(array $row, array $keys): float
+    {
+        foreach ($keys as $k) {
+            if (isset($row[$k]) && is_numeric($row[$k])) {
+                return (float) $row[$k];
+            }
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    protected function costoVenta(array $row): float
+    {
+        foreach (['StockPrice', 'Costo', 'costo', 'GrossBuyPrice', 'Price', 'Precio', 'UnitPrice'] as $k) {
+            if (isset($row[$k]) && is_numeric($row[$k]) && (float) $row[$k] != 0.0) {
+                return (float) $row[$k];
+            }
+        }
+
+        return 0.0;
     }
 
     /**
@@ -1739,25 +1964,6 @@ class CentrosCostosController extends Controller
         return array_values($byId);
     }
 
-    protected function claveDesdeNombre(string $nombre, string $empresa): string
-    {
-        $base = strtoupper((string) Str::slug($nombre, '_'));
-        $base = trim($base, '_');
-        if ($base === '') {
-            $base = 'GRP';
-        }
-        $base = substr($base, 0, 36);
-        $clave = $base;
-        $n = 2;
-        while (CcGrupoCuenta::query()->where('empresa', $empresa)->where('clave', $clave)->exists()) {
-            $suffix = '_' . $n;
-            $clave = substr($base, 0, 40 - strlen($suffix)) . $suffix;
-            $n++;
-        }
-
-        return $clave;
-    }
-
     protected function codigoCuentaVisible(string $codigo): string
     {
         $s = trim($codigo);
@@ -1819,46 +2025,6 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * @param  array<int, array<string, mixed>>  $cuentas
-     */
-    protected function syncGrupoCuentas(CcGrupoCuenta $grupo, array $cuentas): void
-    {
-        CcGrupoCuentaItem::query()->where('grupo_id', $grupo->id)->delete();
-        $seen = [];
-        foreach ($cuentas as $cta) {
-            $codigo = trim((string) ($cta['codigo'] ?? $cta['cuenta_codigo'] ?? ''));
-            if ($codigo === '' || isset($seen[$codigo])) {
-                continue;
-            }
-            $seen[$codigo] = true;
-            CcGrupoCuentaItem::query()->create([
-                'grupo_id' => $grupo->id,
-                'cuenta_codigo' => $codigo,
-                'cuenta_nombre' => $cta['nombre'] ?? $cta['cuenta_nombre'] ?? null,
-            ]);
-        }
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    protected function grupoPayload(CcGrupoCuenta $g): array
-    {
-        return [
-            'id' => $g->id,
-            'empresa' => $g->empresa,
-            'clave' => $g->clave,
-            'nombre' => $g->nombre,
-            'cuentas' => $g->cuentas->map(function (CcGrupoCuentaItem $c) {
-                return [
-                    'codigo' => $c->cuenta_codigo,
-                    'nombre' => $c->cuenta_nombre,
-                ];
-            })->values()->all(),
-        ];
-    }
-
-    /**
      * @param  array<int, mixed>  $rows
      * @return array<int, array<string, mixed>>
      */
@@ -1869,8 +2035,8 @@ class CentrosCostosController extends Controller
             if (! is_array($row)) {
                 continue;
             }
-            $codigo = (string) ($row['PrcCode'] ?? $row['CC'] ?? $row['OcrCode'] ?? $row['codigo'] ?? '');
-            $nombre = (string) ($row['PrcName'] ?? $row['NOMBRE'] ?? $row['nombre'] ?? '');
+            $codigo = (string) ($row['CardCode'] ?? $row['PrcCode'] ?? $row['CC'] ?? $row['OcrCode'] ?? $row['codigo'] ?? '');
+            $nombre = (string) ($row['CardName'] ?? $row['PrcName'] ?? $row['NOMBRE'] ?? $row['nombre'] ?? '');
             if ($codigo === '' && $nombre === '') {
                 continue;
             }
@@ -1897,23 +2063,19 @@ class CentrosCostosController extends Controller
             if (! is_array($row)) {
                 continue;
             }
-            $format = trim((string) ($row['FormatCode'] ?? $row['CUENTA'] ?? $row['Cuenta'] ?? ''));
-            $acct = trim((string) ($row['AcctCode'] ?? $row['codigo'] ?? ''));
-            if ($format !== '' && stripos($format, 'SYS') === false) {
-                $codigo = $format;
-            } else {
-                $codigo = $this->codigoCuentaVisible($format !== '' ? $format : $acct);
-            }
-            $nombre = (string) ($row['AcctName'] ?? $row['NOMBRE'] ?? $row['nombre'] ?? '');
+            $codigo = trim((string) ($row['ItemCode'] ?? $row['FormatCode'] ?? $row['CUENTA'] ?? $row['Cuenta'] ?? $row['AcctCode'] ?? $row['codigo'] ?? ''));
+            $nombre = (string) ($row['ItemName'] ?? $row['Dscription'] ?? $row['AcctName'] ?? $row['NOMBRE'] ?? $row['nombre'] ?? '');
             if ($codigo === '' && $nombre === '') {
                 continue;
             }
+            $linea = (string) ($row['U_LINEA_QV'] ?? $row['GroupName'] ?? $row['agrupacion'] ?? $row['grupo'] ?? '');
             $out[] = [
                 'codigo' => $codigo,
                 'nombre' => $nombre,
                 'empresa' => (string) ($row['Empresa'] ?? $row['empresa'] ?? ''),
-                'grupo' => (string) ($row['GroupName'] ?? $row['agrupacion'] ?? $row['grupo'] ?? ''),
-                'grupo_id' => (string) ($row['GroupMask'] ?? $row['grupo_id'] ?? ''),
+                'grupo' => $linea,
+                'grupo_id' => (string) ($row['GroupMask'] ?? $row['grupo_id'] ?? $linea),
+                'costo' => $this->costoVenta($row),
             ];
         }
 
@@ -1998,7 +2160,7 @@ class CentrosCostosController extends Controller
     protected function permisosCatalogo(): array
     {
         $copy = $this->permisosCatalogoCopy();
-        if (! Schema::hasTable('tbl_cc_tipos_permiso')) {
+        if (! Schema::hasTable('tbl_pv_tipos_permiso')) {
             return [
                 ['clave' => 'capturar', 'nombre' => 'Capturar', 'descripcion' => $copy['capturar']],
                 ['clave' => 'editar', 'nombre' => 'Editar', 'descripcion' => $copy['editar']],
@@ -2007,7 +2169,7 @@ class CentrosCostosController extends Controller
             ];
         }
 
-        return CcTipoPermiso::query()->orderBy('orden')->get(['id', 'clave', 'nombre', 'descripcion'])
+        return PvTipoPermiso::query()->orderBy('orden')->get(['id', 'clave', 'nombre', 'descripcion'])
             ->map(function ($p) use ($copy) {
                 $row = $p->toArray();
                 $clave = (string) ($row['clave'] ?? '');
@@ -2025,10 +2187,10 @@ class CentrosCostosController extends Controller
     protected function permisosCatalogoCopy(): array
     {
         return [
-            'capturar' => 'Puede capturar presupuesto mientras el budget esté Abierto',
-            'editar' => 'Puede modificar montos cuando el ciclo está En revisión o Cerrado',
+            'capturar' => 'Puede capturar proyección mientras el ciclo esté Abierto',
+            'editar' => 'Puede modificar cantidades cuando el ciclo está En revisión o Cerrado',
             'revisar' => 'Puede consultar y revisar sin editar',
-            'importar' => 'Puede descargar plantilla e importar presupuestos de todos sus centros. Aplica al usuario en todo el ciclo.',
+            'importar' => 'Puede descargar plantilla e importar proyecciones de todos sus clientes. Aplica al usuario en todo el ciclo.',
         ];
     }
 
@@ -2050,10 +2212,10 @@ class CentrosCostosController extends Controller
     protected function userIdsConImportar(string $ciclo): array
     {
         $ids = [];
-        if (Schema::hasTable('tbl_cc_usuario_permisos') && Schema::hasTable('tbl_cc_tipos_permiso')) {
-            $tipo = CcTipoPermiso::query()->where('clave', 'importar')->first();
+        if (Schema::hasTable('tbl_pv_usuario_permisos') && Schema::hasTable('tbl_pv_tipos_permiso')) {
+            $tipo = PvTipoPermiso::query()->where('clave', 'importar')->first();
             if ($tipo) {
-                $ids = CcUsuarioPermiso::query()
+                $ids = PvUsuarioPermiso::query()
                     ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
                     ->where('permiso_id', $tipo->id)
                     ->pluck('user_id')
@@ -2078,8 +2240,8 @@ class CentrosCostosController extends Controller
         }
 
         $centros = [];
-        if (Schema::hasTable('tbl_cc_asignaciones')) {
-            $centros = CcAsignacion::query()
+        if (Schema::hasTable('tbl_pv_asignaciones')) {
+            $centros = PvAsignacion::query()
                 ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
                 ->whereIn('user_id', $ids)
                 ->selectRaw('user_id, count(*) as total')
@@ -2103,19 +2265,19 @@ class CentrosCostosController extends Controller
     {
         static $has = null;
         if ($has === null) {
-            $has = Schema::hasTable('tbl_cc_asignaciones')
-                && Schema::hasColumn('tbl_cc_asignaciones', 'es_principal');
+            $has = Schema::hasTable('tbl_pv_asignaciones')
+                && Schema::hasColumn('tbl_pv_asignaciones', 'es_principal');
         }
 
         return $has;
     }
 
-    protected function buscarPrincipal(string $ciclo, string $empresa, string $centro): ?CcAsignacion
+    protected function buscarPrincipal(string $ciclo, string $empresa, string $centro): ?PvAsignacion
     {
-        $q = CcAsignacion::query()
+        $q = PvAsignacion::query()
             ->where('ciclo_codigo', $ciclo)
             ->where('empresa', $empresa)
-            ->where('centro_codigo', $centro);
+            ->where('cliente_codigo', $centro);
         if ($this->asigHasRolColumns()) {
             $q->where('es_principal', true);
         }
@@ -2123,14 +2285,14 @@ class CentrosCostosController extends Controller
         return $q->orderBy('id')->first();
     }
 
-    protected function principalDeAsignacion(CcAsignacion $asig): CcAsignacion
+    protected function principalDeAsignacion(PvAsignacion $asig): PvAsignacion
     {
         if ($this->asigHasRolColumns()) {
             if ($asig->es_principal) {
                 return $asig;
             }
             if ($asig->parent_id) {
-                $p = CcAsignacion::query()->find($asig->parent_id);
+                $p = PvAsignacion::query()->find($asig->parent_id);
                 if ($p) {
                     return $p;
                 }
@@ -2144,15 +2306,15 @@ class CentrosCostosController extends Controller
     /**
      * @param  array<int, array<string, mixed>>  $cuentas
      */
-    protected function syncCuentas(CcAsignacion $asig, array $cuentas): void
+    protected function syncCuentas(PvAsignacion $asig, array $cuentas): void
     {
-        CcAsignacionCuenta::query()->where('asignacion_id', $asig->id)->delete();
+        PvAsignacionProducto::query()->where('asignacion_id', $asig->id)->delete();
         foreach ($cuentas as $cta) {
-            CcAsignacionCuenta::query()->create([
+            PvAsignacionProducto::query()->create([
                 'asignacion_id' => $asig->id,
-                'cuenta_codigo' => $cta['codigo'] ?? $cta['cuenta_codigo'] ?? '',
-                'cuenta_nombre' => $cta['nombre'] ?? $cta['cuenta_nombre'] ?? null,
-                'agrupacion' => $cta['agrupacion'] ?? null,
+                'producto_codigo' => $cta['codigo'] ?? $cta['cuenta_codigo'] ?? '',
+                'producto_nombre' => $cta['nombre'] ?? $cta['cuenta_nombre'] ?? null,
+                'linea' => $cta['agrupacion'] ?? null,
             ]);
         }
     }
@@ -2160,18 +2322,18 @@ class CentrosCostosController extends Controller
     /**
      * @param  array<int, string>  $claves
      */
-    protected function syncPermisosClaves(CcAsignacion $asig, array $claves): void
+    protected function syncPermisosClaves(PvAsignacion $asig, array $claves): void
     {
         $claves = array_values(array_unique(array_filter(array_map('strval', $claves))));
         $clavesAsig = array_values(array_filter($claves, function ($c) {
             return $c !== 'importar';
         }));
 
-        CcAsignacionPermiso::query()->where('asignacion_id', $asig->id)->delete();
-        if (Schema::hasTable('tbl_cc_tipos_permiso')) {
-            $tipos = CcTipoPermiso::query()->whereIn('clave', $clavesAsig)->get();
+        PvAsignacionPermiso::query()->where('asignacion_id', $asig->id)->delete();
+        if (Schema::hasTable('tbl_pv_tipos_permiso')) {
+            $tipos = PvTipoPermiso::query()->whereIn('clave', $clavesAsig)->get();
             foreach ($tipos as $tipo) {
-                CcAsignacionPermiso::query()->create([
+                PvAsignacionPermiso::query()->create([
                     'asignacion_id' => $asig->id,
                     'permiso_id' => $tipo->id,
                 ]);
@@ -2185,18 +2347,18 @@ class CentrosCostosController extends Controller
             return;
         }
 
-        if (Schema::hasTable('tbl_cc_usuario_permisos') && Schema::hasTable('tbl_cc_tipos_permiso')) {
-            $tipo = CcTipoPermiso::query()->where('clave', $clave)->first();
+        if (Schema::hasTable('tbl_pv_usuario_permisos') && Schema::hasTable('tbl_pv_tipos_permiso')) {
+            $tipo = PvTipoPermiso::query()->where('clave', $clave)->first();
             if (! $tipo) {
                 return;
             }
-            $q = CcUsuarioPermiso::query()
+            $q = PvUsuarioPermiso::query()
                 ->where('ciclo_codigo', $ciclo)
                 ->where('user_id', $userId)
                 ->where('permiso_id', $tipo->id);
             if ($enabled) {
                 if (! $q->exists()) {
-                    CcUsuarioPermiso::query()->create([
+                    PvUsuarioPermiso::query()->create([
                         'ciclo_codigo' => $ciclo,
                         'user_id' => $userId,
                         'permiso_id' => $tipo->id,
@@ -2209,19 +2371,19 @@ class CentrosCostosController extends Controller
             return;
         }
 
-        if (! $enabled || ! Schema::hasTable('tbl_cc_tipos_permiso')) {
+        if (! $enabled || ! Schema::hasTable('tbl_pv_tipos_permiso')) {
             return;
         }
-        $tipo = CcTipoPermiso::query()->where('clave', $clave)->first();
+        $tipo = PvTipoPermiso::query()->where('clave', $clave)->first();
         if (! $tipo) {
             return;
         }
-        $asigs = CcAsignacion::query()
+        $asigs = PvAsignacion::query()
             ->where('ciclo_codigo', $ciclo)
             ->where('user_id', $userId)
             ->get();
         foreach ($asigs as $a) {
-            CcAsignacionPermiso::query()->firstOrCreate([
+            PvAsignacionPermiso::query()->firstOrCreate([
                 'asignacion_id' => $a->id,
                 'permiso_id' => $tipo->id,
             ]);
@@ -2234,14 +2396,14 @@ class CentrosCostosController extends Controller
             return false;
         }
         $cacheKey = strtoupper($ciclo).'|'.$userId.'|'.$clave;
-        if (array_key_exists($cacheKey, $this->ccUserPermCache)) {
-            return $this->ccUserPermCache[$cacheKey];
+        if (array_key_exists($cacheKey, $this->pvUserPermCache)) {
+            return $this->pvUserPermCache[$cacheKey];
         }
 
         $found = false;
-        if (Schema::hasTable('tbl_cc_usuario_permisos') && Schema::hasTable('tbl_cc_tipos_permiso')) {
-            $tipo = CcTipoPermiso::query()->where('clave', $clave)->first();
-            if ($tipo && CcUsuarioPermiso::query()
+        if (Schema::hasTable('tbl_pv_usuario_permisos') && Schema::hasTable('tbl_pv_tipos_permiso')) {
+            $tipo = PvTipoPermiso::query()->where('clave', $clave)->first();
+            if ($tipo && PvUsuarioPermiso::query()
                 ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
                 ->where('user_id', $userId)
                 ->where('permiso_id', $tipo->id)
@@ -2250,8 +2412,8 @@ class CentrosCostosController extends Controller
             }
         }
 
-        if (! $found && Schema::hasTable('tbl_cc_asignaciones')) {
-            $asigs = CcAsignacion::query()
+        if (! $found && Schema::hasTable('tbl_pv_asignaciones')) {
+            $asigs = PvAsignacion::query()
                 ->with('permisos.tipo')
                 ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
                 ->where('user_id', $userId)
@@ -2266,7 +2428,7 @@ class CentrosCostosController extends Controller
             }
         }
 
-        $this->ccUserPermCache[$cacheKey] = $found;
+        $this->pvUserPermCache[$cacheKey] = $found;
 
         return $found;
     }
@@ -2274,7 +2436,7 @@ class CentrosCostosController extends Controller
     /**
      * @return array<int, array<string, mixed>>
      */
-    protected function cuentasDe(CcAsignacion $asig): array
+    protected function cuentasDe(PvAsignacion $asig): array
     {
         return $asig->cuentas()->get()->map(function ($c) {
             return [
@@ -2285,17 +2447,17 @@ class CentrosCostosController extends Controller
         })->values()->all();
     }
 
-    protected function propagarCuentasAColaboradores(CcAsignacion $asig): void
+    protected function propagarCuentasAColaboradores(PvAsignacion $asig): void
     {
         $principal = $this->principalDeAsignacion($asig);
         if ((int) $principal->id !== (int) $asig->id && ! ($this->asigHasRolColumns() && $asig->es_principal)) {
             return;
         }
         $cuentas = $this->cuentasDe($asig);
-        $extras = CcAsignacion::query()
+        $extras = PvAsignacion::query()
             ->where('ciclo_codigo', $asig->ciclo_codigo)
             ->where('empresa', $asig->empresa)
-            ->where('centro_codigo', $asig->centro_codigo)
+            ->where('cliente_codigo', $asig->centro_codigo)
             ->where('id', '!=', $asig->id)
             ->get();
         foreach ($extras as $extra) {
@@ -2306,7 +2468,7 @@ class CentrosCostosController extends Controller
     /**
      * @param  array<int, array<string, mixed>>  $accesos
      */
-    protected function syncAccesos(CcAsignacion $asig, array $accesos): void
+    protected function syncAccesos(PvAsignacion $asig, array $accesos): void
     {
         $principal = $this->principalDeAsignacion($asig);
         $keepIds = [(int) $principal->user_id];
@@ -2318,11 +2480,11 @@ class CentrosCostosController extends Controller
                 continue;
             }
             $keepIds[] = $uid;
-            $col = CcAsignacion::query()->firstOrNew([
+            $col = PvAsignacion::query()->firstOrNew([
                 'ciclo_codigo' => $principal->ciclo_codigo,
                 'empresa' => $principal->empresa,
                 'user_id' => $uid,
-                'centro_codigo' => $principal->centro_codigo,
+                'cliente_codigo' => $principal->centro_codigo,
             ]);
             $col->centro_nombre = $principal->centro_nombre;
             if (! $col->exists) {
@@ -2337,10 +2499,10 @@ class CentrosCostosController extends Controller
             $this->syncPermisosClaves($col, $acc['permisos'] ?? ['revisar']);
         }
 
-        $extras = CcAsignacion::query()
+        $extras = PvAsignacion::query()
             ->where('ciclo_codigo', $principal->ciclo_codigo)
             ->where('empresa', $principal->empresa)
-            ->where('centro_codigo', $principal->centro_codigo)
+            ->where('cliente_codigo', $principal->centro_codigo)
             ->whereNotIn('user_id', $keepIds)
             ->get();
         foreach ($extras as $extra) {
@@ -2348,17 +2510,17 @@ class CentrosCostosController extends Controller
         }
     }
 
-    protected function borrarAsignacion(CcAsignacion $asig): void
+    protected function borrarAsignacion(PvAsignacion $asig): void
     {
-        CcAsignacionCuenta::query()->where('asignacion_id', $asig->id)->delete();
-        CcAsignacionPermiso::query()->where('asignacion_id', $asig->id)->delete();
+        PvAsignacionProducto::query()->where('asignacion_id', $asig->id)->delete();
+        PvAsignacionPermiso::query()->where('asignacion_id', $asig->id)->delete();
         $asig->delete();
     }
 
     /**
      * @return array<string, mixed>
      */
-    protected function asignacionPayload(CcAsignacion $a): array
+    protected function asignacionPayload(PvAsignacion $a): array
     {
         $permisos = $a->permisos->map(function ($p) {
             return $p->tipo->clave ?? null;
@@ -2399,14 +2561,14 @@ class CentrosCostosController extends Controller
      */
     protected function ciclosPayload(): array
     {
-        if (! Schema::hasTable('tbl_cc_ciclos')) {
+        if (! Schema::hasTable('tbl_pv_ciclos')) {
             return [];
         }
 
         $statsMap = $this->cicloStatsByCodigo();
 
-        return CcCiclo::query()->orderByDesc('anio_presupuesto')->orderByDesc('id')->get()
-            ->map(function (CcCiclo $c) use ($statsMap) {
+        return PvCiclo::query()->orderByDesc('anio_presupuesto')->orderByDesc('id')->get()
+            ->map(function (PvCiclo $c) use ($statsMap) {
                 return $this->cicloPayload($c, $statsMap[$c->codigo] ?? $this->emptyCicloStats());
             })->values()->all();
     }
@@ -2415,7 +2577,7 @@ class CentrosCostosController extends Controller
      * @param  array<string, int>|null  $stats
      * @return array<string, mixed>
      */
-    protected function cicloPayload(CcCiclo $c, ?array $stats = null): array
+    protected function cicloPayload(PvCiclo $c, ?array $stats = null): array
     {
         $stats = $stats ?: $this->cicloStats($c->codigo);
 
@@ -2482,11 +2644,11 @@ class CentrosCostosController extends Controller
      */
     protected function cicloStatsByCodigo(?array $codigos = null): array
     {
-        if (! Schema::hasTable('tbl_cc_asignaciones')) {
+        if (! Schema::hasTable('tbl_pv_asignaciones')) {
             return [];
         }
 
-        $q = CcAsignacion::query()->select(['id', 'ciclo_codigo', 'user_id', 'empresa', 'centro_codigo']);
+        $q = PvAsignacion::query()->select(['id', 'ciclo_codigo', 'user_id', 'empresa', 'cliente_codigo']);
         if ($codigos !== null) {
             $q->whereIn('ciclo_codigo', $codigos);
         }
@@ -2496,8 +2658,8 @@ class CentrosCostosController extends Controller
         }
 
         $ctaByAsig = [];
-        if (Schema::hasTable('tbl_cc_asignacion_cuentas')) {
-            $ctaByAsig = CcAsignacionCuenta::query()
+        if (Schema::hasTable('tbl_pv_asignacion_productos')) {
+            $ctaByAsig = PvAsignacionProducto::query()
                 ->selectRaw('asignacion_id, count(*) as total')
                 ->whereIn('asignacion_id', $asigs->pluck('id'))
                 ->groupBy('asignacion_id')

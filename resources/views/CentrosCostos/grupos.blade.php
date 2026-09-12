@@ -1,7 +1,7 @@
 @extends('layouts.app')
 
 @section('css')
-<link href="{{ asset('css/centros-costos.css') }}" rel="stylesheet">
+<link href="{{ asset('css/centros-costos.css') }}?v={{ (int) @filemtime(public_path('css/centros-costos.css')) }}" rel="stylesheet">
 @endsection
 
 @section('content')
@@ -10,24 +10,13 @@
         <div>
             <div class="cc-kicker">Contabilidad · catálogo</div>
             <h1 class="cc-title">Grupos de cuentas</h1>
-            <p class="cc-sub">Elige la empresa, revisa sus cuentas SAP y arma agrupaciones con una clave y un nombre.</p>
+            <p class="cc-sub">Elige la empresa, crea o selecciona una agrupación a la izquierda, y en el panel grande marca las cuentas.</p>
         </div>
         <div class="cc-header-actions">
             <a class="cc-btn" href="{{ route('centros.admin') }}">
                 <i class="fa-solid fa-arrow-left"></i> Budgets
             </a>
-            <button type="button" class="cc-btn cc-btn-ink" id="grp-nuevo" disabled>
-                <i class="fa-solid fa-plus"></i> Nuevo grupo
-            </button>
         </div>
-    </div>
-
-
-    <div class="cc-kpis">
-        <div class="cc-kpi"><div class="label">Empresa</div><div class="value" id="kpi-grp-emp">—</div><div class="hint">Catálogo SAP</div></div>
-        <div class="cc-kpi"><div class="label">Cuentas</div><div class="value" id="kpi-grp-ctas">—</div><div class="hint">Del catálogo activo</div></div>
-        <div class="cc-kpi"><div class="label">Grupos</div><div class="value" id="kpi-grp-n">—</div><div class="hint">Agrupaciones creadas</div></div>
-        <div class="cc-kpi"><div class="label">En el grupo</div><div class="value" id="kpi-grp-sel">—</div><div class="hint">Cuentas seleccionadas</div></div>
     </div>
 
     <div class="cc-panel">
@@ -43,9 +32,19 @@
 
     <div id="grp-workspace" hidden>
         <div class="cc-asig-pair cc-grupos-pair">
+            <div class="cc-panel cc-asig-col" id="grp-opciones">
+                <div class="cc-panel-head">
+                    <h3><i class="fa-solid fa-layer-group"></i> Agrupaciones</h3>
+                    <span class="cc-badge cc-badge-solo_revision" id="grp-list-meta">—</span>
+                </div>
+                <div id="grp-list" class="cc-pick-list cc-grupos-list" role="listbox" aria-label="Grupos de cuentas">
+                    <div class="cc-empty">Elige una empresa. Crea una nueva o pulsa una existente.</div>
+                </div>
+            </div>
+
             <div class="cc-panel cc-asig-col" id="grp-editor">
                 <div class="cc-panel-head">
-                    <h3 id="grp-editor-title"><i class="fa-solid fa-list"></i> Cuentas</h3>
+                    <h3 id="grp-editor-title"><i class="fa-solid fa-list"></i> Seleccionar cuentas</h3>
                     <button type="button" class="cc-btn cc-btn-danger" id="grp-borrar" hidden>
                         <i class="fa-solid fa-trash"></i> Eliminar
                     </button>
@@ -65,24 +64,19 @@
                     <small id="grp-cta-meta">—</small>
                 </label>
                 <div id="grp-cta-list" class="cc-pick-list cc-grupos-ctas">
-                    <div class="cc-empty">Elige una empresa para cargar cuentas</div>
-                </div>
-                <div class="cc-grupos-actions">
-                    <button type="button" class="cc-btn" id="grp-cancelar">Cancelar</button>
-                    <button type="button" class="cc-btn cc-btn-ink" id="grp-guardar">
-                        <i class="fa-solid fa-floppy-disk"></i> Guardar grupo
-                    </button>
+                    <div class="cc-empty">Pon un nombre a la izquierda y selecciona las cuentas aquí</div>
                 </div>
             </div>
-
-            <div class="cc-panel cc-asig-col">
-                <div class="cc-panel-head">
-                    <h3><i class="fa-solid fa-layer-group"></i> Agrupaciones</h3>
-                    <span class="cc-badge cc-badge-solo_revision" id="grp-list-meta">—</span>
-                </div>
-                <div id="grp-list" class="cc-pick-list cc-grupos-list" role="listbox" aria-label="Grupos de cuentas">
-                    <div class="cc-empty">Elige una empresa para ver grupos</div>
-                </div>
+        </div>
+        <div class="cc-grupos-actions">
+            <button type="button" class="cc-btn" id="grp-cancelar">Cancelar</button>
+            <div class="cc-grupos-actions-save">
+                <button type="button" class="cc-btn" id="grp-guardar-salir">
+                    <i class="fa-solid fa-arrow-left"></i> Guardar y salir
+                </button>
+                <button type="button" class="cc-btn cc-btn-ink" id="grp-guardar">
+                    <i class="fa-solid fa-check"></i> Guardar
+                </button>
             </div>
         </div>
     </div>
@@ -90,7 +84,7 @@
 @endsection
 
 @section('js')
-<script src="{{ asset('js/centros-grupos.js') }}"></script>
+<script src="{{ asset('js/centros-grupos.js') }}?v={{ (int) @filemtime(public_path('js/centros-grupos.js')) }}"></script>
 <script>
     CCGrupos.boot(@json($bootstrap));
 </script>

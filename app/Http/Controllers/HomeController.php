@@ -18,6 +18,9 @@ use Illuminate\Support\Carbon;
 use App\Models\CcAsignacion;
 use App\Models\CcAsignacionCuenta;
 use App\Models\CcCiclo;
+use App\Models\PvAsignacion;
+use App\Models\PvAsignacionProducto;
+use App\Models\PvCiclo;
 use App\Models\GestionAlumnosVisitaProspeccion;
 use App\Models\Mantenimiento;
 use App\Models\ProgramacionMantenimiento;
@@ -100,6 +103,7 @@ class HomeController extends Controller
 
             $datosMantenimientoMaquinas = $this->obtenerDatosCalendarioMantenimiento();
             $resumenCentros = $this->obtenerResumenCentrosHome();
+            $resumenPv = $this->obtenerResumenPvHome();
 
             if(auth()->user()->tipo != "ext"){
             
@@ -116,7 +120,8 @@ class HomeController extends Controller
                     'ordenesEnviadas',
                     'visitasEmpresasCalendario',
                     'datosMantenimientoMaquinas',
-                    'resumenCentros'
+                    'resumenCentros',
+                    'resumenPv'
                 ));
             }else{
                 return redirect()->route('ext_licitaciones');
@@ -639,11 +644,10 @@ class HomeController extends Controller
     {
         $labels = [
             'abierto' => 'Abierto',
-            'en_proceso' => 'En captura',
+            'en_proceso' => 'Abierto',
             'en_revision' => 'En revisión',
-            'terminado' => 'Terminado',
-            'aceptado' => 'Aceptado',
-            'rechazado' => 'Cerrado',
+            'terminado' => 'Cerrado',
+            'cerrado' => 'Cerrado',
         ];
 
         $empty = [
@@ -738,6 +742,118 @@ class HomeController extends Controller
             ];
         } catch (\Throwable $e) {
             Log::warning('Resumen centros home: '.$e->getMessage());
+
+            return $empty;
+        }
+    }
+
+    /**
+     * Resumen de alto nivel del ciclo de proyecciones de ventas.
+     *
+     * @return array<string, mixed>
+     */
+    private function obtenerResumenPvHome(): array
+    {
+        $labels = [
+            'abierto' => 'Abierto',
+            'en_proceso' => 'Abierto',
+            'en_revision' => 'En revisión',
+            'terminado' => 'Cerrado',
+            'cerrado' => 'Cerrado',
+        ];
+
+        $empty = [
+            'hayCiclo' => false,
+            'nombre' => 'Proyecciones de ventas',
+            'anioRef' => 2026,
+            'anioPpto' => 2027,
+            'estado' => '',
+            'estadoLabel' => 'Sin ciclo',
+            'enVentana' => false,
+            'diasRestantes' => null,
+            'capturaHasta' => null,
+            'clientes' => 0,
+            'productos' => 0,
+            'usuarios' => 0,
+            'empresas' => 0,
+            'misClientes' => 0,
+        ];
+
+        try {
+            if (! Schema::hasTable('tbl_pv_ciclos')) {
+                return $empty;
+            }
+
+            $hoy = Carbon::today();
+            $ciclos = PvCiclo::query()->orderByDesc('anio_presupuesto')->orderByDesc('id')->get();
+            if ($ciclos->isEmpty()) {
+                return $empty;
+            }
+
+            $ciclo = $ciclos->first(function (PvCiclo $c) use ($hoy) {
+                $inicio = $c->fecha_inicio;
+                $cierre = $c->captura_hasta ?: $c->fecha_fin;
+                if ($inicio && $cierre) {
+                    return $hoy->between($inicio, $cierre);
+                }
+
+                return in_array((string) $c->estado, ['abierto', 'en_proceso'], true);
+            }) ?: $ciclos->first();
+
+            $cierre = $ciclo->captura_hasta ?: $ciclo->fecha_fin;
+            $enVentana = false;
+            $dias = null;
+            if ($cierre) {
+                $enVentana = $hoy->lte($cierre) && in_array((string) $ciclo->estado, ['abierto', 'en_proceso'], true);
+                $dias = (int) $hoy->diffInDays($cierre, false);
+                $dias = max(0, $dias);
+            }
+
+            $clientes = 0;
+            $productos = 0;
+            $usuarios = 0;
+            $empresas = 0;
+            $misClientes = 0;
+
+            if (Schema::hasTable('tbl_pv_asignaciones')) {
+                $asigs = PvAsignacion::query()
+                    ->where('ciclo_codigo', $ciclo->codigo)
+                    ->get(['id', 'user_id', 'empresa', 'cliente_codigo']);
+
+                $clientes = $asigs->unique(function ($a) {
+                    return strtolower((string) $a->empresa).'|'.$a->cliente_codigo;
+                })->count();
+                $usuarios = $asigs->pluck('user_id')->unique()->filter()->count();
+                $empresas = $asigs->pluck('empresa')->map(fn ($e) => strtolower(trim((string) $e)))->filter()->unique()->count();
+                $misClientes = $asigs->where('user_id', auth()->id())->unique(function ($a) {
+                    return strtolower((string) $a->empresa).'|'.$a->cliente_codigo;
+                })->count();
+
+                if (Schema::hasTable('tbl_pv_asignacion_productos') && $asigs->isNotEmpty()) {
+                    $productos = (int) PvAsignacionProducto::query()
+                        ->whereIn('asignacion_id', $asigs->pluck('id'))
+                        ->count();
+                }
+            }
+
+            return [
+                'hayCiclo' => true,
+                'nombre' => $ciclo->nombre ?: ('Proyección '.(int) $ciclo->anio_presupuesto),
+                'anioRef' => (int) $ciclo->anio_referencia,
+                'anioPpto' => (int) $ciclo->anio_presupuesto,
+                'estado' => (string) $ciclo->estado,
+                'estadoLabel' => $labels[(string) $ciclo->estado] ?? ucfirst((string) $ciclo->estado),
+                'enVentana' => $enVentana,
+                'diasRestantes' => $dias,
+                'capturaHasta' => $cierre ? $cierre->format('d/m/Y') : null,
+                'clientes' => $clientes,
+                'productos' => $productos,
+                'usuarios' => $usuarios,
+                'empresas' => $empresas,
+                'misClientes' => $misClientes,
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('Resumen proyecciones home: '.$e->getMessage());
 
             return $empty;
         }

@@ -48,6 +48,7 @@ use App\Http\Controllers\VentasController;
 use App\Http\Controllers\ReporteNoExistenciasController;
 use App\Http\Controllers\AutinApiController;
 use App\Http\Controllers\CentrosCostosController;
+use App\Http\Controllers\ProyeccionesVentasController;
 /*
 |--------------------------------------------------------------------------
 | Web Routes
@@ -1197,6 +1198,8 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::post('/AdminCentros/{ciclo}/asignaciones', [CentrosCostosController::class, 'storeAsignacion'])->name('centros.asignaciones.store');
     Route::put('/AdminCentros/{ciclo}/asignaciones/{id}', [CentrosCostosController::class, 'updateAsignacion'])->name('centros.asignaciones.update');
     Route::delete('/AdminCentros/{ciclo}/asignaciones/{id}', [CentrosCostosController::class, 'destroyAsignacion'])->name('centros.asignaciones.destroy');
+    Route::get('/AdminCentros/{ciclo}/importar-usuarios', [CentrosCostosController::class, 'listImportarUsuarios'])->name('centros.importar.usuarios');
+    Route::put('/AdminCentros/{ciclo}/importar-usuarios', [CentrosCostosController::class, 'syncImportarUsuarios'])->name('centros.importar.usuarios.sync');
     Route::get('/AdminCentros/{ciclo}', [CentrosCostosController::class, 'ciclo'])->name('centros.ciclo');
     Route::get('/CentrosCostos/api/ciclos', [CentrosCostosController::class, 'listCiclos'])->name('centros.api.ciclos');
     Route::post('/CentrosCostos/api/ciclos', [CentrosCostosController::class, 'storeCiclo'])->name('centros.api.ciclos.store');
@@ -1214,6 +1217,38 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/CentrosCostos/api/captura', [CentrosCostosController::class, 'captura'])->name('centros.api.captura');
     Route::put('/CentrosCostos/api/captura/presupuesto', [CentrosCostosController::class, 'guardarPresupuesto'])->name('centros.api.captura.presupuesto');
     Route::put('/CentrosCostos/api/captura/centro', [CentrosCostosController::class, 'guardarCapturaCentro'])->name('centros.api.captura.centro');
+    Route::get('/CentrosCostos/api/captura/plantilla', [CentrosCostosController::class, 'plantillaCaptura'])->name('centros.api.captura.plantilla');
+    Route::post('/CentrosCostos/api/captura/importar', [CentrosCostosController::class, 'importarCaptura'])->name('centros.api.captura.importar');
+
+    Route::get('/Ventas/Asignaciones', [ProyeccionesVentasController::class, 'admin'])->name('pv.admin');
+    Route::get('/Ventas/Asignaciones/{ciclo}/asignar/{empresa?}', [ProyeccionesVentasController::class, 'asignar'])
+        ->where('empresa', 'austin|imsa|pitic|sydney')
+        ->name('pv.asignar');
+    Route::get('/Ventas/Asignaciones/{ciclo}/asignaciones', [ProyeccionesVentasController::class, 'listAsignaciones'])->name('pv.asignaciones.index');
+    Route::post('/Ventas/Asignaciones/{ciclo}/asignaciones', [ProyeccionesVentasController::class, 'storeAsignacion'])->name('pv.asignaciones.store');
+    Route::put('/Ventas/Asignaciones/{ciclo}/asignaciones/{id}', [ProyeccionesVentasController::class, 'updateAsignacion'])->name('pv.asignaciones.update');
+    Route::delete('/Ventas/Asignaciones/{ciclo}/asignaciones/{id}', [ProyeccionesVentasController::class, 'destroyAsignacion'])->name('pv.asignaciones.destroy');
+    Route::get('/Ventas/Asignaciones/{ciclo}/importar-usuarios', [ProyeccionesVentasController::class, 'listImportarUsuarios'])->name('pv.importar.usuarios');
+    Route::put('/Ventas/Asignaciones/{ciclo}/importar-usuarios', [ProyeccionesVentasController::class, 'syncImportarUsuarios'])->name('pv.importar.usuarios.sync');
+    Route::get('/Ventas/Asignaciones/{ciclo}', [ProyeccionesVentasController::class, 'ciclo'])->name('pv.ciclo');
+    Route::get('/ProyeccionesVentas/api/ciclos', [ProyeccionesVentasController::class, 'listCiclos'])->name('pv.api.ciclos');
+    Route::post('/ProyeccionesVentas/api/ciclos', [ProyeccionesVentasController::class, 'storeCiclo'])->name('pv.api.ciclos.store');
+    Route::post('/ProyeccionesVentas/api/ciclos/{ciclo}/estado', [ProyeccionesVentasController::class, 'updateCicloEstado'])->name('pv.api.ciclos.estado');
+    Route::delete('/ProyeccionesVentas/api/ciclos/{ciclo}', [ProyeccionesVentasController::class, 'destroyCiclo'])->name('pv.api.ciclos.destroy');
+    Route::get('/ProyeccionesVentas/api/empresas', [ProyeccionesVentasController::class, 'empresasSap'])->name('pv.api.empresas');
+    Route::get('/ProyeccionesVentas/api/centros', [ProyeccionesVentasController::class, 'centrosSap'])->name('pv.api.centros');
+    Route::get('/ProyeccionesVentas/api/cuentas', [ProyeccionesVentasController::class, 'cuentasSap'])->name('pv.api.cuentas');
+    Route::get('/ProyeccionesVentas/api/mis-asignaciones', [ProyeccionesVentasController::class, 'misAsignaciones'])->name('pv.api.mis');
+    Route::get('/Ventas/Captura', [ProyeccionesVentasController::class, 'control'])->name('pv.control');
+    Route::get('/Ventas/Captura/detalle', [ProyeccionesVentasController::class, 'detalle'])->name('pv.detalle');
+    Route::get('/Ventas/Analisis', [ProyeccionesVentasController::class, 'analisis'])->name('pv.analisis');
+    Route::get('/ProyeccionesVentas/api/catalogo', [ProyeccionesVentasController::class, 'catalogo'])->name('pv.catalogo');
+    Route::get('/ProyeccionesVentas/api/gasto-real', [ProyeccionesVentasController::class, 'gastoReal'])->name('pv.api.gasto_real');
+    Route::get('/ProyeccionesVentas/api/captura', [ProyeccionesVentasController::class, 'captura'])->name('pv.api.captura');
+    Route::put('/ProyeccionesVentas/api/captura/presupuesto', [ProyeccionesVentasController::class, 'guardarPresupuesto'])->name('pv.api.captura.presupuesto');
+    Route::put('/ProyeccionesVentas/api/captura/centro', [ProyeccionesVentasController::class, 'guardarCapturaCentro'])->name('pv.api.captura.centro');
+    Route::get('/ProyeccionesVentas/api/captura/plantilla', [ProyeccionesVentasController::class, 'plantillaCaptura'])->name('pv.api.captura.plantilla');
+    Route::post('/ProyeccionesVentas/api/captura/importar', [ProyeccionesVentasController::class, 'importarCaptura'])->name('pv.api.captura.importar');
 
    
   });

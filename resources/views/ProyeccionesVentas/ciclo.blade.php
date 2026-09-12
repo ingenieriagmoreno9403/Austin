@@ -11,28 +11,28 @@
             <div class="cc-kicker">Ciclo <span id="period-codigo">{{ $bootstrap['cicloCodigo'] ?? '' }}</span> · asignaciones</div>
             <h1 class="cc-title" id="period-nombre">Ciclo</h1>
             <p class="cc-sub">Revisa las asignaciones del ciclo o crea una nueva: empresa SAP,
-                 usuario, centro, cuentas y permisos.</p>
+                 usuario, cliente, productos y permisos.</p>
         </div>
         <div class="cc-header-actions">
-            <a class="cc-btn" href="{{ route('centros.admin') }}">
+            <a class="cc-btn" href="{{ route('pv.admin') }}">
                 <i class="fa-solid fa-arrow-left"></i> Ciclos
             </a>
             <button type="button" class="cc-btn" id="btn-importar-usuarios">
                 <i class="fa-solid fa-unlock"></i> Importe masivo
             </button>
-            <a class="cc-btn cc-btn-ink" href="{{ route('centros.asignar', $bootstrap['cicloCodigo'] ?? '') }}">
+            <a class="cc-btn cc-btn-ink" href="{{ route('pv.asignar', $bootstrap['cicloCodigo'] ?? '') }}">
                 <i class="fa-solid fa-user-plus"></i> Nueva asignación
             </a>
         </div>
     </div>
 
-    @include('CentrosCostos.partials.nav')
+    @include('ProyeccionesVentas.partials.nav')
 
     <div class="cc-banner">
         <div>
-            <strong>Ciclo para presupuestar</strong>
+            <strong>Ciclo para proyectar</strong>
             <p>
-                Real <span id="period-anio-ref">2026</span> / Ppto <span id="period-anio">2027</span>
+                Venta <span id="period-anio-ref">2026</span> / Proy. <span id="period-anio">2027</span>
                 · Ventana: <span id="period-rango">—</span>
             </p>
         </div>
@@ -64,14 +64,14 @@
             <div class="hint" id="kpi-asig-emp-hint">Empresas SAP con algo asignado</div>
         </div>
         <div class="cc-kpi">
-            <div class="label">Centros de costos</div>
+            <div class="label">Clientes</div>
             <div class="value" id="kpi-asig-cc">—</div>
-            <div class="hint" id="kpi-asig-cc-hint">Centros que ya tienen asignación</div>
+            <div class="hint" id="kpi-asig-cc-hint">Clientes que ya tienen asignación</div>
         </div>
         <div class="cc-kpi">
             <div class="label">Usuarios</div>
             <div class="value" id="kpi-asig-user">—</div>
-            <div class="hint" id="kpi-asig-user-hint">Usuarios con centros de costos</div>
+            <div class="hint" id="kpi-asig-user-hint">Usuarios con clientes asignados</div>
         </div>
     </div>
 
@@ -93,7 +93,7 @@
             </div>
             <div class="cc-pick-search">
                 <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-sitemap"></i></span>
-                <input id="asig-q-centro" class="cc-input" type="search" placeholder="Buscar por centro de costo…" aria-label="Buscar por centro de costo">
+                <input id="asig-q-centro" class="cc-input" type="search" placeholder="Buscar por cliente…" aria-label="Buscar por cliente">
             </div>
         </div>
         <div class="cc-table-wrap">
@@ -102,8 +102,8 @@
                     <tr>
                         <th>Usuario</th>
                         <th>Empresa</th>
-                        <th>Centro de costos</th>
-                        <th>Cuentas</th>
+                        <th>Cliente</th>
+                        <th>Productos</th>
                         <th>Permisos</th>
                         <th>Acciones</th>
                     </tr>
@@ -116,8 +116,8 @@
     </div>
 </div>
 
-@include('CentrosCostos.partials.modal-ciclo')
-@include('CentrosCostos.partials.modals-asignacion')
+@include('ProyeccionesVentas.partials.modal-ciclo')
+@include('ProyeccionesVentas.partials.modals-asignacion')
 
 <div class="modal fade cc-modal" id="modalImportarUsuarios" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -128,7 +128,7 @@
             </div>
             <div class="modal-body">
                 <p class="text-muted mb-3" style="font-size:.85rem">
-                    Este permiso no es por empresa ni por centro. Quien lo tenga puede bajar la plantilla con <strong>todas</strong> sus asignaciones del ciclo e importar los montos de una vez.
+                    Este permiso no es por empresa ni por cliente. Quien lo tenga puede bajar la plantilla con <strong>todas</strong> sus asignaciones del ciclo e importar las cantidades de una vez.
                 </p>
                 <div class="cc-form-kicker">Agregar usuario</div>
                 <div class="cc-pick-search">
@@ -163,8 +163,8 @@
 @endsection
 
 @section('js')
-<script src="{{ asset('js/centros-costos.js') }}?v={{ (int) @filemtime(public_path('js/centros-costos.js')) }}"></script>
-<script src="{{ asset('js/centros-asignaciones.js') }}?v={{ (int) @filemtime(public_path('js/centros-asignaciones.js')) }}"></script>
+<script src="{{ asset('js/proyecciones-ventas.js') }}?v={{ (int) @filemtime(public_path('js/proyecciones-ventas.js')) }}"></script>
+<script src="{{ asset('js/proyecciones-asignaciones.js') }}?v={{ (int) @filemtime(public_path('js/proyecciones-asignaciones.js')) }}"></script>
 <script>
     CC.boot(Object.assign(@json($bootstrap), { page: 'admin-ciclo' }));
     CCAsig.initCiclo({

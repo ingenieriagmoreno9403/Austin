@@ -6,30 +6,30 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body">
-                <p class="text-muted mb-3" style="font-size:.85rem">Identifica el ciclo y define años, indicadores y la ventana en la que los departamentos pueden capturar.</p>
+                <p class="text-muted mb-3" style="font-size:.85rem">Identifica el ciclo, el tipo de cambio y la ventana en la que se puede capturar la proyección.</p>
                 <div class="row g-3">
                     <div class="col-12"><div class="cc-form-kicker">Identidad</div></div>
                     <div class="col-md-4">
                         <label class="form-label" for="p-codigo">Código</label>
-                        <input id="p-codigo" class="form-control" type="text" required placeholder="BGT-2027" maxlength="20">
+                        <input id="p-codigo" class="form-control" type="text" required placeholder="PRY-2027" maxlength="20">
                     </div>
                     <div class="col-md-8">
                         <label class="form-label" for="p-nombre">Nombre</label>
-                        <input id="p-nombre" class="form-control" type="text" required placeholder="Presupuesto 2027">
+                        <input id="p-nombre" class="form-control" type="text" required placeholder="Proyección de ventas 2027">
                     </div>
 
                     <div class="col-12"><div class="cc-form-kicker">Años y parámetros</div></div>
                     <div class="col-md-6">
-                        <label class="form-label" for="p-anio-ref">Año de referencia (real)</label>
+                        <label class="form-label" for="p-anio-ref">Año de referencia (venta real)</label>
                         <input id="p-anio-ref" class="form-control" type="number" min="2000" max="2100" required>
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label" for="p-anio">Año de presupuesto</label>
+                        <label class="form-label" for="p-anio">Año de proyección</label>
                         <input id="p-anio" class="form-control" type="number" min="2000" max="2100" required>
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label" for="p-inflacion">Inflación estimada (%)</label>
-                        <input id="p-inflacion" class="form-control" type="number" step="0.1" min="0" placeholder="4.0">
+                    <div class="col-md-6" hidden>
+                        <label class="form-label" for="p-inflacion">Ajuste</label>
+                        <input id="p-inflacion" class="form-control" type="number" step="0.1" value="0">
                     </div>
                     <div class="col-md-6">
                         <label class="form-label" for="p-tc">Tipo de cambio USD</label>

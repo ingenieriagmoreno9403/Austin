@@ -375,6 +375,7 @@
     }
     $nombreCorto = auth()->user()->name ? explode(' ', auth()->user()->name)[0] : '';
     $cc = $resumenCentros ?? [];
+    $pv = $resumenPv ?? [];
     $mm = $datosMantenimientoMaquinas ?? [];
 @endphp
 
@@ -445,7 +446,59 @@
         </p>
     </section>
 
-    <section class="home-cal home-panel" aria-label="Calendario de mantenimiento">
+    <section class="home-block home-panel" aria-label="Proyecciones de ventas">
+        <div class="home-row">
+            <h2>{{ $pv['nombre'] ?? 'Proyecciones de ventas' }}</h2>
+            <span class="home-status {{ !empty($pv['enVentana']) ? 'is-on' : '' }}">{{ $pv['estadoLabel'] ?? 'Sin ciclo' }}</span>
+        </div>
+
+        <dl class="home-metrics">
+            <div>
+                <dt>Venta ref.</dt>
+                <dd>{{ $pv['anioRef'] ?? 2026 }}</dd>
+            </div>
+            <div>
+                <dt>Proyección</dt>
+                <dd>{{ $pv['anioPpto'] ?? 2027 }}</dd>
+            </div>
+            <div>
+                <dt>Clientes</dt>
+                <dd>{{ number_format($pv['clientes'] ?? 0) }}</dd>
+            </div>
+            <div>
+                <dt>Productos</dt>
+                <dd>{{ number_format($pv['productos'] ?? 0) }}</dd>
+            </div>
+            <div>
+                <dt>Responsables</dt>
+                <dd>{{ number_format($pv['usuarios'] ?? 0) }}</dd>
+            </div>
+        </dl>
+
+        <nav class="home-nav">
+            <a href="{{ route('pv.control') }}">Captura</a>
+            <a href="{{ route('pv.control', ['vista' => 'visor']) }}">Visor</a>
+            <a href="{{ route('pv.analisis') }}">Análisis</a>
+            <a href="{{ route('pv.admin') }}">Asignaciones</a>
+        </nav>
+
+        <p class="home-note">
+            @if(($pv['misClientes'] ?? 0) > 0)
+                {{ $pv['misClientes'] }} {{ $pv['misClientes'] === 1 ? 'cliente asignado' : 'clientes asignados' }}
+            @else
+                Sin clientes asignados
+            @endif
+            @if(!empty($pv['capturaHasta']))
+                · captura hasta {{ $pv['capturaHasta'] }}
+                @if($pv['diasRestantes'] !== null)
+                    · {{ $pv['diasRestantes'] }} {{ $pv['diasRestantes'] === 1 ? 'día' : 'días' }}
+                @endif
+            @endif
+            @if(($pv['empresas'] ?? 0) > 0)
+                · {{ $pv['empresas'] }} {{ $pv['empresas'] === 1 ? 'empresa' : 'empresas' }}
+            @endif
+        </p>
+    </section>
         <div>
             <div class="home-cal-head">
                 <h2>Mantenimiento</h2>

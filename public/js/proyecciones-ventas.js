@@ -14,20 +14,18 @@
         cerrado: { label: 'Cerrado', cls: 'cc-badge-cerrado' }
     };
     var SK = {
-        admin: 'austin.cc.admin.v1',
-        budget: 'austin.cc.budget.v1',
-        period: 'austin.cc.period.v1',
-        ciclos: 'austin.cc.ciclos.v1',
-        currency: 'austin.cc.currency.v1'
+        admin: 'austin.pv.admin.v1',
+        budget: 'austin.pv.budget.v1',
+        period: 'austin.pv.period.v1',
+        ciclos: 'austin.pv.ciclos.v1',
+        currency: 'austin.pv.currency.v1'
     };
 
     function money(n, currency) {
-        var cur = currency || CC.state.currency || 'MXN';
         var val = Number(n) || 0;
-        if (cur === 'USD') val = val / (Number(CC.state.period.tipoCambio) || 20);
-        return (cur === 'USD' ? 'US$' : '$') + val.toLocaleString('es-MX', {
+        return val.toLocaleString('es-MX', {
             minimumFractionDigits: 0,
-            maximumFractionDigits: 0
+            maximumFractionDigits: 2
         });
     }
 
@@ -192,16 +190,21 @@
         var asig = asigDe(c);
         if (asig && asig.cuentas && asig.cuentas.length) {
             var gmap = gastoLookupDeCentro(c);
+            var emap = extrasLookupDeCentro(c);
             return asig.cuentas.map(function (x) {
                 var sap = (CC.state.cuentas || []).filter(function (cta) {
                     return String(cta.codigo) === String(x.codigo);
                 })[0];
                 var nombre = x.nombre || (sap && sap.nombre) || x.codigo;
+                var extra = extraMensualDe(x.codigo, nombre, emap);
                 return {
                     codigo: x.codigo,
                     nombre: nombre,
                     grupo: x.agrupacion || (sap && sap.grupo) || 'Asignadas',
                     gasto: gastoMensualDe(x.codigo, nombre, gmap),
+                    importe: extra.importe,
+                    importeUsd: extra.importe_usd,
+                    precio: extra.precio,
                     empresa: c.empresa
                 };
             });
@@ -311,25 +314,40 @@
         return zeros12();
     }
 
+    function extraFromRow(row) {
+        return {
+            importe: (row && row.importe && row.importe.length === 12) ? row.importe : zeros12(),
+            importe_usd: (row && row.importe_usd && row.importe_usd.length === 12) ? row.importe_usd : zeros12(),
+            precio: (row && row.precio && row.precio.length === 12) ? row.precio : zeros12()
+        };
+    }
+
     function mapFromPorCuenta(porCuenta) {
         var map = {};
+        var extras = {};
         var nombres = [];
+        function put(k, gasto, extra) {
+            if (!k) return;
+            map[k] = gasto;
+            extras[k] = extra;
+        }
         Object.keys(porCuenta || {}).forEach(function (key) {
             var row = porCuenta[key] || {};
             var gasto = row.gasto || row;
             if (!gasto || gasto.length !== 12) return;
-            map[key] = gasto;
-            if (row.codigo) map[String(row.codigo)] = gasto;
-            map[codigoCuentaKey(key)] = gasto;
-            if (row.codigo) map[codigoCuentaKey(row.codigo)] = gasto;
+            var extra = extraFromRow(row);
+            put(key, gasto, extra);
+            if (row.codigo) put(String(row.codigo), gasto, extra);
+            put(codigoCuentaKey(key), gasto, extra);
+            if (row.codigo) put(codigoCuentaKey(row.codigo), gasto, extra);
             var nk = nombreCuentaKey(row.nombre || '');
             if (nk) {
-                map['n:' + nk] = gasto;
-                map['nc:' + nk.replace(/\s+/g, '')] = gasto;
-                nombres.push({ key: nk, gasto: gasto });
+                put('n:' + nk, gasto, extra);
+                put('nc:' + nk.replace(/\s+/g, ''), gasto, extra);
+                nombres.push({ key: nk, gasto: gasto, extra: extra });
             }
         });
-        return { map: map, nombres: nombres };
+        return { map: map, extras: extras, nombres: nombres };
     }
 
     function gastoCacheKey(c) {
@@ -337,27 +355,71 @@
         return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
     }
 
-    function gastoLookupDeCentro(c) {
-        if (!c) return control._gastoMap || {};
+    function packedLookupDeCentro(c) {
+        var empty = { map: {}, extras: {}, nombres: [] };
+        if (!c) {
+            return {
+                map: control._gastoMap || {},
+                extras: control._gastoExtras || {},
+                nombres: control._gastoNombres || []
+            };
+        }
         var key = gastoCacheKey(c);
-        if (control._gastoReq === key && control._gastoMap) return control._gastoMap;
+        if (control._gastoReq === key && control._gastoMap) {
+            return {
+                map: control._gastoMap,
+                extras: control._gastoExtras || {},
+                nombres: control._gastoNombres || []
+            };
+        }
         var packed = CC.state.gastoLookup && CC.state.gastoLookup[key];
-        if (packed) return packed;
+        if (packed) {
+            if (packed.map) return packed;
+            return { map: packed, extras: {}, nombres: [] };
+        }
         var por = CC.state.gastoCache && CC.state.gastoCache[key];
-        if (!por) return {};
+        if (!por) return empty;
         var built = mapFromPorCuenta(por);
         CC.state.gastoLookup = CC.state.gastoLookup || {};
-        CC.state.gastoLookup[key] = built.map;
-        return built.map;
+        CC.state.gastoLookup[key] = built;
+        return built;
+    }
+
+    function gastoLookupDeCentro(c) {
+        return packedLookupDeCentro(c).map || {};
+    }
+
+    function extrasLookupDeCentro(c) {
+        return packedLookupDeCentro(c).extras || {};
+    }
+
+    function extraMensualDe(codigo, nombre, extrasOpt) {
+        var extras = extrasOpt || control._gastoExtras || {};
+        var hit = extras[String(codigo)] || extras[codigoCuentaKey(codigo)];
+        var nk = nombreCuentaKey(nombre);
+        if (!hit && nk) {
+            hit = extras['n:' + nk] || extras['nc:' + nk.replace(/\s+/g, '')];
+        }
+        if (!hit && nk && !extrasOpt) {
+            var list = control._gastoNombres || [];
+            for (var i = 0; i < list.length; i++) {
+                if (nombresGastoCompatibles(nk, list[i].key)) {
+                    hit = list[i].extra;
+                    break;
+                }
+            }
+        }
+        return extraFromRow(hit);
     }
 
     function applyGastoMap(porCuenta) {
         var built = mapFromPorCuenta(porCuenta);
         control._gastoMap = built.map;
+        control._gastoExtras = built.extras;
         control._gastoNombres = built.nombres;
         if (control._gastoReq) {
             CC.state.gastoLookup = CC.state.gastoLookup || {};
-            CC.state.gastoLookup[control._gastoReq] = built.map;
+            CC.state.gastoLookup[control._gastoReq] = built;
         }
         if (!control.centro) return;
         control._allCtas = cuentasEnriquecidas(control.centro);
@@ -434,7 +496,7 @@
                     break;
                 }
             }
-            fetch('/CentrosCostos/api/captura/presupuesto', {
+            fetch('/ProyeccionesVentas/api/captura/presupuesto', {
                 method: 'PUT',
                 headers: apiJsonHeaders(),
                 body: JSON.stringify({
@@ -444,17 +506,25 @@
                     cuenta: cuenta,
                     cuenta_nombre: nombre,
                     meses: months.slice(),
-                    completado: done
+                    completado: done,
+                    ajuste_pct: Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0,
+                    costo_unitario: (function () {
+                        var list = (control && control._allCtas) || [];
+                        for (var j = 0; j < list.length; j++) {
+                            if (String(list[j].codigo) === String(cuenta)) return Number(list[j].costo) || 0;
+                        }
+                        return 0;
+                    })()
                 })
             }).then(function (res) {
                 return res.json().then(function (json) {
-                    if (!res.ok) throw new Error(json.message || 'No se pudo guardar el presupuesto');
+                    if (!res.ok) throw new Error(json.message || 'No se pudo guardar la proyección');
                     CC.state.completados = CC.state.completados || {};
                     if (json.completado) CC.state.completados[key] = true;
                     else delete CC.state.completados[key];
                 });
             }).catch(function (err) {
-                toast('error', 'No se guardó el presupuesto', err && err.message ? err.message : 'Error de red');
+                toast('error', 'No se guardó la proyección', err && err.message ? err.message : 'Error de red');
             });
         }, 350);
     }
@@ -466,7 +536,7 @@
         if (CC.state.page !== 'control' && CC.state.page !== 'detalle') return;
         var ciclo = cicloActualCodigo();
         if (!ciclo) return;
-        fetch('/CentrosCostos/api/captura/centro', {
+        fetch('/ProyeccionesVentas/api/captura/centro', {
             method: 'PUT',
             headers: apiJsonHeaders(),
             body: JSON.stringify({
@@ -509,7 +579,7 @@
     }
 
     function saveCicloApi(data) {
-        return fetch('/CentrosCostos/api/ciclos', {
+        return fetch('/ProyeccionesVentas/api/ciclos', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -564,11 +634,13 @@
             CC._capturaReady = true;
             return Promise.resolve();
         }
-        return fetch('/CentrosCostos/api/captura?ciclo=' + encodeURIComponent(ciclo), {
+        return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (r) { return r.json(); }).then(function (json) {
             CC.state.overlays = json.overlays || {};
             CC.state.completados = json.completados || {};
+            CC.state.ajustes = json.ajustes || {};
+            CC.state.costos = json.costos || {};
             CC.state.budgets = {};
             var rawBudgets = json.budgets || {};
             Object.keys(rawBudgets).forEach(function (k) {
@@ -612,7 +684,7 @@
     }
 
     function cicloUrl(codigo) {
-        return '/AdminCentros/' + encodeURIComponent(codigo);
+        return '/Ventas/Asignaciones/' + encodeURIComponent(codigo);
     }
 
     function leerFormCiclo() {
@@ -854,9 +926,9 @@
                 htmlEstadoSelect(c.codigo, c.estado) + '</div>' +
                 '<div class="cc-ciclo-meta">' +
                     '<div><small>Año real</small><strong>' + (c.anioReferencia || '—') + '</strong></div>' +
-                    '<div><small>Año presupuesto</small><strong>' + (c.anio || '—') + '</strong></div>' +
+                    '<div><small>Año proyección</small><strong>' + (c.anio || '—') + '</strong></div>' +
                     '<div><small>Ventana</small><strong>' + formatDate(c.inicio) + ' — ' + formatDate(c.fin) + '</strong></div>' +
-                    '<div><small>Indicadores</small><strong>' + (c.inflacion || 0) + '% · USD $' + Number(c.tipoCambio || 0).toFixed(2) + '</strong></div>' +
+                    '<div><small>Tipo de cambio</small><strong>USD $' + Number(c.tipoCambio || 0).toFixed(2) + '</strong></div>' +
                 '</div>' +
                 '<div class="cc-ciclo-obs">' + escapeHtml(c.observaciones || 'Sin observaciones') + '</div>' +
                 '<div class="actions">' +
@@ -976,7 +1048,7 @@
         if (normalizeCicloEstado(c.estado) === estado) return;
         var prev = c.estado;
         applyCicloEstado(codigo, estado);
-        fetch('/CentrosCostos/api/ciclos/' + encodeURIComponent(codigo) + '/estado', {
+        fetch('/ProyeccionesVentas/api/ciclos/' + encodeURIComponent(codigo) + '/estado', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1045,7 +1117,7 @@
     CC.eliminarCiclo = function (codigo) {
         var c = findCiclo(codigo) || { codigo: codigo, nombre: codigo, asignaciones: 0, cuentas: 0, usuarios: 0, centros: 0 };
         var go = function () {
-            return fetch('/CentrosCostos/api/ciclos/' + encodeURIComponent(c.codigo), {
+            return fetch('/ProyeccionesVentas/api/ciclos/' + encodeURIComponent(c.codigo), {
                 method: 'DELETE',
                 headers: {
                     Accept: 'application/json',
@@ -1061,7 +1133,7 @@
                 purgeCicloLocal(c.codigo);
                 toast('success', 'Budget eliminado', c.codigo);
                 if (CC.state.page === 'admin-ciclo' || CC.state.page === 'asignacion') {
-                    window.location = '/AdminCentros';
+                    window.location = '/Ventas/Asignaciones';
                     return;
                 }
                 renderCiclos();
@@ -1159,9 +1231,9 @@
                 estadoEl.className = 'cc-badge ' + s.cls;
             }
         }
-        setText('period-fx', (p.inflacion || 0) + '% infl. · USD $' + Number(p.tipoCambio || 0).toFixed(2));
-        setText('th-gasto', 'Gasto ' + (p.anioReferencia || 2026));
-        setText('th-ppto', 'Ppto ' + (p.anio || 2027));
+        setText('period-fx', 'USD $' + Number(p.tipoCambio || 0).toFixed(2));
+        setText('th-gasto', 'Venta ' + (p.anioReferencia || 2026));
+        setText('th-ppto', 'Proy. ' + (p.anio || 2027));
         setText('ind-inflacion', (p.inflacion || 0) + ' %');
         setText('ind-tc', '$ ' + Number(p.tipoCambio || 0).toFixed(2));
         setText('ind-anio-ref', p.anioReferencia || 2026);
@@ -1196,7 +1268,7 @@
         var tb = document.getElementById('admin-tbody');
         if (!tb) return;
         if (!rows.length) {
-            tb.innerHTML = '<tr><td colspan="9"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>Sin centros con esos filtros</div></td></tr>';
+            tb.innerHTML = '<tr><td colspan="9"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>Sin clientes con esos filtros</div></td></tr>';
             return;
         }
         tb.innerHTML = rows.map(function (c) {
@@ -1204,7 +1276,7 @@
             var ppto = totPptoCentro(c, ctas);
             var gasto = totGastoCentro(c, ctas) || c.gasto2026 || 0;
             return '<tr data-key="' + centroKey(c) + '">' +
-                '<td><div class="fw-semibold">' + c.codigo + ' — ' + escapeHtml(c.nombre) + '</div><div class="text-muted" style="font-size:.75rem">' + ctas.length + ' cuentas · ' + (c.sap ? 'SAP' : 'catálogo') + '</div></td>' +
+                '<td><div class="fw-semibold">' + c.codigo + ' — ' + escapeHtml(c.nombre) + '</div><div class="text-muted" style="font-size:.75rem">' + ctas.length + ' productos · ' + (c.sap ? 'SAP' : 'catálogo') + '</div></td>' +
                 '<td>' + escapeHtml(c.empresa) + '</td>' +
                 '<td>' + escapeHtml(c.departamento || '—') + '</td>' +
                 '<td>' + userCell(c.usuario) + '</td>' +
@@ -1214,9 +1286,9 @@
                 '<td class="num">' + money(ppto) + '</td>' +
                 '<td><div class="cc-row-actions">' +
                     '<button class="cc-icon-btn" data-act="detalle" title="Detalle"><i class="fa-solid fa-eye"></i></button>' +
-                    '<button class="cc-icon-btn" data-act="cuentas" title="Cuentas"><i class="fa-solid fa-list"></i></button>' +
+                    '<button class="cc-icon-btn" data-act="cuentas" title="Productos"><i class="fa-solid fa-list"></i></button>' +
                     '<button class="cc-icon-btn" data-act="permisos" title="Permisos"><i class="fa-solid fa-user-lock"></i></button>' +
-                    '<a class="cc-icon-btn" href="/ControlCentros?empresa=' + encodeURIComponent(c.empresa) + '&cc=' + encodeURIComponent(c.codigo) + '&ciclo=' + encodeURIComponent(CC.state.period.codigo || '') + '" title="Presupuestar"><i class="fa-solid fa-pen-to-square"></i></a>' +
+                    '<a class="cc-icon-btn" href="/Ventas/Captura?empresa=' + encodeURIComponent(c.empresa) + '&cc=' + encodeURIComponent(c.codigo) + '&ciclo=' + encodeURIComponent(CC.state.period.codigo || '') + '" title="Proyectar"><i class="fa-solid fa-pen-to-square"></i></a>' +
                 '</div></td></tr>';
         }).join('');
         tb.querySelectorAll('[data-act]').forEach(function (btn) {
@@ -1323,14 +1395,14 @@
             item('Empresa', c.empresa) + item('Departamento', c.departamento) +
             item('Responsable', c.usuario || 'Sin asignar') + item('Estado', STATUS[normalizeEstado(c.estado)].label) +
             item('Modo', c.modo === 'solo_revision' ? 'Solo revisar' : 'Puede capturar') +
-            item('Cuentas', ctas.length) +
-            item('Gasto 2026', money(gasto)) + item('Ppto 2027', money(ppto)) +
+            item('Productos', ctas.length) +
+            item('Venta 2026', money(gasto)) + item('Proy. 2027', money(ppto)) +
             '</div>' +
-            '<div class="mb-2 d-flex justify-content-between"><span class="text-muted">Avance vs gasto 2026</span><strong>' + av + '%</strong></div>' +
+            '<div class="mb-2 d-flex justify-content-between"><span class="text-muted">Avance vs venta 2026</span><strong>' + av + '%</strong></div>' +
             '<div class="cc-progress ' + (av < 40 ? 'warn' : 'good') + '"><span style="width:' + Math.min(av, 100) + '%"></span></div>' +
             '<div class="mt-3 d-flex gap-2 flex-wrap">' +
-            '<a class="cc-btn cc-btn-ink" href="/ControlCentros?empresa=' + encodeURIComponent(c.empresa) + '&cc=' + encodeURIComponent(c.codigo) + '&ciclo=' + encodeURIComponent((CC.state.period && CC.state.period.codigo) || '') + '">Ir a captura</a>' +
-            '<a class="cc-btn" href="/AnalisisProgreso">Ver análisis</a></div>';
+            '<a class="cc-btn cc-btn-ink" href="/Ventas/Captura?empresa=' + encodeURIComponent(c.empresa) + '&cc=' + encodeURIComponent(c.codigo) + '&ciclo=' + encodeURIComponent((CC.state.period && CC.state.period.codigo) || '') + '">Ir a captura</a>' +
+            '<a class="cc-btn" href="/Ventas/Analisis">Ver análisis</a></div>';
         showOffcanvas('offDetalle');
     }
 
@@ -1351,19 +1423,19 @@
                 var on = asignadas.indexOf(cta.codigo) !== -1;
                 return '<label><input type="checkbox" value="' + cta.codigo + '"' + (on ? ' checked' : '') + '>' +
                     '<span><strong>' + codigoCuentaVisible(cta.codigo) + '</strong> ' + escapeHtml(cta.nombre) +
-                    '<small>' + (cta.grupo || 'Sin agrupación') + (cta.empresa ? ' · ' + cta.empresa : '') + '</small></span></label>';
-            }).join('') || '<div class="cc-empty">Sin cuentas</div>';
+                    '<small>' + (cta.grupo || '') + (cta.empresa ? ' · ' + cta.empresa : '') + '</small></span></label>';
+            }).join('') || '<div class="cc-empty">Sin productos</div>';
         }
         qInput.oninput = draw;
         draw();
-        document.getElementById('cta-title').textContent = 'Cuentas · ' + c.codigo + ' ' + c.nombre;
+        document.getElementById('cta-title').textContent = 'Productos · ' + c.codigo + ' ' + c.nombre;
         document.getElementById('form-cuentas').onsubmit = function (e) {
             e.preventDefault();
             var selected = Array.prototype.map.call(document.querySelectorAll('#cta-list input:checked'), function (i) { return i.value; });
             persistOverlay(c, { cuentasAsignadas: selected });
             hideModal('modalCuentas');
             renderAdminTable();
-            toast('success', 'Cuentas asignadas', selected.length + ' cuentas en el catálogo del centro');
+            toast('success', 'Productos asignados', selected.length + ' productos en el catálogo del cliente');
         };
         showModal('modalCuentas');
     }
@@ -1531,7 +1603,7 @@
     }
 
     function setCapturaEnabled(on) {
-        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar'].forEach(function (id) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.disabled = !on;
         });
@@ -1545,7 +1617,8 @@
                 ppto: ppto,
                 totG: sum(cta.gasto),
                 totP: totP,
-                listo: mesesTodosLlenos(ppto) || cuentaMarcada(c.empresa, c.codigo, cta.codigo)
+                listo: mesesTodosLlenos(ppto) || cuentaMarcada(c.empresa, c.codigo, cta.codigo),
+                costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0
             });
         });
     }
@@ -1598,15 +1671,15 @@
         var hint = document.getElementById('ctl-detalle-hint');
         if (hint) {
             if (control.scopeTabla === 'cuenta' && cta) {
-                hint.textContent = 'Solo la cuenta ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Cambia a Todo el centro para ver todas las cuentas.';
+                hint.textContent = 'Solo el producto ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Cambia a Todo el cliente para ver todos los productos.';
             } else if (control.scopeTabla === 'cuenta' && !control.cuenta) {
-                hint.textContent = 'Elige una cuenta para filtrar el detalle, o cambia a Todo el centro para verlas todas.';
+                hint.textContent = 'Elige un producto para filtrar el detalle, o cambia a Todo el cliente para verlos todos.';
             } else if (control.chartVerTodas) {
-                hint.textContent = 'Todas las cuentas del centro. La gráfica muestra el centro completo.';
+                hint.textContent = 'Todos los productos del cliente. La gráfica muestra el cliente completo.';
             } else if (cta) {
-                hint.textContent = 'Todas las cuentas del centro. La gráfica muestra ' + (cta.nombre || cta.codigo) + '. Marca Ver todas para ver el centro completo.';
+                hint.textContent = 'Todos los productos del cliente. La gráfica muestra ' + (cta.nombre || cta.codigo) + '. Marca Ver todas para ver el cliente completo.';
             } else {
-                hint.textContent = 'Todas las cuentas del centro. Elige una fila para verla en la gráfica, o marca Ver todas.';
+                hint.textContent = 'Todos los productos del cliente. Elige una fila para verla en la gráfica, o marca Ver todas.';
             }
         }
         var wrap = document.getElementById('ctl-chart-todas-wrap');
@@ -1616,11 +1689,11 @@
         ['ctl-chart-hint', 'det-chart-hint'].forEach(function (id) {
             var chartHint = document.getElementById(id);
             if (!chartHint) return;
-            var base = 'Gasto ' + CC.state.anioGasto + ' vs presupuesto ' + CC.state.anioPresupuesto;
+            var base = 'Venta ' + CC.state.anioGasto + ' vs proyección ' + CC.state.anioPresupuesto;
             if (chartScopePref() === 'cuenta' && cta) {
                 chartHint.textContent = base + ' · ' + (cta.nombre || cta.codigo);
             } else {
-                chartHint.textContent = base + ' · Todo el centro';
+                chartHint.textContent = base + ' · Todo el cliente';
             }
         });
         paintScopeToggle('ctl-scope-tabla', control.scopeTabla);
@@ -1767,7 +1840,7 @@
         }
         var list = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
         var cur = val('ctl-centro');
-        var html = '<option value="">Elige centro…</option>';
+        var html = '<option value="">Elige cliente…</option>';
         list.forEach(function (a) {
             var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
             if (CC._capturaReady) {
@@ -1802,7 +1875,7 @@
         var emp = val('ctl-empresa');
         var cc = val('ctl-centro');
         if (!emp || !cc) {
-            el.innerHTML = '<option value="">Elige un centro primero…</option>';
+            el.innerHTML = '<option value="">Elige un cliente primero…</option>';
             el.disabled = true;
             el.classList.remove('is-warn', 'is-ok');
             paintNavStatus('ctl-cta-status', null, el);
@@ -1813,7 +1886,7 @@
             ? control._allCtas
             : (centro ? cuentasEnriquecidas(centro) : []);
         if (control.soloPendientes) ctas = ctas.filter(ctaPendiente);
-        var html = '<option value="">Elige cuenta…</option>';
+        var html = '<option value="">Elige producto…</option>';
         ctas.forEach(function (cta) {
             var pend = ctaPendiente(cta) ? 1 : 0;
             html += '<option value="' + escapeHtml(cta.codigo) + '">' +
@@ -1841,7 +1914,7 @@
             var label = (c.codigo ? (c.codigo + ' — ') : '') + (c.nombre || c.codigo);
             if (season) label += ' · temporada';
             return '<option value="' + escapeHtml(c.codigo) + '">' + escapeHtml(label) + '</option>';
-        }).join('') || '<option value="">Sin presupuestos</option>';
+        }).join('') || '<option value="">Sin ciclos</option>';
         if (selected) el.value = selected;
     }
 
@@ -1890,7 +1963,7 @@
 
     CC.initControl = function () {
         if (!CC._asigLoaded) {
-            fetch('/CentrosCostos/api/mis-asignaciones', {
+            fetch('/ProyeccionesVentas/api/mis-asignaciones', {
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).then(function (r) { return r.json(); }).then(function (json) {
                 CC.state.misAsignaciones = json.asignaciones || [];
@@ -1998,7 +2071,7 @@
 
     CC.initDetalle = function () {
         if (!CC._asigLoaded) {
-            fetch('/CentrosCostos/api/mis-asignaciones', {
+            fetch('/ProyeccionesVentas/api/mis-asignaciones', {
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).then(function (r) { return r.json(); }).then(function (json) {
                 CC.state.misAsignaciones = json.asignaciones || [];
@@ -2084,7 +2157,7 @@
         })[0] || null;
         if (!control.centro) {
             var tb = document.getElementById('ctl-tbody');
-            if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes centros de costo asignados en este ciclo. Pide a contabilidad una asignación.</div></td></tr>';
+            if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes clientes asignados en este ciclo. Pide una asignación.</div></td></tr>';
             setCapturaEnabled(false);
             control._allCtas = [];
             control._ctas = [];
@@ -2128,13 +2201,13 @@
         var c = control.centro;
         var box = document.getElementById('ctl-nav-pend');
         if (!c) {
-            setText('ctl-progress-kicker', 'Centro de costo');
-            setText('ctl-progress-title', 'Selecciona un centro');
+            setText('ctl-progress-kicker', 'Cliente');
+            setText('ctl-progress-title', 'Selecciona un cliente');
             setText('kpi-ctl-avance', '—');
-            setText('ctl-progress-meta', 'Elige un centro para ver el avance');
+            setText('ctl-progress-meta', 'Elige un cliente para ver el avance');
             setText('ctl-pend-label', '— pendientes');
             setText('ctl-nav-pend-n', '—');
-            setText('ctl-nav-pend-sub', 'Elige un centro para ver cuántas cuentas faltan por presupuestar');
+            setText('ctl-nav-pend-sub', 'Elige un cliente para ver cuántos productos faltan por proyectar');
             if (box) box.className = 'cc-nav-pend';
             var bar0 = document.getElementById('ctl-avance-bar');
             var wrap0 = document.getElementById('ctl-avance-wrap');
@@ -2145,10 +2218,10 @@
             return;
         }
         var st = statsDeCentro(c);
-        setText('ctl-progress-kicker', (c.ciclo || val('ctl-ciclo') || 'Presupuesto') + ' · ' + c.empresa);
+        setText('ctl-progress-kicker', (c.ciclo || val('ctl-ciclo') || 'Proyección') + ' · ' + c.empresa);
         setText('ctl-progress-title', c.codigo + ' — ' + c.nombre);
         setText('kpi-ctl-avance', st.avance + '%');
-        setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' cuentas capturadas');
+        setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
         setText('ctl-pend-label', st.pendientes + (st.pendientes === 1 ? ' pendiente' : ' pendientes'));
         setText('kpi-ctl-gasto', moneyGasto(st.totG));
         setText('kpi-ctl-ppto', money(st.totP));
@@ -2160,9 +2233,9 @@
         setText('ctl-nav-pend-n', st.pendientes);
         setText('ctl-nav-pend-sub', st.total
             ? (st.pendientes
-                ? ('De ' + st.total + ' cuentas asignadas a este centro')
-                : ('Las ' + st.total + ' cuentas de este centro ya tienen presupuesto'))
-            : 'Este centro no tiene cuentas asignadas');
+                ? ('De ' + st.total + ' productos asignados a este cliente')
+                : ('Los ' + st.total + ' productos de este cliente ya tienen proyección'))
+            : 'Este cliente no tiene productos asignados');
         if (box) box.className = 'cc-nav-pend' + (st.pendientes ? '' : ' is-ok');
         paintScopeHints();
     }
@@ -2186,7 +2259,7 @@
             var ok = !ctaPendiente(cta);
             return '<button type="button" class="cc-cta-chip' + (on ? ' is-on' : '') + (ok ? ' is-ok' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '" title="' + escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo)) + '">' +
                 '<span class="dot"></span><span class="cc-cta-chip-name">' + escapeHtml(cta.nombre || cta.codigo) + '</span></button>';
-        }).join('') || '<div class="text-muted" style="font-size:.8rem">Sin cuentas para mostrar</div>';
+        }).join('') || '<div class="text-muted" style="font-size:.8rem">Sin productos para mostrar</div>';
         box.querySelectorAll('[data-cta]').forEach(function (btn) {
             btn.addEventListener('click', function () {
                 selectCuenta(btn.getAttribute('data-cta'));
@@ -2220,10 +2293,16 @@
         }
         if (empty) empty.hidden = true;
         if (body) body.hidden = false;
-        setText('ctl-form-grupo', cta.grupo || 'Cuenta');
+        setText('ctl-form-grupo', cta.grupo || '');
         var cc = control.centro;
         paintNombreCodigo('ctl-form-cc', cc ? cc.nombre : '', cc ? cc.codigo : '');
         paintNombreCodigo('ctl-form-cta', cta.nombre, cta.codigo);
+        var aj = document.getElementById('ctl-ajuste-pct');
+        if (aj && control.centro) {
+            var akey = budgetKey(control.centro.empresa, control.centro.codigo, cta.codigo);
+            var saved = CC.state.ajustes && CC.state.ajustes[akey];
+            aj.value = (saved != null && saved !== '') ? saved : '';
+        }
         paintFormPresupuestoLabel();
         paintFormEstado(cta);
         paintCompletarBtn(cta);
@@ -2287,6 +2366,30 @@
         paintCtaFill(cta);
     }
 
+    function qtyLabel(n) {
+        var val = Number(n) || 0;
+        return val.toLocaleString('es-MX', { maximumFractionDigits: 2 });
+    }
+
+    function monthRealHtml(cta, i) {
+        var qty = Number((cta.gasto && cta.gasto[i]) || 0);
+        var tot = Number((cta.importe && cta.importe[i]) || 0);
+        var usd = Number((cta.importeUsd && cta.importeUsd[i]) || 0);
+        var price = Number((cta.precio && cta.precio[i]) || 0);
+        if (!qty && !tot && !usd) {
+            return '<div class="cc-month-real is-empty">Sin venta</div>';
+        }
+        if (!price && qty) price = tot / qty;
+        return '<div class="cc-month-real">' +
+            '<div class="cc-month-qty">' + qtyLabel(qty) + ' <em>uds</em></div>' +
+            '<div class="cc-month-money">' +
+                '<span>MXN ' + money(tot) + '</span>' +
+                (usd ? '<span>USD ' + money(usd) + '</span>' : '') +
+            '</div>' +
+            (price ? '<div class="cc-month-price">P. ' + moneyDec(price) + '</div>' : '') +
+            '</div>';
+    }
+
     function drawMonthGrid(cta) {
         var grid = document.getElementById('ctl-month-grid');
         if (!grid) return;
@@ -2294,8 +2397,8 @@
             var cls = monthCellClass(cta, i);
             var shown = mesLleno(cta.ppto[i]) ? String(Number(cta.ppto[i])) : '';
             return '<div class="' + cls + '"><div class="m">' + m + '</div>' +
-                '<div class="prev">' + ((cta.gasto[i] || 0) ? ('Gastó ' + money(cta.gasto[i])) : 'Sin gasto') + '</div>' +
-                '<input type="number" step="0.01" min="0" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' + (control.locked ? 'disabled' : '') + ' placeholder="0"></div>';
+                monthRealHtml(cta, i) +
+                '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' + (control.locked ? 'disabled' : '') + ' placeholder="Cantidad" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '"></div>';
         }).join('');
         grid.querySelectorAll('input').forEach(function (inp) {
             inp.addEventListener('input', function () {
@@ -2362,20 +2465,20 @@
     function celebrarCentroCompleto() {
         var c = control.centro || {};
         var n = (control._allCtas || []).length;
-        var nombre = c.nombre || c.codigo || 'este centro';
-        var cuentaTxt = n === 1 ? 'la única cuenta' : ('las ' + n + ' cuentas');
+        var nombre = c.nombre || c.codigo || 'este cliente';
+        var cuentaTxt = n === 1 ? 'el único producto' : ('los ' + n + ' productos');
         var frases = [
             {
                 title: '¡Lo lograste!',
-                html: 'Cerraste ' + cuentaTxt + ' de <b>' + escapeHtml(nombre) + '</b>. Ese centro ya puede dormir tranquilo.'
+                html: 'Cerraste ' + cuentaTxt + ' de <b>' + escapeHtml(nombre) + '</b>.'
             },
             {
-                title: '¡Centro listo, crack!',
-                html: '<b>' + escapeHtml(nombre) + '</b> quedó redondo: ' + cuentaTxt + ' presupuestadas. Contabilidad te lo va a agradecer.'
+                title: '¡Cliente listo!',
+                html: '<b>' + escapeHtml(nombre) + '</b> quedó redondo: ' + cuentaTxt + ' proyectados.'
             },
             {
                 title: '¡Misión cumplida!',
-                html: 'Ni una cuenta pendiente en <b>' + escapeHtml(nombre) + '</b>. Hoy sí se siente el avance.'
+                html: 'Ni un producto pendiente en <b>' + escapeHtml(nombre) + '</b>.'
             }
         ];
         var pick = frases[Math.floor(Math.random() * frases.length)];
@@ -2392,7 +2495,7 @@
                 allowOutsideClick: true
             });
         } else {
-            toast('success', pick.title, 'Ya no hay cuentas pendientes de presupuestar');
+            toast('success', pick.title, 'Ya no hay productos pendientes de proyectar');
         }
     }
 
@@ -2449,7 +2552,7 @@
         var tbody = document.getElementById(tbodyId);
         if (!thead || !tbody) return;
         if (!c) {
-            tbody.innerHTML = '<tr><td colspan="28"><div class="cc-empty">Elige un centro para ver el detalle</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="28"><div class="cc-empty">Elige un cliente para ver el detalle</div></td></tr>';
             if (tbodyId === 'ctl-tbody') paintVisibleTableTotals(null, 'ctl');
             if (tbodyId === 'det-tbody') paintVisibleTableTotals(null, 'det');
             return;
@@ -2486,7 +2589,7 @@
             var gTotP = groups[g].reduce(function (a, x) { return a + x.totP; }, 0);
             var closed = !!closedMap[g];
             if (!hideGroups) {
-                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="4"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' cuentas</td>';
+                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="4"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
                 html += '<td class="num" colspan="2">' + money(gTotG) + ' → ' + money(gTotP) + '</td><td colspan="22"></td></tr>';
             }
             if (!closed || hideGroups) {
@@ -2512,8 +2615,8 @@
             }
         });
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
-            ? 'No hay filas para esta cuenta con los filtros actuales'
-            : 'Sin cuentas asignadas a este centro';
+            ? 'No hay filas para este producto con los filtros actuales'
+            : 'Sin productos asignados a este cliente';
         tbody.innerHTML = html || '<tr><td colspan="28"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
 
         tbody.querySelectorAll('.cc-group-row').forEach(function (row) {
@@ -2587,7 +2690,7 @@
             if (!c || !cta || control.locked) return;
             persistBudget(c.empresa, c.codigo, cta.codigo, (cta.gasto || []).slice());
             refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Copiado', 'Se copió el gasto ' + CC.state.anioGasto + ' a los 12 meses');
+            toast('success', 'Copiado', 'Se copió la cantidad vendida de ' + CC.state.anioGasto + ' a los 12 meses');
         });
         var clear = document.getElementById('ctl-clear-year');
         if (clear) clear.addEventListener('click', function () {
@@ -2596,18 +2699,21 @@
             if (!c || !cta || control.locked) return;
             persistBudget(c.empresa, c.codigo, cta.codigo, [null, null, null, null, null, null, null, null, null, null, null, null], { completado: false });
             refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Limpio', 'Se quitó el presupuesto de ' + cta.nombre);
+            toast('success', 'Limpio', 'Se quitó la proyección de ' + cta.nombre);
         });
         var infl = document.getElementById('ctl-apply-infl');
         if (infl) infl.addEventListener('click', function () {
             var c = control.centro;
             var cta = currentCta();
             if (!c || !cta || control.locked) return;
-            var rate = 1 + ((Number(CC.state.period.inflacion) || 4) / 100);
-            var months = (cta.gasto || []).map(function (v) { return Math.round((Number(v) || 0) * rate); });
+            var pctIn = document.getElementById('ctl-ajuste-pct');
+            var pctVal = pctIn ? Number(pctIn.value) : 0;
+            if (!isFinite(pctVal)) pctVal = 0;
+            var rate = 1 + (pctVal / 100);
+            var months = (cta.gasto || []).map(function (v) { return (Number(v) || 0) * rate; });
             persistBudget(c.empresa, c.codigo, cta.codigo, months);
             refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Inflación aplicada', 'Gasto ' + CC.state.anioGasto + ' × ' + ((Number(CC.state.period.inflacion) || 4)) + '%');
+            toast('success', 'Ajuste aplicado', 'Cantidad ' + CC.state.anioGasto + ' × (1 ' + (pctVal >= 0 ? '+ ' : '− ') + Math.abs(pctVal) + '%)');
         });
         var completar = document.getElementById('ctl-completar');
         if (completar) completar.addEventListener('click', function () {
@@ -2665,9 +2771,9 @@
         var facts = document.getElementById('cc-detalle-facts');
         var sub = document.getElementById('cc-page-sub');
         if (!c) {
-            setText('cc-page-kicker', 'Detalle del centro');
-            setText('cc-page-title', 'Centro de costos');
-            if (sub) { sub.hidden = false; setText('cc-page-sub', 'Elige un centro desde el visor.'); }
+            setText('cc-page-kicker', 'Detalle del cliente');
+            setText('cc-page-title', 'Cliente');
+            if (sub) { sub.hidden = false; setText('cc-page-sub', 'Elige un cliente desde el visor.'); }
             if (facts) facts.hidden = true;
             return;
         }
@@ -2676,14 +2782,14 @@
         var barCls = stt.pendientes ? 'warn' : 'good';
         setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
         var title = document.getElementById('cc-page-title');
-        if (title) title.innerHTML = escapeHtml(c.nombre || c.codigo || 'Centro de costos');
+        if (title) title.innerHTML = escapeHtml(c.nombre || c.codigo || 'Cliente');
         if (sub) sub.hidden = true;
         if (facts) {
             facts.hidden = false;
             facts.innerHTML =
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
-                factHtml('Tot Gasto', money(stt.totG)) +
-                factHtml('Tot Pres', money(stt.totP)) +
+                factHtml('Tot Venta', money(stt.totG)) +
+                factHtml('Tot Proy.', money(stt.totP)) +
                 factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
                 factHtml('Progreso', stt.avance + '%',
@@ -2795,8 +2901,8 @@
     function paintVisorResumen(tot) {
         setText('visor-avance', tot.n ? (tot.avance + '%') : '—');
         setText('visor-avance-meta', tot.n
-            ? (tot.listos + ' de ' + tot.n + ' centros listos · ' + tot.capturadas + ' de ' + tot.totalCtas + ' cuentas capturadas')
-            : 'No hay centros para sumar');
+            ? (tot.listos + ' de ' + tot.n + ' clientes listos · ' + tot.capturadas + ' de ' + tot.totalCtas + ' productos capturados')
+            : 'No hay clientes para sumar');
         var bar = document.getElementById('visor-avance-bar');
         var wrap = document.getElementById('visor-avance-wrap');
         if (bar) bar.style.width = (tot.n ? Math.min(tot.avance, 100) : 0) + '%';
@@ -2812,7 +2918,7 @@
             return;
         }
         tf.innerHTML = '<tr>' +
-            '<td colspan="4">Totales · ' + tot.n + (tot.n === 1 ? ' centro' : ' centros') + '</td>' +
+            '<td colspan="4">Totales · ' + tot.n + (tot.n === 1 ? ' cliente' : ' clientes') + '</td>' +
             '<td class="num">' + money(tot.totG) + '</td>' +
             '<td class="num">' + money(tot.totP) + '</td>' +
             '<td colspan="2"></td>' +
@@ -2828,7 +2934,7 @@
         var tot = visorTotales(rows);
         paintVisorResumen(tot);
         if (!rows.length) {
-            tb.innerHTML = '<tr><td colspan="10"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay centros con esos filtros</div></td></tr>';
+            tb.innerHTML = '<tr><td colspan="10"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay clientes con esos filtros</div></td></tr>';
             return;
         }
         tb.innerHTML = rows.map(function (c) {
@@ -2852,7 +2958,7 @@
     }
 
     function detalleHref(c) {
-        var base = CC.state.detalleUrl || '/ControlCentros/detalle';
+        var base = CC.state.detalleUrl || '/Ventas/Captura/detalle';
         var ciclo = val('ctl-ciclo') || CC.state.cicloCodigo || '';
         return base + '?empresa=' + encodeURIComponent(c.empresa || '') +
             '&cc=' + encodeURIComponent(c.codigo || '') +
@@ -2918,7 +3024,7 @@
                 celebrarCentroCompleto();
                 return;
             }
-            toast('success', 'Captura guardada', 'El presupuesto quedó en el servidor');
+            toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
         });
         var saveNext = document.getElementById('ctl-guardar-seguir');
         if (saveNext) saveNext.addEventListener('click', function () {
@@ -2926,7 +3032,7 @@
             if (!guardarCapturaActual()) return;
             refreshControlAfterEdit(codigo);
             if (!irSiguientePendiente(codigo)) return;
-            toast('success', 'Captura guardada', 'El presupuesto quedó en el servidor');
+            toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
         });
     }
 
@@ -2989,7 +3095,7 @@
                     avisarPlantillaBloqueada();
                     return;
                 }
-                window.location.href = '/CentrosCostos/api/captura/plantilla?ciclo=' + encodeURIComponent(ciclo);
+                window.location.href = '/ProyeccionesVentas/api/captura/plantilla?ciclo=' + encodeURIComponent(ciclo);
             });
         }
         if (btnImportar && fileEl) {
@@ -3019,7 +3125,7 @@
                     Swal.fire({
                         title: 'Subiendo plantilla…',
                         html: '<p style="margin:0 0 .55rem">Estamos leyendo <b>' + escapeHtml(file.name) + '</b></p>' +
-                            '<p style="margin:0;color:#71717a">Guardando tus presupuestos. No cierres esta ventana.</p>',
+                            '<p style="margin:0;color:#71717a">Guardando tus proyecciones. No cierres esta ventana.</p>',
                         position: 'center',
                         width: '32rem',
                         allowOutsideClick: false,
@@ -3028,7 +3134,7 @@
                         didOpen: function () { Swal.showLoading(); }
                     });
                 }
-                fetch('/CentrosCostos/api/captura/importar', {
+                fetch('/ProyeccionesVentas/api/captura/importar', {
                     method: 'POST',
                     headers: {
                         'Accept': 'application/json',
@@ -3084,7 +3190,7 @@
                             confirmButtonText: n ? '¡Listo!' : 'Entendido'
                         });
                     } else {
-                        toast(n ? 'success' : 'error', n ? 'Importación lista' : 'Nada se importó', n + ' cuentas actualizadas');
+                        toast(n ? 'success' : 'error', n ? 'Importación lista' : 'Nada se importó', n + ' productos actualizados');
                     }
                     loadOverlaysForCycle().then(function () {
                         loadControlCentro();
@@ -3184,14 +3290,14 @@
     function paintAnalisisYears() {
         var g = CC.state.anioGasto || 2026;
         var p = CC.state.anioPresupuesto || 2027;
-        setText('an-kicker', 'Supervisión · presupuesto ' + p);
-        setText('an-sub', 'Cuánto se lleva capturado por empresa, centro, cuenta o usuario, y dónde se pasó el límite vs el gasto ' + g + '.');
-        setText('an-kpi-over-hint', 'Ppto ' + p + ' > 110% del gasto ' + g);
+        setText('an-kicker', 'Supervisión · proyección ' + p);
+        setText('an-sub', 'Cuánto se lleva capturado por empresa, cliente, producto o usuario, y la diferencia vs la venta real (cantidad × costo).');
+        setText('an-kpi-over-hint', 'Proy. ' + p + ' > 110% de la venta ' + g);
         setText('an-kpi-yoy-hint', 'Promedio de aumento vs ' + g);
         var title = document.getElementById('an-chart-emp-title');
-        if (title) title.innerHTML = '<i class="fa-solid fa-chart-column"></i> Gasto ' + g + ' vs presupuesto ' + p;
-        setText('an-th-gasto', 'Gasto ' + g);
-        setText('an-th-ppto', 'Ppto ' + p);
+        if (title) title.innerHTML = '<i class="fa-solid fa-chart-column"></i> Venta ' + g + ' vs proyección ' + p;
+        setText('an-th-gasto', 'Venta ' + g);
+        setText('an-th-ppto', 'Proy. ' + p);
         var months = document.getElementById('an-heat-months');
         if (months) months.innerHTML = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
     }
@@ -3286,7 +3392,7 @@
                 return;
             }
             CC._anAsigLoading = true;
-            fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
+            fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones', {
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).then(function (r) { return r.json(); }).then(function (json) {
                 CC.state.misAsignaciones = json.asignaciones || [];
@@ -3640,8 +3746,8 @@
         CC.state.empresaInicial = boot.empresaInicial || '';
         CC.state.cicloInicial = boot.cicloInicial || '';
         CC.state.vistaInicial = boot.vistaInicial || '';
-        CC.state.detalleUrl = boot.detalleUrl || '/ControlCentros/detalle';
-        CC.state.gastoUrl = boot.gastoUrl || '/CentrosCostos/api/gasto-real';
+        CC.state.detalleUrl = boot.detalleUrl || '/Ventas/Captura/detalle';
+        CC.state.gastoUrl = boot.gastoUrl || '/ProyeccionesVentas/api/gasto-real';
         CC.state.gastoCache = {};
         CC.state.cicloCodigo = boot.cicloCodigo || boot.cicloInicial || '';
         CC.state.usuarioActual = boot.usuarioActual || '';

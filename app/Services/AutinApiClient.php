@@ -5,6 +5,8 @@ namespace App\Services;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Pool;
+use GuzzleHttp\Psr7\Request;
 use RuntimeException;
 
 /**
@@ -118,10 +120,8 @@ class AutinApiClient
     }
 
     /**
-     * Ventas y notas de crédito (OINV + ORIN) de AUSTIN/PITIC/SYDNEY/IMSA.
-     * En IMSA, CardCode que empieza con P se reporta como Empresa=BACHIMBA.
-     * Filtros: year, Empresa, Tipo_Doc, ItemCode, CardCode, CardName, U_LINEA_QV,
-     * fecha_desde, fecha_hasta, per_page, page.
+     * Ventas y notas de crédito (OINV + ORIN).
+     * CardName = cliente, ItemName = producto.
      *
      * @param  array<string, mixed>  $filters
      * @return array{ok: bool, status: int, body: array|null, message: string|null}
@@ -129,6 +129,64 @@ class AutinApiClient
     public function ventas(array $filters = []): array
     {
         return $this->request('GET', 'ventas', $filters);
+    }
+
+    /**
+     * Recorre todas las páginas de /ventas (tope 500 por página en AutinApi).
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>}
+     */
+    public function ventasTodasPaginas(array $filters, int $maxPages = 30, int $concurrency = 6): array
+    {
+        $filters['per_page'] = 500;
+        $first = $this->ventas(array_merge($filters, ['page' => 1]));
+        if (empty($first['ok'])) {
+            return [
+                'ok' => false,
+                'message' => $first['message'] ?? 'Sin conexión a ventas SAP',
+                'rows' => [],
+            ];
+        }
+
+        $body = is_array($first['body'] ?? null) ? $first['body'] : [];
+        $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+        $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
+        $last = (int) ($meta['last_page'] ?? 1);
+        if ($last < 1) {
+            $last = 1;
+        }
+        $last = min($last, max(1, $maxPages));
+        if ($last <= 1) {
+            return ['ok' => true, 'message' => null, 'rows' => $rows];
+        }
+
+        $url = $this->baseUrl.'/ventas';
+        $requests = function () use ($url, $filters, $last) {
+            for ($page = 2; $page <= $last; $page++) {
+                $query = array_filter(array_merge($filters, ['page' => $page]), static function ($value) {
+                    return $value !== null && $value !== '';
+                });
+                yield $page => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        };
+
+        $extra = [];
+        $pool = new Pool($this->client, $requests(), [
+            'concurrency' => max(1, $concurrency),
+            'fulfilled' => function ($response) use (&$extra) {
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                foreach ($data as $row) {
+                    if (is_array($row)) {
+                        $extra[] = $row;
+                    }
+                }
+            },
+        ]);
+        $pool->promise()->wait();
+
+        return ['ok' => true, 'message' => null, 'rows' => array_merge($rows, $extra)];
     }
 
     /**
