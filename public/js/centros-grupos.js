@@ -689,7 +689,7 @@
         return data;
     }
 
-    function guardar() {
+    function guardar(salir) {
         if (!state.empresa) {
             toast('warning', 'Elige una empresa', '');
             return;

@@ -858,7 +858,7 @@ class ProyeccionesVentasController extends Controller
 
         $map = $this->mapearEncabezadosCaptura($sheet[0] ?? []);
         if ($map['empresa'] === null || $map['centro'] === null || $map['cuenta'] === null) {
-            return response()->json(['message' => 'Faltan columnas: empresa, centro de costo y cuenta.'], 422);
+            return response()->json(['message' => 'Faltan columnas: empresa, cliente y producto.'], 422);
         }
         if (count($map['meses']) < 12) {
             return response()->json(['message' => 'Faltan las 12 columnas de meses del periodo.'], 422);
@@ -881,12 +881,12 @@ class ProyeccionesVentasController extends Controller
                     continue;
                 }
                 if ($empresa === '' || $centro === '' || $cuenta === '') {
-                    $errores[] = ['fila' => $fila, 'mensaje' => 'Empresa, centro o cuenta vacíos'];
+                    $errores[] = ['fila' => $fila, 'mensaje' => 'Empresa, cliente o producto vacíos'];
                     continue;
                 }
                 $info = $this->buscarCuentaCaptura($permitidas, $empresa, $centro, $cuenta);
                 if (! $info) {
-                    $errores[] = ['fila' => $fila, 'mensaje' => 'No tienes esa cuenta asignada ('.$empresa.' / '.$centro.' / '.$cuenta.')'];
+                    $errores[] = ['fila' => $fila, 'mensaje' => 'No tienes ese producto asignado ('.$empresa.' / '.$centro.' / '.$cuenta.')'];
                     continue;
                 }
                 if (empty($info['capturar'])) {
@@ -1077,11 +1077,19 @@ class ProyeccionesVentasController extends Controller
                 $empresa = (int) $idx;
                 continue;
             }
-            if (in_array($norm, ['centro_de_costo', 'centro', 'centro_costo', 'centrocosto', 'cc', 'costcenter'], true)) {
+            // Plantilla PV: cliente. Compatibilidad con plantillas CC: centro_de_costo.
+            if (in_array($norm, [
+                'cliente', 'cliente_codigo', 'cardcode', 'card_code', 'socio', 'customer',
+                'centro_de_costo', 'centro', 'centro_costo', 'centrocosto', 'cc', 'costcenter',
+            ], true)) {
                 $centro = (int) $idx;
                 continue;
             }
-            if (in_array($norm, ['cuenta', 'cta', 'cuenta_codigo', 'account'], true)) {
+            // Plantilla PV: producto. Compatibilidad con plantillas CC: cuenta.
+            if (in_array($norm, [
+                'producto', 'producto_codigo', 'itemcode', 'item_code', 'articulo',
+                'cuenta', 'cta', 'cuenta_codigo', 'account',
+            ], true)) {
                 $cuenta = (int) $idx;
                 continue;
             }
