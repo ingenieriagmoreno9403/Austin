@@ -18,12 +18,14 @@ use App\Models\UserSucursal;
 use Illuminate\Support\Arr;
 use DB;
 use App\Models\usuario_perfiles;
+use App\Traits\EmpresaCatalogoTrait;
 
 class SistemasController extends Controller
 {
     use MenuTrait;
     use DatosimpleTraits;
     use SistemasTraits;
+    use EmpresaCatalogoTrait;
 
     public function __construct()
     {
@@ -41,7 +43,8 @@ class SistemasController extends Controller
             $permisos3 = $this->forpermisos('registrar_perfiles');
             $permisos4 = $this->forpermisos('registrar_usuarios');
             $permisos5 = $this->forpermisos('editar_permisos');
-            return view('sistemas.index', compact('varpantallas', 'varsubmenus', 'varlistausers', 'permisos1', 'permisos2', 'permisos3', 'permisos4', 'permisos5'));
+            $esMasterEmpresa = $this->esSesionMasterEmpresa();
+            return view('sistemas.index', compact('varpantallas', 'varsubmenus', 'varlistausers', 'permisos1', 'permisos2', 'permisos3', 'permisos4', 'permisos5', 'esMasterEmpresa'));
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
         }
@@ -54,7 +57,7 @@ class SistemasController extends Controller
             $varsubmenus = $this->Traermenudet();
             $varlistavistas = $this->obtenervistas();
             $varlistapuestos = $this->obtenerpuestos();
-            $varlistausers = $this->obtenerusuarios();
+            $varlistausers = $this->obtenerusuariosAlcance();
             $varlistadepas = $this->obtenerdepartamentos();
             $varpermiso = $this->obtenerpermisos();
             return view('sistemas.pantallas', compact('varpantallas', 'varsubmenus', 'varlistavistas', 'varlistausers', 'varlistadepas', 'varpermiso'));
@@ -101,8 +104,18 @@ class SistemasController extends Controller
             $varsubmenus = $this->Traermenudet();
             $varperfiles = $this->obtenerPerfiles();
             $varaccionesdePerfiles = $this->obtenerAccionesdePerfiles();
-            $varlistausers = $this->obtenerusuarios();
-            $varsucursales = $this->obtenersucursales();
+            $varlistausers = $this->obtenerusuariosAlcance();
+            $varsucursales = $this->obtenersucursalesAlcance();
+
+            $idEmpresaSesion = $this->empresaIdSesion();
+            $perfilesPermitidos = $this->esSesionMasterEmpresa()
+                ? $this->perfilesPermitidosEmpresa($idEmpresaSesion)
+                : null;
+            if (is_array($perfilesPermitidos)) {
+                $varperfiles = collect($varperfiles)->filter(fn ($perfil) => in_array((int) $perfil->id, $perfilesPermitidos, true))->values();
+                $varaccionesdePerfiles = collect($varaccionesdePerfiles)->filter(fn ($accion) => in_array((int) $accion->id, $perfilesPermitidos, true))->values();
+            }
+
             return view('sistemas.perfiles', compact('varpantallas', 'varsubmenus', 'varlistausers', 'varperfiles', 'varaccionesdePerfiles', 'varsucursales'));
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
@@ -202,18 +215,31 @@ class SistemasController extends Controller
             $date = Carbon::now();
             $fecha = $date->format('Y-m-d');
             $id = $request->get('idusuario');
+            $idEmpresa = $this->empresaIdDeUsuario((int) $id);
+            $vistasPermitidas = $this->vistasPermitidasEmpresa($idEmpresa);
 
             if ($request->has('vistas')) {
-                foreach ($request->get('vistas') as $idvista) {
+                $vistas = collect($request->get('vistas'))
+                    ->map(fn ($idvista) => (int) $idvista)
+                    ->filter()
+                    ->unique()
+                    ->values();
+
+                if (is_array($vistasPermitidas)) {
+                    $vistas = $vistas->filter(fn ($idvista) => in_array($idvista, $vistasPermitidas, true))->values();
+                }
+
+                foreach ($vistas as $idvista) {
                     $vardepa = $this->obtenerdepartamentoXvista($idvista);
-                    foreach ($vardepa as $depa)
+                    foreach ($vardepa as $depa) {
                         $usuario_pantalas = new usuario_pantallas();
-                    $usuario_pantalas->idusuario = $id;
-                    $usuario_pantalas->idvista = $idvista;
-                    $usuario_pantalas->iddepartamento = $depa->iddepartamento;
-                    $usuario_pantalas->estado = 'A';
-                    $usuario_pantalas->created_at = $fecha;
-                    $usuario_pantalas->save();
+                        $usuario_pantalas->idusuario = $id;
+                        $usuario_pantalas->idvista = $idvista;
+                        $usuario_pantalas->iddepartamento = $depa->iddepartamento;
+                        $usuario_pantalas->estado = 'A';
+                        $usuario_pantalas->created_at = $fecha;
+                        $usuario_pantalas->save();
+                    }
                 }
             }
 
@@ -269,9 +295,24 @@ class SistemasController extends Controller
                 ->map(fn ($idSucursal) => (int) $idSucursal)
                 ->values();
 
+            $idEmpresa = $this->empresaIdDeUsuario($id);
+            $catalogoActivo = $this->catalogoAccesosActivo($idEmpresa);
+            $perfilesPermitidos = $this->perfilesPermitidosEmpresa($idEmpresa);
+            $vistasPermitidas = $this->vistasPermitidasEmpresa($idEmpresa);
+
+            $empresaNombre = null;
+            if ($idEmpresa) {
+                $empresaNombre = DB::table('tblempresas')->where('id', $idEmpresa)->value('nombre_empresa');
+            }
+
             return response()->json([
                 'perfiles' => $perfiles,
                 'sucursales' => $sucursales,
+                'id_empresa' => $idEmpresa,
+                'empresa' => $empresaNombre,
+                'catalogo_activo' => $catalogoActivo,
+                'perfiles_permitidos' => $perfilesPermitidos,
+                'vistas_permitidas' => $vistasPermitidas,
             ]);
         } catch (\Illuminate\Database\QueryException $ex) {
             return response()->json([
@@ -293,8 +334,25 @@ class SistemasController extends Controller
                 ->unique()
                 ->values();
             $usuario = $request->get('idusuario');
+            if ($this->esSesionMasterEmpresa()) {
+                $permitido = $this->obtenerusuariosAlcance()->firstWhere('id', (int) $usuario);
+                if (!$permitido) {
+                    return back()->with('warning', 'No puedes asignar perfiles a usuarios de otra empresa.');
+                }
+            }
             $guardado = false;
-            $varsucursales = $this->obtenersucursales();
+            $varsucursales = $this->obtenersucursalesAlcance();
+
+            $idEmpresa = $this->empresaIdDeUsuario((int) $usuario);
+            $perfilesPermitidos = $this->perfilesPermitidosEmpresa($idEmpresa);
+            if (is_array($perfilesPermitidos)) {
+                $perfilesActualesIds = usuario_perfiles::where('id_usuario', $usuario)
+                    ->pluck('id_perfil')
+                    ->map(fn ($id) => (int) $id)
+                    ->all();
+                $permitidos = array_values(array_unique(array_merge($perfilesPermitidos, $perfilesActualesIds)));
+                $perfiles = $perfiles->filter(fn ($id) => in_array((int) $id, $permitidos, true))->values();
+            }
 
             DB::beginTransaction();
             $transactionStarted = true;
@@ -418,12 +476,15 @@ class SistemasController extends Controller
         try {
             $varpantallas = $this->Traermenuenc();
             $varsubmenus = $this->Traermenudet();
-            $varlistausers = $this->obtenerusuarios();
+            $varlistausers = $this->obtenerusuariosAlcance();
             $varacciones = $this->obteneracciones();
             $varlistadepas = $this->obtenerdepartamentos();
+            $varusuario = $varlistausers->firstWhere('id', $id);
+            if ($this->esSesionMasterEmpresa() && !$varusuario) {
+                return back()->with('warning', 'No puedes editar usuarios de otra empresa.');
+            }
             $varlistuseracc = $this->obtenerAccionesUser($id);
             $varperfilesUser = $this->obtenerPerfilesUsuario($id);
-            $varusuario = $varlistausers->firstWhere('id', $id);
 
             return view('sistemas.permisos_user', compact('varpantallas', 'varsubmenus', 'varlistausers', 'varlistadepas', 'varacciones', 'varlistuseracc', 'varperfilesUser', 'varusuario'));
         } catch (\Illuminate\Database\QueryException $ex) {
@@ -435,7 +496,7 @@ class SistemasController extends Controller
     {
         $varpantallas = $this->Traermenuenc();
         $varsubmenus = $this->Traermenudet();
-        $varlistausers = $this->obtenerusuarios();
+        $varlistausers = $this->obtenerusuariosAlcance();
         $perfilesPorUsuario = $this->obtenerPerfilesUsuarios()->groupBy('id_usuario');
 
         return view('sistemas.usuarios_permisos', compact('varpantallas', 'varsubmenus', 'varlistausers', 'perfilesPorUsuario'));
@@ -489,6 +550,32 @@ class SistemasController extends Controller
             ORDER BY tblperfiles.nombre asc;', [$idusuario]);
 
         return collect($perfiles);
+    }
+
+    private function obtenerusuariosAlcance()
+    {
+        $usuarios = $this->obtenerusuarios();
+        if (!$this->esSesionMasterEmpresa()) {
+            return $usuarios;
+        }
+
+        return $this->filtrarUsuariosDeEmpresa($usuarios, $this->empresaIdSesion());
+    }
+
+    private function obtenersucursalesAlcance()
+    {
+        $sucursales = $this->obtenersucursales();
+        if (!$this->esSesionMasterEmpresa()) {
+            return $sucursales;
+        }
+
+        $idEmpresa = $this->empresaIdSesion();
+        $ids = collect(DB::table('tblsucursales')->where('idempresa', $idEmpresa)->pluck('id'))
+            ->map(fn ($id) => (int) $id);
+
+        return collect($sucursales)->filter(function ($sucursal) use ($ids) {
+            return $ids->contains((int) $sucursal->id);
+        })->values();
     }
 
     private function obtenerPerfilesUsuarios()

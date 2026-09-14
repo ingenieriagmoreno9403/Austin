@@ -13,11 +13,13 @@ use App\Models\usuario_pantallas;
 use App\Traits\MenuTrait;
 use App\Traits\SistemasTraits;
 use App\Traits\DatosimpleTraits;
+use App\Traits\EmpresaCatalogoTrait;
 use Carbon\Carbon;
 use App\Models\Empleados;
 use Illuminate\Http\Request;
 use DB;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Schema;
 
 class RegisterController extends Controller
 {
@@ -25,6 +27,7 @@ class RegisterController extends Controller
     use RegistersUsers;
     use DatosimpleTraits;
     use SistemasTraits;
+    use EmpresaCatalogoTrait;
 
     /**
      * Where to redirect users after registration.
@@ -55,10 +58,11 @@ class RegisterController extends Controller
         $optenerproveedoresuser =  $this->optenerproveedoresuser();
         $varlistaalumnos = $this->obtenerAlumnosSinUsuario();
         $varlistasocios = $this->obtenerSociosSinUsuario();
-        $varlistaempresas = $this->obtenerEmpresasSinUsuario();
+        $varlistaempresas = $this->obtenerEmpresasParaRegistro();
+        $esMasterEmpresa = $this->esSesionMasterEmpresa();
 
         return view('sistemas.registro',compact('varpantallas','varsubmenus',
-        'varlistaempleados','valusers','optenerproveedoresuser', 'varlistaalumnos', 'varlistasocios', 'varlistaempresas'));
+        'varlistaempleados','valusers','optenerproveedoresuser', 'varlistaalumnos', 'varlistasocios', 'varlistaempresas', 'esMasterEmpresa'));
     }
 
     // public function __construct()
@@ -116,12 +120,27 @@ class RegisterController extends Controller
             }
 
             $idTipo = $this->obtenerIdTipoRegistro($request, $tipo);
+            $idEmpresaSistema = null;
+            if (in_array($tipo, ['empresa', 'master'], true)) {
+                $parsed = $this->parseIdEmpresaRegistro($request->get('id_tipo_empresa'));
+                $idEmpresaSistema = $parsed['id_empresa'];
+                if ($tipo === 'empresa') {
+                    $idTipo = $parsed['id_tipo'];
+                }
+            }
+
             if ($tipo !== 'master' && is_null($idTipo)) {
                 return redirect()->route('registro')->with("warning", "Selecciona el registro correspondiente al tipo de usuario");
             }
 
-            if ($tipo !== 'master' && User::where('tipo', $tipo)->where('id_tipo', $idTipo)->exists()) {
-                return redirect()->route('registro')->with("warning", "Este registro ya tiene un usuario asignado");
+            if ($tipo !== 'master') {
+                $yaAsignado = $tipo === 'empresa' && $idEmpresaSistema && Schema::hasColumn('users', 'id_empresa')
+                    ? User::where('tipo', 'empresa')->where('id_empresa', $idEmpresaSistema)->exists()
+                    : User::where('tipo', $tipo)->where('id_tipo', $idTipo)->exists();
+
+                if ($yaAsignado) {
+                    return redirect()->route('registro')->with("warning", "Este registro ya tiene un usuario asignado");
+                }
             }
 
             $idempleado = null;
@@ -155,10 +174,18 @@ class RegisterController extends Controller
             $user->estado_user = "A";
             $user->created_at = $fecha;
             $user->created_by = auth()->user()->name;
+            if (in_array($tipo, ['empresa', 'master'], true) && $idEmpresaSistema && Schema::hasColumn('users', 'id_empresa')) {
+                $user->id_empresa = $idEmpresaSistema;
+            }
 
             if($user->save()){
                 if ($tipo === 'proveedor') {
                     DB::select('update tblprovedores set id_usuario = ? where id = ?;', [$user->id, $idTipo]);
+                }
+
+                if (in_array($tipo, ['empresa', 'master'], true) && $idEmpresaSistema) {
+                    $perfiles = $this->perfilesPermitidosEmpresa((int) $idEmpresaSistema) ?? [];
+                    $this->asignarPerfilesAUsuario((int) $user->id, $perfiles);
                 }
 
                 return redirect()->route('registro')->with("success_msg_large","¡Se guardaron los cambios correctamente!");
@@ -249,6 +276,49 @@ class RegisterController extends Controller
         return redirect()->route('registro')->with("error_msg_large", "No se logro reactivar el usuario");
     }
 
+    public function asignarEmpresa(Request $request)
+    {
+        if ($this->esSesionMasterEmpresa()) {
+            return redirect()->route('registro')->with('warning', 'No puedes cambiar la empresa de un usuario.');
+        }
+
+        if (!Schema::hasColumn('users', 'id_empresa')) {
+            return redirect()->route('registro')->with('warning', 'Falta el campo id_empresa en users.');
+        }
+
+        $iduser = $request->get('iduser');
+        if (is_null($iduser)) {
+            return redirect()->route('registro')->with('warning', 'Selecciona el usuario.');
+        }
+
+        $user = User::find($iduser);
+        if (!$user) {
+            return redirect()->route('registro')->with('warning', 'No se encontró el usuario seleccionado.');
+        }
+
+        $parsed = $this->parseIdEmpresaRegistro($request->get('id_tipo_empresa'));
+        $idEmpresa = $parsed['id_empresa'];
+
+        try {
+            if ($idEmpresa) {
+                $perfiles = $this->perfilesPermitidosEmpresa((int) $idEmpresa) ?? [];
+                $data = $this->promoverSuperusuarioEmpresa((int) $user->id, (int) $idEmpresa, $perfiles);
+                $mensaje = $data['name'] . ' quedó como superusuario de la empresa.';
+                if (($data['perfiles_asignados'] ?? 0) > 0) {
+                    $mensaje .= ' Se le asignaron los módulos vendidos.';
+                }
+                return redirect()->route('registro')->with('success_msg_large', $mensaje);
+            }
+
+            $this->quitarRolSuperusuarioEmpresa((int) $user->id);
+            return redirect()->route('registro')->with('success_msg_large', 'Se quitó el rol de superusuario de empresa a ' . $user->name);
+        } catch (\InvalidArgumentException $ex) {
+            return redirect()->route('registro')->with('warning', $ex->getMessage());
+        } catch (\RuntimeException $ex) {
+            return redirect()->route('registro')->with('warning', $ex->getMessage());
+        }
+    }
+
     private function obtenerIdTipoRegistro(Request $request, string $tipo)
     {
         return Arr::get([
@@ -286,16 +356,70 @@ class RegisterController extends Controller
             ORDER BY tblsocios.nombre asc;"));
     }
 
-    private function obtenerEmpresasSinUsuario()
+    private function parseIdEmpresaRegistro($valor): array
     {
-        return collect(DB::select("SELECT tblga_empresas.id,
-                tblga_empresas.nombre,
-                tblga_empresas.estado,
-                tblga_empresas.municipio
-            FROM tblga_empresas
-            LEFT JOIN users on users.id_tipo = tblga_empresas.id and users.tipo = 'empresa'
-            WHERE users.id IS NULL
-            ORDER BY tblga_empresas.nombre asc;"));
+        $raw = trim((string) $valor);
+        if ($raw === '') {
+            return ['id_tipo' => null, 'id_empresa' => null];
+        }
+
+        if (str_starts_with($raw, 'sis-')) {
+            $id = (int) substr($raw, 4);
+            return ['id_tipo' => $id > 0 ? $id : null, 'id_empresa' => $id > 0 ? $id : null];
+        }
+
+        if (str_starts_with($raw, 'ga-')) {
+            $id = (int) substr($raw, 3);
+            return ['id_tipo' => $id > 0 ? $id : null, 'id_empresa' => null];
+        }
+
+        $id = (int) $raw;
+        if ($id <= 0) {
+            return ['id_tipo' => null, 'id_empresa' => null];
+        }
+
+        $esSistema = Schema::hasTable('tblempresas')
+            && DB::table('tblempresas')->where('id', $id)->exists();
+
+        return [
+            'id_tipo' => $id,
+            'id_empresa' => $esSistema ? $id : null,
+        ];
+    }
+
+    private function obtenerEmpresasParaRegistro()
+    {
+        $lista = collect();
+
+        if (Schema::hasTable('tblempresas')) {
+            $sql = "SELECT tblempresas.id,
+                    tblempresas.nombre_empresa as nombre,
+                    tblempresas.descripcion,
+                    NULL as municipio,
+                    'sis' as origen
+                FROM tblempresas";
+            if (Schema::hasColumn('tblempresas', 'estado')) {
+                $sql .= " WHERE tblempresas.estado = 'A' OR tblempresas.estado IS NULL";
+            }
+            $sql .= " ORDER BY tblempresas.nombre_empresa asc";
+            $lista = $lista->concat(DB::select($sql));
+        }
+
+        if (Schema::hasTable('tblga_empresas')) {
+            $ga = DB::select("SELECT tblga_empresas.id,
+                    tblga_empresas.nombre,
+                    tblga_empresas.estado,
+                    tblga_empresas.municipio,
+                    'ga' as origen
+                FROM tblga_empresas
+                LEFT JOIN users on users.id_tipo = tblga_empresas.id and users.tipo = 'empresa'
+                    and (users.id_empresa IS NULL OR users.id_empresa = 0)
+                WHERE users.id IS NULL
+                ORDER BY tblga_empresas.nombre asc;");
+            $lista = $lista->concat($ga);
+        }
+
+        return $lista;
     }
 
 }

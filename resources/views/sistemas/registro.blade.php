@@ -85,6 +85,7 @@
                                         <span><i class="fa-solid fa-handshake"></i> Socio</span>
                                     </label>
 
+                                    @if (empty($esMasterEmpresa))
                                     <label class="registro-tipo-option" for="tipoEmpresa">
                                         <input class="form-check-input" type="radio" name="tipo" id="tipoEmpresa"
                                             value="empresa" onclick="mostrarTipoUsuario('empresa')">
@@ -96,13 +97,14 @@
                                             value="master" onclick="mostrarTipoUsuario('master')">
                                         <span><i class="fa-solid fa-user-shield"></i> Master</span>
                                     </label>
+                                    @endif
                                 </div>
                             </div>
 
                             <div class="col-lg-9 col-12 mb-3">
                                 <div class="alert alert-info border-0 rounded-4 mb-3" id="masterInfo">
                                     <i class="fa-solid fa-circle-info me-2"></i>
-                                    El usuario master no requiere proveedor, empleado, alumno, socio o empresa.
+                                    El master interno de Austin (dueño del ERP) se deja sin empresa. El superusuario de un cliente (René) sí debe tener su empresa.
                                 </div>
 
                                 <div class="form-outline registro-tipo-panel" id="empleado">
@@ -180,22 +182,35 @@
                                 </div>
 
                                 <div class="form-outline registro-tipo-panel" id="empresa">
-                                    <label class="form-label">Empresa</label>
-                                    <select name="id_tipo_empresa" id="id_tipo_empresa" class="form-select select2 registro-buscador"
+                                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                        <label class="form-label mb-0">Empresa</label>
+                                        @if (empty($esMasterEmpresa))
+                                            <button type="button" class="btn btn-baseColor-light fs-8 py-1" data-bs-toggle="modal" data-bs-target="#modalNuevaEmpresaRegistro">
+                                                <i class="fa-solid fa-plus"></i> Nueva empresa
+                                            </button>
+                                        @endif
+                                    </div>
+                                    <select name="id_tipo_empresa" id="id_tipo_empresa" class="form-select select2 registro-buscador mt-2"
                                         data-placeholder="Buscar empresa...">
                                         <option value="">Seleccionar empresa... </option>
                                         @foreach ($varlistaempresas as $empresa)
-                                            <option value="{{ $empresa->id }}">
-                                                {{ $empresa->id }} -
+                                            @php
+                                                $origen = $empresa->origen ?? 'ga';
+                                                $value = $origen === 'sis' ? ('sis-' . $empresa->id) : ('ga-' . $empresa->id);
+                                            @endphp
+                                            <option value="{{ $value }}">
                                                 {{ $empresa->nombre }}
                                                 @if (!empty($empresa->municipio))
                                                     ({{ $empresa->municipio }})
+                                                @endif
+                                                @if ($origen === 'sis')
+                                                    · sistema
                                                 @endif
                                             </option>
                                         @endforeach
                                     </select>
                                     <small class="registro-search-help">
-                                        <i class="fa-solid fa-keyboard me-1"></i>Solo aparecen empresas sin usuario asignado.
+                                        <i class="fa-solid fa-keyboard me-1"></i>Para un master de empresa (como rene) elige o crea la empresa. También puedes asignársela después en la sección de abajo.
                                     </small>
                                     <div class="valid-feedback">¡Se ve bien!</div>
                                     <div class="invalid-feedback">Por favor, completa la información requerida.</div>
@@ -303,6 +318,81 @@
                         </button>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row justify-content-center mb-4">
+        <div class="card border-0 shadow p-3 mt-2 bg-body rounded-5 registro-card">
+            <div class="card-header text-start bg-body border-0 pb-0">
+                <h5 class="text-secondary mb-1">
+                    <i class="fa-solid fa-building-user me-2"></i>Asignar superusuario de empresa
+                </h5>
+                <p class="text-muted fs-8 mb-0">Si el usuario del cliente ya existe, asígnalo a su empresa. Quedará como superusuario y podrá dar permisos de los módulos vendidos.</p>
+            </div>
+
+            <div class="card-body">
+                @if (empty($esMasterEmpresa))
+                <form method="POST" action="{{ route('asignarEmpresaUser') }}" class="g-3 needs-validation form modern-form"
+                    id="frmAsignarEmpresa" novalidate>
+                    @csrf
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Usuario</label>
+                            <select name="iduser" id="iduser_empresa" class="form-select select2 registro-buscador" required
+                                data-placeholder="Buscar usuario...">
+                                <option value="">Seleccionar usuario... </option>
+                                @foreach ($valusers as $item)
+                                    <option value="{{ $item->id }}">
+                                        {{ $item->name }}
+                                        @if (!empty($item->tipo))
+                                            · {{ $item->tipo }}
+                                        @endif
+                                        @if (!empty($item->empresa))
+                                            — {{ $item->empresa }}
+                                        @else
+                                            — sin empresa
+                                        @endif
+                                    </option>
+                                @endforeach
+                            </select>
+                            <small class="registro-search-help">
+                                <i class="fa-solid fa-circle-info me-1"></i>Si no tiene empresa aparece como “sin empresa”.
+                            </small>
+                            <div class="invalid-feedback">Selecciona un usuario.</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Empresa</label>
+                            <select name="id_tipo_empresa" id="id_empresa_asignar" class="form-select select2 registro-buscador"
+                                data-placeholder="Buscar empresa...">
+                                <option value="">Sin empresa</option>
+                                @foreach ($varlistaempresas as $empresa)
+                                    @if (($empresa->origen ?? 'ga') === 'sis')
+                                        <option value="sis-{{ $empresa->id }}">{{ $empresa->nombre }}</option>
+                                    @endif
+                                @endforeach
+                            </select>
+                            <small class="registro-search-help">
+                                <i class="fa-solid fa-keyboard me-1"></i>Elige la empresa del sistema o déjala vacía para quitarla.
+                            </small>
+                        </div>
+                    </div>
+                </form>
+                <div class="registro-action-bar">
+                    <div class="text-muted fs-8">
+                        <i class="fa-solid fa-circle-info me-1"></i>Lo deja como superusuario de esa empresa. No cambia su contraseña.
+                    </div>
+                    <div>
+                        <button type="button" onclick="validarAsignarEmpresa()" class="fs-6 btn btn-baseColor">
+                            <i class="fa-solid fa-check"></i> Asignar como superusuario
+                        </button>
+                    </div>
+                </div>
+                @else
+                    <div class="alert alert-info border-0 rounded-4 mb-0">
+                        <i class="fa-solid fa-lock me-2"></i>Solo el administrador del sistema puede asignar empresas a usuarios.
+                    </div>
+                @endif
             </div>
         </div>
     </div>
@@ -527,6 +617,48 @@
     </div>
 </div>
 
+<div class="modal fade" id="modalNuevaEmpresaRegistro" tabindex="-1" aria-labelledby="modalNuevaEmpresaRegistroLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header border-0">
+                <h5 class="modal-title text-dark" id="modalNuevaEmpresaRegistroLabel">Nueva empresa</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="formNuevaEmpresaRegistro" class="needs-validation" novalidate>
+                @csrf
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label" for="regEmpNombre">Nombre oficial</label>
+                        <input type="text" class="form-control" name="nombre_empresa" id="regEmpNombre" maxlength="100" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="regEmpCorto">Nombre corto</label>
+                        <input type="text" class="form-control" name="descripcion" id="regEmpCorto" maxlength="100">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="regEmpRep">Representante</label>
+                        <input type="text" class="form-control" name="representada" id="regEmpRep" maxlength="100">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="regEmpRfc">RFC</label>
+                        <input type="text" class="form-control text-uppercase" name="rfc" id="regEmpRfc" maxlength="13">
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label" for="regEmpDir">Dirección fiscal</label>
+                        <input type="text" class="form-control" name="direccion_fiscal" id="regEmpDir" maxlength="255">
+                    </div>
+                </div>
+                <div class="modal-footer border-0">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-baseColor" id="regEmpCrearBtn">
+                        <i class="fa-solid fa-plus"></i> Registrar y seleccionar
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <script src="{{ asset('js/validation.js') }}"></script>
 <script>
     const tipoSelects = {
@@ -559,6 +691,12 @@
         if (tipoSelects[tipo]) {
             $(tipo === 'empleado' ? '#empleado' : '#' + tipo).show();
             document.querySelector(tipoSelects[tipo]).required = true;
+            inicializarBuscadoresRegistro();
+        }
+
+        if (tipo === 'master') {
+            $('#empresa').show();
+            document.querySelector('#id_tipo_empresa').required = false;
             inicializarBuscadoresRegistro();
         }
     }
@@ -697,6 +835,20 @@
         return true;
     }
 
+    function validarAsignarEmpresa() {
+        const form = document.getElementById('frmAsignarEmpresa');
+        if (!form) return false;
+
+        form.classList.add('was-validated');
+        if (!form.checkValidity()) {
+            swalAlerta('warning', 'Usuario requerido', 'Selecciona el usuario al que le asignarás la empresa.');
+            return false;
+        }
+
+        form.submit();
+        return true;
+    }
+
     function validarActivarUsuario() {
         const form = document.getElementById('frmActivar');
 
@@ -791,6 +943,75 @@
 
     $(document).ready(function() {
         inicializarBuscadoresRegistro();
+
+        const formEmpresa = document.getElementById('formNuevaEmpresaRegistro');
+        if (!formEmpresa) {
+            return;
+        }
+
+        formEmpresa.addEventListener('submit', async function (event) {
+            event.preventDefault();
+            if (!formEmpresa.checkValidity()) {
+                formEmpresa.classList.add('was-validated');
+                return;
+            }
+
+            const btn = document.getElementById('regEmpCrearBtn');
+            const csrf = document.querySelector('meta[name="csrf-token"]');
+            btn.disabled = true;
+            try {
+                const response = await fetch('{{ url('/Sistemas/Empresas') }}', {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': csrf ? csrf.content : ''
+                    },
+                    body: JSON.stringify({
+                        nombre_empresa: document.getElementById('regEmpNombre').value,
+                        descripcion: document.getElementById('regEmpCorto').value,
+                        representada: document.getElementById('regEmpRep').value,
+                        rfc: document.getElementById('regEmpRfc').value,
+                        direccion_fiscal: document.getElementById('regEmpDir').value
+                    })
+                });
+                const payload = await response.json();
+                if (!response.ok) {
+                    const firstError = payload.errors ? Object.values(payload.errors)[0][0] : (payload.message || 'No se pudo registrar');
+                    throw new Error(firstError);
+                }
+
+                const data = payload.data;
+                const value = 'sis-' + data.id;
+                const $selectAlta = $('#id_tipo_empresa');
+                const $selectAsignar = $('#id_empresa_asignar');
+                [$selectAlta, $selectAsignar].forEach(function ($select) {
+                    if (!$select.length) return;
+                    if ($select.find('option[value="' + value + '"]').length === 0) {
+                        const option = new Option(data.nombre_empresa + ' · sistema', value, $select.is('#id_tipo_empresa'), $select.is('#id_tipo_empresa'));
+                        $select.append(option);
+                    }
+                });
+                $selectAlta.val(value).trigger('change');
+                formEmpresa.reset();
+                formEmpresa.classList.remove('was-validated');
+                const modalEl = document.getElementById('modalNuevaEmpresaRegistro');
+                const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+                modal.hide();
+                if (typeof Swal !== 'undefined') {
+                    Swal.fire({ icon: 'success', title: 'Empresa creada', text: 'Quedó seleccionada para este usuario.', timer: 2200, showConfirmButton: false });
+                }
+            } catch (error) {
+                if (typeof Swal !== 'undefined') {
+                    Swal.fire({ icon: 'error', title: 'No se registró', text: error.message || 'Revisa los datos.' });
+                } else {
+                    alert(error.message || 'No se registró la empresa');
+                }
+            } finally {
+                btn.disabled = false;
+            }
+        });
     });
 </script>
 @endsection

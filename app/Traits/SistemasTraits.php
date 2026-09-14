@@ -67,7 +67,17 @@ trait SistemasTraits{
     }
 
     public function forpermisos($permisobuscado){
-        $idusuario=auth()->user()->id;
+        $usuario = auth()->user();
+        if ($usuario) {
+            $tipo = strtolower((string) ($usuario->tipo ?? ''));
+            $esMasterEmpresa = in_array($tipo, ['empresa', 'master'], true)
+                && (int) ($usuario->id_empresa ?? 0) > 0;
+            if ($esMasterEmpresa && in_array($permisobuscado, ['registrar_perfiles', 'editar_permisos', 'registrar_usuarios'], true)) {
+                return $permisobuscado;
+            }
+        }
+
+        $idusuario = $usuario->id ?? 0;
         $permisos = $this->obtener_permisosxusuario($idusuario,$permisobuscado)->nombre_accion ?? "null";  
         return $permisos;
     }

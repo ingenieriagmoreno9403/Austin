@@ -1,6 +1,6 @@
 @extends('layouts.app')
 @section('content')
-<link href="{{ asset('css/vistas.css') }}" rel="stylesheet">
+<link href="{{ asset('css/vistas.css') }}?v={{ @filemtime(public_path('css/vistas.css')) ?: time() }}" rel="stylesheet">
 
 <div class="container-fluid">
     <div class="row mb-4">
@@ -36,11 +36,11 @@
                     <label for="">Usuario</label>
                     <select class="form-select select2 fs-6" name="idusuario" id="idusuario" required>
                         <option value="">Seleccionar empleado... </option>
-                        @foreach ($varlistausers as $usuario)
+                            @foreach ($varlistausers as $usuario)
                             <option value="{{ $usuario->id }}">{{ $usuario->name }}- {{ $usuario->Nombre }}
                                 ({{ $usuario->puesto }})
                             </option>
-                        @endforeach
+                            @endforeach
                     </select>
                     <div class="valid-feedback">¡Se ve bien!</div>
                     <div class="invalid-feedback"> Por favor, completa la información requerida.</div>
@@ -55,7 +55,7 @@
                         @php($varvista = 'null')
                         @foreach ($varpermiso as $datos)
                             @if ($vardepartamento == 'null' || $vardepartamento != $datos->nombre_departamento)
-                                <div class="col">
+                                <div class="col pantalla-depto-block" data-departamento="{{ $datos->nombre_departamento }}">
                                     <input type="checkbox" class="btn-check d-none"
                                         id="departamento{{ $datos->nombre_departamento }}" autocomplete="off"
                                         name='vistas[{{ $datos->iddepartamento }}]' value="{{ $datos->iddepartamento }}">
@@ -66,7 +66,7 @@
                             @endif
                             @if ($vardepartamento == $datos->nombre_departamento && $varvista != $datos->nombre_vista)
                             @endif
-                            <div class="accordion" id="{{ $datos->iddepartamento }}">
+                            <div class="accordion pantalla-vista-block" id="{{ $datos->iddepartamento }}" data-idvista="{{ $datos->idvista }}">
                                 <div class="accordion-item border-0">
                                     @if ($varvista == 'null' || $varvista != $datos->nombre_vista)
                                         <h2 class="accordion-header" id="vistaHeading{{ $datos->idvista }}">
@@ -115,4 +115,43 @@
         </div>
     </div>
 </div>
+
+<script>
+    function aplicarFiltroVistasCatalogo(data) {
+        const catalogoActivo = !!(data && data.catalogo_activo);
+        const permitidas = (data && Array.isArray(data.vistas_permitidas))
+            ? data.vistas_permitidas.map(String)
+            : null;
+
+        document.querySelectorAll('.pantalla-vista-block').forEach(function (item) {
+            const id = String(item.getAttribute('data-idvista') || '');
+            const visible = !catalogoActivo || permitidas === null || permitidas.includes(id);
+            item.classList.toggle('is-hidden-catalogo', !visible);
+            item.querySelectorAll('input').forEach(function (input) {
+                if (!visible) input.checked = false;
+            });
+        });
+    }
+
+    async function cargarCatalogoUsuario(idUsuario) {
+        document.querySelectorAll('.pantalla-vista-block').forEach(function (item) {
+            item.classList.remove('is-hidden-catalogo');
+        });
+        if (!idUsuario) return;
+
+        try {
+            const response = await fetch('/Sistemas/usuario_asignaciones/' + encodeURIComponent(idUsuario), {
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (!response.ok) throw new Error('No se pudo cargar el catálogo');
+            aplicarFiltroVistasCatalogo(await response.json());
+        } catch (error) {
+            console.error(error);
+        }
+    }
+
+    $('#idusuario').on('change', function () {
+        cargarCatalogoUsuario(this.value);
+    });
+</script>
 @endsection

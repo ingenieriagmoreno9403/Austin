@@ -13,7 +13,7 @@
     @endphp
 @endif
 
-<link href="{{ asset('css/vistas.css') }}" rel="stylesheet">
+<link href="{{ asset('css/vistas.css') }}?v={{ @filemtime(public_path('css/vistas.css')) ?: time() }}" rel="stylesheet">
 
 <div class="container-fluid">
     <div class="row mb-4">
@@ -60,7 +60,9 @@
                         <select class="form-select select2" name="idusuario" id="idusuario" required>
                             <option value="">Seleccionar usuario...</option>
                             @foreach ($varlistausers as $usuario)
-                                <option value="{{ $usuario->id }}">
+                                <option value="{{ $usuario->id }}"
+                                    data-empresa="{{ $usuario->id_empresa ?? '' }}"
+                                    data-empresa-nombre="{{ $usuario->empresa ?? '' }}">
                                     {{ $usuario->name }} — {{ $usuario->Nombre }}
                                     ({{ $usuario->puesto }}) · {{ $usuario->sucursal }}
                                 </option>
@@ -75,13 +77,14 @@
                             <label class="perfil-section-label d-block">
                                 <i class="fa-solid fa-id-badge"></i> Perfiles
                             </label>
+                            <p class="perfil-catalogo-hint" id="perfilCatalogoHint"></p>
                             <div class="perfil-picker" id="perfilPicker">
                                 @foreach ($varperfiles as $perfiles)
                                     @php
                                         $accionesDelPerfil = $accionesPorPerfil->get($perfiles->id, collect());
                                         $totalAcciones = $accionesDelPerfil->count();
                                     @endphp
-                                    <div class="perfil-picker__item">
+                                    <div class="perfil-picker__item" data-perfil-id="{{ $perfiles->id }}">
                                         <label class="perfil-picker__card" for="perfil{{ $perfiles->id }}">
                                             <input class="perfil-picker__input" type="checkbox" name="perfil[]"
                                                 id="perfil{{ $perfiles->id }}" value="{{ $perfiles->id }}">
@@ -196,6 +199,36 @@
         toggleTodas.checked = sucursales.every(function(cb) { return cb.checked; });
     }
 
+    function aplicarFiltroCatalogo(data) {
+        const hint = document.getElementById('perfilCatalogoHint');
+        const catalogoActivo = !!(data && data.catalogo_activo);
+        const permitidos = (data && Array.isArray(data.perfiles_permitidos))
+            ? data.perfiles_permitidos.map(String)
+            : null;
+        const asignados = (data && data.perfiles) ? data.perfiles.map(String) : [];
+        const empresaNombre = (data && data.empresa) ? data.empresa : '';
+
+        document.querySelectorAll('.perfil-picker__item').forEach(function(item) {
+            const id = String(item.getAttribute('data-perfil-id') || '');
+            const visible = !catalogoActivo || permitidos === null
+                || permitidos.includes(id)
+                || asignados.includes(id);
+            item.classList.toggle('is-hidden-catalogo', !visible);
+        });
+
+        if (hint) {
+            if (catalogoActivo) {
+                hint.classList.add('is-visible');
+                hint.innerHTML = empresaNombre
+                    ? '<i class="fa-solid fa-filter me-1"></i>Solo se listan los perfiles vendidos a <strong>' + empresaNombre + '</strong>.'
+                    : '<i class="fa-solid fa-filter me-1"></i>Solo se listan los perfiles habilitados para la empresa de este usuario.';
+            } else {
+                hint.classList.remove('is-visible');
+                hint.textContent = '';
+            }
+        }
+    }
+
     function limpiarAsignaciones() {
         document.querySelectorAll('.perfil-picker__input').forEach(function(input) {
             input.checked = false;
@@ -203,6 +236,14 @@
         document.querySelectorAll('.dinamic').forEach(function(input) {
             input.checked = false;
         });
+        document.querySelectorAll('.perfil-picker__item').forEach(function(item) {
+            item.classList.remove('is-hidden-catalogo');
+        });
+        const hint = document.getElementById('perfilCatalogoHint');
+        if (hint) {
+            hint.classList.remove('is-visible');
+            hint.textContent = '';
+        }
         syncPerfilCards();
         syncToggleTodasSucursales();
     }
@@ -220,6 +261,7 @@
             input.checked = sucursales.includes(idSucursal);
         });
 
+        aplicarFiltroCatalogo(data);
         syncPerfilCards();
         syncToggleTodasSucursales();
     }
