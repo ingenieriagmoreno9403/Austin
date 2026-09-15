@@ -22,15 +22,68 @@
     };
 
     function money(n, currency) {
-        var val = Number(n) || 0;
-        return val.toLocaleString('es-MX', {
+        var cur = currency || CC.state.currency || 'MXN';
+        var val = toDisplayAmount(n);
+        return (cur === 'USD' ? 'US$' : '$') + val.toLocaleString('es-MX', {
             minimumFractionDigits: 0,
             maximumFractionDigits: 2
         });
     }
 
     function moneyDec(n) {
-        return (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return toDisplayAmount(n).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function fxRate() {
+        var p = CC.state.period || {};
+        var tc = Number(p.tipoCambio);
+        return tc > 0 ? tc : 20;
+    }
+
+    function isUsdView() {
+        return String(CC.state.currency || 'MXN').toUpperCase() === 'USD';
+    }
+
+    /** Valor guardado (base MXN) → lo que se muestra según moneda. */
+    function toDisplayAmount(n) {
+        var val = Number(n);
+        if (!isFinite(val)) val = 0;
+        if (isUsdView()) val = val / fxRate();
+        return Math.round(val * 100) / 100;
+    }
+
+    /** Valor capturado en pantalla → lo que se guarda (siempre en MXN base). */
+    function toStoreAmount(n) {
+        var val = Number(n);
+        if (!isFinite(val)) val = 0;
+        if (isUsdView()) val = val * fxRate();
+        return Math.round(val * 100) / 100;
+    }
+
+    function formatInputAmount(n) {
+        if (!mesLleno(n)) return '';
+        var v = toDisplayAmount(n);
+        if (Math.abs(v - Math.round(v)) < 0.00001) return String(Math.round(v));
+        return String(v);
+    }
+
+    function paintFxBadge() {
+        var tc = fxRate();
+        var cur = isUsdView() ? 'USD' : 'MXN';
+        var label = cur === 'USD'
+            ? ('Vista USD · TC ' + tc.toFixed(2) + ' MXN/USD')
+            : ('Vista MXN · TC ' + tc.toFixed(2) + ' MXN/USD');
+        var shortLabel = 'TC ' + tc.toFixed(2);
+        ['ctl-fx-badge', 'ctl-fx-nav'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.hidden = false;
+            el.textContent = id === 'ctl-fx-nav' ? shortLabel : label;
+            el.setAttribute('title', '1 USD = ' + tc.toFixed(2) + ' MXN (tipo de cambio del ciclo)');
+            el.classList.toggle('is-usd', cur === 'USD');
+        });
+        var mon = document.getElementById('ctl-moneda');
+        if (mon) mon.setAttribute('title', '1 USD = ' + tc.toFixed(2) + ' MXN');
     }
 
     function mesLleno(v) {
@@ -1238,6 +1291,7 @@
         setText('ind-tc', '$ ' + Number(p.tipoCambio || 0).toFixed(2));
         setText('ind-anio-ref', p.anioReferencia || 2026);
         setText('ind-anio', p.anio || 2027);
+        paintFxBadge();
         var kicker = document.querySelector('.cc-kicker');
         if (kicker && CC.state.page === 'admin-ciclo') {
             kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · centros y permisos';
@@ -1490,7 +1544,7 @@
     }
 
     /* ---------- Control ---------- */
-    var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, vista: 'captura', scopeTabla: 'cuenta', chartVerTodas: false };
+    var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, vista: 'captura', scopeTabla: 'centro', chartVerTodas: false, prodQuery: '' };
 
     function asignacionesDelCiclo(ciclo) {
         return (CC.state.misAsignaciones || []).filter(function (a) {
@@ -1603,7 +1657,7 @@
     }
 
     function setCapturaEnabled(on) {
-        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct'].forEach(function (id) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.disabled = !on;
         });
@@ -1871,14 +1925,19 @@
 
     function renderNavCuentas() {
         var el = document.getElementById('ctl-cuenta');
-        if (!el) return;
+        var qEl = document.getElementById('ctl-prod-q');
         var emp = val('ctl-empresa');
         var cc = val('ctl-centro');
         if (!emp || !cc) {
-            el.innerHTML = '<option value="">Elige un cliente primero…</option>';
-            el.disabled = true;
-            el.classList.remove('is-warn', 'is-ok');
-            paintNavStatus('ctl-cta-status', null, el);
+            if (el) {
+                el.innerHTML = '<option value="">Elige un cliente primero…</option>';
+                el.value = '';
+            }
+            if (qEl) {
+                qEl.value = '';
+                qEl.disabled = true;
+            }
+            paintNavStatus('ctl-cta-status', null, qEl || el);
             return;
         }
         var centro = control.centro;
@@ -1886,21 +1945,27 @@
             ? control._allCtas
             : (centro ? cuentasEnriquecidas(centro) : []);
         if (control.soloPendientes) ctas = ctas.filter(ctaPendiente);
-        var html = '<option value="">Elige producto…</option>';
-        ctas.forEach(function (cta) {
-            var pend = ctaPendiente(cta) ? 1 : 0;
-            html += '<option value="' + escapeHtml(cta.codigo) + '">' +
-                escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo) + '   ·   ' + markPendLabel(pend)) + '</option>';
-        });
-        el.innerHTML = html;
-        el.disabled = !ctas.length;
-        if (control.cuenta && ctas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
-            el.value = control.cuenta;
-        } else {
-            el.value = '';
+        if (qEl) qEl.disabled = !ctas.length;
+        if (el) {
+            var html = '<option value="">Todos los productos</option>';
+            ctas.forEach(function (cta) {
+                var pend = ctaPendiente(cta) ? 1 : 0;
+                html += '<option value="' + escapeHtml(cta.codigo) + '">' +
+                    escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo) + '   ·   ' + markPendLabel(pend)) + '</option>';
+            });
+            el.innerHTML = html;
+            if (control.cuenta && ctas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
+                el.value = control.cuenta;
+            } else {
+                el.value = '';
+            }
         }
-        var cta = ctas.filter(function (x) { return String(x.codigo) === String(el.value); })[0];
-        paintNavStatus('ctl-cta-status', cta ? (ctaPendiente(cta) ? 1 : 0) : null, el);
+        var st = statsDeCentro({
+            codigo: cc,
+            nombre: '',
+            empresa: emp
+        });
+        paintNavStatus('ctl-cta-status', st.pendientes, qEl || el);
     }
 
     function renderCicloPicks() {
@@ -2020,6 +2085,12 @@
             if (ctaSel) ctaSel.addEventListener('change', function () {
                 selectCuenta(this.value || null);
             });
+            var prodQ = document.getElementById('ctl-prod-q');
+            if (prodQ) prodQ.addEventListener('input', function () {
+                control.prodQuery = String(this.value || '');
+                renderCapturaForm();
+                renderControlTable();
+            });
             var qEl = document.getElementById('ctl-q');
             if (qEl) qEl.addEventListener('input', function () {
                 renderCtaChips();
@@ -2028,13 +2099,19 @@
             document.getElementById('ctl-moneda').addEventListener('change', function () {
                 CC.state.currency = this.value;
                 saveJSON(SK.currency, CC.state.currency);
-                loadControlCentro();
+                paintFxBadge();
+                renderCapturaForm();
+                renderControlTable();
+                renderControlCharts();
+                updateControlProgress();
+                renderVisorTable();
             });
             var pend = document.getElementById('ctl-pendientes');
             if (pend) pend.addEventListener('change', function () {
                 control.soloPendientes = this.checked;
                 renderNavCuentas();
                 renderCtaChips();
+                renderCapturaForm();
                 renderControlTable();
             });
             bindControlTools();
@@ -2047,6 +2124,7 @@
         }
         var mon = document.getElementById('ctl-moneda');
         if (mon) mon.value = CC.state.currency;
+        paintFxBadge();
         if (CC.state.centroInicial) {
             var found = CC.state.centros.filter(function (c) { return String(c.codigo) === String(CC.state.centroInicial); })[0];
             if (found) {
@@ -2122,6 +2200,7 @@
             mon.addEventListener('change', function () {
                 CC.state.currency = this.value || 'MXN';
                 saveJSON(SK.currency, CC.state.currency);
+                paintFxBadge();
                 paintDetalleHeader();
                 renderDetalleTable();
                 renderDetalleChart();
@@ -2274,7 +2353,9 @@
             el.value = control.cuenta || '';
         }
         renderCtaChips();
-        renderCapturaForm();
+        paintMatrixSelection();
+        paintMatrixHint();
+        paintCompletarBtn(currentCta());
         renderControlTable();
         renderControlCharts();
         renderDetalleTable();
@@ -2282,32 +2363,93 @@
         paintScopeHints();
     }
 
+    function matrixCtas() {
+        var q = normSearch(control.prodQuery || ((document.getElementById('ctl-prod-q') || {}).value || ''));
+        var ctas = (control._allCtas || []).slice();
+        if (control.soloPendientes) ctas = ctas.filter(ctaPendiente);
+        if (q) {
+            ctas = ctas.filter(function (cta) {
+                return normSearch(
+                    (cta.codigo || '') + ' ' + (cta.nombre || '') + ' ' + (cta.grupo || '')
+                ).indexOf(q) !== -1;
+            });
+        }
+        return ctas;
+    }
+
+    function normSearch(s) {
+        var t = String(s == null ? '' : s).toLowerCase();
+        if (t.normalize) t = t.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        return t.replace(/\s+/g, ' ').trim();
+    }
+
+    function targetCtasForTools() {
+        var selected = currentCta();
+        if (selected) return [selected];
+        return matrixCtas();
+    }
+
     function renderCapturaForm() {
         var empty = document.getElementById('ctl-form-empty');
         var body = document.getElementById('ctl-form-body');
-        var cta = currentCta();
-        if (!control.centro || !cta) {
+        if (!control.centro) {
             if (empty) empty.hidden = false;
             if (body) body.hidden = true;
             return;
         }
         if (empty) empty.hidden = true;
         if (body) body.hidden = false;
-        setText('ctl-form-grupo', cta.grupo || '');
         var cc = control.centro;
-        paintNombreCodigo('ctl-form-cc', cc ? cc.nombre : '', cc ? cc.codigo : '');
-        paintNombreCodigo('ctl-form-cta', cta.nombre, cta.codigo);
-        var aj = document.getElementById('ctl-ajuste-pct');
-        if (aj && control.centro) {
-            var akey = budgetKey(control.centro.empresa, control.centro.codigo, cta.codigo);
-            var saved = CC.state.ajustes && CC.state.ajustes[akey];
-            aj.value = (saved != null && saved !== '') ? saved : '';
-        }
+        var ctas = matrixCtas();
+        var st = statsDeCentro(cc);
+        paintNombreCodigo('ctl-form-cc', cc.nombre || '', cc.codigo || '');
+        setText('ctl-form-cta', st.total + (st.total === 1 ? ' producto' : ' productos'));
+        setText('ctl-form-grupo', ctas.length === st.total
+            ? 'Edita Ene–Dic por fila'
+            : ('Mostrando ' + ctas.length + ' de ' + st.total));
         paintFormPresupuestoLabel();
-        paintFormEstado(cta);
-        paintCompletarBtn(cta);
-        updateFormTotals(cta);
-        drawMonthGrid(cta);
+        paintFormEstadoCliente(st);
+        paintCompletarBtn(currentCta() || ctas[0] || null);
+        updateFormTotalsCliente(st);
+        paintFxBadge();
+        drawMatrixTable(ctas);
+        paintMatrixHint();
+    }
+
+    function paintFormEstadoCliente(st) {
+        var el = document.getElementById('ctl-form-estado');
+        if (!el) return;
+        var listo = st && st.total > 0 && !st.pendientes;
+        el.textContent = listo ? 'Capturada' : (st && st.pendientes ? (st.pendientes + ' pend.') : 'Pendiente');
+        el.className = 'cc-badge ' + (listo ? 'cc-badge-aceptado' : 'cc-badge-en_proceso');
+    }
+
+    function updateFormTotalsCliente(st) {
+        st = st || (control.centro ? statsDeCentro(control.centro) : { totG: 0, totP: 0, capturadas: 0, total: 0, pendientes: 0, avance: 0 });
+        setText('ctl-form-gasto', moneyGasto(st.totG));
+        setText('ctl-form-ppto', money(st.totP));
+        var d = deltaPct(st.totP, st.totG);
+        var el = document.getElementById('ctl-form-delta');
+        if (el) el.textContent = st.pendientes
+            ? (st.pendientes + (st.pendientes === 1 ? ' producto pendiente' : ' productos pendientes'))
+            : (st.totP ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada');
+        setText('ctl-form-avance', st.avance + '%');
+        setText('ctl-form-avance-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
+        var bar = document.getElementById('ctl-form-avance-bar');
+        var wrap = document.getElementById('ctl-form-avance-wrap');
+        if (bar) bar.style.width = Math.min(st.avance, 100) + '%';
+        if (wrap) wrap.className = 'cc-progress ' + (st.pendientes ? 'warn' : 'good');
+    }
+
+    function paintMatrixHint() {
+        var hint = document.getElementById('ctl-matrix-hint');
+        if (!hint) return;
+        var cta = currentCta();
+        if (cta) {
+            hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Copiar / Limpiar / % / Completado / Dispersar aplican a esta fila.';
+            return;
+        }
+        hint.textContent = 'Clic en un producto para herramientas puntuales. Si no hay fila activa, Copiar / Limpiar / % / Completado aplican a todos los visibles.';
     }
 
     function nombrePresupuestoActual() {
@@ -2320,6 +2462,10 @@
     }
 
     function paintFormEstado(cta) {
+        if (!cta) {
+            if (control.centro) paintFormEstadoCliente(statsDeCentro(control.centro));
+            return;
+        }
         var st = document.getElementById('ctl-form-estado');
         if (!st) return;
         var listo = !ctaPendiente(cta);
@@ -2330,12 +2476,12 @@
     function paintCompletarBtn(cta) {
         var btn = document.getElementById('ctl-completar');
         if (!btn) return;
-        if (!cta || control.locked) {
+        if (control.locked || !control.centro) {
             btn.hidden = true;
             return;
         }
         btn.hidden = false;
-        var on = !ctaPendiente(cta);
+        var on = cta ? !ctaPendiente(cta) : !(statsDeCentro(control.centro).pendientes);
         btn.setAttribute('data-on', on ? '1' : '0');
         btn.innerHTML = '<i class="fa-solid fa-check"></i> Completado';
     }
@@ -2345,6 +2491,10 @@
     }
 
     function paintCtaFill(cta) {
+        if (!cta) {
+            updateFormTotalsCliente();
+            return;
+        }
         var filled = mesesCapturados(cta);
         var av = Math.round((filled / 12) * 100);
         setText('ctl-form-avance', av + '%');
@@ -2356,6 +2506,10 @@
     }
 
     function updateFormTotals(cta) {
+        if (!cta) {
+            updateFormTotalsCliente();
+            return;
+        }
         setText('ctl-form-gasto', moneyGasto(cta.totG));
         setText('ctl-form-ppto', money(cta.totP));
         var d = deltaPct(cta.totP, cta.totG);
@@ -2391,29 +2545,137 @@
     }
 
     function drawMonthGrid(cta) {
-        var grid = document.getElementById('ctl-month-grid');
-        if (!grid) return;
-        grid.innerHTML = MONTHS.map(function (m, i) {
-            var cls = monthCellClass(cta, i);
-            var shown = mesLleno(cta.ppto[i]) ? String(Number(cta.ppto[i])) : '';
-            return '<div class="' + cls + '"><div class="m">' + m + '</div>' +
-                monthRealHtml(cta, i) +
-                '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' + (control.locked ? 'disabled' : '') + ' placeholder="Cantidad" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '"></div>';
+        drawMatrixTable(matrixCtas());
+    }
+
+    function drawMatrixTable(ctas) {
+        var thead = document.getElementById('ctl-matrix-thead');
+        var tbody = document.getElementById('ctl-matrix-tbody');
+        if (!thead || !tbody) return;
+        ctas = ctas || matrixCtas();
+        var cur = isUsdView() ? 'USD' : 'MXN';
+        var head = '<tr><th class="sticky-col">Producto</th><th class="num">Venta ' + CC.state.anioGasto + '</th><th class="num">Proy. (' + cur + ')</th><th class="num">Δ%</th>';
+        MONTHS.forEach(function (m) { head += '<th class="num">' + m + '</th>'; });
+        head += '</tr>';
+        thead.innerHTML = head;
+        if (!ctas.length) {
+            tbody.innerHTML = '<tr><td colspan="16"><div class="cc-empty">' +
+                (control.soloPendientes || control.prodQuery
+                    ? 'Sin productos con ese filtro'
+                    : 'Este cliente no tiene productos asignados') +
+                '</div></td></tr>';
+            return;
+        }
+        tbody.innerHTML = ctas.map(function (cta) {
+            var d = deltaPct(cta.totP, cta.totG);
+            var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+            var selected = String(cta.codigo) === String(control.cuenta || '');
+            var done = !ctaPendiente(cta);
+            var cells = '';
+            for (var i = 0; i < 12; i++) {
+                var shown = formatInputAmount(cta.ppto[i]);
+                var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
+                cells += '<td class="' + pCls + '">' +
+                    '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
+                    (control.locked ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '" title="' +
+                    escapeHtml(MONTHS[i] + ' · ' + cur + ' · venta ' + formatInputAmount((cta.gasto && cta.gasto[i]) || 0) + ' · TC ' + fxRate().toFixed(2)) + '">' +
+                    '</td>';
+            }
+            return '<tr class="cc-matrix-row' + (selected ? ' is-on' : '') + (done ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '">' +
+                '<td class="sticky-col">' +
+                    '<button type="button" class="cc-matrix-prod" data-pick-cta="' + escapeHtml(cta.codigo) + '">' +
+                        htmlNombreCodigo(cta.nombre, cta.codigo) +
+                    '</button>' +
+                    '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
+                '</td>' +
+                '<td class="num">' + moneyGasto(cta.totG) + '</td>' +
+                '<td class="num fw-semibold" data-tot-p>' + money(cta.totP) + '</td>' +
+                '<td class="num ' + dCls + '" data-delta>' + (cta.totP || done ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>' +
+                cells +
+                '</tr>';
         }).join('');
-        grid.querySelectorAll('input').forEach(function (inp) {
+
+        tbody.querySelectorAll('[data-pick-cta]').forEach(function (btn) {
+            btn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                selectCuenta(btn.getAttribute('data-pick-cta'));
+            });
+        });
+        tbody.querySelectorAll('input[data-m]').forEach(function (inp) {
+            inp.addEventListener('focus', function () {
+                if (String(control.cuenta || '') !== String(inp.getAttribute('data-cta') || '')) {
+                    control.cuenta = inp.getAttribute('data-cta');
+                    paintMatrixSelection();
+                    paintMatrixHint();
+                    paintCompletarBtn(currentCta());
+                }
+            });
             inp.addEventListener('input', function () {
-                var cell = inp.closest('.cc-month-cell');
-                if (!cell) return;
+                var td = inp.closest('td');
+                var codigo = inp.getAttribute('data-cta');
+                var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
+                if (!td || !cta) return;
                 var raw = String(inp.value || '').trim().replace(/,/g, '');
                 var fake = { gasto: cta.gasto, ppto: (cta.ppto || []).slice() };
-                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : (Number(raw) || 0);
-                cell.className = monthCellClass(fake, Number(inp.getAttribute('data-m')));
+                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreAmount(Number(raw) || 0);
+                td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell');
+                inp.classList.toggle('is-neg', (Number(raw) || 0) < 0);
             });
             inp.addEventListener('change', onMonthChange);
             inp.addEventListener('keydown', function (ev) {
                 if (ev.key === 'Enter') { ev.preventDefault(); inp.blur(); }
             });
         });
+    }
+
+    function paintMatrixSelection() {
+        var tbody = document.getElementById('ctl-matrix-tbody');
+        if (!tbody) return;
+        tbody.querySelectorAll('.cc-matrix-row').forEach(function (row) {
+            row.classList.toggle('is-on', String(row.getAttribute('data-cta') || '') === String(control.cuenta || ''));
+        });
+    }
+
+    function updateMatrixRow(codigo) {
+        var c = control.centro;
+        if (!c || !codigo) return;
+        var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
+        var row = document.querySelector('#ctl-matrix-tbody tr[data-cta="' + cssEscape(codigo) + '"]');
+        if (!cta || !row) {
+            drawMatrixTable();
+            return;
+        }
+        var d = deltaPct(cta.totP, cta.totG);
+        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var done = !ctaPendiente(cta);
+        row.classList.toggle('is-done', done);
+        row.classList.toggle('is-on', String(control.cuenta || '') === String(codigo));
+        var tot = row.querySelector('[data-tot-p]');
+        var delta = row.querySelector('[data-delta]');
+        var status = row.querySelector('.cc-matrix-status');
+        if (tot) tot.textContent = money(cta.totP);
+        if (delta) {
+            delta.className = 'num ' + dCls;
+            delta.textContent = (cta.totP || done) ? ((d > 0 ? '+' : '') + d + '%') : '—';
+        }
+        if (status) status.textContent = done ? 'Capturado' : (mesesCapturados(cta) + '/12');
+        for (var i = 0; i < 12; i++) {
+            var inp = row.querySelector('input[data-m="' + i + '"]');
+            if (!inp) continue;
+            if (document.activeElement === inp) continue;
+            var shown = formatInputAmount(cta.ppto[i]);
+            if (String(inp.value) !== shown) inp.value = shown;
+            inp.classList.toggle('is-neg', (Number(shown) || 0) < 0);
+            var td = inp.closest('td');
+            if (td) td.className = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
+        }
+        updateFormTotalsCliente(statsDeCentro(c));
+        paintFormEstadoCliente(statsDeCentro(c));
+        paintMatrixHint();
+    }
+
+    function cssEscape(value) {
+        return String(value == null ? '' : value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     }
 
     function monthCellClass(cta, i) {
@@ -2432,12 +2694,12 @@
     function monthsFromGrid(cta, fillEmpty) {
         var c = control.centro;
         var months = (c && cta) ? pptoDe(c.empresa, c.codigo, cta, cta.gasto).slice() : [null, null, null, null, null, null, null, null, null, null, null, null];
-        var grid = document.getElementById('ctl-month-grid');
-        if (!grid) return months;
-        grid.querySelectorAll('input[data-m]').forEach(function (inp) {
+        if (!cta) return months;
+        var selector = '#ctl-matrix-tbody input[data-cta="' + cssEscape(cta.codigo) + '"][data-m], #ctl-month-grid input[data-cta="' + cssEscape(cta.codigo) + '"][data-m]';
+        document.querySelectorAll(selector).forEach(function (inp) {
             var m = Number(inp.getAttribute('data-m'));
             var raw = String(inp.value || '').trim().replace(/,/g, '');
-            months[m] = raw === '' ? (fillEmpty ? 0 : null) : (Number(raw) || 0);
+            months[m] = raw === '' ? (fillEmpty ? 0 : null) : toStoreAmount(Number(raw) || 0);
         });
         return months;
     }
@@ -2456,6 +2718,10 @@
         })[0];
         if (pend) {
             selectCuenta(pend.codigo);
+            var row = document.querySelector('#ctl-matrix-tbody tr[data-cta="' + cssEscape(pend.codigo) + '"]');
+            if (row && row.scrollIntoView) row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            var firstEmpty = row && row.querySelector('td.is-empty input, .cc-matrix-cell.is-empty input');
+            if (firstEmpty) firstEmpty.focus();
             return true;
         }
         celebrarCentroCompleto();
@@ -2501,18 +2767,26 @@
 
     function guardarCapturaActual() {
         var c = control.centro;
-        var cta = currentCta();
-        if (c && cta && !control.locked) {
+        if (!c || control.locked) return true;
+        var ctas = control._allCtas || [];
+        var incompletos = [];
+        ctas.forEach(function (cta) {
             var months = monthsFromGrid(cta);
             var faltan = cuentaMesesVacios(months);
             if (faltan.length) {
-                toast('warning', 'Faltan meses', 'Llena los 12 meses (el 0 sí cuenta) o pulsa Completado.');
-                drawMonthGrid(Object.assign({}, cta, { ppto: months, totP: sum(months) }));
-                return false;
+                incompletos.push(labelNombreCodigo(cta.nombre, cta.codigo));
+                return;
             }
             persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
+        });
+        if (incompletos.length) {
+            toast('warning', 'Faltan meses', incompletos.length === 1
+                ? ('Completa los 12 meses de ' + incompletos[0] + ' (el 0 sí cuenta) o pulsa Completado.')
+                : ('Hay ' + incompletos.length + ' productos incompletos. Llena los 12 meses o usa Completado.'));
+            drawMatrixTable();
+            return false;
         }
-        if (c) persistOverlay(c, { estado: c.estado === 'abierto' ? 'en_proceso' : c.estado });
+        persistOverlay(c, { estado: c.estado === 'abierto' ? 'en_proceso' : c.estado });
         renderVisorTable();
         return true;
     }
@@ -2527,13 +2801,12 @@
         renderCtaChips();
         renderControlTable();
         renderControlCharts();
-        var cta = currentCta() || control._allCtas.filter(function (x) { return String(x.codigo) === String(codigo); })[0];
-        if (cta) {
-            paintFormEstado(cta);
-            paintCompletarBtn(cta);
-            updateFormTotals(cta);
-            if (!opts.skipFormGrid) drawMonthGrid(cta);
+        if (opts.skipFormGrid) {
+            updateMatrixRow(codigo);
+        } else {
+            renderCapturaForm();
         }
+        paintCompletarBtn(currentCta());
         renderVisorTable();
     }
 
@@ -2647,16 +2920,21 @@
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         if (!c || !cta) return;
         var raw = String(inp.value || '').trim().replace(/,/g, '');
-        var valN = raw === '' ? null : (Number(raw) || 0);
+        var valN = raw === '' ? null : toStoreAmount(Number(raw) || 0);
         var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
         var wasEmpty = !mesesTodosLlenos(months) && months.every(function (x) { return !mesLleno(x); });
         months[m] = valN;
         persistBudget(c.empresa, c.codigo, codigo, months);
 
-        var cell = inp.closest('.cc-month-cell');
+        var cell = inp.closest('.cc-month-cell, .cc-matrix-cell, td');
         if (cell) {
             var fake = { gasto: cta.gasto, ppto: months };
-            cell.className = monthCellClass(fake, m);
+            var cls = monthCellClass(fake, m);
+            if (cell.classList.contains('cc-matrix-cell') || cell.tagName === 'TD') {
+                cell.className = cls.replace('cc-month-cell', 'cc-matrix-cell');
+            } else {
+                cell.className = cls;
+            }
         }
 
         if (wasEmpty && valN > 0 && m === 0 && !control.locked) {
@@ -2686,44 +2964,105 @@
         var copy = document.getElementById('ctl-copy-year');
         if (copy) copy.addEventListener('click', function () {
             var c = control.centro;
-            var cta = currentCta();
-            if (!c || !cta || control.locked) return;
-            persistBudget(c.empresa, c.codigo, cta.codigo, (cta.gasto || []).slice());
-            refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Copiado', 'Se copió la cantidad vendida de ' + CC.state.anioGasto + ' a los 12 meses');
+            var list = targetCtasForTools();
+            if (!c || !list.length || control.locked) return;
+            var run = function () {
+                list.forEach(function (cta) {
+                    persistBudget(c.empresa, c.codigo, cta.codigo, (cta.gasto || []).slice());
+                });
+                refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                toast('success', 'Copiado', list.length === 1
+                    ? ('Se copió la venta de ' + CC.state.anioGasto + ' a ' + labelNombreCodigo(list[0].nombre, list[0].codigo))
+                    : ('Se copió ' + CC.state.anioGasto + ' en ' + list.length + ' productos'));
+            };
+            if (list.length > 1 && window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: 'Copiar a ' + list.length + ' productos',
+                    text: 'Se reemplazará la proyección visible con la venta real de ' + CC.state.anioGasto + '.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Copiar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) run(); });
+                return;
+            }
+            run();
         });
         var clear = document.getElementById('ctl-clear-year');
         if (clear) clear.addEventListener('click', function () {
             var c = control.centro;
-            var cta = currentCta();
-            if (!c || !cta || control.locked) return;
-            persistBudget(c.empresa, c.codigo, cta.codigo, [null, null, null, null, null, null, null, null, null, null, null, null], { completado: false });
-            refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Limpio', 'Se quitó la proyección de ' + cta.nombre);
+            var list = targetCtasForTools();
+            if (!c || !list.length || control.locked) return;
+            var run = function () {
+                list.forEach(function (cta) {
+                    persistBudget(c.empresa, c.codigo, cta.codigo, [null, null, null, null, null, null, null, null, null, null, null, null], { completado: false });
+                });
+                refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                toast('success', 'Limpio', list.length === 1
+                    ? ('Se quitó la proyección de ' + labelNombreCodigo(list[0].nombre, list[0].codigo))
+                    : ('Se limpiaron ' + list.length + ' productos'));
+            };
+            if (list.length > 1 && window.Swal) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Limpiar ' + list.length + ' productos',
+                    text: 'Se borrarán las cantidades proyectadas visibles.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Limpiar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#b91c1c'
+                }).then(function (r) { if (r.isConfirmed) run(); });
+                return;
+            }
+            run();
         });
         var infl = document.getElementById('ctl-apply-infl');
         if (infl) infl.addEventListener('click', function () {
             var c = control.centro;
-            var cta = currentCta();
-            if (!c || !cta || control.locked) return;
+            var list = targetCtasForTools();
+            if (!c || !list.length || control.locked) return;
             var pctIn = document.getElementById('ctl-ajuste-pct');
             var pctVal = pctIn ? Number(pctIn.value) : 0;
             if (!isFinite(pctVal)) pctVal = 0;
             var rate = 1 + (pctVal / 100);
-            var months = (cta.gasto || []).map(function (v) { return (Number(v) || 0) * rate; });
-            persistBudget(c.empresa, c.codigo, cta.codigo, months);
-            refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Ajuste aplicado', 'Cantidad ' + CC.state.anioGasto + ' × (1 ' + (pctVal >= 0 ? '+ ' : '− ') + Math.abs(pctVal) + '%)');
+            var run = function () {
+                list.forEach(function (cta) {
+                    var months = (cta.gasto || []).map(function (v) { return (Number(v) || 0) * rate; });
+                    persistBudget(c.empresa, c.codigo, cta.codigo, months);
+                });
+                refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                toast('success', 'Ajuste aplicado', list.length === 1
+                    ? ('Cantidad ' + CC.state.anioGasto + ' × (1 ' + (pctVal >= 0 ? '+ ' : '− ') + Math.abs(pctVal) + '%)')
+                    : (list.length + ' productos × (1 ' + (pctVal >= 0 ? '+ ' : '− ') + Math.abs(pctVal) + '%)'));
+            };
+            if (list.length > 1 && window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: 'Aplicar % a ' + list.length + ' productos',
+                    text: 'Se recalculará la proyección visible con el porcentaje indicado.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Aplicar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) run(); });
+                return;
+            }
+            run();
         });
         var completar = document.getElementById('ctl-completar');
         if (completar) completar.addEventListener('click', function () {
             var c = control.centro;
-            var cta = currentCta();
-            if (!c || !cta || control.locked) return;
-            var months = monthsFromGrid(cta, true);
-            persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
-            refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Completado', 'Los meses vacíos quedaron en 0');
+            var list = targetCtasForTools();
+            if (!c || !list.length || control.locked) return;
+            list.forEach(function (cta) {
+                var months = monthsFromGrid(cta, true);
+                persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
+            });
+            refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+            toast('success', 'Completado', list.length === 1
+                ? 'Los meses vacíos quedaron en 0'
+                : ('Se completaron ' + list.length + ' productos (vacíos en 0)'));
         });
     }
 
@@ -2969,11 +3308,12 @@
         var mismo = val('d-modo') === 'mismo';
         var label = document.getElementById('d-monto-label');
         var hint = document.getElementById('d-modo-hint');
-        if (label) label.textContent = mismo ? 'Monto mensual' : 'Monto total';
+        var cur = isUsdView() ? 'USD' : 'MXN';
+        if (label) label.textContent = (mismo ? 'Monto mensual' : 'Monto total') + ' (' + cur + ')';
         if (hint) {
             hint.textContent = mismo
-                ? 'Gasto fijo: se copia el mismo monto a cada mes del rango Desde–Hasta.'
-                : 'El total se reparte entre los meses del rango.';
+                ? ('Gasto fijo en ' + cur + ': se copia el mismo monto a cada mes del rango Desde–Hasta. TC ' + fxRate().toFixed(2) + '.')
+                : ('El total en ' + cur + ' se reparte entre los meses del rango. TC ' + fxRate().toFixed(2) + '.');
         }
     }
 
@@ -2987,8 +3327,12 @@
                 e.preventDefault();
                 var c = control.centro;
                 var cta = currentCta();
-                var codigo = cta ? cta.codigo : '';
-                var monto = Number(val('d-monto')) || 0;
+                if (!cta) {
+                    toast('warning', 'Elige un producto', 'Haz clic en una fila de la tabla antes de dispersar.');
+                    return;
+                }
+                var codigo = cta.codigo;
+                var monto = toStoreAmount(Number(val('d-monto')) || 0);
                 var from = Number(val('d-desde')) || 0;
                 var to = Number(val('d-hasta')) || 11;
                 var modo = val('d-modo');
@@ -2996,14 +3340,14 @@
                 var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
                 var n = to - from + 1;
                 if (modo === 'igual') {
-                    var each = Math.round(monto / n);
+                    var each = Math.round((monto / n) * 100) / 100;
                     for (var i = from; i <= to; i++) months[i] = each;
                 } else if (modo === 'mismo') {
                     for (var k = from; k <= to; k++) months[k] = monto;
                 } else {
                     var weights = cta.gasto.slice(from, to + 1);
                     var tw = sum(weights) || n;
-                    for (var j = from; j <= to; j++) months[j] = Math.round(monto * ((cta.gasto[j] || 0) / tw));
+                    for (var j = from; j <= to; j++) months[j] = Math.round(monto * ((cta.gasto[j] || 0) / tw) * 100) / 100;
                 }
                 persistBudget(c.empresa, c.codigo, codigo, months);
                 hideModal('modalDispersar');
