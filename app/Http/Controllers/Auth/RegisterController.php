@@ -113,7 +113,7 @@ class RegisterController extends Controller
             $valusers =  $this-> obtenerusuarios();
             $varlistaempleados =  $this-> obtenerlistaempleados();
             $tipo = $request->get('tipo');
-            $tiposPermitidos = ['proveedor', 'empleado', 'alumno', 'socio', 'empresa', 'master'];
+            $tiposPermitidos = ['proveedor', 'empleado', 'alumno', 'socio', 'empresa', 'master', 'sin_empleado'];
 
             if (!in_array($tipo, $tiposPermitidos, true)) {
                 return redirect()->route('registro')->with("warning", "Tipo de usuario no válido");
@@ -121,7 +121,7 @@ class RegisterController extends Controller
 
             $idTipo = $this->obtenerIdTipoRegistro($request, $tipo);
             $idEmpresaSistema = null;
-            if (in_array($tipo, ['empresa', 'master'], true)) {
+            if (in_array($tipo, ['empresa', 'master', 'sin_empleado'], true)) {
                 $parsed = $this->parseIdEmpresaRegistro($request->get('id_tipo_empresa'));
                 $idEmpresaSistema = $parsed['id_empresa'];
                 if ($tipo === 'empresa') {
@@ -129,11 +129,11 @@ class RegisterController extends Controller
                 }
             }
 
-            if ($tipo !== 'master' && is_null($idTipo)) {
+            if (!in_array($tipo, ['master', 'sin_empleado'], true) && is_null($idTipo)) {
                 return redirect()->route('registro')->with("warning", "Selecciona el registro correspondiente al tipo de usuario");
             }
 
-            if ($tipo !== 'master') {
+            if (!in_array($tipo, ['master', 'sin_empleado'], true)) {
                 $yaAsignado = $tipo === 'empresa' && $idEmpresaSistema && Schema::hasColumn('users', 'id_empresa')
                     ? User::where('tipo', 'empresa')->where('id_empresa', $idEmpresaSistema)->exists()
                     : User::where('tipo', $tipo)->where('id_tipo', $idTipo)->exists();
@@ -174,8 +174,17 @@ class RegisterController extends Controller
             $user->estado_user = "A";
             $user->created_at = $fecha;
             $user->created_by = auth()->user()->name;
-            if (in_array($tipo, ['empresa', 'master'], true) && $idEmpresaSistema && Schema::hasColumn('users', 'id_empresa')) {
-                $user->id_empresa = $idEmpresaSistema;
+            if (Schema::hasColumn('users', 'id_empresa')) {
+                if (in_array($tipo, ['empresa', 'master'], true) && $idEmpresaSistema) {
+                    $user->id_empresa = $idEmpresaSistema;
+                }
+                if ($tipo === 'sin_empleado') {
+                    if ($this->esSesionMasterEmpresa()) {
+                        $user->id_empresa = $this->empresaIdSesion();
+                    } elseif ($idEmpresaSistema) {
+                        $user->id_empresa = $idEmpresaSistema;
+                    }
+                }
             }
 
             if($user->save()){
@@ -328,6 +337,7 @@ class RegisterController extends Controller
             'socio' => $request->get('id_tipo_socio'),
             'empresa' => $request->get('id_tipo_empresa'),
             'master' => null,
+            'sin_empleado' => null,
         ], $tipo);
     }
 

@@ -53,7 +53,7 @@
                             </span>
                             <div>
                                 <h6>Tipo y relación</h6>
-                                <p>Elige cómo se dará de alta el usuario. Master no requiere relación.</p>
+                                <p>Elige cómo se dará de alta el usuario. Sin empleado y Master no requieren relación.</p>
                             </div>
                         </div>
 
@@ -85,6 +85,12 @@
                                         <span><i class="fa-solid fa-handshake"></i> Socio</span>
                                     </label>
 
+                                    <label class="registro-tipo-option" for="tipoSinEmpleado">
+                                        <input class="form-check-input" type="radio" name="tipo" id="tipoSinEmpleado"
+                                            value="sin_empleado" onclick="mostrarTipoUsuario('sin_empleado')">
+                                        <span><i class="fa-solid fa-user"></i> Sin empleado</span>
+                                    </label>
+
                                     @if (empty($esMasterEmpresa))
                                     <label class="registro-tipo-option" for="tipoEmpresa">
                                         <input class="form-check-input" type="radio" name="tipo" id="tipoEmpresa"
@@ -102,6 +108,10 @@
                             </div>
 
                             <div class="col-lg-9 col-12 mb-3">
+                                <div class="alert alert-info border-0 rounded-4 mb-3" id="sinEmpleadoInfo">
+                                    <i class="fa-solid fa-circle-info me-2"></i>
+                                    Este usuario no se liga a un empleado. Después le asignas perfiles y permisos como a cualquier otro.
+                                </div>
                                 <div class="alert alert-info border-0 rounded-4 mb-3" id="masterInfo">
                                     <i class="fa-solid fa-circle-info me-2"></i>
                                     El master interno de Austin (dueño del ERP) se deja sin empresa. El superusuario de un cliente (René) sí debe tener su empresa.
@@ -661,6 +671,7 @@
 
 <script src="{{ asset('js/validation.js') }}"></script>
 <script>
+    const esMasterEmpresa = @json(!empty($esMasterEmpresa));
     const tipoSelects = {
         empleado: '#id_tipo_empleado',
         proveedor: '#id_tipo_proveedor',
@@ -671,6 +682,7 @@
 
     $('.registro-tipo-panel').hide();
     $('#masterInfo').hide();
+    $('#sinEmpleadoInfo').hide();
     Object.values(tipoSelects).forEach(function(selector) {
         document.querySelector(selector).required = false;
     });
@@ -678,8 +690,9 @@
     function mostrarTipoUsuario(tipo) {
         $('.registro-tipo-panel').hide();
         $('#masterInfo').toggle(tipo === 'master');
+        $('#sinEmpleadoInfo').toggle(tipo === 'sin_empleado');
         $('.registro-tipo-option').removeClass('is-selected');
-        $('#tipo' + tipo.charAt(0).toUpperCase() + tipo.slice(1)).closest('.registro-tipo-option').addClass('is-selected');
+        $('input[name="tipo"][value="' + tipo + '"]').closest('.registro-tipo-option').addClass('is-selected');
 
         Object.values(tipoSelects).forEach(function(selector) {
             const select = document.querySelector(selector);
@@ -694,7 +707,7 @@
             inicializarBuscadoresRegistro();
         }
 
-        if (tipo === 'master') {
+        if (tipo === 'master' || (tipo === 'sin_empleado' && !esMasterEmpresa)) {
             $('#empresa').show();
             document.querySelector('#id_tipo_empresa').required = false;
             inicializarBuscadoresRegistro();
@@ -766,7 +779,7 @@
         const tipo = document.querySelector('input[name="tipo"]:checked');
 
         if (!tipo) {
-            swalAlerta('warning', 'Tipo requerido', 'Selecciona si el usuario es empleado, proveedor, alumno, socio, empresa o master.');
+            swalAlerta('warning', 'Tipo requerido', 'Selecciona el tipo de usuario.');
             return false;
         }
 
