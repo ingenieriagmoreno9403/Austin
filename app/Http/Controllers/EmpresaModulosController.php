@@ -323,6 +323,8 @@ class EmpresaModulosController extends Controller
             'name' => $row->name,
             'email' => $row->email ?? '',
             'tipo' => $row->tipo,
+            'idempleado' => isset($row->idempleado) ? ((int) $row->idempleado ?: null) : null,
+            'estado_user' => $row->estado_user ?? null,
             'id_empresa' => isset($row->id_empresa) ? ((int) $row->id_empresa ?: null) : null,
             'empresa' => $row->nombre_empresa ?? null,
         ];

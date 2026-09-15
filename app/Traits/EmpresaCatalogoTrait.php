@@ -151,35 +151,36 @@ trait EmpresaCatalogoTrait
 
     public function candidatosSuperusuarioEmpresa(int $idEmpresa): Collection
     {
-        if (!Schema::hasColumn('users', 'id_empresa')) {
-            return collect();
-        }
+        $query = DB::table('users')->orderBy('users.name');
 
-        $superIds = $this->superusuariosDeEmpresa($idEmpresa)->pluck('id')->all();
-
-        $query = DB::table('users')
-            ->leftJoin('tblempresas', 'tblempresas.id', '=', 'users.id_empresa')
-            ->where(function ($q) {
-                $q->whereNull('users.estado_user')->orWhere('users.estado_user', 'A');
-            })
-            ->where(function ($q) {
-                $q->whereRaw('LOWER(COALESCE(users.tipo, "")) <> ?', ['master'])
-                    ->orWhere(function ($q2) {
-                        $q2->whereRaw('LOWER(users.tipo) = ?', ['master'])
-                            ->whereNotNull('users.id_empresa')
-                            ->where('users.id_empresa', '>', 0);
-                    });
-            })
-            ->when($superIds, fn ($q) => $q->whereNotIn('users.id', $superIds))
-            ->orderBy('users.name')
-            ->select(
+        if (Schema::hasColumn('users', 'id_empresa')) {
+            $superIds = $this->superusuariosDeEmpresa($idEmpresa)->pluck('id')->all();
+            $query->leftJoin('tblempresas', 'tblempresas.id', '=', 'users.id_empresa')
+                ->when($superIds, fn ($q) => $q->whereNotIn('users.id', $superIds))
+                ->select(
+                    'users.id',
+                    'users.name',
+                    'users.email',
+                    'users.tipo',
+                    'users.idempleado',
+                    'users.estado_user',
+                    'users.id_empresa',
+                    'tblempresas.nombre_empresa'
+                );
+        } else {
+            $query->select(
                 'users.id',
                 'users.name',
                 'users.email',
                 'users.tipo',
-                'users.id_empresa',
-                'tblempresas.nombre_empresa'
+                'users.idempleado',
+                'users.estado_user'
             );
+        }
+
+        if (auth()->id()) {
+            $query->where('users.id', '<>', auth()->id());
+        }
 
         return collect($query->get());
     }
@@ -195,8 +196,8 @@ trait EmpresaCatalogoTrait
             throw new \InvalidArgumentException('No se encontró el usuario.');
         }
 
-        if ($this->esUsuarioAdminErp($user)) {
-            throw new \InvalidArgumentException('Ese usuario es administrador del ERP. No puede ser superusuario de un cliente.');
+        if (auth()->id() && (int) $user->id === (int) auth()->id()) {
+            throw new \InvalidArgumentException('No puedes asignarte a ti mismo como superusuario de un cliente.');
         }
 
         $tipo = strtolower((string) ($user->tipo ?? ''));
