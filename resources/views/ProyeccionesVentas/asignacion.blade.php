@@ -101,6 +101,9 @@
                     </label>
                 </div>
                 <div class="cc-grupos-cta-tools">
+                    <select id="asig-cta-linea" class="cc-select" aria-label="Línea U_LINEA_QV" disabled>
+                        <option value="">Todas las líneas</option>
+                    </select>
                     <div class="cc-pick-search">
                         <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
                         <input id="asig-cta-q" class="cc-input" type="search" placeholder="Buscar producto…">

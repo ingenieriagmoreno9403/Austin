@@ -279,7 +279,22 @@
         var ac = a.replace(/\s+/g, '');
         var bc = b.replace(/\s+/g, '');
         if (ac === bc) return true;
-        return ac.length >= 16 && bc.length >= 16 && (ac.indexOf(bc) === 0 || bc.indexOf(ac) === 0);
+        var as = stripPrefijoCuenta(a).replace(/\s+/g, '');
+        var bs = stripPrefijoCuenta(b).replace(/\s+/g, '');
+        if (as && bs && as === bs) return true;
+        if (as && (as === bc || as === ac)) return true;
+        if (bs && (bs === ac || bs === as)) return true;
+        var minLen = Math.min(ac.length, bc.length);
+        if (minLen >= 8 && (ac.indexOf(bc) === 0 || bc.indexOf(ac) === 0)) return true;
+        return as.length >= 8 && bs.length >= 8 && (as.indexOf(bs) === 0 || bs.indexOf(as) === 0);
+    }
+
+    function stripPrefijoCuenta(s) {
+        var parts = String(s || '').trim().split(/\s+/);
+        if (parts.length >= 2 && parts[0].length === 2) {
+            return parts.slice(1).join(' ');
+        }
+        return String(s || '');
     }
 
     function zeros12() {
@@ -291,15 +306,26 @@
         return n ? money(n) : '—';
     }
 
+    function nombresDesdeMapa(map) {
+        var list = [];
+        Object.keys(map || {}).forEach(function (k) {
+            if (k.indexOf('n:') !== 0) return;
+            var gasto = map[k];
+            if (gasto && gasto.length === 12) list.push({ key: k.slice(2), gasto: gasto });
+        });
+        return list;
+    }
+
     function gastoMensualDe(codigo, nombre, mapOpt) {
         var map = mapOpt || control._gastoMap || {};
-        var hit = map[String(codigo)] || map[codigoCuentaKey(codigo)];
         var nk = nombreCuentaKey(nombre);
-        if ((!hit || hit.length !== 12) && nk) {
-            hit = map['n:' + nk] || map['nc:' + nk.replace(/\s+/g, '')];
-        }
-        if ((!hit || hit.length !== 12) && nk && !mapOpt) {
-            var list = control._gastoNombres || [];
+        if (!nk) return zeros12();
+        var compact = nk.replace(/\s+/g, '');
+        var hit = map['n:' + nk] || map['nc:' + compact] || map[nk] || map[compact];
+        if (!hit || hit.length !== 12) {
+            var list = control._gastoNombres && (!mapOpt || mapOpt === control._gastoMap)
+                ? control._gastoNombres
+                : nombresDesdeMapa(map);
             for (var i = 0; i < list.length; i++) {
                 if (nombresGastoCompatibles(nk, list[i].key)) {
                     hit = list[i].gasto;
@@ -311,30 +337,38 @@
         return zeros12();
     }
 
+    function asMeses12(gasto) {
+        if (Array.isArray(gasto) && gasto.length === 12) return gasto;
+        if (gasto && typeof gasto === 'object') {
+            var a = [];
+            for (var i = 0; i < 12; i++) a.push(Number(gasto[i] != null ? gasto[i] : gasto[String(i)]) || 0);
+            return a;
+        }
+        return null;
+    }
+
     function mapFromPorCuenta(porCuenta) {
         var map = {};
         var nombres = [];
         Object.keys(porCuenta || {}).forEach(function (key) {
             var row = porCuenta[key] || {};
-            var gasto = row.gasto || row;
-            if (!gasto || gasto.length !== 12) return;
-            map[key] = gasto;
-            if (row.codigo) map[String(row.codigo)] = gasto;
-            map[codigoCuentaKey(key)] = gasto;
-            if (row.codigo) map[codigoCuentaKey(row.codigo)] = gasto;
-            var nk = nombreCuentaKey(row.nombre || '');
-            if (nk) {
-                map['n:' + nk] = gasto;
-                map['nc:' + nk.replace(/\s+/g, '')] = gasto;
-                nombres.push({ key: nk, gasto: gasto });
-            }
+            var gasto = asMeses12(row.gasto || row);
+            if (!gasto) return;
+            var nk = nombreCuentaKey(row.nombre || key || '');
+            if (!nk) return;
+            var compact = nk.replace(/\s+/g, '');
+            map['n:' + nk] = gasto;
+            map['nc:' + compact] = gasto;
+            map[nk] = gasto;
+            map[compact] = gasto;
+            nombres.push({ key: nk, gasto: gasto });
         });
         return { map: map, nombres: nombres };
     }
 
     function gastoCacheKey(c) {
         var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+        return String(c.empresa || '').toUpperCase() + '|' + year;
     }
 
     function gastoLookupDeCentro(c) {
@@ -373,29 +407,89 @@
         paintDetalleHeader();
     }
 
-    function loadGastoRealCentro(c) {
-        if (!c || !CC.state.gastoUrl) return;
-        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
-        control._gastoReq = key;
-        if (CC.state.gastoCache && CC.state.gastoCache[key]) {
-            applyGastoMap(CC.state.gastoCache[key]);
+    function nombreGastoCargado(nombre) {
+        var nk = nombreCuentaKey(nombre);
+        if (!nk) return false;
+        var map = control._gastoMap || {};
+        var hit = map['n:' + nk] || map[nk] || map['nc:' + nk.replace(/\s+/g, '')];
+        return !!(hit && hit.length === 12);
+    }
+
+    function labelGastoMes(cta, i) {
+        var n = Number((cta && cta.gasto && cta.gasto[i]) || 0);
+        if (n) return 'Gastó ' + money(n);
+        if (!nombreGastoCargado(cta && cta.nombre)) return 'Cargando…';
+        return 'Sin gasto';
+    }
+
+    function nombresAsignadosCentro(c) {
+        var asig = asigDe(c);
+        var out = [];
+        var seen = {};
+        ((asig && asig.cuentas) || []).forEach(function (x) {
+            var n = String((x && x.nombre) || '').trim();
+            var k = nombreCuentaKey(n);
+            if (!k || seen[k]) return;
+            seen[k] = true;
+            out.push(n);
+        });
+        return out;
+    }
+
+    function mergePorCuenta(por) {
+        var key = control._gastoReq;
+        CC.state.gastoCache = CC.state.gastoCache || {};
+        CC.state.gastoCache[key] = Object.assign({}, CC.state.gastoCache[key] || {}, por || {});
+        applyGastoMap(CC.state.gastoCache[key]);
+    }
+
+    function fetchGastoNombres(c, nombres, done) {
+        if (!nombres.length) {
+            if (done) done();
             return;
         }
-        control._gastoMap = {};
-        fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(c.empresa || '') +
-            '&cc=' + encodeURIComponent(c.codigo || '') +
-            '&year=' + encodeURIComponent(year), {
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        var params = new URLSearchParams();
+        params.set('empresa', c.empresa || '');
+        params.set('cc', c.codigo || '');
+        params.set('year', String(year));
+        nombres.forEach(function (n) { params.append('nombres[]', n); });
+        fetch(CC.state.gastoUrl + '?' + params.toString(), {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
-            if (control._gastoReq !== key) return;
-            var por = (json && json.por_cuenta) || {};
-            CC.state.gastoCache = CC.state.gastoCache || {};
-            CC.state.gastoCache[key] = por;
-            applyGastoMap(por);
+            if (control._gastoReq !== gastoCacheKey(c)) return;
+            mergePorCuenta((json && json.por_cuenta) || {});
+            if (done) done();
         }).catch(function () {
-            if (control._gastoReq !== key) return;
-            applyGastoMap({});
+            if (control._gastoReq !== gastoCacheKey(c)) return;
+            var dummy = {};
+            nombres.forEach(function (n) {
+                dummy[nombreCuentaKey(n)] = { nombre: n, gasto: zeros12() };
+            });
+            mergePorCuenta(dummy);
+            if (done) done();
+        });
+    }
+
+    function loadGastoRealCentro(c) {
+        if (!c || !CC.state.gastoUrl) return;
+        var key = gastoCacheKey(c);
+        control._gastoReq = key;
+        var all = nombresAsignadosCentro(c);
+        var pend = all.filter(function (n) { return !nombreGastoCargado(n); });
+        if (!pend.length) {
+            if (CC.state.gastoCache && CC.state.gastoCache[key]) applyGastoMap(CC.state.gastoCache[key]);
+            return;
+        }
+        var actual = currentCta();
+        var first = [];
+        if (actual && actual.nombre && !nombreGastoCargado(actual.nombre)) first = [actual.nombre];
+        if (!first.length) first = pend.slice(0, 1);
+        var rest = pend.filter(function (n) {
+            return nombreCuentaKey(n) !== nombreCuentaKey(first[0] || '');
+        });
+        fetchGastoNombres(c, first, function () {
+            fetchGastoNombres(c, rest);
         });
     }
 
@@ -1418,7 +1512,7 @@
     }
 
     /* ---------- Control ---------- */
-    var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, vista: 'captura', scopeTabla: 'cuenta', chartVerTodas: false };
+    var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, vista: 'captura', scopeTabla: 'cuenta', chartVerTodas: false, _gastoLoading: false };
 
     function asignacionesDelCiclo(ciclo) {
         return (CC.state.misAsignaciones || []).filter(function (a) {
@@ -2207,6 +2301,10 @@
         renderDetalleTable();
         renderDetalleChart();
         paintScopeHints();
+        var cta = currentCta();
+        if (control.centro && cta && cta.nombre && !nombreGastoCargado(cta.nombre)) {
+            fetchGastoNombres(control.centro, [cta.nombre]);
+        }
     }
 
     function renderCapturaForm() {
@@ -2277,7 +2375,7 @@
     }
 
     function updateFormTotals(cta) {
-        setText('ctl-form-gasto', moneyGasto(cta.totG));
+        setText('ctl-form-gasto', nombreGastoCargado(cta.nombre) ? moneyGasto(cta.totG) : 'Cargando…');
         setText('ctl-form-ppto', money(cta.totP));
         var d = deltaPct(cta.totP, cta.totG);
         var el = document.getElementById('ctl-form-delta');
@@ -2294,7 +2392,7 @@
             var cls = monthCellClass(cta, i);
             var shown = mesLleno(cta.ppto[i]) ? String(Number(cta.ppto[i])) : '';
             return '<div class="' + cls + '"><div class="m">' + m + '</div>' +
-                '<div class="prev">' + ((cta.gasto[i] || 0) ? ('Gastó ' + money(cta.gasto[i])) : 'Sin gasto') + '</div>' +
+                '<div class="prev' + (Number(cta.gasto[i] || 0) || nombreGastoCargado(cta.nombre) ? '' : ' is-loading') + '">' + labelGastoMes(cta, i) + '</div>' +
                 '<input type="number" step="0.01" min="0" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' + (control.locked ? 'disabled' : '') + ' placeholder="0"></div>';
         }).join('');
         grid.querySelectorAll('input').forEach(function (inp) {
@@ -3316,8 +3414,11 @@
     function queueAnalisisGastos() {
         if (!CC.state.gastoUrl || CC.state.page !== 'analisis') return;
         var year = CC.state.anioGasto || 2026;
+        var seenEmp = {};
         var pending = (CC.state.centros || []).filter(function (c) {
             var key = gastoCacheKey(c);
+            if (seenEmp[key]) return false;
+            seenEmp[key] = true;
             return !(CC.state.gastoCache && CC.state.gastoCache[key]);
         });
         if (!pending.length) return;

@@ -653,9 +653,11 @@ class CentrosCostosController extends Controller
 
     public function gastoReal(Request $request): JsonResponse
     {
+        @set_time_limit(120);
         $empresa = strtoupper(trim((string) $request->get('empresa', '')));
         $cc = trim((string) $request->get('cc', $request->get('CC', '')));
         $year = (int) $request->get('year', $request->get('anio', 0));
+        $nombres = $this->listaRequest($request, 'nombres');
 
         $alias = [
             'ABSA' => 'AUSTIN',
@@ -664,22 +666,26 @@ class CentrosCostosController extends Controller
             $empresa = $alias[$empresa];
         }
 
-        if ($empresa === '' || $cc === '') {
-            return response()->json(['ok' => false, 'por_cuenta' => (object) [], 'mensaje' => 'Falta empresa o centro.'], 422);
+        if ($empresa === '') {
+            return response()->json(['ok' => false, 'por_cuenta' => (object) [], 'mensaje' => 'Falta empresa.'], 422);
         }
         if ($year < 2000 || $year > 2100) {
             $year = (int) date('Y');
         }
 
-        $cacheKey = 'cc.gasto-real.' . $empresa . '.' . $cc . '.' . $year;
+        if (! $nombres) {
+            $this->completarNombresGastoDesdeAsignaciones($empresa, $cc, $nombres);
+        }
+
+        $cacheKey = 'cc.gasto-real.v6.' . $empresa . '.' . $year . '.' . md5(json_encode($nombres));
         $cached = Cache::get($cacheKey);
-        if (is_array($cached) && ! empty($cached['ok'])) {
+        if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['por_cuenta'])) {
             return response()->json($cached);
         }
 
         try {
-            $payload = $this->cargarGastoRealCentro($empresa, $cc, $year);
-            if (! empty($payload['ok'])) {
+            $payload = $this->cargarGastoRealCentro($empresa, $cc, $year, $nombres);
+            if (! empty($payload['ok']) && ! empty($payload['por_cuenta'])) {
                 Cache::put($cacheKey, $payload, 900);
             }
         } catch (Throwable $e) {
@@ -1319,94 +1325,275 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * @return array{ok: bool, year: int, por_cuenta: array<string, array<string, mixed>>, mensaje: string|null}
+     * @param  array<int, string>  $nombres
+     * @return array{ok: bool, year: int, por_cuenta: array<string, array<string, mixed>>|\stdClass, mensaje: string|null}
      */
-    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year): array
+    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year, array $nombres = []): array
     {
         $api = app(AutinApiClient::class);
         $porCuenta = [];
         $ok = false;
         $mensaje = null;
-        $perPage = 200;
-        $maxPages = 20;
+        $base = [
+            'Empresa' => $empresa,
+            'year' => $year,
+            'fecha_desde' => $year . '-01-01',
+            'fecha_hasta' => $year . '-12-31',
+        ];
 
-        for ($page = 1; $page <= $maxPages; $page++) {
-            $res = $api->gastoReal([
-                'Empresa' => $empresa,
-                'CC' => $cc,
-                'year' => $year,
-                'fecha_desde' => $year . '-01-01',
-                'fecha_hasta' => $year . '-12-31',
-                'per_page' => $perPage,
-                'page' => $page,
-            ]);
-
-            if (empty($res['ok'])) {
-                if ($page === 1) {
-                    $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
-                }
-                break;
+        $consultas = [];
+        foreach ($nombres as $nombre) {
+            $nombre = trim($nombre);
+            if ($nombre !== '') {
+                $consultas[] = $nombre;
             }
+        }
 
-            $ok = true;
-            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
-            $rows = $body['data'] ?? [];
-            if (! is_array($rows) || ! $rows) {
-                break;
-            }
-
-            foreach ($rows as $row) {
-                if (! is_array($row)) {
-                    continue;
-                }
-                $rowCc = (string) ($row['CC'] ?? $row['PrcCode'] ?? '');
-                if (! $this->mismoCentroCodigo($rowCc, $cc)) {
-                    continue;
-                }
-                $codigo = trim((string) ($row['Cuenta'] ?? $row['FormatCode'] ?? $row['AcctCode'] ?? ''));
-                if ($codigo === '') {
-                    continue;
-                }
-                $fecha = (string) ($row['Fecha'] ?? $row['fecha'] ?? '');
-                $ts = strtotime(substr($fecha, 0, 19));
-                if ($ts && (int) date('Y', $ts) !== $year) {
-                    continue;
-                }
-                $mes = $this->mesDeFecha($fecha);
-                if ($mes < 0) {
-                    continue;
-                }
-                $importe = (float) ($row['Importe'] ?? $row['importe'] ?? 0);
-                $nombre = trim((string) ($row['DescCuenta'] ?? $row['AcctName'] ?? ''));
-                $key = $this->codigoCuentaKey($codigo);
-                if (! isset($porCuenta[$key])) {
-                    $porCuenta[$key] = [
-                        'codigo' => $codigo,
-                        'nombre' => $nombre,
-                        'gasto' => array_fill(0, 12, 0.0),
+        if ($consultas) {
+            $cachedNombres = [];
+            $faltan = [];
+            foreach ($consultas as $nombre) {
+                $nk = $this->nombreCuentaKey($nombre);
+                $nomCache = 'cc.gasto-nom.v1.' . $empresa . '.' . $year . '.' . md5($nk);
+                $hit = Cache::get($nomCache);
+                if (is_array($hit) && isset($hit['gasto']) && is_array($hit['gasto'])) {
+                    $porCuenta[$nk] = [
+                        'nombre' => $hit['nombre'] ?? $nombre,
+                        'gasto' => $hit['gasto'],
                     ];
-                } elseif ($nombre !== '' && $porCuenta[$key]['nombre'] === '') {
-                    $porCuenta[$key]['nombre'] = $nombre;
+                    $cachedNombres[$nk] = true;
+                } else {
+                    $faltan[] = $nombre;
                 }
-                $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $importe, 2);
             }
-
-            $pag = $this->paginacionDe($body);
-            $lastPage = (int) ($pag['last_page'] ?? 0);
-            if ($lastPage > 0 && $page >= $lastPage) {
-                break;
+            if ($faltan) {
+                $res = $api->gastoRealPorNombres($empresa, $year, $faltan, 12, 8);
+                if (empty($res['ok'])) {
+                    if (! $cachedNombres) {
+                        $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
+                    }
+                } else {
+                    $ok = true;
+                    $mensaje = null;
+                    foreach ($res['rows'] as $row) {
+                        if (is_array($row)) {
+                            $this->acumularGastoRealFila($porCuenta, $row, $empresa, $year, $faltan);
+                        }
+                    }
+                    foreach ($faltan as $nombre) {
+                        $nk = $this->nombreCuentaKey($nombre);
+                        if (! isset($porCuenta[$nk])) {
+                            $porCuenta[$nk] = [
+                                'nombre' => $nombre,
+                                'gasto' => array_fill(0, 12, 0.0),
+                            ];
+                        }
+                        Cache::put('cc.gasto-nom.v1.' . $empresa . '.' . $year . '.' . md5($nk), $porCuenta[$nk], 1800);
+                    }
+                }
             }
-            if ($lastPage < 1 && count($rows) < $perPage) {
-                break;
+            if ($cachedNombres) {
+                $ok = true;
+            }
+        } elseif ($cc !== '') {
+            $res = $api->gastoRealTodasPaginas(array_merge($base, ['CC' => $cc, 'GroupMask' => '6']), 8, 6);
+            if (empty($res['ok'])) {
+                $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
+            } else {
+                $ok = true;
+                foreach ($res['rows'] as $row) {
+                    if (is_array($row)) {
+                        $this->acumularGastoRealFila($porCuenta, $row, $empresa, $year, $nombres);
+                    }
+                }
             }
         }
 
         return [
             'ok' => $ok,
             'year' => $year,
-            'por_cuenta' => $porCuenta,
+            'por_cuenta' => $porCuenta ?: (object) [],
             'mensaje' => $mensaje,
         ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function listaRequest(Request $request, string $key): array
+    {
+        $raw = $request->input($key, $request->input($key . '[]', []));
+        if (is_string($raw)) {
+            $raw = preg_split('/\s*,\s*/', $raw) ?: [];
+        }
+        if (! is_array($raw)) {
+            return [];
+        }
+        $out = [];
+        foreach ($raw as $item) {
+            $item = trim((string) $item);
+            if ($item !== '') {
+                $out[$item] = $item;
+            }
+        }
+
+        return array_values($out);
+    }
+
+    /**
+     * @param  array<int, string>  $nombres
+     */
+    protected function completarNombresGastoDesdeAsignaciones(string $empresa, string $cc, array &$nombres): void
+    {
+        if (! Schema::hasTable('tbl_cc_asignaciones') || ! Schema::hasTable('tbl_cc_asignacion_cuentas')) {
+            return;
+        }
+        $q = CcAsignacion::query()->with('cuentas')->whereRaw('UPPER(empresa) = ?', [$empresa]);
+        if ($cc !== '') {
+            $alt = ltrim($cc, '0');
+            $q->where(function ($w) use ($cc, $alt) {
+                $w->where('centro_codigo', $cc);
+                if ($alt !== '' && $alt !== $cc) {
+                    $w->orWhere('centro_codigo', $alt)->orWhere('centro_codigo', str_pad($alt, strlen($cc), '0', STR_PAD_LEFT));
+                }
+            });
+        }
+        foreach ($q->get() as $asig) {
+            foreach ($asig->cuentas as $cta) {
+                $nom = trim((string) $cta->cuenta_nombre);
+                if ($nom !== '') {
+                    $nombres[] = $nom;
+                }
+            }
+        }
+        $nombres = array_values(array_unique($nombres));
+    }
+
+    /**
+     * Suma importes de la misma cuenta / DescCuenta en el mismo mes.
+     *
+     * @param  array<string, array{codigo: string, nombre: string, gasto: array<int, float>}>  $porCuenta
+     * @param  array<string, mixed>  $row
+     * @param  array<int, string>  $nombresPedido
+     */
+    protected function acumularGastoRealFila(array &$porCuenta, array $row, string $empresa, int $year, array $nombresPedido = []): void
+    {
+        $rowEmp = $this->campoFila($row, ['EMPRESA', 'Empresa', 'empresa', 'DB']);
+        if ($rowEmp !== '' && ! $this->mismaEmpresaSap($rowEmp, $empresa)) {
+            return;
+        }
+
+        $nombre = $this->campoFila($row, ['DescCuenta', 'AcctName', 'NOMBRE', 'AccountName', 'nombre']);
+        if ($nombre === '' || ($nombresPedido && ! $this->nombreGastoPedido($nombre, $nombresPedido))) {
+            return;
+        }
+
+        $fecha = $this->campoFila($row, ['Fecha', 'fecha', 'FECHA', 'RefDate', 'TaxDate', 'DocDate', 'DueDate', 'CreateDate']);
+        $anioFila = $this->anioDeFecha($fecha);
+        if ($anioFila > 0 && $anioFila !== $year) {
+            return;
+        }
+        $mes = $this->mesDeFecha($fecha);
+        if ($mes < 0) {
+            return;
+        }
+
+        $importe = $this->importeGastoFila($row);
+        $key = $this->nombreCuentaKey($nombre);
+        if ($key === '') {
+            return;
+        }
+        if (! isset($porCuenta[$key])) {
+            $porCuenta[$key] = [
+                'nombre' => $nombre,
+                'gasto' => array_fill(0, 12, 0.0),
+            ];
+        }
+        $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $importe, 2);
+    }
+
+    /**
+     * @param  array<int, string>  $nombres
+     */
+    protected function nombreGastoPedido(string $nombre, array $nombres): bool
+    {
+        $nk = $this->nombreCuentaKey($nombre);
+        if ($nk === '') {
+            return false;
+        }
+        foreach ($nombres as $req) {
+            if ($this->nombreCuentaKey((string) $req) === $nk) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @param  array<int, string>  $keys
+     */
+    protected function campoFila(array $row, array $keys): string
+    {
+        foreach ($keys as $key) {
+            if (! array_key_exists($key, $row) || $row[$key] === null) {
+                continue;
+            }
+            $val = trim((string) $row[$key]);
+            if ($val !== '') {
+                return $val;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    protected function importeGastoFila(array $row): float
+    {
+        foreach (['Importe', 'importe', 'LineTotal', 'DebitSys', 'Amount'] as $key) {
+            if (isset($row[$key]) && $row[$key] !== '' && $row[$key] !== null) {
+                return round((float) $row[$key], 2);
+            }
+        }
+        $debit = (float) ($row['Debit'] ?? $row['DebitLC'] ?? 0);
+        $credit = (float) ($row['Credit'] ?? $row['CreditLC'] ?? 0);
+        if ($debit != 0.0 || $credit != 0.0) {
+            return round($debit - $credit, 2);
+        }
+
+        return 0.0;
+    }
+
+    protected function nombreCuentaKey(string $nombre): string
+    {
+        $s = strtoupper(trim($nombre));
+        if ($s === '') {
+            return '';
+        }
+        $s = strtr($s, [
+            'Á' => 'A', 'É' => 'E', 'Í' => 'I', 'Ó' => 'O', 'Ú' => 'U',
+            'Ä' => 'A', 'Ë' => 'E', 'Ï' => 'I', 'Ö' => 'O', 'Ü' => 'U',
+            'Ñ' => 'N',
+        ]);
+        $s = preg_replace('/[^A-Z0-9]+/', ' ', $s) ?? $s;
+
+        return trim(preg_replace('/\s+/', ' ', $s) ?? $s);
+    }
+
+    protected function anioDeFecha(string $fecha): int
+    {
+        if ($fecha === '') {
+            return 0;
+        }
+        if (preg_match('/(20\d{2}|19\d{2})/', $fecha, $m)) {
+            return (int) $m[1];
+        }
+
+        return 0;
     }
 
     protected function mismoCentroCodigo(string $a, string $b): bool
@@ -1422,6 +1609,17 @@ class CentrosCostosController extends Controller
         return $na !== '' && $na === $nb;
     }
 
+    protected function mismaEmpresaSap(string $a, string $b): bool
+    {
+        $alias = ['ABSA' => 'AUSTIN'];
+        $a = strtoupper(trim($a));
+        $b = strtoupper(trim($b));
+        $a = $alias[$a] ?? $a;
+        $b = $alias[$b] ?? $b;
+
+        return $a === $b;
+    }
+
     protected function codigoCuentaKey(string $codigo): string
     {
         $digits = preg_replace('/\D+/', '', $codigo);
@@ -1434,7 +1632,21 @@ class CentrosCostosController extends Controller
         if ($fecha === '') {
             return -1;
         }
-        $ts = strtotime(substr($fecha, 0, 10));
+        $fecha = trim($fecha);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}/', $fecha, $m)) {
+            $month = (int) substr($m[0], 5, 2);
+
+            return $month >= 1 && $month <= 12 ? $month - 1 : -1;
+        }
+        if (preg_match('/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})/', $fecha, $m)) {
+            $month = (int) $m[2];
+            if ($month > 12) {
+                $month = (int) $m[1];
+            }
+
+            return $month >= 1 && $month <= 12 ? $month - 1 : -1;
+        }
+        $ts = strtotime(substr($fecha, 0, 19));
         if (! $ts) {
             return -1;
         }

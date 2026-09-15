@@ -131,6 +131,64 @@
         sel.onchange = function () { onPick(sel.value || ''); };
     }
 
+    function lineaKey(c) {
+        return String((c && (c.grupo_id || c.grupo || c.agrupacion)) || '').trim();
+    }
+
+    function lineasFromCuentas(rows) {
+        var map = {};
+        (rows || []).forEach(function (c) {
+            var id = lineaKey(c) || 'SIN_LINEA';
+            if (!map[id]) {
+                map[id] = { id: id, nombre: id === 'SIN_LINEA' ? 'Sin línea' : id, n: 0 };
+            }
+            map[id].n += 1;
+        });
+        return Object.keys(map).sort(function (a, b) {
+            if (a === 'SIN_LINEA') return 1;
+            if (b === 'SIN_LINEA') return -1;
+            return a.localeCompare(b, 'es', { sensitivity: 'base' });
+        }).map(function (k) { return map[k]; });
+    }
+
+    function fillLineaUi(selId, rows, current, onPick) {
+        var sel = document.getElementById(selId);
+        if (!sel) return;
+        current = String(current || '');
+        var lineas = lineasFromCuentas(rows);
+        var opts = '<option value="">Todas las líneas</option>';
+        if (!lineas.length) {
+            opts += '<option value="_none" disabled>Sin U_LINEA_QV</option>';
+        } else {
+            opts += lineas.map(function (g) {
+                return '<option value="' + escapeHtml(g.id) + '"' + (current === String(g.id) ? ' selected' : '') + '>' +
+                    escapeHtml(g.nombre + ' · ' + g.n) + '</option>';
+            }).join('');
+        }
+        sel.innerHTML = opts;
+        if (current && !lineas.some(function (g) { return String(g.id) === current; })) {
+            current = '';
+        }
+        sel.value = current;
+        sel.onchange = function () { onPick(sel.value || ''); };
+    }
+
+    function groupByLinea(rows) {
+        var groups = {};
+        (rows || []).forEach(function (c) {
+            var id = lineaKey(c) || 'SIN_LINEA';
+            if (!groups[id]) {
+                groups[id] = { id: id, label: id === 'SIN_LINEA' ? 'Sin línea' : id, rows: [] };
+            }
+            groups[id].rows.push(c);
+        });
+        return Object.keys(groups).sort(function (a, b) {
+            if (a === 'SIN_LINEA') return 1;
+            if (b === 'SIN_LINEA') return -1;
+            return a.localeCompare(b, 'es', { sensitivity: 'base' });
+        }).map(function (k) { return groups[k]; });
+    }
+
     function fillGrupoUi(selId, grupos, current, onPick) {
         var sel = document.getElementById(selId);
         if (!sel) return;
@@ -1145,6 +1203,7 @@
         var ctaSelected = {};
         var ctaMask = '';
         var ctaGrupo = '';
+        var ctaLinea = '';
         var lastFlashKey = '';
         var currentUserId = 0;
 
@@ -1500,6 +1559,7 @@
             ctaSelected = {};
             ctaMask = '';
             ctaGrupo = '';
+            ctaLinea = '';
             if (centroSel) {
                 centroSel.innerHTML = '<option value="">Cargando clientes…</option>';
                 centroSel.disabled = false;
@@ -1508,10 +1568,13 @@
             if (ccList) ccList.innerHTML = '<div class="cc-empty">Cargando centros…</div>';
             if (ccQ) { ccQ.disabled = false; ccQ.value = ''; }
             if (ctaQ) { ctaQ.disabled = true; ctaQ.value = ''; }
+            var lineaSelReset = document.getElementById('asig-cta-linea');
+            if (lineaSelReset) { lineaSelReset.disabled = true; }
             var list = document.getElementById('asig-cta-list');
             if (list) list.innerHTML = '<div class="cc-empty">Elige un cliente para ver los productos</div>';
             fillMaskUi('asig-cta-mask', [], [], '', setCtaMask);
             fillGrupoUi('asig-cta-grupo', [], '', setCtaGrupo);
+            fillLineaUi('asig-cta-linea', [], '', setCtaLinea);
             loadCentros();
             loadGrupos();
         }
@@ -1659,6 +1722,9 @@
             if (codigo) {
                 setStep(4);
                 if (ctaQ) ctaQ.disabled = false;
+                ctaLinea = '';
+                var lineaSelPick = document.getElementById('asig-cta-linea');
+                if (lineaSelPick) lineaSelPick.disabled = false;
                 seedCtaSelected();
                 loadCuentas();
             }
@@ -1690,6 +1756,12 @@
             if (map) {
                 mergeGrupoCuentas(ctaSelected, map, cacheCuentas[cfg.empresa] || cuentas, normCode);
             }
+            renderCuentas(ctaQ ? ctaQ.value : '');
+        }
+
+        function setCtaLinea(id) {
+            ctaLinea = String(id || '');
+            fillLineaUi('asig-cta-linea', cuentas, ctaLinea, setCtaLinea);
             renderCuentas(ctaQ ? ctaQ.value : '');
         }
 
@@ -1768,6 +1840,7 @@
                 if (groups && groups.length) agrupaciones = groups;
                 fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
                 fillGrupoUi('asig-cta-grupo', grupos, ctaGrupo, setCtaGrupo);
+                fillLineaUi('asig-cta-linea', cuentas, ctaLinea, setCtaLinea);
                 if (ctaMask) {
                     setCtaMask(ctaMask);
                     return;
@@ -1795,23 +1868,36 @@
             var mask = String(ctaMask || '');
             var grupoMap = grupoCuentaMap(grupos, ctaGrupo);
             var rows = filterRowsByGrupo(cuentas, grupoMap).filter(function (c) {
-                return matchQuery((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || ''), q);
+                var linea = lineaKey(c) || 'SIN_LINEA';
+                if (ctaLinea && linea !== ctaLinea) return false;
+                return matchQuery((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || '') + ' ' + (c.grupo || ''), q);
             });
             if (!rows.length) {
-                box.innerHTML = '<div class="cc-empty">Sin productos para este catálogo</div>';
+                box.innerHTML = '<div class="cc-empty">' + (ctaLinea
+                    ? 'Sin productos en esta línea'
+                    : 'Sin productos para este catálogo') + '</div>';
                 updateCtaSelCount();
                 return;
             }
             var current = centroSel ? centroSel.value : '';
             var prev = asignacionDeCentro(cfg.empresa, current);
-            box.innerHTML = '<div class="cc-cta-group">' + rows.map(function (c) {
+            box.innerHTML = groupByLinea(rows).map(function (pack) {
+                var nOn = 0;
+                pack.rows.forEach(function (c) { if (ctaSelected[normCode(c.codigo)]) nOn += 1; });
+                var allOn = pack.rows.length > 0 && nOn === pack.rows.length;
+                return '<div class="cc-cta-group">' +
+                    '<label class="cc-cta-group-h cc-cta-mask-h"><input type="checkbox" data-cta-mask="' + escapeHtml(pack.id) + '"' + (allOn ? ' checked' : '') + '>' +
+                    escapeHtml(pack.label) + ' · ' + pack.rows.length + '</label>' +
+                    pack.rows.map(function (c) {
                         var checked = ctaSelected[normCode(c.codigo)] ? ' checked' : '';
+                        var maskId = lineaKey(c) || 'SIN_LINEA';
                         return '<label class="cc-cta-item"><input type="checkbox" data-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                             ' data-nombre="' + escapeHtml(c.nombre) + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
-                            ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + checked + '>' +
+                            ' data-mask="' + escapeHtml(maskId) + '"' + checked + '>' +
                             '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
                             '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                     }).join('') + '</div>';
+            }).join('');
             syncPermisos(prev ? prev.permisos : null);
             var boxes = box.querySelectorAll('[data-cta]');
             var nOn = 0;
@@ -1853,12 +1939,16 @@
             ctaSelected = {};
             ctaMask = '';
             ctaGrupo = '';
+            ctaLinea = '';
             var list = document.getElementById('asig-cta-list');
             if (list) list.innerHTML = '<div class="cc-empty">Elige un cliente para ver los productos</div>';
             var todas = document.getElementById('asig-cta-todas');
             if (todas) todas.checked = false;
             fillMaskUi('asig-cta-mask', agrupaciones, cuentas, '', setCtaMask);
             fillGrupoUi('asig-cta-grupo', grupos, '', setCtaGrupo);
+            fillLineaUi('asig-cta-linea', [], '', setCtaLinea);
+            var lineaSelParcial = document.getElementById('asig-cta-linea');
+            if (lineaSelParcial) lineaSelParcial.disabled = true;
             updateCtaSelCount();
             setStep(cfg.empresa ? 3 : (userId() ? 2 : 1));
         }
@@ -1904,6 +1994,8 @@
             if (!centroSel.value) return;
             setStep(4);
             if (ctaQ) ctaQ.disabled = false;
+            var lineaSelChange = document.getElementById('asig-cta-linea');
+            if (lineaSelChange) lineaSelChange.disabled = false;
             loadCuentas();
         });
 
