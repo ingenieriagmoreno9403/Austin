@@ -355,7 +355,11 @@
             let label = user.name || ('Usuario ' + user.id);
             if (user.empresa) label += ' — ' + user.empresa;
             else label += ' — sin empresa';
-            if (user.tipo) label += ' · ' + user.tipo;
+            label += ' · ' + (user.tipo || 'sin tipo');
+            if (!user.idempleado) label += ' · sin empleado';
+            if (user.estado_user && String(user.estado_user).toUpperCase() !== 'A') {
+                label += ' · inactivo';
+            }
             opt.textContent = label;
             select.appendChild(opt);
         });
