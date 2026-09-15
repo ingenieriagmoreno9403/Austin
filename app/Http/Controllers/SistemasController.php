@@ -105,7 +105,6 @@ class SistemasController extends Controller
             $varperfiles = $this->obtenerPerfiles();
             $varaccionesdePerfiles = $this->obtenerAccionesdePerfiles();
             $varlistausers = $this->obtenerusuariosAlcance();
-            $varsucursales = $this->obtenersucursalesAlcance();
 
             $idEmpresaSesion = $this->empresaIdSesion();
             $perfilesPermitidos = $this->esSesionMasterEmpresa()
@@ -116,7 +115,7 @@ class SistemasController extends Controller
                 $varaccionesdePerfiles = collect($varaccionesdePerfiles)->filter(fn ($accion) => in_array((int) $accion->id, $perfilesPermitidos, true))->values();
             }
 
-            return view('sistemas.perfiles', compact('varpantallas', 'varsubmenus', 'varlistausers', 'varperfiles', 'varaccionesdePerfiles', 'varsucursales'));
+            return view('sistemas.perfiles', compact('varpantallas', 'varsubmenus', 'varlistausers', 'varperfiles', 'varaccionesdePerfiles'));
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
         }
@@ -341,7 +340,6 @@ class SistemasController extends Controller
                 }
             }
             $guardado = false;
-            $varsucursales = $this->obtenersucursalesAlcance();
 
             $idEmpresa = $this->empresaIdDeUsuario((int) $usuario);
             $perfilesPermitidos = $this->perfilesPermitidosEmpresa($idEmpresa);
@@ -378,37 +376,6 @@ class SistemasController extends Controller
                     $usuario_perfiles->id_usuario = $usuario;
                     $usuario_perfiles->created_by = auth()->user()->name;
                     $usuario_perfiles->save();
-                    $guardado = true;
-                }
-            }
-
-            // Sucursales marcadas en el formulario
-            $sucursalesSeleccionadas = collect($varsucursales)
-                ->filter(fn ($dato) => (int) $request->input((string) $dato->id) === 1)
-                ->map(fn ($dato) => (int) $dato->id)
-                ->values();
-
-            // Quitar sucursales desmarcadas
-            $sucursalesActuales = UserSucursal::where('idusuario', $usuario)->get();
-            foreach ($sucursalesActuales as $sucursalActual) {
-                if (!$sucursalesSeleccionadas->contains((int) $sucursalActual->idsucursal)) {
-                    $sucursalActual->delete();
-                    $guardado = true;
-                }
-            }
-
-            // Agregar sucursales nuevas
-            foreach ($sucursalesSeleccionadas as $idSucursal) {
-                $yaAsignada = UserSucursal::where('idusuario', $usuario)
-                    ->where('idsucursal', $idSucursal)
-                    ->exists();
-
-                if (!$yaAsignada) {
-                    $UserSucursal = new UserSucursal();
-                    $UserSucursal->idusuario = $usuario;
-                    $UserSucursal->idsucursal = $idSucursal;
-                    $UserSucursal->created_by = auth()->user()->name;
-                    $UserSucursal->save();
                     $guardado = true;
                 }
             }
