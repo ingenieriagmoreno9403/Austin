@@ -232,8 +232,8 @@ trait DatosimpleTraits
                 tblusuario_acciones.created_by, 
                 tblusuario_acciones.updated_by
             FROM users
-            INNER JOIN tblempleados on users.idempleado = tblempleados.id 
-            INNER JOIN tblpuestos on tblpuestos.id = tblempleados.idpuesto 
+            LEFT JOIN tblempleados on users.idempleado = tblempleados.id 
+            LEFT JOIN tblpuestos on tblpuestos.id = tblempleados.idpuesto 
             INNER JOIN tblusuario_acciones on users.id = tblusuario_acciones.idusuario 
             INNER JOIN tblacciones on tblusuario_acciones.idacciones = tblacciones.id 
             INNER JOIN tblvistas on tblacciones.idvista = tblvistas.id 

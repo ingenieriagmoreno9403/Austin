@@ -38,7 +38,7 @@
             'valor' => 'editar_permisos',
             'url' => '/Sistemas/Usuarios',
             'titulo' => 'Editar permisos',
-            'desc' => 'Permisos de usuarios y acciones.',
+            'desc' => 'Acciones puntuales por usuario, sin cambiar el perfil.',
             'icono' => 'fa-sitemap',
             'color' => 'secondary',
         ],
@@ -62,7 +62,6 @@
             'desc' => 'Añadir o quitar acciones disponibles para cada perfil.',
             'icono' => 'fa-link',
             'color' => 'primary',
-            'admin' => true,
         ],
         
         [

@@ -108,6 +108,128 @@
         </div>
     </div>
 
+    @if (($permisosModulo ?? collect())->isNotEmpty())
+    <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
+        <div class="card-header text-start bg-body border-0">
+            <h5 class="text-secondary mb-1">
+                <i class="fa-solid fa-file-excel me-2"></i>Importe masivo de Excel
+            </h5>
+            <p class="text-muted fs-8 mb-0">
+                Este permiso no vive en el perfil. Márcalo por ciclo para que el usuario pueda bajar plantilla e importar, igual que el botón Importe masivo.
+            </p>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ url('/Sistemas/UsuarioPermisos/'.$varusuario->id.'/modulos') }}">
+                @csrf
+                <div class="row g-3">
+                    @foreach ($permisosModulo as $modulo)
+                        <div class="col-lg-6">
+                            <div class="acciones-perfiles-vista" style="display:block">
+                                <div class="acciones-perfiles-vista__summary">
+                                    <span class="acciones-perfiles-vista__summary-main">
+                                        <i class="fa-solid fa-unlock"></i>
+                                        <span class="acciones-perfiles-vista__name">{{ $modulo['titulo'] }}</span>
+                                    </span>
+                                </div>
+                                <div class="acciones-perfiles-vista__content">
+                                    <div class="acciones-perfiles-vista__list">
+                                        @foreach ($modulo['ciclos'] as $ciclo)
+                                            <label class="acciones-perfiles-check{{ !empty($ciclo['activo']) ? ' is-checked' : '' }}">
+                                                <input class="form-check-input acciones-perfiles-check__input" type="checkbox"
+                                                    name="{{ $modulo['campo'] }}[]" value="{{ $ciclo['codigo'] }}"
+                                                    {{ !empty($ciclo['activo']) ? 'checked' : '' }}>
+                                                <span class="acciones-perfiles-check__content">
+                                                    <span class="acciones-perfiles-check__title">{{ $ciclo['nombre'] }}</span>
+                                                    <span class="acciones-perfiles-check__meta">Ciclo {{ $ciclo['codigo'] }} · {{ $ciclo['estado'] }}</span>
+                                                </span>
+                                            </label>
+                                        @endforeach
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+                <div class="text-end mt-3">
+                    <button class="btn btn-baseColor fs-6" type="submit">
+                        <i class="fa-solid fa-check"></i> Guardar importe masivo
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    @endif
+
+    <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
+        <div class="card-header text-start bg-body border-0">
+            <h5 class="text-secondary mb-1">
+                <i class="fa-solid fa-plus me-2"></i>Agregar acción puntual
+            </h5>
+            <p class="text-muted fs-8 mb-0">
+                Súmale acciones sueltas a este usuario (por ejemplo descarga masiva) sin cambiar su perfil.
+            </p>
+        </div>
+        <div class="card-body">
+            @if (($accionesAgrupadas ?? collect())->isNotEmpty())
+                <form method="POST" action="{{ url('/Sistemas/UsuarioPermisos/'.$varusuario->id.'/acciones') }}">
+                    @csrf
+                    <div class="acciones-perfiles-search mb-3">
+                        <div class="acciones-perfiles-search__field">
+                            <i class="fa-solid fa-magnifying-glass acciones-perfiles-search__icon"></i>
+                            <input type="search" class="form-control" id="buscarAccionPuntual"
+                                placeholder="Buscar acción, pantalla o departamento…"
+                                autocomplete="off"
+                                oninput="filtrarAccionesPuntuales(this.value)">
+                        </div>
+                    </div>
+                    <div class="row g-3 acciones-perfiles-grid" id="accionesPuntualesGrid">
+                        @foreach ($accionesAgrupadas as $departamento => $vistas)
+                            @foreach ($vistas as $vista => $acciones)
+                                <div class="col-xl-6 col-12 accion-puntual-grupo"
+                                    data-search="{{ mb_strtolower($departamento.' '.$vista.' '.$acciones->pluck('descripcion_accion')->implode(' ').' '.$acciones->pluck('nombre_accion')->implode(' ')) }}">
+                                    <details class="acciones-perfiles-vista" open>
+                                        <summary class="acciones-perfiles-vista__summary">
+                                            <span class="acciones-perfiles-vista__summary-main">
+                                                <i class="fa-solid fa-bolt"></i>
+                                                <span class="acciones-perfiles-vista__name">{{ $vista }}</span>
+                                            </span>
+                                            <span class="acciones-perfiles-count">{{ $acciones->count() }}</span>
+                                        </summary>
+                                        <div class="acciones-perfiles-vista__content">
+                                            <small class="text-muted d-block mb-2">{{ $departamento }}</small>
+                                            <div class="acciones-perfiles-vista__list">
+                                                @foreach ($acciones as $accion)
+                                                    <label class="acciones-perfiles-check" for="accionUser{{ $accion->id }}">
+                                                        <input class="form-check-input acciones-perfiles-check__input" type="checkbox"
+                                                            id="accionUser{{ $accion->id }}" name="acciones[]" value="{{ $accion->id }}">
+                                                        <span class="acciones-perfiles-check__content">
+                                                            <span class="acciones-perfiles-check__title">{{ $accion->descripcion_accion }}</span>
+                                                            <span class="acciones-perfiles-check__meta">{{ $accion->nombre_accion }}</span>
+                                                        </span>
+                                                    </label>
+                                                @endforeach
+                                            </div>
+                                        </div>
+                                    </details>
+                                </div>
+                            @endforeach
+                        @endforeach
+                    </div>
+                    <div class="text-end mt-3">
+                        <button class="btn btn-baseColor fs-6" type="submit">
+                            <i class="fa-solid fa-check"></i> Agregar al usuario
+                        </button>
+                    </div>
+                </form>
+            @else
+                <div class="alert alert-info border-0 rounded-4 mb-0">
+                    <i class="fa-solid fa-circle-info me-2"></i>
+                    No hay más acciones disponibles para asignar de forma puntual.
+                </div>
+            @endif
+        </div>
+    </div>
+
     <div class="card border-0 shadow p-3 mt-2 bg-body rounded-5">
         <div class="card-header text-start bg-body border-0">
             <h5 class="text-secondary mb-1">
@@ -222,4 +344,13 @@
 <script src="{{ asset('js/table.js') }}"></script>
 <script src="{{ asset('js/validaPDF.js') }}"></script>
 <script src="{{ asset('js/validation.js') }}"></script>
+<script>
+    function filtrarAccionesPuntuales(termino) {
+        const query = (termino || '').trim().toLowerCase();
+        document.querySelectorAll('.accion-puntual-grupo').forEach(function (grupo) {
+            const hay = (grupo.getAttribute('data-search') || '').indexOf(query) !== -1;
+            grupo.hidden = query !== '' && !hay;
+        });
+    }
+</script>
 @endsection
