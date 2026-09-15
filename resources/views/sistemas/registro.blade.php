@@ -61,6 +61,7 @@
                             <div class="col-lg-3 col-12">
                                 <label class="form-label d-block">Tipo de usuario</label>
                                 <div class="registro-tipo-options">
+                                    @if (empty($esMasterEmpresa))
                                     <label class="registro-tipo-option" for="tipoEmpleado">
                                         <input class="form-check-input" type="radio" name="tipo" id="tipoEmpleado"
                                             value="empleado" onclick="mostrarTipoUsuario('empleado')">
@@ -84,10 +85,12 @@
                                             value="socio" onclick="mostrarTipoUsuario('socio')">
                                         <span><i class="fa-solid fa-handshake"></i> Socio</span>
                                     </label>
+                                    @endif
 
                                     <label class="registro-tipo-option" for="tipoSinEmpleado">
                                         <input class="form-check-input" type="radio" name="tipo" id="tipoSinEmpleado"
-                                            value="sin_empleado" onclick="mostrarTipoUsuario('sin_empleado')">
+                                            value="sin_empleado" onclick="mostrarTipoUsuario('sin_empleado')"
+                                            @if (!empty($esMasterEmpresa)) checked @endif>
                                         <span><i class="fa-solid fa-user"></i> Sin empleado</span>
                                     </label>
 
@@ -712,6 +715,10 @@
             document.querySelector('#id_tipo_empresa').required = false;
             inicializarBuscadoresRegistro();
         }
+    }
+
+    if (esMasterEmpresa) {
+        mostrarTipoUsuario('sin_empleado');
     }
 </script>
 

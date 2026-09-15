@@ -114,6 +114,9 @@ class RegisterController extends Controller
             $varlistaempleados =  $this-> obtenerlistaempleados();
             $tipo = $request->get('tipo');
             $tiposPermitidos = ['proveedor', 'empleado', 'alumno', 'socio', 'empresa', 'master', 'sin_empleado'];
+            if ($this->esSesionMasterEmpresa()) {
+                $tiposPermitidos = ['sin_empleado'];
+            }
 
             if (!in_array($tipo, $tiposPermitidos, true)) {
                 return redirect()->route('registro')->with("warning", "Tipo de usuario no válido");
