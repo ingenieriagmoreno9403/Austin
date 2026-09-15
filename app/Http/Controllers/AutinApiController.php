@@ -39,6 +39,7 @@ class AutinApiController extends Controller
             'cuentas' => 'Cuentas (todas las empresas)',
             'gasto-real' => 'Gasto real (histórico / GroupMask)',
             'ventas' => 'Ventas y notas de crédito (OINV + ORIN)',
+            'listas-precios' => 'Listas de precios (por empresa / cliente)',
         ];
         $defaultDb = $api->defaultDatabase();
         $apiBaseUrl = rtrim((string) config('services.autin_api.base_url'), '/');
@@ -84,6 +85,14 @@ class AutinApiController extends Controller
                 'proxy' => $proxyBaseUrl . '/ventas',
                 'remoto' => $apiBaseUrl . '/ventas',
                 'descripcion' => 'Facturas (VENTA) y notas de crédito (NC). Filtros: year, Empresa (AUSTIN/PITIC/SYDNEY/IMSA/BACHIMBA), Tipo_Doc, ItemCode, CardCode, CardName, U_LINEA_QV, fecha_desde, fecha_hasta, per_page, page.',
+            ],
+            [
+                'grupo' => 'Global (todas las empresas)',
+                'method' => 'GET',
+                'path' => '/listas-precios',
+                'proxy' => $proxyBaseUrl . '/listas-precios',
+                'remoto' => $apiBaseUrl . '/listas-precios',
+                'descripcion' => 'Listas de precios SAP. Filtros: Empresa (ej. IMSA), CodigoCliente (ej. D136), per_page, page.',
             ],
             [
                 'grupo' => 'Por empresa',
@@ -163,6 +172,13 @@ class AutinApiController extends Controller
             'page' => 'Página',
         ];
 
+        $listasPreciosFilters = [
+            'Empresa' => 'Empresa SAP (ej. IMSA, AUSTIN)',
+            'CodigoCliente' => 'Código de cliente (ej. D136)',
+            'per_page' => 'Registros por página',
+            'page' => 'Página',
+        ];
+
         return view('AutinApi.index', compact(
             'varpantallas',
             'varsubmenus',
@@ -175,7 +191,8 @@ class AutinApiController extends Controller
             'proxyBaseUrl',
             'endpoints',
             'gastoRealFilters',
-            'ventasFilters'
+            'ventasFilters',
+            'listasPreciosFilters'
         ));
     }
 
@@ -210,6 +227,13 @@ class AutinApiController extends Controller
     public function ventas(Request $request, AutinApiClient $api): JsonResponse
     {
         $result = $api->ventas($request->except(['_token']));
+
+        return $this->jsonFromApi($result);
+    }
+
+    public function listasPrecios(Request $request, AutinApiClient $api): JsonResponse
+    {
+        $result = $api->listasPrecios($request->except(['_token']));
 
         return $this->jsonFromApi($result);
     }

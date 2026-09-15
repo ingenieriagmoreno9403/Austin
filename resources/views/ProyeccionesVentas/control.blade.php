@@ -75,6 +75,11 @@
                     </select>
                 </div>
                 <div class="cc-nav-field">
+                    <button type="button" class="cc-btn cc-btn-block" id="ctl-btn-ventas-pasadas" disabled>
+                        <i class="fa-solid fa-clock-rotate-left"></i> Ventas pasadas
+                    </button>
+                </div>
+                <div class="cc-nav-field">
                     <label for="ctl-prod-q">Buscar producto</label>
                     <input id="ctl-prod-q" class="cc-input" type="search" placeholder="Filtrar por código o nombre…" disabled>
                     <select id="ctl-cuenta" hidden aria-hidden="true" tabindex="-1">
@@ -149,12 +154,12 @@
                             <div class="cc-cta-compare-card">
                                 <small>Se vendió {{ $bootstrap['anioGasto'] }}</small>
                                 <strong id="ctl-form-gasto">—</strong>
-                                <span>Cantidad vendida el año anterior</span>
+                                <span>Importe de venta real</span>
                             </div>
                             <div class="cc-cta-compare-card is-now">
                                 <small id="ctl-form-ppto-label">Proyección</small>
                                 <strong id="ctl-form-ppto">—</strong>
-                                <span id="ctl-form-delta">vs venta real</span>
+                                <span id="ctl-form-delta">Unidades × precio unitario</span>
                             </div>
                         </div>
                         <div class="cc-cta-fill mb-3">
@@ -193,7 +198,7 @@
                             </div>
                             <div class="cc-matrix-fx">
                                 <span class="cc-fx-badge" id="ctl-fx-badge">Vista MXN · TC —</span>
-                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Clic en una fila para herramientas puntuales. Los cambios se guardan al salir de cada celda.</small>
+                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Los cambios se guardan al salir de cada celda.</small>
                             </div>
                         </div>
                         <div class="cc-matrix-wrap">
@@ -353,6 +358,55 @@
                 <button type="submit" class="cc-btn cc-btn-ink">Dispersar</button>
             </div>
         </form>
+    </div>
+</div>
+
+<div class="modal fade cc-modal" id="modalVentasPasadas" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0">Ventas pasadas</h5>
+                    <p class="text-muted mb-0 mt-1" id="vp-sub" style="font-size:.82rem">Elige empresa y cliente para consultar el historial.</p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="cc-vp-tools">
+                    <div class="cc-vp-field">
+                        <label for="vp-anio">Año</label>
+                        <select id="vp-anio" class="cc-select"></select>
+                    </div>
+                    <div class="cc-vp-field">
+                        <label for="vp-metric">Mostrar</label>
+                        <select id="vp-metric" class="cc-select">
+                            <option value="qty">Cantidad (uds)</option>
+                            <option value="mxn">Importe MXN</option>
+                            <option value="usd">Importe USD</option>
+                        </select>
+                    </div>
+                    <div class="cc-vp-field cc-vp-search">
+                        <label for="vp-q">Buscar</label>
+                        <input id="vp-q" class="cc-input" type="search" placeholder="Producto…">
+                    </div>
+                    <button type="button" class="cc-btn cc-btn-ink" id="vp-cargar">
+                        <i class="fa-solid fa-rotate"></i> Cargar
+                    </button>
+                </div>
+                <div class="cc-vp-meta" id="vp-meta">—</div>
+                <div class="cc-table-wrap cc-vp-table-wrap">
+                    <table class="cc-table cc-vp-table">
+                        <thead id="vp-thead"></thead>
+                        <tbody id="vp-tbody">
+                            <tr><td colspan="16"><div class="cc-empty">Elige un año y pulsa Cargar</div></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cerrar</button>
+            </div>
+        </div>
     </div>
 </div>
 
