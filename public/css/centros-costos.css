@@ -1717,8 +1717,8 @@
     color: #b91c1c;
     font-weight: 650;
 }
-.cc-captura-nav .cc-select option.is-ok { color: #047857; }
-.cc-captura-nav .cc-select option.is-danger { color: #b91c1c; }
+.cc-captura-nav .cc-select option.is-ok { color: #047857; font-weight: 650; }
+.cc-captura-nav .cc-select option.is-danger { color: #b91c1c; font-weight: 650; }
 .cc-nav-tools {
     display: flex;
     flex-direction: column;
@@ -2994,8 +2994,27 @@
 }
 .cc-captura-quick-inline {
     display: flex;
+    flex-direction: row;
     flex-wrap: wrap;
+    align-items: center;
     gap: 0.4rem;
+    flex: 1 1 auto;
+}
+.cc-captura-quick-inline .cc-btn {
+    width: auto;
+    flex: 0 0 auto;
+}
+.cc-captura-quick-inline .cc-ajuste-ctrl {
+    margin-left: 0.15rem;
+    padding-left: 0.55rem;
+    border-left: 1px solid var(--cc-line);
+}
+.cc-captura-quick-inline .cc-ajuste-ctrl label {
+    margin: 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--cc-muted);
+    white-space: nowrap;
 }
 .cc-matrix-hint {
     color: var(--cc-muted);
@@ -3131,6 +3150,21 @@
 .cc-month-past.is-zero {
     color: #d4d4d8;
     font-weight: 500;
+}
+.cc-month-past.is-loading,
+.cc-month-real.is-loading,
+.cc-cta-compare-card strong.is-loading,
+.cc-nav-stat strong.is-loading,
+.cc-table td.is-loading,
+.cc-sticky-totales strong.is-loading {
+    color: var(--cc-info);
+    font-style: italic;
+    font-weight: 500;
+}
+.cc-month-past.is-loading {
+    font-size: 0.58rem;
+    letter-spacing: 0;
+    text-transform: none;
 }
 .cc-matrix-table thead th .cc-th-past {
     display: block;

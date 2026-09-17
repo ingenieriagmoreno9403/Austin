@@ -170,17 +170,6 @@
                             <div class="cc-progress warn" id="ctl-form-avance-wrap"><span id="ctl-form-avance-bar" style="width:0%"></span></div>
                             <div class="cc-cta-fill-meta" id="ctl-form-avance-meta">0 de 0 productos capturados</div>
                         </div>
-                        <div class="cc-ajuste-row">
-                            <div class="cc-ajuste-copy">
-                                <label for="ctl-ajuste-pct">Sugerir % sobre la venta real</label>
-                                <p>Se aplica a los productos visibles (o al seleccionado). Puede ser negativo.</p>
-                            </div>
-                            <div class="cc-ajuste-ctrl">
-                                <input id="ctl-ajuste-pct" type="number" step="0.1" placeholder="-30" aria-label="Porcentaje de ajuste">
-                                <span>%</span>
-                                <button type="button" class="cc-btn cc-btn-ink" id="ctl-apply-infl">Aplicar</button>
-                            </div>
-                        </div>
                         <div class="cc-matrix-toolbar">
                             <div class="cc-captura-quick cc-captura-quick-inline">
                                 <button type="button" class="cc-btn" id="ctl-copy-year">
@@ -195,6 +184,12 @@
                                 <button type="button" class="cc-btn" id="ctl-completar">
                                     <i class="fa-solid fa-check"></i> Completado
                                 </button>
+                                <div class="cc-ajuste-ctrl" title="Sugerir % sobre la venta real. Se aplica a los productos visibles (o al seleccionado). Puede ser negativo.">
+                                    <label for="ctl-ajuste-pct">% venta</label>
+                                    <input id="ctl-ajuste-pct" type="number" step="0.1" placeholder="-30" aria-label="Porcentaje de ajuste sobre la venta real">
+                                    <span>%</span>
+                                    <button type="button" class="cc-btn cc-btn-ink" id="ctl-apply-infl">Aplicar</button>
+                                </div>
                             </div>
                             <div class="cc-matrix-fx">
                                 <span class="cc-fx-badge" id="ctl-fx-badge">Vista MXN · TC —</span>

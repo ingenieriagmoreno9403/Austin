@@ -1868,6 +1868,11 @@
         return n > 0 ? ('⚠  ' + n + (n === 1 ? ' pend' : ' pend')) : '✓  listo';
     }
 
+    function optionPendAttrs(n) {
+        if (n > 0) return ' class="is-danger" style="color:#b91c1c;font-weight:650"';
+        return ' class="is-ok" style="color:#047857;font-weight:650"';
+    }
+
     function paintNavStatus(id, n, selectEl) {
         var el = document.getElementById(id);
         var has = n !== null && n !== undefined && n !== '';
@@ -1875,12 +1880,13 @@
             el.hidden = !has;
             if (has) {
                 el.textContent = n > 0 ? (n + (n === 1 ? ' pendiente' : ' pendientes')) : 'Listo';
-                el.className = 'cc-nav-status ' + (n > 0 ? 'is-warn' : 'is-ok');
+                el.className = 'cc-nav-status ' + (n > 0 ? 'is-danger' : 'is-ok');
             }
         }
         if (selectEl) {
-            selectEl.classList.toggle('is-warn', has && n > 0);
+            selectEl.classList.toggle('is-danger', has && n > 0);
             selectEl.classList.toggle('is-ok', has && n === 0);
+            selectEl.classList.toggle('is-warn', false);
         }
     }
 
@@ -1903,8 +1909,13 @@
         var html = '<option value="">Elige empresa…</option>';
         keys.forEach(function (e) {
             var label = e;
-            if (CC._capturaReady) label += '   ·   ' + markPendLabel(pendientesDeEmpresa(e));
-            html += '<option value="' + escapeHtml(e) + '">' + escapeHtml(label) + '</option>';
+            var attrs = '';
+            if (CC._capturaReady) {
+                var pendEmp = pendientesDeEmpresa(e);
+                label += '   ·   ' + markPendLabel(pendEmp);
+                attrs = optionPendAttrs(pendEmp);
+            }
+            html += '<option value="' + escapeHtml(e) + '"' + attrs + '>' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         if (cur && keys.indexOf(cur) !== -1) el.value = cur;
@@ -1923,7 +1934,7 @@
         if (!emp) {
             el.innerHTML = '<option value="">Elige una empresa primero…</option>';
             el.disabled = true;
-            el.classList.remove('is-warn', 'is-ok');
+            el.classList.remove('is-warn', 'is-ok', 'is-danger');
             paintNavStatus('ctl-cc-status', null, el);
             return;
         }
@@ -1932,6 +1943,7 @@
         var html = '<option value="">Elige centro…</option>';
         list.forEach(function (a) {
             var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
+            var attrs = '';
             if (CC._capturaReady) {
                 var st = statsDeCentro({
                     codigo: a.centro_codigo,
@@ -1939,8 +1951,9 @@
                     empresa: emp
                 });
                 label += '   ·   ' + markPendLabel(st.pendientes);
+                attrs = optionPendAttrs(st.pendientes);
             }
-            html += '<option value="' + escapeHtml(a.centro_codigo) + '">' + escapeHtml(label) + '</option>';
+            html += '<option value="' + escapeHtml(a.centro_codigo) + '"' + attrs + '>' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         el.disabled = !list.length;
@@ -1966,7 +1979,7 @@
         if (!emp || !cc) {
             el.innerHTML = '<option value="">Elige un centro primero…</option>';
             el.disabled = true;
-            el.classList.remove('is-warn', 'is-ok');
+            el.classList.remove('is-warn', 'is-ok', 'is-danger');
             paintNavStatus('ctl-cta-status', null, el);
             return;
         }
@@ -1978,7 +1991,7 @@
         var html = '<option value="">Elige cuenta…</option>';
         ctas.forEach(function (cta) {
             var pend = ctaPendiente(cta) ? 1 : 0;
-            html += '<option value="' + escapeHtml(cta.codigo) + '">' +
+            html += '<option value="' + escapeHtml(cta.codigo) + '"' + optionPendAttrs(pend) + '>' +
                 escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo) + '   ·   ' + markPendLabel(pend)) + '</option>';
         });
         el.innerHTML = html;

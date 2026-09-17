@@ -365,6 +365,21 @@
         return n ? money(n) : '—';
     }
 
+    function gastoCentroCargado(c) {
+        c = c || control.centro;
+        if (!c || !CC.state.gastoUrl) return true;
+        var key = gastoCacheKey(c);
+        return !!(CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key));
+    }
+
+    function setVentaText(id, value) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var loading = !gastoCentroCargado();
+        el.textContent = loading ? 'Cargando…' : value;
+        el.classList.toggle('is-loading', loading);
+    }
+
     function gastoMensualDe(codigo, nombre, mapOpt) {
         var map = mapOpt || control._gastoMap || {};
         var hit = map[String(codigo)] || map[codigoCuentaKey(codigo)];
@@ -529,6 +544,8 @@
             applyGastoMap(por);
         }).catch(function () {
             if (control._gastoReq !== key) return;
+            CC.state.gastoCache = CC.state.gastoCache || {};
+            CC.state.gastoCache[key] = {};
             applyGastoMap({});
         });
     }
@@ -2151,12 +2168,14 @@
             setText(prefix + '-tot-gasto', '—');
             setText(prefix + '-tot-ppto', '—');
             setText(prefix + '-pend', '—');
+            var emptyEl = document.getElementById(prefix + '-tot-gasto');
+            if (emptyEl) emptyEl.classList.remove('is-loading');
             return;
         }
         var totG = ctas.reduce(function (a, x) { return a + (x.importeVenta != null ? x.importeVenta : importeVentaMxn(x)); }, 0);
         var totP = ctas.reduce(function (a, x) { return a + (x.importeProy != null ? x.importeProy : importeProyeccionMxn(x)); }, 0);
         var pend = ctas.filter(ctaPendiente).length;
-        setText(prefix + '-tot-gasto', money(totG));
+        setVentaText(prefix + '-tot-gasto', money(totG));
         setText(prefix + '-tot-ppto', money(totP));
         setText(prefix + '-pend', pend);
     }
@@ -2671,7 +2690,7 @@
         setText('kpi-ctl-avance', st.avance + '%');
         setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
         setText('ctl-pend-label', st.pendientes + (st.pendientes === 1 ? ' pendiente' : ' pendientes'));
-        setText('kpi-ctl-gasto', moneyGasto(st.totG));
+        setVentaText('kpi-ctl-gasto', moneyGasto(st.totG));
         setText('kpi-ctl-ppto', money(st.totP));
         setText('kpi-ctl-pend', st.pendientes);
         var bar = document.getElementById('ctl-avance-bar');
@@ -2795,7 +2814,7 @@
 
     function updateFormTotalsCliente(st) {
         st = st || (control.centro ? statsDeCentro(control.centro) : { totG: 0, totP: 0, capturadas: 0, total: 0, pendientes: 0, avance: 0 });
-        setText('ctl-form-gasto', moneyGasto(st.totG));
+        setVentaText('ctl-form-gasto', moneyGasto(st.totG));
         setText('ctl-form-ppto', money(st.totP));
         var d = deltaPct(st.totP, st.totG);
         var el = document.getElementById('ctl-form-delta');
@@ -2881,7 +2900,7 @@
             updateFormTotalsCliente();
             return;
         }
-        setText('ctl-form-gasto', moneyGasto(cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta)));
+        setVentaText('ctl-form-gasto', moneyGasto(cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta)));
         setText('ctl-form-ppto', money(cta.importeProy != null ? cta.importeProy : importeProyeccionMxn(cta)));
         var d = deltaPct(
             cta.importeProy != null ? cta.importeProy : importeProyeccionMxn(cta),
@@ -3001,7 +3020,22 @@
         return html;
     }
 
+    function monthPastHtml(cta, i) {
+        var pastQty = Number((cta && cta.gasto && cta.gasto[i]) || 0);
+        var anioPast = CC.state.anioGasto || '';
+        if (!gastoCentroCargado()) {
+            return '<div class="cc-month-past is-loading" title="Cargando venta ' + escapeHtml(String(anioPast)) + '">Cargando…</div>';
+        }
+        return '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
+            escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (cta.unidad ? ' · ' + cta.unidad : '')) + '">' +
+            (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
+            '</div>';
+    }
+
     function monthRealHtml(cta, i) {
+        if (!gastoCentroCargado()) {
+            return '<div class="cc-month-real is-loading">Cargando…</div>';
+        }
         var qty = Number((cta.gasto && cta.gasto[i]) || 0);
         var tot = Number((cta.importe && cta.importe[i]) || 0);
         var usd = Number((cta.importeUsd && cta.importeUsd[i]) || 0);
@@ -3059,14 +3093,12 @@
                 var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
                 cells += '<td class="' + pCls + '">' +
                     '<div class="cc-matrix-month">' +
-                        '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
-                            escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (cta.unidad ? ' · ' + cta.unidad : '')) + '">' +
-                            (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
-                        '</div>' +
+                        monthPastHtml(cta, i) +
                         '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
                         (control.locked ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '" title="' +
-                        escapeHtml(MONTHS[i] + ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
-                            (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
+                        escapeHtml(MONTHS[i] + ' · proyección (unidades)' + (gastoCentroCargado()
+                            ? (' · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') + (cta.unidad ? ' ' + cta.unidad : ''))
+                            : ' · cargando venta…')) + '">' +
                     '</div>' +
                     '</td>';
             }
@@ -3077,7 +3109,11 @@
                     '</button>' +
                     '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
                 '</td>' +
-                '<td class="num">' + moneyGasto(cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta)) + '</td>' +
+                '<td class="num' + (gastoCentroCargado() ? '' : ' is-loading') + '">' +
+                    (gastoCentroCargado()
+                        ? moneyGasto(cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta))
+                        : 'Cargando…') +
+                '</td>' +
                 '<td class="num cc-price-cell" data-precio-unit>' + precioUnitarioHtml(cta) + '</td>' +
                 '<td class="num ' + dCls + '" data-delta>' + (cta.totP || done ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>' +
                 cells +
@@ -3353,7 +3389,7 @@
             var closed = !!closedMap[g];
             if (!hideGroups) {
                 html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="4"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
-                html += '<td class="num" colspan="2">' + money(gTotG) + ' → ' + money(gTotP) + '</td><td colspan="22"></td></tr>';
+                html += '<td class="num" colspan="2">' + (gastoCentroCargado() ? money(gTotG) : 'Cargando…') + ' → ' + money(gTotP) + '</td><td colspan="22"></td></tr>';
             }
             if (!closed || hideGroups) {
                 groups[g].forEach(function (cta) {
@@ -3364,7 +3400,9 @@
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
-                    html += '<td class="num">' + moneyGasto(impG) + '</td><td class="num fw-semibold">' + money(impP) + '</td>';
+                    html += '<td class="num' + (gastoCentroCargado() ? '' : ' is-loading') + '">' +
+                        (gastoCentroCargado() ? moneyGasto(impG) : 'Cargando…') +
+                        '</td><td class="num fw-semibold">' + money(impP) + '</td>';
                     html += '<td class="num ' + dCls + '">' + (impP || !ctaPendiente(cta) ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
                     for (var i = 0; i < 12; i++) {
                         var lleno = mesLleno(cta.ppto[i]);
@@ -3375,9 +3413,13 @@
                             : 'is-empty';
                         var impMesG = importeMesVentaMxn(cta, i);
                         var impMesP = importeMesProyMxn(cta, i);
-                        html += '<td class="num text-muted" style="font-size:.75rem" title="' +
-                            escapeHtml('Venta ' + CC.state.anioGasto + (udsPast ? ' · ' + qtyLabel(udsPast) + ' uds' : '')) + '">' +
-                            (impMesG ? money(impMesG) : (udsPast ? qtyLabel(udsPast) : '—')) + '</td>';
+                        html += '<td class="num text-muted' + (gastoCentroCargado() ? '' : ' is-loading') + '" style="font-size:.75rem" title="' +
+                            escapeHtml(gastoCentroCargado()
+                                ? ('Venta ' + CC.state.anioGasto + (udsPast ? ' · ' + qtyLabel(udsPast) + ' uds' : ''))
+                                : 'Cargando venta…') + '">' +
+                            (gastoCentroCargado()
+                                ? (impMesG ? money(impMesG) : (udsPast ? qtyLabel(udsPast) : '—'))
+                                : 'Cargando…') + '</td>';
                         html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem" title="' +
                             escapeHtml('Proy. ' + CC.state.anioPresupuesto + (lleno ? ' · ' + qtyLabel(udsProy) + ' uds' : '')) + '">' +
                             (lleno
