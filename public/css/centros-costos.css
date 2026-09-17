@@ -1702,9 +1702,23 @@
 }
 .cc-nav-status.is-warn { background: var(--cc-warn-bg); color: var(--cc-warn); }
 .cc-nav-status.is-ok { background: var(--cc-ok-bg); color: var(--cc-ok); }
+.cc-nav-status.is-danger { background: var(--cc-danger-bg); color: var(--cc-danger); }
 .cc-captura-nav .cc-select { width: 100%; }
-.cc-captura-nav .cc-select.is-warn { border-color: #fbbf24; background: #fffbeb; }
-.cc-captura-nav .cc-select.is-ok { border-color: #6ee7b7; background: #ecfdf5; }
+.cc-captura-nav .cc-select.is-warn { border-color: #fbbf24; background: #fffbeb; color: #92400e; }
+.cc-captura-nav .cc-select.is-ok {
+    border-color: #6ee7b7;
+    background: #ecfdf5;
+    color: #047857;
+    font-weight: 650;
+}
+.cc-captura-nav .cc-select.is-danger {
+    border-color: #fca5a5;
+    background: #fef2f2;
+    color: #b91c1c;
+    font-weight: 650;
+}
+.cc-captura-nav .cc-select option.is-ok { color: #047857; }
+.cc-captura-nav .cc-select option.is-danger { color: #b91c1c; }
 .cc-nav-tools {
     display: flex;
     flex-direction: column;
@@ -1977,6 +1991,16 @@
 .cc-nav-pend.is-ok {
     background: var(--cc-ok-bg);
     border-color: #6ee7b7;
+}
+.cc-nav-pend.is-danger {
+    background: var(--cc-danger-bg);
+    border-color: #fca5a5;
+}
+.cc-nav-pend.is-danger .cc-nav-pend-value {
+    color: var(--cc-danger);
+}
+.cc-nav-pend.is-ok .cc-nav-pend-value {
+    color: var(--cc-ok);
 }
 .cc-nav-pend-label {
     font-size: 0.65rem;
@@ -3057,13 +3081,66 @@
     color: var(--cc-muted);
 }
 .cc-matrix-row.is-done .cc-matrix-status { color: #047857; }
+.cc-price-cell {
+    min-width: 5.5rem;
+    vertical-align: middle !important;
+    line-height: 1.15;
+}
+.cc-price-amt {
+    font-weight: 650;
+    color: #18181b;
+    white-space: nowrap;
+}
+.cc-price-src {
+    font-size: 0.65rem;
+    color: #71717a;
+}
+.cc-price-uom {
+    margin-top: 0.1rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #3f3f46;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+}
+.cc-price-empty { color: #a1a1aa; }
 .cc-matrix-cell {
-    min-width: 68px;
+    min-width: 72px;
     text-align: center;
+    vertical-align: middle !important;
 }
 .cc-matrix-cell.is-empty { background: #fffbeb; }
 .cc-matrix-cell.is-ok { background: #ecfdf5; }
 .cc-matrix-cell.is-over { background: #fef2f2; }
+.cc-matrix-month {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.12rem;
+    min-width: 58px;
+}
+.cc-month-past {
+    font-size: 0.68rem;
+    font-weight: 650;
+    line-height: 1.1;
+    color: #71717a;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    letter-spacing: -0.01em;
+}
+.cc-month-past.is-zero {
+    color: #d4d4d8;
+    font-weight: 500;
+}
+.cc-matrix-table thead th .cc-th-past {
+    display: block;
+    margin-top: 0.1rem;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: #a1a1aa;
+}
 .cc-matrix-cell .cc-month-input {
     width: 100%;
     min-width: 58px;
@@ -3135,3 +3212,64 @@
 .cc-matrix-fx .cc-matrix-hint {
     text-align: right;
 }
+
+/* Ventas pasadas modal */
+.cc-btn-block {
+    width: 100%;
+    justify-content: center;
+}
+.cc-vp-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem 0.75rem;
+    align-items: end;
+    margin-bottom: 0.75rem;
+}
+.cc-vp-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 110px;
+}
+.cc-vp-field label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--cc-muted);
+}
+.cc-vp-search { flex: 1 1 180px; min-width: 160px; }
+.cc-vp-meta {
+    font-size: 0.8rem;
+    color: var(--cc-muted);
+    margin-bottom: 0.55rem;
+}
+.cc-vp-table-wrap {
+    max-height: min(60vh, 560px);
+    overflow: auto;
+    border: 1px solid var(--cc-line);
+    border-radius: 12px;
+}
+.cc-vp-table {
+    margin: 0;
+    min-width: 920px;
+}
+.cc-vp-table .sticky-col {
+    position: sticky;
+    left: 0;
+    background: #fff;
+    z-index: 1;
+    min-width: 200px;
+}
+.cc-vp-table thead th {
+    position: sticky;
+    top: 0;
+    background: #fafafa;
+    z-index: 2;
+}
+.cc-vp-table thead .sticky-col { z-index: 3; background: #fafafa; }
+.cc-vp-total td {
+    background: #f4f4f5;
+    border-top: 1px solid #d4d4d8;
+}
+.cc-vp-total .sticky-col { background: #f4f4f5; }

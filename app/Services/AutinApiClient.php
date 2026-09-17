@@ -273,6 +273,18 @@ class AutinApiClient
     }
 
     /**
+     * Listas de precios por empresa / cliente.
+     * Filtros: Empresa, CodigoCliente, per_page, page.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, status: int, body: array|null, message: string|null}
+     */
+    public function listasPrecios(array $filters = []): array
+    {
+        return $this->request('GET', 'listas-precios', $filters);
+    }
+
+    /**
      * Recorre todas las páginas de /ventas (tope 500 por página en AutinApi).
      *
      * @param  array<string, mixed>  $filters

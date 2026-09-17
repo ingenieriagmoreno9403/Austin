@@ -311,6 +311,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
             Route::get('/centros-costo', [AutinApiController::class, 'centrosCostoGlobal'])->name('autin-api.centros-global');
             Route::get('/gasto-real', [AutinApiController::class, 'gastoReal'])->name('autin-api.gasto-real');
             Route::get('/ventas', [AutinApiController::class, 'ventas'])->name('autin-api.ventas');
+            Route::get('/listas-precios', [AutinApiController::class, 'listasPrecios'])->name('autin-api.listas-precios');
 
             Route::get('/{database}/catalogos', [AutinApiController::class, 'catalogos'])
                 ->where('database', 'austin|imsa|pitic|sydney')
@@ -1253,6 +1254,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/Ventas/Analisis', [ProyeccionesVentasController::class, 'analisis'])->name('pv.analisis');
     Route::get('/ProyeccionesVentas/api/catalogo', [ProyeccionesVentasController::class, 'catalogo'])->name('pv.catalogo');
     Route::get('/ProyeccionesVentas/api/gasto-real', [ProyeccionesVentasController::class, 'gastoReal'])->name('pv.api.gasto_real');
+    Route::get('/ProyeccionesVentas/api/listas-precios', [ProyeccionesVentasController::class, 'listasPrecios'])->name('pv.api.listas_precios');
     Route::get('/ProyeccionesVentas/api/captura', [ProyeccionesVentasController::class, 'captura'])->name('pv.api.captura');
     Route::put('/ProyeccionesVentas/api/captura/presupuesto', [ProyeccionesVentasController::class, 'guardarPresupuesto'])->name('pv.api.captura.presupuesto');
     Route::put('/ProyeccionesVentas/api/captura/centro', [ProyeccionesVentasController::class, 'guardarCapturaCentro'])->name('pv.api.captura.centro');

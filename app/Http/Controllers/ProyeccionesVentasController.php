@@ -559,6 +559,57 @@ class ProyeccionesVentasController extends Controller
         return response()->json($payload);
     }
 
+    /**
+     * Listas de precios SAP por empresa + cliente (CardCode).
+     * Respuesta: por_articulo[codigo] => { codigo, nombre, precio, moneda, unidad, lista }.
+     */
+    public function listasPrecios(Request $request): JsonResponse
+    {
+        $empresa = strtoupper(trim((string) $request->get('empresa', '')));
+        $cc = trim((string) $request->get('cliente', $request->get('cc', $request->get('CodigoCliente', ''))));
+
+        $alias = [
+            'ABSA' => 'AUSTIN',
+        ];
+        if (isset($alias[$empresa])) {
+            $empresa = $alias[$empresa];
+        }
+
+        if ($empresa === '' || $cc === '') {
+            return response()->json([
+                'ok' => false,
+                'por_articulo' => (object) [],
+                'mensaje' => 'Falta empresa o cliente.',
+            ], 422);
+        }
+
+        $cacheKey = 'pv.listas-precios.' . $empresa . '.' . $cc;
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['ok'])) {
+            return response()->json($cached);
+        }
+
+        $year = (int) $request->get('year', $request->get('anio', 0));
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y') - 1;
+        }
+
+        try {
+            $payload = $this->cargarListasPreciosCliente($empresa, $cc, $year);
+            if (! empty($payload['ok'])) {
+                Cache::put($cacheKey, $payload, 900);
+            }
+        } catch (Throwable $e) {
+            return response()->json([
+                'ok' => false,
+                'por_articulo' => (object) [],
+                'mensaje' => $e->getMessage(),
+            ], 200);
+        }
+
+        return response()->json($payload);
+    }
+
     public function captura(Request $request): JsonResponse
     {
         $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
@@ -1228,8 +1279,8 @@ class ProyeccionesVentasController extends Controller
                 'Empresa' => strtoupper($empresa),
                 'CardCode' => $cc,
                 'year' => $year,
-                'fecha_desde' => $year . '-01-01',
-                'fecha_hasta' => $year . '-12-31',
+                'fecha_desde' => $year . '/01/01',
+                'fecha_hasta' => $year . '/12/31',
                 'per_page' => $perPage,
                 'page' => $page,
             ]);
@@ -1275,11 +1326,13 @@ class ProyeccionesVentasController extends Controller
                 $price = $this->numeroVenta($row, ['Price', 'Precio', 'UnitPrice', 'PriceBefDi']);
                 $costo = $this->costoVenta($row);
                 $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
+                $unidad = trim((string) ($row['SalPackMsr'] ?? $row['SalUnitMsr'] ?? $row['unidad'] ?? ''));
                 $key = $this->codigoCuentaKey($codigo);
                 if (! isset($porCuenta[$key])) {
                     $porCuenta[$key] = [
                         'codigo' => $codigo,
                         'nombre' => $nombre,
+                        'unidad' => $unidad,
                         'gasto' => array_fill(0, 12, 0.0),
                         'importe' => array_fill(0, 12, 0.0),
                         'importe_usd' => array_fill(0, 12, 0.0),
@@ -1289,6 +1342,9 @@ class ProyeccionesVentasController extends Controller
                     ];
                 } elseif ($nombre !== '' && $porCuenta[$key]['nombre'] === '') {
                     $porCuenta[$key]['nombre'] = $nombre;
+                }
+                if ($unidad !== '' && ($porCuenta[$key]['unidad'] ?? '') === '') {
+                    $porCuenta[$key]['unidad'] = $unidad;
                 }
                 $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $qty, 4);
                 $porCuenta[$key]['importe'][$mes] = round($porCuenta[$key]['importe'][$mes] + $importe, 2);
@@ -1335,6 +1391,208 @@ class ProyeccionesVentasController extends Controller
             'por_cuenta' => $porCuenta,
             'mensaje' => $mensaje,
         ];
+    }
+
+    /**
+     * @return array{ok: bool, empresa: string, cliente: string, por_articulo: array<string, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarListasPreciosCliente(string $empresa, string $cc, int $year = 0): array
+    {
+        $api = app(AutinApiClient::class);
+        $porArticulo = [];
+        $ok = false;
+        $mensaje = null;
+        $perPage = 500;
+        $maxPages = 20;
+
+        for ($page = 1; $page <= $maxPages; $page++) {
+            $res = $api->listasPrecios([
+                'Empresa' => strtoupper($empresa),
+                'CodigoCliente' => $cc,
+                'per_page' => $perPage,
+                'page' => $page,
+            ]);
+
+            if (empty($res['ok'])) {
+                if ($page === 1) {
+                    $mensaje = $res['message'] ?? 'Sin conexión a listas de precios SAP';
+                }
+                break;
+            }
+
+            $ok = true;
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+            $rows = $body['data'] ?? [];
+            if (! is_array($rows) || ! $rows) {
+                break;
+            }
+
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $codigo = trim((string) ($row['CodigoArticulo'] ?? $row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+                if ($codigo === '') {
+                    continue;
+                }
+                $precio = $this->numeroVenta($row, ['Precio', 'Price', 'UnitPrice', 'PriceBefDi']);
+                $moneda = strtoupper(trim((string) ($row['Moneda'] ?? $row['Currency'] ?? 'MXN')));
+                if ($moneda === '') {
+                    $moneda = 'MXN';
+                }
+                $unidad = trim((string) (
+                    $row['Unidad']
+                    ?? $row['SalPackMsr']
+                    ?? $row['SalUnitMsr']
+                    ?? $row['UomCode']
+                    ?? $row['unidad']
+                    ?? ''
+                ));
+                $nombre = trim((string) ($row['Descripcion'] ?? $row['ItemName'] ?? ''));
+                $entry = [
+                    'codigo' => $codigo,
+                    'nombre' => $nombre,
+                    'precio' => $precio,
+                    'moneda' => $moneda,
+                    'unidad' => $unidad,
+                    'lista' => trim((string) ($row['ListaPrecio'] ?? '')),
+                    'no_lista' => trim((string) ($row['NoLista'] ?? '')),
+                ];
+
+                $keys = array_unique(array_filter([
+                    $codigo,
+                    strtoupper($codigo),
+                    $this->codigoCuentaKey($codigo),
+                ]));
+                foreach ($keys as $k) {
+                    $porArticulo[$k] = $entry;
+                }
+            }
+
+            $pag = $this->paginacionDe($body);
+            $lastPage = (int) ($pag['last_page'] ?? 0);
+            if ($lastPage > 0 && $page >= $lastPage) {
+                break;
+            }
+            if ($lastPage < 1 && count($rows) < $perPage) {
+                break;
+            }
+        }
+
+        if ($ok && $porArticulo) {
+            $this->enriquecerUnidadesDesdeVentas($api, $porArticulo, $empresa, $cc, $year);
+        }
+
+        return [
+            'ok' => $ok,
+            'empresa' => strtoupper($empresa),
+            'cliente' => $cc,
+            'por_articulo' => $porArticulo,
+            'mensaje' => $mensaje,
+        ];
+    }
+
+    /**
+     * Completa unidad de medida (SalPackMsr) desde ventas SAP cuando la lista de precios no la trae.
+     *
+     * @param  array<string, array<string, mixed>>  $porArticulo
+     */
+    protected function enriquecerUnidadesDesdeVentas(AutinApiClient $api, array &$porArticulo, string $empresa, string $cc, int $year): void
+    {
+        $years = [];
+        if ($year >= 2000) {
+            $years[] = $year;
+        }
+        $prev = ((int) date('Y')) - 1;
+        if (! in_array($prev, $years, true)) {
+            $years[] = $prev;
+        }
+        $curr = (int) date('Y');
+        if (! in_array($curr, $years, true)) {
+            $years[] = $curr;
+        }
+
+        $faltan = 0;
+        foreach ($porArticulo as $entry) {
+            if (($entry['unidad'] ?? '') === '') {
+                $faltan++;
+            }
+        }
+        if ($faltan < 1) {
+            return;
+        }
+
+        foreach ($years as $y) {
+            $res = $api->ventas([
+                'Empresa' => strtoupper($empresa),
+                'CardCode' => $cc,
+                'year' => $y,
+                'per_page' => 500,
+                'page' => 1,
+            ]);
+            if (empty($res['ok'])) {
+                continue;
+            }
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+            $rows = $body['data'] ?? [];
+            if (! is_array($rows)) {
+                continue;
+            }
+            $lastPage = (int) (($body['meta']['last_page'] ?? 1) ?: 1);
+            $maxPages = min(3, max(1, $lastPage));
+
+            for ($page = 1; $page <= $maxPages; $page++) {
+                if ($page > 1) {
+                    $res = $api->ventas([
+                        'Empresa' => strtoupper($empresa),
+                        'CardCode' => $cc,
+                        'year' => $y,
+                        'per_page' => 500,
+                        'page' => $page,
+                    ]);
+                    if (empty($res['ok'])) {
+                        break;
+                    }
+                    $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                    $rows = $body['data'] ?? [];
+                    if (! is_array($rows) || ! $rows) {
+                        break;
+                    }
+                }
+
+                foreach ($rows as $row) {
+                    if (! is_array($row)) {
+                        continue;
+                    }
+                    $codigo = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+                    if ($codigo === '') {
+                        continue;
+                    }
+                    $unidad = trim((string) ($row['SalPackMsr'] ?? $row['SalUnitMsr'] ?? ''));
+                    if ($unidad === '') {
+                        continue;
+                    }
+                    foreach (array_unique(array_filter([$codigo, strtoupper($codigo), $this->codigoCuentaKey($codigo)])) as $k) {
+                        if (! isset($porArticulo[$k])) {
+                            continue;
+                        }
+                        if (($porArticulo[$k]['unidad'] ?? '') === '') {
+                            $porArticulo[$k]['unidad'] = $unidad;
+                        }
+                    }
+                }
+            }
+
+            $faltan = 0;
+            foreach ($porArticulo as $entry) {
+                if (($entry['unidad'] ?? '') === '') {
+                    $faltan++;
+                }
+            }
+            if ($faltan < 1) {
+                return;
+            }
+        }
     }
 
     protected function mismoCentroCodigo(string $a, string $b): bool
@@ -1429,6 +1687,7 @@ class ProyeccionesVentasController extends Controller
             'sapBase' => url('/Sistemas/AutinApi'),
             'catalogoUrl' => route('pv.catalogo'),
             'gastoUrl' => route('pv.api.gasto_real'),
+            'listasPreciosUrl' => route('pv.api.listas_precios'),
             'sapOk' => false,
             'sapMensaje' => null,
             'empresasSap' => [],

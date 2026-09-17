@@ -18,7 +18,8 @@
         budget: 'austin.pv.budget.v1',
         period: 'austin.pv.period.v1',
         ciclos: 'austin.pv.ciclos.v1',
-        currency: 'austin.pv.currency.v1'
+        currency: 'austin.pv.currency.v1',
+        qtyRaw: 'austin.pv.qtyRaw.v1'
     };
 
     function money(n, currency) {
@@ -44,7 +45,7 @@
         return String(CC.state.currency || 'MXN').toUpperCase() === 'USD';
     }
 
-    /** Valor guardado (base MXN) → lo que se muestra según moneda. */
+    /** Valor guardado (base MXN) → lo que se muestra según moneda. Solo importes. */
     function toDisplayAmount(n) {
         var val = Number(n);
         if (!isFinite(val)) val = 0;
@@ -52,7 +53,7 @@
         return Math.round(val * 100) / 100;
     }
 
-    /** Valor capturado en pantalla → lo que se guarda (siempre en MXN base). */
+    /** Valor capturado en pantalla → lo que se guarda (siempre en MXN base). Solo importes. */
     function toStoreAmount(n) {
         var val = Number(n);
         if (!isFinite(val)) val = 0;
@@ -60,11 +61,27 @@
         return Math.round(val * 100) / 100;
     }
 
-    function formatInputAmount(n) {
+    /**
+     * Cantidades (unidades): el tipo de cambio NO las afecta.
+     * Se muestran y guardan tal cual.
+     */
+    function toStoreQty(n) {
+        var val = Number(n);
+        if (!isFinite(val)) val = 0;
+        return Math.round(val * 100) / 100;
+    }
+
+    function formatInputQty(n) {
         if (!mesLleno(n)) return '';
-        var v = toDisplayAmount(n);
+        var v = Number(n);
+        if (!isFinite(v)) return '';
         if (Math.abs(v - Math.round(v)) < 0.00001) return String(Math.round(v));
-        return String(v);
+        return String(Math.round(v * 100) / 100);
+    }
+
+    /** @deprecated Usar formatInputQty para meses (unidades). */
+    function formatInputAmount(n) {
+        return formatInputQty(n);
     }
 
     function paintFxBadge() {
@@ -258,6 +275,7 @@
                     importe: extra.importe,
                     importeUsd: extra.importe_usd,
                     precio: extra.precio,
+                    unidad: extra.unidad || '',
                     empresa: c.empresa
                 };
             });
@@ -371,7 +389,8 @@
         return {
             importe: (row && row.importe && row.importe.length === 12) ? row.importe : zeros12(),
             importe_usd: (row && row.importe_usd && row.importe_usd.length === 12) ? row.importe_usd : zeros12(),
-            precio: (row && row.precio && row.precio.length === 12) ? row.precio : zeros12()
+            precio: (row && row.precio && row.precio.length === 12) ? row.precio : zeros12(),
+            unidad: (row && row.unidad) ? String(row.unidad) : ''
         };
     }
 
@@ -511,6 +530,297 @@
         }).catch(function () {
             if (control._gastoReq !== key) return;
             applyGastoMap({});
+        });
+    }
+
+    function preciosCacheKey(c) {
+        return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '');
+    }
+
+    function lookupPrecioLista(codigo) {
+        var map = control._preciosMap || {};
+        if (!codigo) return null;
+        return map[String(codigo)]
+            || map[String(codigo).toUpperCase()]
+            || map[codigoCuentaKey(codigo)]
+            || null;
+    }
+
+    function applyPreciosMap(porArticulo) {
+        var map = {};
+        Object.keys(porArticulo || {}).forEach(function (key) {
+            var row = porArticulo[key];
+            if (!row || typeof row !== 'object') return;
+            var codigo = String(row.codigo || key || '').trim();
+            if (!codigo) return;
+            var entry = {
+                codigo: codigo,
+                nombre: row.nombre || '',
+                precio: Number(row.precio) || 0,
+                moneda: String(row.moneda || 'MXN').toUpperCase(),
+                unidad: String(row.unidad || '').trim(),
+                lista: row.lista || '',
+                no_lista: row.no_lista || ''
+            };
+            map[codigo] = entry;
+            map[codigo.toUpperCase()] = entry;
+            map[codigoCuentaKey(codigo)] = entry;
+        });
+        control._preciosMap = map;
+        if (control._preciosReq) {
+            CC.state.preciosCache = CC.state.preciosCache || {};
+            CC.state.preciosCache[control._preciosReq] = map;
+        }
+        if (!control.centro) return;
+        control._allCtas = cuentasEnriquecidas(control.centro);
+        updateControlProgress();
+        renderNavCuentas();
+        renderCtaChips();
+        renderCapturaForm();
+        renderControlTable();
+        renderControlCharts();
+        renderDetalleTable();
+        renderDetalleChart();
+        renderVisorTable();
+        paintDetalleHeader();
+    }
+
+    function loadListasPreciosCentro(c) {
+        if (!c || !CC.state.listasPreciosUrl) return;
+        var key = preciosCacheKey(c);
+        control._preciosReq = key;
+        if (CC.state.preciosCache && CC.state.preciosCache[key]) {
+            control._preciosMap = CC.state.preciosCache[key];
+            if (control.centro) {
+                control._allCtas = cuentasEnriquecidas(control.centro);
+                renderControlTable();
+            }
+            return;
+        }
+        control._preciosMap = {};
+        fetch(CC.state.listasPreciosUrl + '?empresa=' + encodeURIComponent(c.empresa || '') +
+            '&cliente=' + encodeURIComponent(c.codigo || '') +
+            '&year=' + encodeURIComponent(CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear()), {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (res) { return res.json(); }).then(function (json) {
+            if (control._preciosReq !== key) return;
+            applyPreciosMap((json && json.por_articulo) || {});
+        }).catch(function () {
+            if (control._preciosReq !== key) return;
+            applyPreciosMap({});
+        });
+    }
+
+    function syncVentasPasadasBtn() {
+        var btn = document.getElementById('ctl-btn-ventas-pasadas');
+        if (!btn) return;
+        btn.disabled = !(val('ctl-empresa') && val('ctl-centro'));
+    }
+
+    function fillVentasPasadasYears() {
+        var sel = document.getElementById('vp-anio');
+        if (!sel) return;
+        var current = Number(sel.value) || 0;
+        var ref = Number(CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear()) || new Date().getFullYear();
+        var years = [];
+        for (var y = ref + 1; y >= ref - 6; y--) years.push(y);
+        var preferred = current || ref;
+        sel.innerHTML = years.map(function (y) {
+            return '<option value="' + y + '"' + (y === preferred ? ' selected' : '') + '>' + y + '</option>';
+        }).join('');
+        if (!sel.value) sel.value = String(preferred);
+    }
+
+    function openVentasPasadas() {
+        var emp = val('ctl-empresa');
+        var cc = val('ctl-centro');
+        if (!emp || !cc) {
+            toast('warning', 'Elige empresa y cliente', '');
+            return;
+        }
+        var c = control.centro;
+        var sub = document.getElementById('vp-sub');
+        if (sub) {
+            sub.textContent = String(emp).toUpperCase() + ' · ' +
+                labelNombreCodigo((c && c.nombre) || cc, (c && c.codigo) || cc);
+        }
+        fillVentasPasadasYears();
+        control._vpMetric = val('vp-metric') || 'qty';
+        control._vpQuery = '';
+        var q = document.getElementById('vp-q');
+        if (q) q.value = '';
+        showModal('modalVentasPasadas');
+        loadVentasPasadas(true);
+    }
+
+    function fetchVentasPasadas(empresa, cc, year) {
+        var key = String(empresa || '').toUpperCase() + '|' + String(cc || '') + '|' + year;
+        CC.state.gastoCache = CC.state.gastoCache || {};
+        if (CC.state.gastoCache[key]) {
+            return Promise.resolve({ ok: true, year: year, por_cuenta: CC.state.gastoCache[key], cached: true });
+        }
+        return fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(empresa || '') +
+            '&cc=' + encodeURIComponent(cc || '') +
+            '&year=' + encodeURIComponent(year), {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (res) { return res.json(); }).then(function (json) {
+            var por = (json && json.por_cuenta) || {};
+            if (json && json.ok) CC.state.gastoCache[key] = por;
+            return json || { ok: false, por_cuenta: {}, mensaje: 'Sin respuesta' };
+        });
+    }
+
+    function rowsFromPorCuenta(por) {
+        return Object.keys(por || {}).map(function (k) {
+            var row = por[k] || {};
+            var gasto = Array.isArray(row.gasto) ? row.gasto : zeros12();
+            var importe = Array.isArray(row.importe) ? row.importe : zeros12();
+            var usd = Array.isArray(row.importe_usd) ? row.importe_usd : zeros12();
+            return {
+                codigo: row.codigo || k,
+                nombre: row.nombre || row.codigo || k,
+                gasto: gasto,
+                importe: importe,
+                importe_usd: usd,
+                totQty: sum(gasto),
+                totMxn: sum(importe),
+                totUsd: sum(usd)
+            };
+        }).sort(function (a, b) {
+            return (b.totMxn || b.totQty) - (a.totMxn || a.totQty);
+        });
+    }
+
+    function formatVpCell(v, metric) {
+        var n = Number(v) || 0;
+        if (!n) return '—';
+        var txt = n.toLocaleString('es-MX', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: metric === 'qty' ? 2 : 2
+        });
+        if (metric === 'mxn') return '$' + txt;
+        if (metric === 'usd') return 'US$' + txt;
+        return txt;
+    }
+
+    function renderVentasPasadasTable(rows, year, metric) {
+        var thead = document.getElementById('vp-thead');
+        var tbody = document.getElementById('vp-tbody');
+        var meta = document.getElementById('vp-meta');
+        if (!thead || !tbody) return;
+        metric = metric || control._vpMetric || 'qty';
+        var q = normSearch(control._vpQuery || ((document.getElementById('vp-q') || {}).value || ''));
+        var list = (rows || []).filter(function (r) {
+            if (!q) return true;
+            return normSearch((r.codigo || '') + ' ' + (r.nombre || '')).indexOf(q) !== -1;
+        });
+        var totLabel = metric === 'mxn' ? 'Tot. MXN' : (metric === 'usd' ? 'Tot. USD' : 'Tot. uds');
+        var head = '<tr><th class="sticky-col">Producto</th><th class="num">' + totLabel + '</th>';
+        MONTHS.forEach(function (m) { head += '<th class="num">' + m + '</th>'; });
+        head += '</tr>';
+        thead.innerHTML = head;
+
+        if (!list.length) {
+            tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">Sin ventas en ' + year +
+                (q ? ' para ese filtro' : '') + '</div></td></tr>';
+            if (meta) meta.textContent = 'Año ' + year + ' · 0 productos';
+            return;
+        }
+
+        var seriesKey = metric === 'mxn' ? 'importe' : (metric === 'usd' ? 'importe_usd' : 'gasto');
+        var totKey = metric === 'mxn' ? 'totMxn' : (metric === 'usd' ? 'totUsd' : 'totQty');
+        var grand = list.reduce(function (a, r) { return a + (Number(r[totKey]) || 0); }, 0);
+        tbody.innerHTML = list.map(function (r) {
+            var series = r[seriesKey] || zeros12();
+            var cells = '';
+            for (var i = 0; i < 12; i++) {
+                cells += '<td class="num' + ((Number(series[i]) || 0) ? '' : ' text-muted') + '">' +
+                    formatVpCell(series[i], metric) + '</td>';
+            }
+            return '<tr><td class="sticky-col">' + htmlNombreCodigo(r.nombre, r.codigo) + '</td>' +
+                '<td class="num fw-semibold">' + formatVpCell(r[totKey], metric) + '</td>' +
+                cells + '</tr>';
+        }).join('') +
+            '<tr class="cc-vp-total"><td class="sticky-col"><strong>Total</strong></td>' +
+            '<td class="num fw-semibold">' + formatVpCell(grand, metric) + '</td>' +
+            MONTHS.map(function (_, i) {
+                var t = list.reduce(function (a, r) {
+                    return a + (Number((r[seriesKey] || [])[i]) || 0);
+                }, 0);
+                return '<td class="num fw-semibold">' + formatVpCell(t, metric) + '</td>';
+            }).join('') + '</tr>';
+
+        if (meta) {
+            meta.textContent = 'Año ' + year + ' · ' + list.length +
+                (list.length === 1 ? ' producto' : ' productos') +
+                ' · Total ' + formatVpCell(grand, metric);
+        }
+    }
+
+    function loadVentasPasadas(force) {
+        var emp = val('ctl-empresa');
+        var cc = val('ctl-centro');
+        var year = Number(val('vp-anio')) || Number(CC.state.anioGasto) || new Date().getFullYear();
+        var metric = val('vp-metric') || 'qty';
+        control._vpMetric = metric;
+        var tbody = document.getElementById('vp-tbody');
+        var meta = document.getElementById('vp-meta');
+        var btn = document.getElementById('vp-cargar');
+        if (!emp || !cc) {
+            if (tbody) tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">Elige empresa y cliente</div></td></tr>';
+            return;
+        }
+        if (!force && control._vpRows && Number(control._vpYear) === year) {
+            renderVentasPasadasTable(control._vpRows, year, metric);
+            return;
+        }
+        if (tbody) tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">Cargando ventas ' + year + '…</div></td></tr>';
+        if (meta) meta.textContent = 'Consultando SAP…';
+        if (btn) btn.disabled = true;
+        control._vpReq = String(emp).toUpperCase() + '|' + cc + '|' + year;
+        fetchVentasPasadas(emp, cc, year).then(function (json) {
+            if (control._vpReq !== String(emp).toUpperCase() + '|' + cc + '|' + year) return;
+            if (btn) btn.disabled = false;
+            if (!json || !json.ok) {
+                control._vpRows = [];
+                control._vpYear = year;
+                if (tbody) {
+                    tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">' +
+                        escapeHtml((json && json.mensaje) || 'No se pudieron cargar las ventas') +
+                        '</div></td></tr>';
+                }
+                if (meta) meta.textContent = 'Año ' + year + ' · sin datos';
+                return;
+            }
+            control._vpRows = rowsFromPorCuenta(json.por_cuenta || {});
+            control._vpYear = year;
+            renderVentasPasadasTable(control._vpRows, year, metric);
+        }).catch(function (err) {
+            if (btn) btn.disabled = false;
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">' +
+                    escapeHtml((err && err.message) || 'Error de red') + '</div></td></tr>';
+            }
+        });
+    }
+
+    function bindVentasPasadas() {
+        var openBtn = document.getElementById('ctl-btn-ventas-pasadas');
+        if (openBtn) openBtn.addEventListener('click', openVentasPasadas);
+        var cargar = document.getElementById('vp-cargar');
+        if (cargar) cargar.addEventListener('click', function () { loadVentasPasadas(true); });
+        var anio = document.getElementById('vp-anio');
+        if (anio) anio.addEventListener('change', function () { loadVentasPasadas(true); });
+        var metric = document.getElementById('vp-metric');
+        if (metric) metric.addEventListener('change', function () {
+            control._vpMetric = this.value || 'qty';
+            if (control._vpRows) renderVentasPasadasTable(control._vpRows, control._vpYear, control._vpMetric);
+            else loadVentasPasadas(false);
+        });
+        var q = document.getElementById('vp-q');
+        if (q) q.addEventListener('input', function () {
+            control._vpQuery = this.value || '';
+            if (control._vpRows) renderVentasPasadasTable(control._vpRows, control._vpYear, control._vpMetric);
         });
     }
 
@@ -669,6 +979,31 @@
         });
     }
 
+    /**
+     * Una sola vez: si se capturó en vista USD, los meses se guardaron × TC.
+     * Los dejamos en unidades reales para que MXN/USD ya no los mueva.
+     */
+    function unscaleQtyBudgetsIfNeeded() {
+        if (loadJSON(SK.qtyRaw, false)) return;
+        var cur = String(CC.state.currency || 'MXN').toUpperCase();
+        if (cur !== 'USD') {
+            saveJSON(SK.qtyRaw, true);
+            return;
+        }
+        var tc = fxRate();
+        if (!(tc > 0)) {
+            saveJSON(SK.qtyRaw, true);
+            return;
+        }
+        Object.keys(CC.state.budgets || {}).forEach(function (k) {
+            CC.state.budgets[k] = (CC.state.budgets[k] || []).map(function (v) {
+                if (!mesLleno(v)) return v;
+                return Math.round((Number(v) / tc) * 100) / 100;
+            });
+        });
+        saveJSON(SK.qtyRaw, true);
+    }
+
     function overlayStoreKey() {
         return SK.admin + ':' + String((CC.state.period && CC.state.period.codigo) || 'default');
     }
@@ -699,6 +1034,7 @@
             Object.keys(rawBudgets).forEach(function (k) {
                 CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
             });
+            unscaleQtyBudgetsIfNeeded();
             CC._capturaReady = true;
         }).catch(function () {
             CC.state.overlays = {};
@@ -1358,13 +1694,22 @@
         });
     }
 
-    function totGastoCentro(c, ctas) {
-        return (ctas || cuentasDeCentro(c)).reduce(function (a, cta) { return a + sum(cta.gasto); }, 0);
+    function totPptoCentro(c, ctas) {
+        return (ctas || cuentasEnriquecidas(c)).reduce(function (a, cta) {
+            if (cta.importeProy != null) return a + Number(cta.importeProy || 0);
+            var full = Object.assign({}, cta, {
+                ppto: cta.ppto || pptoDe(c.empresa, c.codigo, cta, cta.gasto),
+                precioLista: cta.precioLista != null ? cta.precioLista : Number((lookupPrecioLista(cta.codigo) || {}).precio) || 0,
+                precioMoneda: cta.precioMoneda || String((lookupPrecioLista(cta.codigo) || {}).moneda || 'MXN').toUpperCase()
+            });
+            return a + importeProyeccionMxn(full);
+        }, 0);
     }
 
-    function totPptoCentro(c, ctas) {
-        return (ctas || cuentasDeCentro(c)).reduce(function (a, cta) {
-            return a + sum(pptoDe(c.empresa, c.codigo, cta, cta.gasto));
+    function totGastoCentro(c, ctas) {
+        return (ctas || cuentasEnriquecidas(c)).reduce(function (a, cta) {
+            if (cta.importeVenta != null) return a + Number(cta.importeVenta || 0);
+            return a + importeVentaMxn(cta);
         }, 0);
     }
 
@@ -1667,13 +2012,22 @@
         return cuentasDeCentro(c).map(function (cta) {
             var ppto = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
             var totP = sum(ppto);
-            return Object.assign({}, cta, {
+            var lista = lookupPrecioLista(cta.codigo) || {};
+            var enriched = Object.assign({}, cta, {
                 ppto: ppto,
                 totG: sum(cta.gasto),
                 totP: totP,
                 listo: mesesTodosLlenos(ppto) || cuentaMarcada(c.empresa, c.codigo, cta.codigo),
-                costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0
+                costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
+                precioLista: Number(lista.precio) || 0,
+                precioMoneda: String(lista.moneda || '').toUpperCase() || '',
+                unidad: String(lista.unidad || cta.unidad || '').trim(),
+                listaPrecioNombre: lista.lista || ''
             });
+            enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
+            enriched.importeProy = importeProyeccionMxn(enriched);
+            enriched.importeVenta = importeVentaMxn(enriched);
+            return enriched;
         });
     }
 
@@ -1684,8 +2038,10 @@
             total: ctas.length,
             capturadas: ctas.length - pend,
             pendientes: pend,
-            totG: ctas.reduce(function (a, x) { return a + x.totG; }, 0),
-            totP: ctas.reduce(function (a, x) { return a + x.totP; }, 0),
+            totG: ctas.reduce(function (a, x) { return a + (x.importeVenta || 0); }, 0),
+            totP: ctas.reduce(function (a, x) { return a + (x.importeProy || 0); }, 0),
+            totUnitsG: ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0),
+            totUnitsP: ctas.reduce(function (a, x) { return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto)); }, 0),
             avance: pct(ctas.length - pend, ctas.length || 1)
         };
     }
@@ -1797,8 +2153,8 @@
             setText(prefix + '-pend', '—');
             return;
         }
-        var totG = ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0);
-        var totP = ctas.reduce(function (a, x) { return a + (x.totP || 0); }, 0);
+        var totG = ctas.reduce(function (a, x) { return a + (x.importeVenta != null ? x.importeVenta : importeVentaMxn(x)); }, 0);
+        var totP = ctas.reduce(function (a, x) { return a + (x.importeProy != null ? x.importeProy : importeProyeccionMxn(x)); }, 0);
         var pend = ctas.filter(ctaPendiente).length;
         setText(prefix + '-tot-gasto', money(totG));
         setText(prefix + '-tot-ppto', money(totP));
@@ -1840,11 +2196,12 @@
             el.hidden = !has;
             if (has) {
                 el.textContent = n > 0 ? (n + (n === 1 ? ' pendiente' : ' pendientes')) : 'Listo';
-                el.className = 'cc-nav-status ' + (n > 0 ? 'is-warn' : 'is-ok');
+                el.className = 'cc-nav-status ' + (n > 0 ? 'is-danger' : 'is-ok');
             }
         }
         if (selectEl) {
-            selectEl.classList.toggle('is-warn', has && n > 0);
+            selectEl.classList.toggle('is-danger', has && n > 0);
+            selectEl.classList.toggle('is-warn', false);
             selectEl.classList.toggle('is-ok', has && n === 0);
         }
     }
@@ -1867,9 +2224,11 @@
         var cur = String(el.value || '').toUpperCase();
         var html = '<option value="">Elige empresa…</option>';
         keys.forEach(function (e) {
+            var pend = CC._capturaReady ? pendientesDeEmpresa(e) : null;
             var label = e;
-            if (CC._capturaReady) label += '   ·   ' + markPendLabel(pendientesDeEmpresa(e));
-            html += '<option value="' + escapeHtml(e) + '">' + escapeHtml(label) + '</option>';
+            if (pend !== null) label += '   ·   ' + markPendLabel(pend);
+            var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
+            html += '<option' + (optClass ? ' class="' + optClass + '"' : '') + ' value="' + escapeHtml(e) + '">' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         if (cur && keys.indexOf(cur) !== -1) el.value = cur;
@@ -1888,7 +2247,7 @@
         if (!emp) {
             el.innerHTML = '<option value="">Elige una empresa primero…</option>';
             el.disabled = true;
-            el.classList.remove('is-warn', 'is-ok');
+            el.classList.remove('is-warn', 'is-ok', 'is-danger');
             paintNavStatus('ctl-cc-status', null, el);
             return;
         }
@@ -1897,15 +2256,17 @@
         var html = '<option value="">Elige cliente…</option>';
         list.forEach(function (a) {
             var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
+            var pend = null;
             if (CC._capturaReady) {
-                var st = statsDeCentro({
+                pend = statsDeCentro({
                     codigo: a.centro_codigo,
                     nombre: a.centro_nombre || a.centro_codigo,
                     empresa: emp
-                });
-                label += '   ·   ' + markPendLabel(st.pendientes);
+                }).pendientes;
+                label += '   ·   ' + markPendLabel(pend);
             }
-            html += '<option value="' + escapeHtml(a.centro_codigo) + '">' + escapeHtml(label) + '</option>';
+            var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
+            html += '<option' + (optClass ? ' class="' + optClass + '"' : '') + ' value="' + escapeHtml(a.centro_codigo) + '">' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         el.disabled = !list.length;
@@ -2056,6 +2417,7 @@
 
         var cicloSel = document.getElementById('ctl-ciclo');
         renderCicloPicks();
+        syncVentasPasadasBtn();
         var ciclo = val('ctl-ciclo') || cicloControlPreferido();
         if (cicloSel && ciclo) cicloSel.value = ciclo;
         CC.state.cicloCodigo = ciclo || '';
@@ -2117,6 +2479,7 @@
             bindControlTools();
             bindImportMasivo();
             bindCapturaQuick();
+            bindVentasPasadas();
             bindVistas();
             bindVisor();
             bindScopeToggles();
@@ -2221,9 +2584,12 @@
             control.cuenta = null;
             control._allCtas = [];
             control._ctas = [];
+            control._preciosMap = {};
+            control._preciosReq = null;
             setCapturaEnabled(false);
             updateControlProgress();
             renderNavCuentas();
+            syncVentasPasadasBtn();
             renderCtaChips();
             renderCapturaForm();
             renderControlTable();
@@ -2242,6 +2608,7 @@
             control._ctas = [];
             updateControlProgress();
             renderNavCuentas();
+            syncVentasPasadasBtn();
             renderCtaChips();
             renderCapturaForm();
             renderVisorTable();
@@ -2261,6 +2628,7 @@
                 : '<span class="text-muted">Sin permiso</span>';
         }
         loadGastoRealCentro(c);
+        loadListasPreciosCentro(c);
         control._allCtas = cuentasEnriquecidas(c);
         if (control.cuenta && !control._allCtas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
             control.cuenta = null;
@@ -2269,6 +2637,7 @@
         renderNavEmpresas();
         renderNavCentros();
         renderNavCuentas();
+        syncVentasPasadasBtn();
         renderCtaChips();
         renderCapturaForm();
         renderControlTable();
@@ -2315,7 +2684,7 @@
                 ? ('De ' + st.total + ' productos asignados a este cliente')
                 : ('Los ' + st.total + ' productos de este cliente ya tienen proyección'))
             : 'Este cliente no tiene productos asignados');
-        if (box) box.className = 'cc-nav-pend' + (st.pendientes ? '' : ' is-ok');
+        if (box) box.className = 'cc-nav-pend' + (st.pendientes ? ' is-danger' : ' is-ok');
         paintScopeHints();
     }
 
@@ -2445,11 +2814,13 @@
         var hint = document.getElementById('ctl-matrix-hint');
         if (!hint) return;
         var cta = currentCta();
+        var anio = CC.state.anioGasto || '';
         if (cta) {
-            hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Copiar / Limpiar / % / Completado / Dispersar aplican a esta fila.';
+            hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
+                '. Arriba = venta ' + anio + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
             return;
         }
-        hint.textContent = 'Clic en un producto para herramientas puntuales. Si no hay fila activa, Copiar / Limpiar / % / Completado aplican a todos los visibles.';
+        hint.textContent = 'Arriba de cada mes: venta ' + anio + '. Abajo: proyección. Clic en un producto para herramientas puntuales.';
     }
 
     function nombrePresupuestoActual() {
@@ -2510,12 +2881,15 @@
             updateFormTotalsCliente();
             return;
         }
-        setText('ctl-form-gasto', moneyGasto(cta.totG));
-        setText('ctl-form-ppto', money(cta.totP));
-        var d = deltaPct(cta.totP, cta.totG);
+        setText('ctl-form-gasto', moneyGasto(cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta)));
+        setText('ctl-form-ppto', money(cta.importeProy != null ? cta.importeProy : importeProyeccionMxn(cta)));
+        var d = deltaPct(
+            cta.importeProy != null ? cta.importeProy : importeProyeccionMxn(cta),
+            cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta)
+        );
         var el = document.getElementById('ctl-form-delta');
         if (el) el.textContent = !ctaPendiente(cta)
-            ? (cta.totP ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada en 0')
+            ? ((cta.importeProy || cta.totP) ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada en 0')
             : 'Aún sin capturar';
         paintCtaFill(cta);
     }
@@ -2523,6 +2897,108 @@
     function qtyLabel(n) {
         var val = Number(n) || 0;
         return val.toLocaleString('es-MX', { maximumFractionDigits: 2 });
+    }
+
+    /** Precio de lista (moneda nativa) → monto en la moneda de vista. */
+    function precioListaEnVista(precio, monedaNativa) {
+        var amount = Number(precio) || 0;
+        var src = String(monedaNativa || 'MXN').toUpperCase();
+        var view = isUsdView() ? 'USD' : 'MXN';
+        if (src === view) return amount;
+        var tc = fxRate();
+        if (src === 'USD' && view === 'MXN') return amount * tc;
+        if (src === 'MXN' && view === 'USD') return tc > 0 ? amount / tc : amount;
+        return amount;
+    }
+
+    /** Unidades capturadas (Ene–Dic). Sin tipo de cambio. */
+    function unidadesAnuales(ppto) {
+        var total = 0;
+        (ppto || []).forEach(function (v) {
+            if (mesLleno(v)) total += Number(v) || 0;
+        });
+        return total;
+    }
+
+    /**
+     * Proyección monetaria en base MXN: unidades del año × precio unitario de lista.
+     * money() convierte luego a USD/MXN según la vista.
+     */
+    function importeProyeccionMxn(cta) {
+        if (!cta) return 0;
+        var uds = unidadesAnuales(cta.ppto);
+        var precio = Number(cta.precioLista) || 0;
+        if (!uds || !precio) return 0;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var precioMxn = mon === 'USD' ? precio * fxRate() : precio;
+        return uds * precioMxn;
+    }
+
+    /** Venta real en MXN (suma de importes SAP) o, si no hay, qty × precio lista. */
+    function importeVentaMxn(cta) {
+        if (!cta) return 0;
+        var fromSap = sum(cta.importe || []);
+        if (fromSap) return fromSap;
+        var uds = Number(cta.totG) || sum(cta.gasto || []);
+        var precio = Number(cta.precioLista) || 0;
+        if (!uds || !precio) return 0;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        return uds * (mon === 'USD' ? precio * fxRate() : precio);
+    }
+
+    /** Importe MXN de un mes de venta real. */
+    function importeMesVentaMxn(cta, i) {
+        if (!cta) return 0;
+        var fromSap = Number((cta.importe && cta.importe[i]) || 0);
+        if (fromSap) return fromSap;
+        var qty = Number((cta.gasto && cta.gasto[i]) || 0);
+        var precio = Number(cta.precioLista) || 0;
+        if (!qty || !precio) return 0;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        return qty * (mon === 'USD' ? precio * fxRate() : precio);
+    }
+
+    /** Importe MXN de un mes proyectado: unidades capturadas × precio lista. */
+    function importeMesProyMxn(cta, i) {
+        if (!cta || !mesLleno(cta.ppto && cta.ppto[i])) return null;
+        var uds = Number(cta.ppto[i]) || 0;
+        var precio = Number(cta.precioLista) || 0;
+        if (!uds) return 0;
+        if (!precio) return null;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var precioMxn = mon === 'USD' ? precio * fxRate() : precio;
+        return uds * precioMxn;
+    }
+
+    function moneyLista(precio, monedaNativa) {
+        var view = isUsdView() ? 'USD' : 'MXN';
+        var val = precioListaEnVista(precio, monedaNativa);
+        return (view === 'USD' ? 'US$' : '$') + val.toLocaleString('es-MX', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function precioUnitarioHtml(cta) {
+        var precio = Number(cta && cta.precioLista) || 0;
+        var mon = String((cta && cta.precioMoneda) || '').toUpperCase();
+        var unidad = String((cta && cta.unidad) || '').trim();
+        if (!precio && !unidad) {
+            return '<span class="cc-price-empty">—</span>';
+        }
+        var html = '';
+        if (precio) {
+            html += '<div class="cc-price-amt">' + escapeHtml(moneyLista(precio, mon || 'MXN')) + '</div>';
+            if (mon && mon !== (isUsdView() ? 'USD' : 'MXN')) {
+                html += '<div class="cc-price-src">' + escapeHtml(mon) + ' lista</div>';
+            }
+        } else {
+            html += '<div class="cc-price-amt text-muted">Sin precio</div>';
+        }
+        if (unidad) {
+            html += '<div class="cc-price-uom">' + escapeHtml(unidad) + '</div>';
+        }
+        return html;
     }
 
     function monthRealHtml(cta, i) {
@@ -2554,8 +3030,13 @@
         if (!thead || !tbody) return;
         ctas = ctas || matrixCtas();
         var cur = isUsdView() ? 'USD' : 'MXN';
-        var head = '<tr><th class="sticky-col">Producto</th><th class="num">Venta ' + CC.state.anioGasto + '</th><th class="num">Proy. (' + cur + ')</th><th class="num">Δ%</th>';
-        MONTHS.forEach(function (m) { head += '<th class="num">' + m + '</th>'; });
+        var anioPast = CC.state.anioGasto || '';
+        var head = '<tr><th class="sticky-col">Producto</th><th class="num">Venta ' + anioPast + '</th>' +
+            '<th class="num">Precio (' + cur + ')</th><th class="num">Δ%</th>';
+        MONTHS.forEach(function (m) {
+            head += '<th class="num">' + m +
+                '<span class="cc-th-past">vs ' + String(anioPast).slice(2) + '</span></th>';
+        });
         head += '</tr>';
         thead.innerHTML = head;
         if (!ctas.length) {
@@ -2573,12 +3054,20 @@
             var done = !ctaPendiente(cta);
             var cells = '';
             for (var i = 0; i < 12; i++) {
-                var shown = formatInputAmount(cta.ppto[i]);
+                var shown = formatInputQty(cta.ppto[i]);
+                var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
                 var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
                 cells += '<td class="' + pCls + '">' +
-                    '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
-                    (control.locked ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '" title="' +
-                    escapeHtml(MONTHS[i] + ' · ' + cur + ' · venta ' + formatInputAmount((cta.gasto && cta.gasto[i]) || 0) + ' · TC ' + fxRate().toFixed(2)) + '">' +
+                    '<div class="cc-matrix-month">' +
+                        '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
+                            escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (cta.unidad ? ' · ' + cta.unidad : '')) + '">' +
+                            (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
+                        '</div>' +
+                        '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
+                        (control.locked ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '" title="' +
+                        escapeHtml(MONTHS[i] + ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
+                            (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
+                    '</div>' +
                     '</td>';
             }
             return '<tr class="cc-matrix-row' + (selected ? ' is-on' : '') + (done ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '">' +
@@ -2588,8 +3077,8 @@
                     '</button>' +
                     '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
                 '</td>' +
-                '<td class="num">' + moneyGasto(cta.totG) + '</td>' +
-                '<td class="num fw-semibold" data-tot-p>' + money(cta.totP) + '</td>' +
+                '<td class="num">' + moneyGasto(cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta)) + '</td>' +
+                '<td class="num cc-price-cell" data-precio-unit>' + precioUnitarioHtml(cta) + '</td>' +
                 '<td class="num ' + dCls + '" data-delta>' + (cta.totP || done ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>' +
                 cells +
                 '</tr>';
@@ -2617,7 +3106,7 @@
                 if (!td || !cta) return;
                 var raw = String(inp.value || '').trim().replace(/,/g, '');
                 var fake = { gasto: cta.gasto, ppto: (cta.ppto || []).slice() };
-                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreAmount(Number(raw) || 0);
+                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreQty(Number(raw) || 0);
                 td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell');
                 inp.classList.toggle('is-neg', (Number(raw) || 0) < 0);
             });
@@ -2650,10 +3139,10 @@
         var done = !ctaPendiente(cta);
         row.classList.toggle('is-done', done);
         row.classList.toggle('is-on', String(control.cuenta || '') === String(codigo));
-        var tot = row.querySelector('[data-tot-p]');
+        var tot = row.querySelector('[data-precio-unit]');
         var delta = row.querySelector('[data-delta]');
         var status = row.querySelector('.cc-matrix-status');
-        if (tot) tot.textContent = money(cta.totP);
+        if (tot) tot.innerHTML = precioUnitarioHtml(cta);
         if (delta) {
             delta.className = 'num ' + dCls;
             delta.textContent = (cta.totP || done) ? ((d > 0 ? '+' : '') + d + '%') : '—';
@@ -2663,7 +3152,7 @@
             var inp = row.querySelector('input[data-m="' + i + '"]');
             if (!inp) continue;
             if (document.activeElement === inp) continue;
-            var shown = formatInputAmount(cta.ppto[i]);
+            var shown = formatInputQty(cta.ppto[i]);
             if (String(inp.value) !== shown) inp.value = shown;
             inp.classList.toggle('is-neg', (Number(shown) || 0) < 0);
             var td = inp.closest('td');
@@ -2685,8 +3174,9 @@
             cls += ' is-empty';
             return cls;
         }
-        var val = Number(raw);
-        if (cta.gasto[i] && val > cta.gasto[i] * 1.2) cls += ' is-over';
+        var val = Number(raw) || 0;
+        var past = Number((cta.gasto && cta.gasto[i]) || 0);
+        if (past && val > past * 1.2) cls += ' is-over';
         else cls += ' is-ok';
         return cls;
     }
@@ -2699,7 +3189,7 @@
         document.querySelectorAll(selector).forEach(function (inp) {
             var m = Number(inp.getAttribute('data-m'));
             var raw = String(inp.value || '').trim().replace(/,/g, '');
-            months[m] = raw === '' ? (fillEmpty ? 0 : null) : toStoreAmount(Number(raw) || 0);
+            months[m] = raw === '' ? (fillEmpty ? 0 : null) : toStoreQty(Number(raw) || 0);
         });
         return months;
     }
@@ -2850,7 +3340,7 @@
         });
         var closedMap = control[opts.groupKey] || (control[opts.groupKey] = {});
 
-        var head = '<tr><th class="sticky-col">Cuenta</th><th class="num">Gasto ' + CC.state.anioGasto + '</th><th class="num">Ppto ' + CC.state.anioPresupuesto + '</th><th class="num">Δ%</th>';
+        var head = '<tr><th class="sticky-col">Cuenta</th><th class="num">Venta ' + CC.state.anioGasto + '</th><th class="num">Proy. ' + CC.state.anioPresupuesto + '</th><th class="num">Δ%</th>';
         MONTHS.forEach(function (m) { head += '<th class="num">' + m + ' ' + String(CC.state.anioGasto).slice(2) + '</th><th class="num">' + m + ' ' + String(CC.state.anioPresupuesto).slice(2) + '</th>'; });
         head += '</tr>';
         thead.innerHTML = head;
@@ -2858,8 +3348,8 @@
         var html = '';
         var hideGroups = opts.scope === 'cuenta' && control.cuenta && ctas.length <= 1;
         Object.keys(groups).forEach(function (g) {
-            var gTotG = groups[g].reduce(function (a, x) { return a + x.totG; }, 0);
-            var gTotP = groups[g].reduce(function (a, x) { return a + x.totP; }, 0);
+            var gTotG = groups[g].reduce(function (a, x) { return a + (x.importeVenta != null ? x.importeVenta : importeVentaMxn(x)); }, 0);
+            var gTotP = groups[g].reduce(function (a, x) { return a + (x.importeProy != null ? x.importeProy : importeProyeccionMxn(x)); }, 0);
             var closed = !!closedMap[g];
             if (!hideGroups) {
                 html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="4"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
@@ -2867,21 +3357,32 @@
             }
             if (!closed || hideGroups) {
                 groups[g].forEach(function (cta) {
-                    var d = deltaPct(cta.totP, cta.totG);
+                    var impG = cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta);
+                    var impP = cta.importeProy != null ? cta.importeProy : importeProyeccionMxn(cta);
+                    var d = deltaPct(impP, impG);
                     var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
-                    html += '<td class="num">' + moneyGasto(cta.totG) + '</td><td class="num fw-semibold">' + money(cta.totP) + '</td>';
-                    html += '<td class="num ' + dCls + '">' + (cta.totP ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
+                    html += '<td class="num">' + moneyGasto(impG) + '</td><td class="num fw-semibold">' + money(impP) + '</td>';
+                    html += '<td class="num ' + dCls + '">' + (impP || !ctaPendiente(cta) ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
                     for (var i = 0; i < 12; i++) {
                         var lleno = mesLleno(cta.ppto[i]);
+                        var udsProy = lleno ? (Number(cta.ppto[i]) || 0) : 0;
+                        var udsPast = Number((cta.gasto && cta.gasto[i]) || 0);
                         var pCls = lleno
-                            ? (cta.gasto[i] && cta.ppto[i] > cta.gasto[i] * 1.2 ? 'is-over' : 'is-ok')
+                            ? (udsPast && udsProy > udsPast * 1.2 ? 'is-over' : 'is-ok')
                             : 'is-empty';
-                        html += '<td class="num text-muted" style="font-size:.75rem">' + moneyGasto(cta.gasto[i] || 0) + '</td>';
-                        html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem">' +
-                            (lleno ? money(cta.ppto[i] || 0) : '—') + '</td>';
+                        var impMesG = importeMesVentaMxn(cta, i);
+                        var impMesP = importeMesProyMxn(cta, i);
+                        html += '<td class="num text-muted" style="font-size:.75rem" title="' +
+                            escapeHtml('Venta ' + CC.state.anioGasto + (udsPast ? ' · ' + qtyLabel(udsPast) + ' uds' : '')) + '">' +
+                            (impMesG ? money(impMesG) : (udsPast ? qtyLabel(udsPast) : '—')) + '</td>';
+                        html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem" title="' +
+                            escapeHtml('Proy. ' + CC.state.anioPresupuesto + (lleno ? ' · ' + qtyLabel(udsProy) + ' uds' : '')) + '">' +
+                            (lleno
+                                ? (impMesP != null ? money(impMesP) : qtyLabel(udsProy))
+                                : '—') + '</td>';
                     }
                     html += '</tr>';
                 });
@@ -2920,7 +3421,7 @@
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         if (!c || !cta) return;
         var raw = String(inp.value || '').trim().replace(/,/g, '');
-        var valN = raw === '' ? null : toStoreAmount(Number(raw) || 0);
+        var valN = raw === '' ? null : toStoreQty(Number(raw) || 0);
         var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
         var wasEmpty = !mesesTodosLlenos(months) && months.every(function (x) { return !mesLleno(x); });
         months[m] = valN;
@@ -2940,8 +3441,8 @@
         if (wasEmpty && valN > 0 && m === 0 && !control.locked) {
             if (window.Swal) {
                 Swal.fire({
-                    title: '¿Gasto fijo mensual?',
-                    html: 'Capturaste <b>' + money(valN) + '</b> en enero para <b>' + escapeHtml(cta.nombre) + '</b>. ¿Lo replicamos en los 12 meses?',
+                    title: '¿Cantidad fija mensual?',
+                    html: 'Capturaste <b>' + escapeHtml(qtyLabel(valN)) + '</b> unidades en enero para <b>' + escapeHtml(cta.nombre) + '</b>. ¿Lo replicamos en los 12 meses?',
                     icon: 'question',
                     showCancelButton: true,
                     confirmButtonColor: '#0a0a0a',
@@ -2950,7 +3451,7 @@
                 }).then(function (res) {
                     if (res.isConfirmed) {
                         persistBudget(c.empresa, c.codigo, codigo, months.map(function () { return valN; }));
-                        toast('success', 'Gasto fijo aplicado', 'Los 12 meses quedaron en ' + money(valN));
+                        toast('success', 'Cantidad fija aplicada', 'Los 12 meses quedaron en ' + qtyLabel(valN));
                     }
                     refreshControlAfterEdit(codigo);
                 });
@@ -3308,12 +3809,11 @@
         var mismo = val('d-modo') === 'mismo';
         var label = document.getElementById('d-monto-label');
         var hint = document.getElementById('d-modo-hint');
-        var cur = isUsdView() ? 'USD' : 'MXN';
-        if (label) label.textContent = (mismo ? 'Monto mensual' : 'Monto total') + ' (' + cur + ')';
+        if (label) label.textContent = mismo ? 'Unidades mensuales' : 'Unidades totales';
         if (hint) {
             hint.textContent = mismo
-                ? ('Gasto fijo en ' + cur + ': se copia el mismo monto a cada mes del rango Desde–Hasta. TC ' + fxRate().toFixed(2) + '.')
-                : ('El total en ' + cur + ' se reparte entre los meses del rango. TC ' + fxRate().toFixed(2) + '.');
+                ? 'Cantidad fija: se copia el mismo número de unidades a cada mes del rango Desde–Hasta.'
+                : 'El total de unidades se reparte entre los meses del rango (el tipo de cambio no aplica).';
         }
     }
 
@@ -3332,7 +3832,7 @@
                     return;
                 }
                 var codigo = cta.codigo;
-                var monto = toStoreAmount(Number(val('d-monto')) || 0);
+                var monto = toStoreQty(Number(val('d-monto')) || 0);
                 var from = Number(val('d-desde')) || 0;
                 var to = Number(val('d-hasta')) || 11;
                 var modo = val('d-modo');
@@ -3354,9 +3854,9 @@
                 control.cuenta = codigo;
                 refreshControlAfterEdit(codigo);
                 var rango = MONTHS[from] + '–' + MONTHS[to];
-                toast('success', modo === 'mismo' ? 'Gasto fijo' : 'Costo dispersado', modo === 'mismo'
-                    ? money(monto) + ' en cada mes (' + rango + ')'
-                    : money(monto) + ' en ' + cta.nombre);
+                toast('success', modo === 'mismo' ? 'Cantidad fija' : 'Unidades dispersadas', modo === 'mismo'
+                    ? qtyLabel(monto) + ' uds en cada mes (' + rango + ')'
+                    : qtyLabel(monto) + ' uds en ' + cta.nombre);
             });
         }
         var save = document.getElementById('ctl-guardar');
@@ -4032,6 +4532,7 @@
         if (el && window.bootstrap) bootstrap.Modal.getOrCreateInstance(el).show();
         if (id === 'modalIndicadores') renderPeriodBanner();
         if (id === 'modalDispersar') paintDispMontoLabel();
+        if (id === 'modalVentasPasadas') fillVentasPasadasYears();
         if (id === 'modalPeriodo') {
             var editing = CC.state.page === 'admin-ciclo';
             var title = document.getElementById('modal-ciclo-title');
@@ -4092,7 +4593,9 @@
         CC.state.vistaInicial = boot.vistaInicial || '';
         CC.state.detalleUrl = boot.detalleUrl || '/Ventas/Captura/detalle';
         CC.state.gastoUrl = boot.gastoUrl || '/ProyeccionesVentas/api/gasto-real';
+        CC.state.listasPreciosUrl = boot.listasPreciosUrl || '/ProyeccionesVentas/api/listas-precios';
         CC.state.gastoCache = {};
+        CC.state.preciosCache = {};
         CC.state.cicloCodigo = boot.cicloCodigo || boot.cicloInicial || '';
         CC.state.usuarioActual = boot.usuarioActual || '';
         CC.state.ciclos = loadCiclos(boot.periodoDefault, boot.ciclos);
