@@ -85,6 +85,7 @@
                         <option value="MXN">MXN</option>
                         <option value="USD">USD</option>
                     </select>
+                    <div class="cc-nav-fx" id="ctl-fx-hint">Captura en MXN · se guarda en pesos</div>
                     <label class="cc-nav-pend-toggle">
                         <input type="checkbox" id="ctl-pendientes"> Solo pendientes
                     </label>
@@ -205,9 +206,9 @@
                         <input type="checkbox" id="ctl-chart-todas"> Ver todas
                     </label>
                     <div class="cc-legend">
-                        <span><i style="background:#fffbeb"></i> Sin capturar</span>
+                        <span><i style="background:#fee2e2;border:1px solid #ef4444"></i> Sin capturar</span>
                         <span><i style="background:#ecfdf5"></i> Capturado</span>
-                        <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                        <span><i style="background:#fff7ed;border:1px solid #fdba74"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
                     </div>
                 </div>
             </div>

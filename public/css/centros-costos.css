@@ -1712,6 +1712,12 @@
     margin: 0.15rem 0 0.75rem;
 }
 .cc-nav-tools .cc-select { width: 100%; }
+.cc-nav-fx {
+    font-size: 0.72rem;
+    color: var(--cc-muted, #71717a);
+    line-height: 1.35;
+    padding: 0 0.15rem;
+}
 .cc-nav-pend-toggle {
     display: flex;
     align-items: center;
@@ -2375,15 +2381,26 @@
     flex-direction: column;
     min-height: 100%;
 }
-.cc-month-cell.is-empty { background: #fffbeb; }
+.cc-month-cell.is-empty {
+    background: #fee2e2;
+    border-color: #ef4444;
+}
+.cc-month-cell.is-empty .m,
+.cc-month-cell.is-empty .m em,
+.cc-month-cell.is-empty .prev { color: #b91c1c; }
+.cc-month-cell.is-empty input,
+.cc-month-cell.is-empty .cc-month-input {
+    border-color: #fca5a5;
+    background: #fff7f7;
+}
 .cc-month-cell.is-ok { background: #ecfdf5; }
-.cc-month-cell.is-over { background: #fef2f2; }
-.cc-month-cell .m {
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    color: var(--cc-muted);
+.cc-month-cell.is-over { background: #fff7ed; border-color: #fdba74; }
+.cc-month-cell .m em {
+    font-style: normal;
+    font-size: 0.62rem;
+    letter-spacing: 0;
+    margin-left: 0.15rem;
+    color: #a1a1aa;
 }
 .cc-month-cell .prev {
     font-size: 0.72rem;
