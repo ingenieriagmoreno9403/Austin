@@ -18,7 +18,7 @@
             'valor' => 'registrar_perfiles',
             'url' => '/Sistemas/Perfiles',
             'titulo' => 'Asignación de perfiles',
-            'desc' => 'Asignación de perfiles a usuarios y sucursales.',
+            'desc' => 'Asignación de perfiles a usuarios.',
             'icono' => 'fa-id-badge',
             'color' => 'cereza',
         ],
@@ -38,7 +38,7 @@
             'valor' => 'editar_permisos',
             'url' => '/Sistemas/Usuarios',
             'titulo' => 'Editar permisos',
-            'desc' => 'Permisos de usuarios y acciones.',
+            'desc' => 'Acciones puntuales por usuario, sin cambiar el perfil.',
             'icono' => 'fa-sitemap',
             'color' => 'secondary',
         ],
@@ -62,7 +62,6 @@
             'desc' => 'Añadir o quitar acciones disponibles para cada perfil.',
             'icono' => 'fa-link',
             'color' => 'primary',
-            'admin' => true,
         ],
         
         [

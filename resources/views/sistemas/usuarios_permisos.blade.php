@@ -29,7 +29,7 @@
             <h5 class="text-secondary mb-1">
                 <i class="fa-solid fa-users-gear me-2"></i>Listado de usuarios
             </h5>
-            <p class="text-muted fs-8 mb-0">Entra a editar para revisar acciones directas y quitar perfiles asignados.</p>
+                <p class="text-muted fs-8 mb-0">Entra a editar para agregar acciones puntuales (sin cambiar el perfil) o quitar accesos.</p>
         </div>
         <div class="card-body">
             <div class="row">

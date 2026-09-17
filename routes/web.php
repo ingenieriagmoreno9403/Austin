@@ -287,6 +287,8 @@ use App\Http\Controllers\ProyeccionesVentasController;
         Route::get('/eliminar_accion_perfil/{id}', 'App\Http\Controllers\SistemasController@eliminar_accion_perfil')->name('eliminar_accion_perfil');
         Route::post('/guardar_perfil_accion', 'App\Http\Controllers\SistemasController@guardar_perfil_accion')->name('guardar_perfil_accion');
         Route::get('/UsuarioPermisos/{id}', 'App\Http\Controllers\SistemasController@indexUserPermisos')->name('indexUserPermisos');
+        Route::post('/UsuarioPermisos/{id}/acciones', 'App\Http\Controllers\SistemasController@guardarAccionesUser')->name('guardar_acciones_user');
+        Route::post('/UsuarioPermisos/{id}/modulos', 'App\Http\Controllers\SistemasController@guardarPermisosModuloUser')->name('guardar_permisos_modulo_user');
         Route::get('/Usuarios', 'App\Http\Controllers\SistemasController@getUsuariosPermisos')->name('usuario_permisos');
         Route::get('/eliminar_acciones_user/{id}', 'App\Http\Controllers\SistemasController@eliminar_acciones_user')->name('eliminar_acciones_user');
         Route::get('/eliminar_perfil_user/{id}', 'App\Http\Controllers\SistemasController@eliminar_perfil_user')->name('eliminar_perfil_user');
