@@ -18,7 +18,8 @@
         budget: 'austin.pv.budget.v1',
         period: 'austin.pv.period.v1',
         ciclos: 'austin.pv.ciclos.v1',
-        currency: 'austin.pv.currency.v1'
+        currency: 'austin.pv.currency.v1',
+        qtyRaw: 'austin.pv.qtyRaw.v1'
     };
 
     function money(n, currency) {
@@ -44,7 +45,7 @@
         return String(CC.state.currency || 'MXN').toUpperCase() === 'USD';
     }
 
-    /** Valor guardado (base MXN) → lo que se muestra según moneda. */
+    /** Valor guardado (base MXN) → lo que se muestra según moneda. Solo importes. */
     function toDisplayAmount(n) {
         var val = Number(n);
         if (!isFinite(val)) val = 0;
@@ -52,7 +53,7 @@
         return Math.round(val * 100) / 100;
     }
 
-    /** Valor capturado en pantalla → lo que se guarda (siempre en MXN base). */
+    /** Valor capturado en pantalla → lo que se guarda (siempre en MXN base). Solo importes. */
     function toStoreAmount(n) {
         var val = Number(n);
         if (!isFinite(val)) val = 0;
@@ -60,11 +61,27 @@
         return Math.round(val * 100) / 100;
     }
 
-    function formatInputAmount(n) {
+    /**
+     * Cantidades (unidades): el tipo de cambio NO las afecta.
+     * Se muestran y guardan tal cual.
+     */
+    function toStoreQty(n) {
+        var val = Number(n);
+        if (!isFinite(val)) val = 0;
+        return Math.round(val * 100) / 100;
+    }
+
+    function formatInputQty(n) {
         if (!mesLleno(n)) return '';
-        var v = toDisplayAmount(n);
+        var v = Number(n);
+        if (!isFinite(v)) return '';
         if (Math.abs(v - Math.round(v)) < 0.00001) return String(Math.round(v));
-        return String(v);
+        return String(Math.round(v * 100) / 100);
+    }
+
+    /** @deprecated Usar formatInputQty para meses (unidades). */
+    function formatInputAmount(n) {
+        return formatInputQty(n);
     }
 
     function paintFxBadge() {
@@ -962,6 +979,31 @@
         });
     }
 
+    /**
+     * Una sola vez: si se capturó en vista USD, los meses se guardaron × TC.
+     * Los dejamos en unidades reales para que MXN/USD ya no los mueva.
+     */
+    function unscaleQtyBudgetsIfNeeded() {
+        if (loadJSON(SK.qtyRaw, false)) return;
+        var cur = String(CC.state.currency || 'MXN').toUpperCase();
+        if (cur !== 'USD') {
+            saveJSON(SK.qtyRaw, true);
+            return;
+        }
+        var tc = fxRate();
+        if (!(tc > 0)) {
+            saveJSON(SK.qtyRaw, true);
+            return;
+        }
+        Object.keys(CC.state.budgets || {}).forEach(function (k) {
+            CC.state.budgets[k] = (CC.state.budgets[k] || []).map(function (v) {
+                if (!mesLleno(v)) return v;
+                return Math.round((Number(v) / tc) * 100) / 100;
+            });
+        });
+        saveJSON(SK.qtyRaw, true);
+    }
+
     function overlayStoreKey() {
         return SK.admin + ':' + String((CC.state.period && CC.state.period.codigo) || 'default');
     }
@@ -992,6 +1034,7 @@
             Object.keys(rawBudgets).forEach(function (k) {
                 CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
             });
+            unscaleQtyBudgetsIfNeeded();
             CC._capturaReady = true;
         }).catch(function () {
             CC.state.overlays = {};
@@ -2153,11 +2196,12 @@
             el.hidden = !has;
             if (has) {
                 el.textContent = n > 0 ? (n + (n === 1 ? ' pendiente' : ' pendientes')) : 'Listo';
-                el.className = 'cc-nav-status ' + (n > 0 ? 'is-warn' : 'is-ok');
+                el.className = 'cc-nav-status ' + (n > 0 ? 'is-danger' : 'is-ok');
             }
         }
         if (selectEl) {
-            selectEl.classList.toggle('is-warn', has && n > 0);
+            selectEl.classList.toggle('is-danger', has && n > 0);
+            selectEl.classList.toggle('is-warn', false);
             selectEl.classList.toggle('is-ok', has && n === 0);
         }
     }
@@ -2180,9 +2224,11 @@
         var cur = String(el.value || '').toUpperCase();
         var html = '<option value="">Elige empresa…</option>';
         keys.forEach(function (e) {
+            var pend = CC._capturaReady ? pendientesDeEmpresa(e) : null;
             var label = e;
-            if (CC._capturaReady) label += '   ·   ' + markPendLabel(pendientesDeEmpresa(e));
-            html += '<option value="' + escapeHtml(e) + '">' + escapeHtml(label) + '</option>';
+            if (pend !== null) label += '   ·   ' + markPendLabel(pend);
+            var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
+            html += '<option' + (optClass ? ' class="' + optClass + '"' : '') + ' value="' + escapeHtml(e) + '">' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         if (cur && keys.indexOf(cur) !== -1) el.value = cur;
@@ -2201,7 +2247,7 @@
         if (!emp) {
             el.innerHTML = '<option value="">Elige una empresa primero…</option>';
             el.disabled = true;
-            el.classList.remove('is-warn', 'is-ok');
+            el.classList.remove('is-warn', 'is-ok', 'is-danger');
             paintNavStatus('ctl-cc-status', null, el);
             return;
         }
@@ -2210,15 +2256,17 @@
         var html = '<option value="">Elige cliente…</option>';
         list.forEach(function (a) {
             var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
+            var pend = null;
             if (CC._capturaReady) {
-                var st = statsDeCentro({
+                pend = statsDeCentro({
                     codigo: a.centro_codigo,
                     nombre: a.centro_nombre || a.centro_codigo,
                     empresa: emp
-                });
-                label += '   ·   ' + markPendLabel(st.pendientes);
+                }).pendientes;
+                label += '   ·   ' + markPendLabel(pend);
             }
-            html += '<option value="' + escapeHtml(a.centro_codigo) + '">' + escapeHtml(label) + '</option>';
+            var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
+            html += '<option' + (optClass ? ' class="' + optClass + '"' : '') + ' value="' + escapeHtml(a.centro_codigo) + '">' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         el.disabled = !list.length;
@@ -2636,7 +2684,7 @@
                 ? ('De ' + st.total + ' productos asignados a este cliente')
                 : ('Los ' + st.total + ' productos de este cliente ya tienen proyección'))
             : 'Este cliente no tiene productos asignados');
-        if (box) box.className = 'cc-nav-pend' + (st.pendientes ? '' : ' is-ok');
+        if (box) box.className = 'cc-nav-pend' + (st.pendientes ? ' is-danger' : ' is-ok');
         paintScopeHints();
     }
 
@@ -2863,11 +2911,11 @@
         return amount;
     }
 
-    /** Unidades capturadas (Ene–Dic), deshaciendo el escalado FX de la vista. */
+    /** Unidades capturadas (Ene–Dic). Sin tipo de cambio. */
     function unidadesAnuales(ppto) {
         var total = 0;
         (ppto || []).forEach(function (v) {
-            if (mesLleno(v)) total += toDisplayAmount(v);
+            if (mesLleno(v)) total += Number(v) || 0;
         });
         return total;
     }
@@ -2881,9 +2929,9 @@
         var uds = unidadesAnuales(cta.ppto);
         var precio = Number(cta.precioLista) || 0;
         if (!uds || !precio) return 0;
-        var precioVista = precioListaEnVista(precio, cta.precioMoneda);
-        var importeVista = uds * precioVista;
-        return isUsdView() ? (importeVista * fxRate()) : importeVista;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var precioMxn = mon === 'USD' ? precio * fxRate() : precio;
+        return uds * precioMxn;
     }
 
     /** Venta real en MXN (suma de importes SAP) o, si no hay, qty × precio lista. */
@@ -2896,6 +2944,30 @@
         if (!uds || !precio) return 0;
         var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
         return uds * (mon === 'USD' ? precio * fxRate() : precio);
+    }
+
+    /** Importe MXN de un mes de venta real. */
+    function importeMesVentaMxn(cta, i) {
+        if (!cta) return 0;
+        var fromSap = Number((cta.importe && cta.importe[i]) || 0);
+        if (fromSap) return fromSap;
+        var qty = Number((cta.gasto && cta.gasto[i]) || 0);
+        var precio = Number(cta.precioLista) || 0;
+        if (!qty || !precio) return 0;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        return qty * (mon === 'USD' ? precio * fxRate() : precio);
+    }
+
+    /** Importe MXN de un mes proyectado: unidades capturadas × precio lista. */
+    function importeMesProyMxn(cta, i) {
+        if (!cta || !mesLleno(cta.ppto && cta.ppto[i])) return null;
+        var uds = Number(cta.ppto[i]) || 0;
+        var precio = Number(cta.precioLista) || 0;
+        if (!uds) return 0;
+        if (!precio) return null;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var precioMxn = mon === 'USD' ? precio * fxRate() : precio;
+        return uds * precioMxn;
     }
 
     function moneyLista(precio, monedaNativa) {
@@ -2982,7 +3054,7 @@
             var done = !ctaPendiente(cta);
             var cells = '';
             for (var i = 0; i < 12; i++) {
-                var shown = formatInputAmount(cta.ppto[i]);
+                var shown = formatInputQty(cta.ppto[i]);
                 var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
                 var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
                 cells += '<td class="' + pCls + '">' +
@@ -2993,7 +3065,7 @@
                         '</div>' +
                         '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
                         (control.locked ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '" title="' +
-                        escapeHtml(MONTHS[i] + ' · proyección · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
+                        escapeHtml(MONTHS[i] + ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
                             (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
                     '</div>' +
                     '</td>';
@@ -3005,7 +3077,7 @@
                     '</button>' +
                     '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
                 '</td>' +
-                '<td class="num">' + moneyGasto(cta.totG) + '</td>' +
+                '<td class="num">' + moneyGasto(cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta)) + '</td>' +
                 '<td class="num cc-price-cell" data-precio-unit>' + precioUnitarioHtml(cta) + '</td>' +
                 '<td class="num ' + dCls + '" data-delta>' + (cta.totP || done ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>' +
                 cells +
@@ -3034,7 +3106,7 @@
                 if (!td || !cta) return;
                 var raw = String(inp.value || '').trim().replace(/,/g, '');
                 var fake = { gasto: cta.gasto, ppto: (cta.ppto || []).slice() };
-                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreAmount(Number(raw) || 0);
+                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreQty(Number(raw) || 0);
                 td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell');
                 inp.classList.toggle('is-neg', (Number(raw) || 0) < 0);
             });
@@ -3080,7 +3152,7 @@
             var inp = row.querySelector('input[data-m="' + i + '"]');
             if (!inp) continue;
             if (document.activeElement === inp) continue;
-            var shown = formatInputAmount(cta.ppto[i]);
+            var shown = formatInputQty(cta.ppto[i]);
             if (String(inp.value) !== shown) inp.value = shown;
             inp.classList.toggle('is-neg', (Number(shown) || 0) < 0);
             var td = inp.closest('td');
@@ -3102,8 +3174,9 @@
             cls += ' is-empty';
             return cls;
         }
-        var val = Number(raw);
-        if (cta.gasto[i] && val > cta.gasto[i] * 1.2) cls += ' is-over';
+        var val = Number(raw) || 0;
+        var past = Number((cta.gasto && cta.gasto[i]) || 0);
+        if (past && val > past * 1.2) cls += ' is-over';
         else cls += ' is-ok';
         return cls;
     }
@@ -3116,7 +3189,7 @@
         document.querySelectorAll(selector).forEach(function (inp) {
             var m = Number(inp.getAttribute('data-m'));
             var raw = String(inp.value || '').trim().replace(/,/g, '');
-            months[m] = raw === '' ? (fillEmpty ? 0 : null) : toStoreAmount(Number(raw) || 0);
+            months[m] = raw === '' ? (fillEmpty ? 0 : null) : toStoreQty(Number(raw) || 0);
         });
         return months;
     }
@@ -3267,7 +3340,7 @@
         });
         var closedMap = control[opts.groupKey] || (control[opts.groupKey] = {});
 
-        var head = '<tr><th class="sticky-col">Cuenta</th><th class="num">Gasto ' + CC.state.anioGasto + '</th><th class="num">Ppto ' + CC.state.anioPresupuesto + '</th><th class="num">Δ%</th>';
+        var head = '<tr><th class="sticky-col">Cuenta</th><th class="num">Venta ' + CC.state.anioGasto + '</th><th class="num">Proy. ' + CC.state.anioPresupuesto + '</th><th class="num">Δ%</th>';
         MONTHS.forEach(function (m) { head += '<th class="num">' + m + ' ' + String(CC.state.anioGasto).slice(2) + '</th><th class="num">' + m + ' ' + String(CC.state.anioPresupuesto).slice(2) + '</th>'; });
         head += '</tr>';
         thead.innerHTML = head;
@@ -3295,12 +3368,21 @@
                     html += '<td class="num ' + dCls + '">' + (impP || !ctaPendiente(cta) ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
                     for (var i = 0; i < 12; i++) {
                         var lleno = mesLleno(cta.ppto[i]);
+                        var udsProy = lleno ? (Number(cta.ppto[i]) || 0) : 0;
+                        var udsPast = Number((cta.gasto && cta.gasto[i]) || 0);
                         var pCls = lleno
-                            ? (cta.gasto[i] && cta.ppto[i] > cta.gasto[i] * 1.2 ? 'is-over' : 'is-ok')
+                            ? (udsPast && udsProy > udsPast * 1.2 ? 'is-over' : 'is-ok')
                             : 'is-empty';
-                        html += '<td class="num text-muted" style="font-size:.75rem">' + moneyGasto(cta.gasto[i] || 0) + '</td>';
-                        html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem">' +
-                            (lleno ? qtyLabel(toDisplayAmount(cta.ppto[i] || 0)) : '—') + '</td>';
+                        var impMesG = importeMesVentaMxn(cta, i);
+                        var impMesP = importeMesProyMxn(cta, i);
+                        html += '<td class="num text-muted" style="font-size:.75rem" title="' +
+                            escapeHtml('Venta ' + CC.state.anioGasto + (udsPast ? ' · ' + qtyLabel(udsPast) + ' uds' : '')) + '">' +
+                            (impMesG ? money(impMesG) : (udsPast ? qtyLabel(udsPast) : '—')) + '</td>';
+                        html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem" title="' +
+                            escapeHtml('Proy. ' + CC.state.anioPresupuesto + (lleno ? ' · ' + qtyLabel(udsProy) + ' uds' : '')) + '">' +
+                            (lleno
+                                ? (impMesP != null ? money(impMesP) : qtyLabel(udsProy))
+                                : '—') + '</td>';
                     }
                     html += '</tr>';
                 });
@@ -3339,7 +3421,7 @@
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         if (!c || !cta) return;
         var raw = String(inp.value || '').trim().replace(/,/g, '');
-        var valN = raw === '' ? null : toStoreAmount(Number(raw) || 0);
+        var valN = raw === '' ? null : toStoreQty(Number(raw) || 0);
         var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
         var wasEmpty = !mesesTodosLlenos(months) && months.every(function (x) { return !mesLleno(x); });
         months[m] = valN;
@@ -3359,8 +3441,8 @@
         if (wasEmpty && valN > 0 && m === 0 && !control.locked) {
             if (window.Swal) {
                 Swal.fire({
-                    title: '¿Gasto fijo mensual?',
-                    html: 'Capturaste <b>' + money(valN) + '</b> en enero para <b>' + escapeHtml(cta.nombre) + '</b>. ¿Lo replicamos en los 12 meses?',
+                    title: '¿Cantidad fija mensual?',
+                    html: 'Capturaste <b>' + escapeHtml(qtyLabel(valN)) + '</b> unidades en enero para <b>' + escapeHtml(cta.nombre) + '</b>. ¿Lo replicamos en los 12 meses?',
                     icon: 'question',
                     showCancelButton: true,
                     confirmButtonColor: '#0a0a0a',
@@ -3369,7 +3451,7 @@
                 }).then(function (res) {
                     if (res.isConfirmed) {
                         persistBudget(c.empresa, c.codigo, codigo, months.map(function () { return valN; }));
-                        toast('success', 'Gasto fijo aplicado', 'Los 12 meses quedaron en ' + money(valN));
+                        toast('success', 'Cantidad fija aplicada', 'Los 12 meses quedaron en ' + qtyLabel(valN));
                     }
                     refreshControlAfterEdit(codigo);
                 });
@@ -3727,12 +3809,11 @@
         var mismo = val('d-modo') === 'mismo';
         var label = document.getElementById('d-monto-label');
         var hint = document.getElementById('d-modo-hint');
-        var cur = isUsdView() ? 'USD' : 'MXN';
-        if (label) label.textContent = (mismo ? 'Monto mensual' : 'Monto total') + ' (' + cur + ')';
+        if (label) label.textContent = mismo ? 'Unidades mensuales' : 'Unidades totales';
         if (hint) {
             hint.textContent = mismo
-                ? ('Gasto fijo en ' + cur + ': se copia el mismo monto a cada mes del rango Desde–Hasta. TC ' + fxRate().toFixed(2) + '.')
-                : ('El total en ' + cur + ' se reparte entre los meses del rango. TC ' + fxRate().toFixed(2) + '.');
+                ? 'Cantidad fija: se copia el mismo número de unidades a cada mes del rango Desde–Hasta.'
+                : 'El total de unidades se reparte entre los meses del rango (el tipo de cambio no aplica).';
         }
     }
 
@@ -3751,7 +3832,7 @@
                     return;
                 }
                 var codigo = cta.codigo;
-                var monto = toStoreAmount(Number(val('d-monto')) || 0);
+                var monto = toStoreQty(Number(val('d-monto')) || 0);
                 var from = Number(val('d-desde')) || 0;
                 var to = Number(val('d-hasta')) || 11;
                 var modo = val('d-modo');
@@ -3773,9 +3854,9 @@
                 control.cuenta = codigo;
                 refreshControlAfterEdit(codigo);
                 var rango = MONTHS[from] + '–' + MONTHS[to];
-                toast('success', modo === 'mismo' ? 'Gasto fijo' : 'Costo dispersado', modo === 'mismo'
-                    ? money(monto) + ' en cada mes (' + rango + ')'
-                    : money(monto) + ' en ' + cta.nombre);
+                toast('success', modo === 'mismo' ? 'Cantidad fija' : 'Unidades dispersadas', modo === 'mismo'
+                    ? qtyLabel(monto) + ' uds en cada mes (' + rango + ')'
+                    : qtyLabel(monto) + ' uds en ' + cta.nombre);
             });
         }
         var save = document.getElementById('ctl-guardar');
