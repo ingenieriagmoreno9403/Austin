@@ -576,7 +576,7 @@
         }
         if (!control.centro) return;
         control._allCtas = cuentasEnriquecidas(control.centro);
-        seedPresupuestoDesdeVentaReal(control.centro);
+        if (CC._capturaReady) seedPresupuestoDesdeVentaReal(control.centro);
         updateControlProgress();
         renderNavCuentas();
         renderCtaChips();
@@ -1047,10 +1047,12 @@
     function persistBudget(empresa, cc, cuenta, months, opts) {
         opts = opts || {};
         months = protectLockedMonths(empresa, cc, cuenta, months, opts);
-        CC.state.budgets[budgetKey(empresa, cc, cuenta)] = months.slice();
         var ciclo = cicloActualCodigo();
         if (!ciclo) return;
         var key = budgetKey(empresa, cc, cuenta);
+        var timerKey = String(ciclo).toUpperCase() + '|' + key;
+        CC.state.budgets = CC.state.budgets || {};
+        CC.state.budgets[key] = months.slice();
         CC.state.completados = CC.state.completados || {};
         var allFilled = mesesTodosLlenos(months);
         var done = Object.prototype.hasOwnProperty.call(opts, 'completado')
@@ -1058,22 +1060,32 @@
             : allFilled;
         if (done && !allFilled) {
             months = months.map(function (v) { return mesLleno(v) ? v : 0; });
-            CC.state.budgets[budgetKey(empresa, cc, cuenta)] = months.slice();
+            CC.state.budgets[key] = months.slice();
         }
         if (done) CC.state.completados[key] = true;
         else delete CC.state.completados[key];
-        if (CC._budgetSaveTimers && CC._budgetSaveTimers[key]) clearTimeout(CC._budgetSaveTimers[key]);
-        CC._budgetSaveTimers = CC._budgetSaveTimers || {};
-        CC._budgetSaveTimers[key] = setTimeout(function () {
-            var nombre = '';
-            var list = (control && control._allCtas) || [];
-            for (var i = 0; i < list.length; i++) {
-                if (String(list[i].codigo) === String(cuenta)) {
-                    nombre = list[i].nombre || '';
-                    break;
-                }
+
+        var monthsToSave = months.slice();
+        var nombre = '';
+        var list = (control && control._allCtas) || [];
+        for (var i = 0; i < list.length; i++) {
+            if (String(list[i].codigo) === String(cuenta)) {
+                nombre = list[i].nombre || '';
+                break;
             }
-            fetch('/ProyeccionesVentas/api/captura/presupuesto', {
+        }
+        var costo = 0;
+        for (var j = 0; j < list.length; j++) {
+            if (String(list[j].codigo) === String(cuenta)) {
+                costo = Number(list[j].costo) || 0;
+                break;
+            }
+        }
+        var precioMeses = preciosMesesDe(empresa, cc, cuenta);
+        var ajuste = Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0;
+
+        function doSave() {
+            return fetch('/ProyeccionesVentas/api/captura/presupuesto', {
                 method: 'PUT',
                 headers: apiJsonHeaders(),
                 body: JSON.stringify({
@@ -1082,30 +1094,66 @@
                     centro: cc,
                     cuenta: cuenta,
                     cuenta_nombre: nombre,
-                    meses: months.slice(),
+                    meses: monthsToSave,
                     completado: done,
-                    ajuste_pct: Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0,
-                    precio_meses: preciosMesesDe(empresa, cc, cuenta),
-                    costo_unitario: (function () {
-                        var list = (control && control._allCtas) || [];
-                        for (var j = 0; j < list.length; j++) {
-                            if (String(list[j].codigo) === String(cuenta)) return Number(list[j].costo) || 0;
-                        }
-                        return 0;
-                    })()
+                    ajuste_pct: ajuste,
+                    precio_meses: precioMeses,
+                    costo_unitario: costo
                 })
             }).then(function (res) {
                 return res.json().then(function (json) {
                     if (!res.ok) throw new Error(json.message || 'No se pudo guardar la proyección');
+                    // Solo sincroniza estado local si seguimos en el mismo ciclo.
+                    if (String(cicloActualCodigo() || '').toUpperCase() !== String(ciclo).toUpperCase()) return json;
                     CC.state.completados = CC.state.completados || {};
                     if (json.completado) CC.state.completados[key] = true;
                     else delete CC.state.completados[key];
                     if (json.precio_meses) setPrecioMesesLocal(empresa, cc, cuenta, json.precio_meses);
+                    return json;
                 });
             }).catch(function (err) {
                 toast('error', 'No se guardó la proyección', err && err.message ? err.message : 'Error de red');
             });
+        }
+
+        if (CC._budgetSaveTimers && CC._budgetSaveTimers[timerKey]) clearTimeout(CC._budgetSaveTimers[timerKey]);
+        CC._budgetSaveTimers = CC._budgetSaveTimers || {};
+        CC._budgetSavePending = CC._budgetSavePending || {};
+        CC._budgetSavePending[timerKey] = doSave;
+        CC._budgetSaveTimers[timerKey] = setTimeout(function () {
+            delete CC._budgetSaveTimers[timerKey];
+            var fn = CC._budgetSavePending[timerKey];
+            delete CC._budgetSavePending[timerKey];
+            if (fn) fn();
         }, 350);
+    }
+
+    /** Antes de cambiar de ciclo: manda a guardar lo pendiente al ciclo correcto. */
+    function flushPendingBudgetSaves() {
+        var pending = CC._budgetSavePending || {};
+        var timers = CC._budgetSaveTimers || {};
+        var keys = Object.keys(pending);
+        var jobs = keys.map(function (k) {
+            if (timers[k]) clearTimeout(timers[k]);
+            delete timers[k];
+            var fn = pending[k];
+            delete pending[k];
+            try {
+                return fn ? Promise.resolve(fn()) : Promise.resolve();
+            } catch (e) {
+                return Promise.resolve();
+            }
+        });
+        return Promise.all(jobs);
+    }
+
+    function cancelPendingBudgetSaves() {
+        var timers = CC._budgetSaveTimers || {};
+        Object.keys(timers).forEach(function (k) {
+            clearTimeout(timers[k]);
+            delete timers[k];
+        });
+        CC._budgetSavePending = {};
     }
 
     function persistPrecioMesesProducto(empresa, cc, cuenta, precioMeses) {
@@ -1247,42 +1295,80 @@
     }
 
     function loadOverlaysForCycle() {
-        var ciclo = cicloActualCodigo();
-        CC._capturaReady = false;
-        CC.state.overlays = {};
-        CC.state.budgets = {};
-        CC.state.budgetsBase = {};
-        CC.state.completados = {};
-        CC.state.preciosMeses = {};
-        if (!ciclo) {
-            CC._capturaReady = true;
-            return Promise.resolve();
-        }
-        return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
-            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-        }).then(function (r) { return r.json(); }).then(function (json) {
-            CC.state.overlays = json.overlays || {};
-            CC.state.completados = json.completados || {};
-            CC.state.ajustes = json.ajustes || {};
-            CC.state.costos = json.costos || {};
-            CC.state.preciosMeses = json.preciosMeses || {};
-            CC.state.budgets = {};
-            var rawBudgets = json.budgets || {};
-            Object.keys(rawBudgets).forEach(function (k) {
-                CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
-            });
-            unscaleQtyBudgetsIfNeeded();
-            return loadBudgetsBaseForSeed();
+        return flushPendingBudgetSaves().catch(function () {
+            return null;
         }).then(function () {
-            CC._capturaReady = true;
-        }).catch(function () {
+            // Capturar ciclo DESPUÉS del flush (el combo ya debe estar estable).
+            var ciclo = String(cicloActualCodigo() || '').trim();
+            CC._capturaLoadGen = (CC._capturaLoadGen || 0) + 1;
+            var gen = CC._capturaLoadGen;
+            CC._seedDoneFor = {};
+            CC._capturaReady = false;
             CC.state.overlays = {};
             CC.state.budgets = {};
             CC.state.budgetsBase = {};
+            CC.state.budgetKeysFromServer = {};
             CC.state.completados = {};
             CC.state.preciosMeses = {};
-            CC._capturaReady = true;
+            CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
+            if (!ciclo) {
+                CC._capturaReady = true;
+                return;
+            }
+            return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(function (r) {
+                if (!r.ok) throw new Error('captura ' + r.status);
+                return r.json();
+            }).then(function (json) {
+                // Solo invalidar por generación (cambio de ciclo real). No comparar el select
+                // otra vez: renderCicloPicks puede tocar el valor sin ser un cambio de ciclo.
+                if (gen !== CC._capturaLoadGen) return { applied: false };
+                CC.state.overlays = json.overlays || {};
+                CC.state.completados = json.completados || {};
+                CC.state.ajustes = json.ajustes || {};
+                CC.state.costos = json.costos || {};
+                CC.state.preciosMeses = json.preciosMeses || {};
+                CC.state.budgets = {};
+                CC.state.budgetKeysFromServer = {};
+                var rawBudgets = json.budgets || {};
+                Object.keys(rawBudgets).forEach(function (k) {
+                    CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
+                    CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+                });
+                Object.keys(CC.state.completados || {}).forEach(function (k) {
+                    if (CC.state.completados[k]) CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+                });
+                unscaleQtyBudgetsIfNeeded();
+                return loadBudgetsBaseForSeed(gen, ciclo).then(function () {
+                    return { applied: true, ciclo: ciclo };
+                });
+            }).then(function (result) {
+                if (gen !== CC._capturaLoadGen) return;
+                CC._capturaReady = true;
+                if (result && result.applied) {
+                    refreshCapturaAfterBudgetsLoaded();
+                }
+            }).catch(function (err) {
+                if (gen !== CC._capturaLoadGen) return;
+                console.warn('[PV] No se pudo cargar captura del ciclo', ciclo, err);
+                // No vaciar budgets si ya había datos de una carga buena previa del mismo gen.
+                CC._capturaReady = true;
+            });
         });
+    }
+
+    function refreshCapturaAfterBudgetsLoaded() {
+        if (!(val('ctl-empresa') && val('ctl-centro'))) return;
+        if (!control.centro) return;
+        control._allCtas = cuentasEnriquecidas(control.centro);
+        updateControlProgress();
+        renderNavCuentas();
+        renderCtaChips();
+        renderCapturaForm();
+        renderControlTable();
+        renderControlCharts();
+        renderVisorTable();
     }
 
     /** Ciclo "normal" (sin tipoBudget) del mismo año, para heredar proyección en 3+9/6+6/9+3. */
@@ -1304,19 +1390,24 @@
         return (sameYear[0] && sameYear[0].codigo) || '';
     }
 
-    function loadBudgetsBaseForSeed() {
+    function loadBudgetsBaseForSeed(gen, cicloEsperado) {
         var base = cicloBaseProyeccion();
         CC.state.budgetsBase = {};
         CC.state.cicloBaseCodigo = base || '';
         if (!base) return Promise.resolve();
         return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(base), {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-        }).then(function (r) { return r.json(); }).then(function (json) {
+        }).then(function (r) {
+            if (!r.ok) throw new Error('base ' + r.status);
+            return r.json();
+        }).then(function (json) {
+            if (gen != null && gen !== CC._capturaLoadGen) return;
             var raw = json.budgets || {};
             Object.keys(raw).forEach(function (k) {
                 CC.state.budgetsBase[k] = normalizeLoadedMonths(raw[k], false);
             });
         }).catch(function () {
+            if (gen != null && gen !== CC._capturaLoadGen) return;
             CC.state.budgetsBase = {};
         });
     }
@@ -1409,20 +1500,21 @@
     }
 
     /**
-     * Al abrir Captura de un cliente: si el producto aún no tiene proyección útil,
-     * precarga los primeros N meses desde la venta real y el resto desde la proyección
-     * normal del mismo año (si existe).
+     * Al abrir Captura de un cliente: solo precarga si el producto NO tiene fila
+     * guardada en este ciclo. Nunca pisa capturas ya persistidas al cambiar de ciclo.
      */
-    function budgetNecesitaSeed(months) {
-        if (!months || !months.length) return true;
-        var n = budgetSeedCount() || 0;
-        var i;
-        for (i = n; i < 12; i++) {
-            if (mesLleno(months[i])) return false;
-        }
-        for (i = 0; i < (n || 12); i++) {
-            if (mesLleno(months[i]) && Number(months[i]) > 0) return false;
-        }
+    function budgetTieneFilaEnServidor(empresa, cc, cuenta) {
+        var map = CC.state.budgetKeysFromServer || {};
+        var primary = budgetKey(empresa, cc, cuenta).toUpperCase();
+        if (map[primary]) return true;
+        return Object.keys(map).some(function (k) {
+            return String(k).toUpperCase() === primary;
+        });
+    }
+
+    function budgetNecesitaSeed(empresa, cc, cuenta, months) {
+        if (budgetTieneFilaEnServidor(empresa, cc, cuenta)) return false;
+        if (months && months.some(mesLleno)) return false;
         return true;
     }
 
@@ -1435,6 +1527,9 @@
 
     function seedPresupuestoDesdeVentaReal(c) {
         if (!c || control.locked) return;
+        if (!CC._capturaReady) return;
+        var cicloSeed = cicloActualCodigo();
+        if (!cicloSeed) return;
         var n = budgetSeedCount();
         if (!n) {
             if (!budgetTipo() && (control._allCtas || []).length) {
@@ -1442,13 +1537,19 @@
             }
             return;
         }
+        var seedKey = String(cicloSeed).toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
+        // Evita reseeds repetidos al reentrar el mismo cliente en la misma carga.
+        CC._seedDoneFor = CC._seedDoneFor || {};
+        if (CC._seedDoneFor[seedKey]) return;
+
         var ctas = control._allCtas || [];
         if (!ctas.length) return;
         var seeded = 0;
         var fromBase = 0;
+        var loadGen = CC._capturaLoadGen || 0;
         ctas.forEach(function (cta) {
             var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
-            if (!budgetNecesitaSeed(existing)) return;
+            if (!budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
             var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
             var gasto = cta.gasto || [];
             var months = [];
@@ -1466,11 +1567,16 @@
             var key = budgetKey(c.empresa, c.codigo, cta.codigo);
             CC.state.budgets = CC.state.budgets || {};
             CC.state.budgets[key] = months.slice();
+            // Marcar como conocido para no volver a sembrar si el save aún no regresa.
+            CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+            CC.state.budgetKeysFromServer[key.toUpperCase()] = true;
             persistBudget(c.empresa, c.codigo, cta.codigo, months, { allowLocked: true });
             seeded += 1;
             if (usedBase) fromBase += 1;
         });
-        if (seeded) {
+        CC._seedDoneFor[seedKey] = true;
+        if (seeded && loadGen === (CC._capturaLoadGen || 0)
+            && String(cicloActualCodigo() || '').toUpperCase() === String(cicloSeed).toUpperCase()) {
             control._allCtas = cuentasEnriquecidas(c);
             var extra = fromBase
                 ? (' · ' + fromBase + (fromBase === 1 ? ' producto' : ' productos') +
@@ -1479,6 +1585,8 @@
             toast('success', 'Budget ' + labelTipoBudget(), 'Se precargaron ' + seeded +
                 (seeded === 1 ? ' producto' : ' productos') + ' con la venta ' + (CC.state.anioGasto || '') +
                 (budgetLockCount() ? ' · meses iniciales bloqueados' : ' · meses editables') + extra);
+            renderCapturaForm();
+            updateControlProgress();
         }
     }
 
@@ -3024,8 +3132,14 @@
         var el = document.getElementById('ctl-ciclo');
         if (!el) return;
         var ciclos = ciclosDeMisAsignaciones();
-        var selected = el.value || cicloControlPreferido();
-        if (!CC._cicloUserPicked) selected = cicloControlPreferido() || selected;
+        var cur = String(el.value || '').trim();
+        var selected = cur;
+        if (!selected) {
+            selected = cicloControlPreferido() || '';
+        } else if (!CC._cicloUserPicked) {
+            // Mantener el valor ya puesto en el combo; no forzar otro ciclo al re-render.
+            selected = cur;
+        }
         el.innerHTML = ciclos.map(function (c) {
             var season = cicloEnTemporadaCaptura(c.codigo);
             var label = (c.codigo ? (c.codigo + ' — ') : '') + (c.nombre || c.codigo);
@@ -3033,6 +3147,7 @@
             return '<option value="' + escapeHtml(c.codigo) + '">' + escapeHtml(label) + '</option>';
         }).join('') || '<option value="">Sin ciclos</option>';
         if (selected) el.value = selected;
+        if (el.value) CC.state.cicloCodigo = el.value;
     }
 
     function applyControlPath(ciclo, emp, cc) {
@@ -3120,6 +3235,8 @@
         var ciclo = val('ctl-ciclo') || cicloControlPreferido();
         if (cicloSel && ciclo) cicloSel.value = ciclo;
         CC.state.cicloCodigo = ciclo || '';
+        // Evita que re-renders posteriores cambien el ciclo sin recargar presupuestos.
+        if (ciclo) CC._cicloUserPicked = true;
         var period = findCiclo(ciclo);
         if (period) {
             CC.state.period = Object.assign({}, CC.state.period, period);
