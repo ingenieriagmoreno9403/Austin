@@ -675,15 +675,19 @@ class ProyeccionesVentasController extends Controller
         $completados = [];
         $costos = [];
         $ajustes = [];
+        $preciosMeses = [];
         if (Schema::hasTable('tbl_pv_proyecciones')) {
             $hasDone = Schema::hasColumn('tbl_pv_proyecciones', 'completado');
-            PvPresupuesto::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (PvPresupuesto $row) use (&$budgets, &$completados, &$costos, &$ajustes, $hasDone) {
+            $hasPrecioMeses = Schema::hasColumn('tbl_pv_proyecciones', 'precio_meses');
+            PvPresupuesto::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (PvPresupuesto $row) use (&$budgets, &$completados, &$costos, &$ajustes, &$preciosMeses, $hasDone, $hasPrecioMeses) {
                 $meses = $row->meses();
                 $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
+                $pm = $hasPrecioMeses ? $row->precioMeses() : array_fill(0, 12, null);
                 foreach ($this->clavesCuentaCaptura($row->empresa, $row->centro_codigo, $row->cuenta_codigo) as $key) {
                     $budgets[$key] = $meses;
                     $costos[$key] = (float) ($row->costo_unitario ?? 0);
                     $ajustes[$key] = (float) ($row->ajuste_pct ?? 0);
+                    $preciosMeses[$key] = $pm;
                     if ($done) {
                         $completados[$key] = true;
                     }
@@ -709,6 +713,7 @@ class ProyeccionesVentasController extends Controller
             'completados' => (object) $completados,
             'costos' => (object) $costos,
             'ajustes' => (object) $ajustes,
+            'preciosMeses' => (object) $preciosMeses,
             'overlays' => (object) $overlays,
         ]);
     }
@@ -731,6 +736,8 @@ class ProyeccionesVentasController extends Controller
             'ajuste_pct' => 'nullable|numeric',
             'costo_unitario' => 'nullable|numeric',
             'moneda' => 'nullable|string|max:8',
+            'precio_meses' => 'nullable|array|size:12',
+            'precio_meses.*' => 'nullable|numeric|min:0',
         ]);
 
         $ciclo = strtoupper(trim($data['ciclo']));
@@ -762,6 +769,9 @@ class ProyeccionesVentasController extends Controller
         if (! empty($data['moneda'])) {
             $row->moneda = strtoupper(trim((string) $data['moneda']));
         }
+        if (array_key_exists('precio_meses', $data) && Schema::hasColumn('tbl_pv_proyecciones', 'precio_meses')) {
+            $row->setPrecioMeses($data['precio_meses']);
+        }
         if (Schema::hasColumn('tbl_pv_proyecciones', 'completado')) {
             $filled = count(array_filter($row->meses(), function ($v) {
                 return $v !== null;
@@ -779,6 +789,7 @@ class ProyeccionesVentasController extends Controller
             'ok' => true,
             'key' => $this->capturaBudgetKey($empresa, $centro, $cuenta),
             'meses' => $row->meses(),
+            'precio_meses' => Schema::hasColumn('tbl_pv_proyecciones', 'precio_meses') ? $row->precioMeses() : array_fill(0, 12, null),
             'completado' => (bool) ($row->completado ?? false),
             'ajuste_pct' => (float) ($row->ajuste_pct ?? 0),
             'costo_unitario' => (float) ($row->costo_unitario ?? 0),

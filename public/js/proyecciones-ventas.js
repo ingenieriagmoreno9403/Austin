@@ -272,6 +272,7 @@
             overlays: {},
             budgets: {},
             completados: {},
+            preciosMeses: {},
             charts: {}
         }
     };
@@ -946,6 +947,54 @@
         });
     }
 
+    function preciosMesesDe(empresa, cc, codigo) {
+        var map = CC.state.preciosMeses || {};
+        var k = budgetKey(empresa, cc, codigo);
+        var arr = map[k];
+        if (!arr) {
+            var needle = String(k).toUpperCase();
+            Object.keys(map).some(function (key) {
+                if (String(key).toUpperCase() === needle) {
+                    arr = map[key];
+                    return true;
+                }
+                return false;
+            });
+        }
+        var out = [];
+        for (var i = 0; i < 12; i++) {
+            var v = arr && arr[i];
+            out.push((v === null || v === undefined || v === '' || !(Number(v) > 0)) ? null : Math.round(Number(v) * 10000) / 10000);
+        }
+        return out;
+    }
+
+    function setPrecioMesesLocal(empresa, cc, codigo, meses) {
+        CC.state.preciosMeses = CC.state.preciosMeses || {};
+        CC.state.preciosMeses[budgetKey(empresa, cc, codigo)] = (meses || []).slice(0, 12);
+    }
+
+    /** Precio unitario efectivo del mes: override o precio de lista global. */
+    function precioUnitarioMes(cta, monthIdx) {
+        var base = Number(cta && cta.precioLista) || 0;
+        var arr = (cta && cta.precioMeses) || [];
+        var v = Number(arr[monthIdx]);
+        if (isFinite(v) && v > 0) return v;
+        return base;
+    }
+
+    function precioMesTieneOverride(cta, monthIdx) {
+        var v = Number((cta && cta.precioMeses && cta.precioMeses[monthIdx]));
+        return isFinite(v) && v > 0;
+    }
+
+    function precioMesesVarian(cta) {
+        for (var i = 0; i < 12; i++) {
+            if (precioMesTieneOverride(cta, i)) return true;
+        }
+        return false;
+    }
+
     function pptoDe(empresa, cc, cuenta, gasto) {
         var key = budgetKey(empresa, cc, cuenta.codigo);
         if (CC.state.budgets[key]) return CC.state.budgets[key].slice();
@@ -993,6 +1042,7 @@
                     meses: months.slice(),
                     completado: done,
                     ajuste_pct: Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0,
+                    precio_meses: preciosMesesDe(empresa, cc, cuenta),
                     costo_unitario: (function () {
                         var list = (control && control._allCtas) || [];
                         for (var j = 0; j < list.length; j++) {
@@ -1007,11 +1057,26 @@
                     CC.state.completados = CC.state.completados || {};
                     if (json.completado) CC.state.completados[key] = true;
                     else delete CC.state.completados[key];
+                    if (json.precio_meses) setPrecioMesesLocal(empresa, cc, cuenta, json.precio_meses);
                 });
             }).catch(function (err) {
                 toast('error', 'No se guardó la proyección', err && err.message ? err.message : 'Error de red');
             });
         }, 350);
+    }
+
+    function persistPrecioMesesProducto(empresa, cc, cuenta, precioMeses) {
+        setPrecioMesesLocal(empresa, cc, cuenta, precioMeses);
+        var months = (CC.state.budgets && CC.state.budgets[budgetKey(empresa, cc, cuenta)])
+            ? CC.state.budgets[budgetKey(empresa, cc, cuenta)].slice()
+            : null;
+        if (!months) {
+            var cta = ((control && control._allCtas) || []).filter(function (x) {
+                return String(x.codigo) === String(cuenta);
+            })[0];
+            months = cta && cta.ppto ? cta.ppto.slice() : [null, null, null, null, null, null, null, null, null, null, null, null];
+        }
+        persistBudget(empresa, cc, cuenta, months);
     }
 
     function persistOverlay(c, patch) {
@@ -1140,6 +1205,7 @@
         CC.state.overlays = {};
         CC.state.budgets = {};
         CC.state.completados = {};
+        CC.state.preciosMeses = {};
         if (!ciclo) {
             CC._capturaReady = true;
             return Promise.resolve();
@@ -1151,6 +1217,7 @@
             CC.state.completados = json.completados || {};
             CC.state.ajustes = json.ajustes || {};
             CC.state.costos = json.costos || {};
+            CC.state.preciosMeses = json.preciosMeses || {};
             CC.state.budgets = {};
             var rawBudgets = json.budgets || {};
             Object.keys(rawBudgets).forEach(function (k) {
@@ -1162,6 +1229,7 @@
             CC.state.overlays = {};
             CC.state.budgets = {};
             CC.state.completados = {};
+            CC.state.preciosMeses = {};
             CC._capturaReady = true;
         });
     }
@@ -1918,6 +1986,126 @@
         }
     }
 
+    function openPrecioMesesModal(codigo) {
+        var c = control.centro;
+        if (!c || !codigo) return;
+        var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
+        if (!cta) {
+            toast('warning', 'Producto', 'No se encontró el producto.');
+            return;
+        }
+        control._precioEditCodigo = String(codigo);
+        selectCuenta(codigo);
+        var sub = document.getElementById('pm-sub');
+        if (sub) sub.textContent = labelNombreCodigo(cta.nombre, cta.codigo);
+        var base = Number(cta.precioLista) || 0;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var baseEl = document.getElementById('pm-base');
+        if (baseEl) baseEl.value = base > 0 ? base.toFixed(4) : '';
+        var baseHint = document.getElementById('pm-base-hint');
+        if (baseHint) {
+            baseHint.textContent = base > 0
+                ? ('Global: ' + moneyLista(base, mon) + (cta.unidad ? ' / ' + cta.unidad : '') + ' · deja vacío un mes para usar este valor')
+                : 'Sin precio de lista; captura un valor base o por mes.';
+        }
+        var box = document.getElementById('pm-months');
+        if (box) {
+            var meses = cta.precioMeses || preciosMesesDe(c.empresa, c.codigo, codigo);
+            box.innerHTML = MONTHS.map(function (m, i) {
+                var ov = Number(meses[i]);
+                var custom = isFinite(ov) && ov > 0;
+                var shown = custom ? ov : base;
+                return '<div class="cc-tc-month' + (custom ? ' is-custom' : '') + '">' +
+                    '<label for="pm-m-' + i + '">' + m + '</label>' +
+                    '<input id="pm-m-' + i + '" type="number" step="0.0001" min="0" placeholder="' +
+                    (base > 0 ? base.toFixed(2) : '0') + '" value="' + (custom ? shown.toFixed(4) : '') + '">' +
+                    '</div>';
+            }).join('');
+        }
+        highlightPrecioMesesEditor();
+        showModal('modalPrecioMeses');
+    }
+
+    function highlightPrecioMesesEditor() {
+        var base = Number(val('pm-base')) || 0;
+        MONTHS.forEach(function (_, i) {
+            var wrap = document.querySelector('#pm-months .cc-tc-month:nth-child(' + (i + 1) + ')');
+            var el = document.getElementById('pm-m-' + i);
+            if (!wrap || !el) return;
+            var raw = String(el.value || '').trim();
+            var v = Number(raw);
+            var custom = raw !== '' && isFinite(v) && v > 0 && Math.abs(v - base) > 0.0001;
+            wrap.classList.toggle('is-custom', custom || (raw !== '' && isFinite(v) && v > 0));
+        });
+    }
+
+    function readPrecioMesesFromEditor() {
+        var out = [];
+        for (var i = 0; i < 12; i++) {
+            var el = document.getElementById('pm-m-' + i);
+            var raw = el ? String(el.value || '').trim() : '';
+            var v = Number(raw);
+            out.push(raw !== '' && isFinite(v) && v > 0 ? Math.round(v * 10000) / 10000 : null);
+        }
+        return out;
+    }
+
+    function bindPrecioMesesUi() {
+        if (CC._precioMesesBound) return;
+        CC._precioMesesBound = true;
+        var applyAll = document.getElementById('pm-apply-all');
+        if (applyAll) applyAll.addEventListener('click', function () {
+            var base = Number(val('pm-base'));
+            if (!(base > 0)) {
+                toast('warning', 'Precio base', 'Captura un precio global válido.');
+                return;
+            }
+            for (var i = 0; i < 12; i++) {
+                var el = document.getElementById('pm-m-' + i);
+                if (el) el.value = '';
+            }
+            highlightPrecioMesesEditor();
+        });
+        var reset = document.getElementById('pm-reset');
+        if (reset) reset.addEventListener('click', function () {
+            for (var i = 0; i < 12; i++) {
+                var el = document.getElementById('pm-m-' + i);
+                if (el) el.value = '';
+            }
+            highlightPrecioMesesEditor();
+        });
+        var save = document.getElementById('pm-save');
+        if (save) save.addEventListener('click', function () {
+            var c = control.centro;
+            var codigo = control._precioEditCodigo || control.cuenta;
+            if (!c || !codigo || control.locked) {
+                toast('warning', 'Sin permiso', 'No se puede editar el precio en este momento.');
+                return;
+            }
+            var meses = readPrecioMesesFromEditor();
+            persistPrecioMesesProducto(c.empresa, c.codigo, codigo, meses);
+            if (control._allCtas) {
+                control._allCtas = cuentasEnriquecidas(c);
+            }
+            updateMatrixRow(codigo);
+            renderControlTable();
+            renderControlCharts();
+            var modal = document.getElementById('modalPrecioMeses');
+            if (modal && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modal).hide();
+            toast('success', 'Precio guardado', precioMesesVarian({ precioMeses: meses, precioLista: Number(val('pm-base')) || 0 })
+                ? 'Hay meses con precio distinto al global'
+                : 'Los 12 meses usan el precio global');
+        });
+        var monthsBox = document.getElementById('pm-months');
+        if (monthsBox) {
+            monthsBox.addEventListener('input', function (ev) {
+                if (ev.target && ev.target.id && ev.target.id.indexOf('pm-m-') === 0) {
+                    highlightPrecioMesesEditor();
+                }
+            });
+        }
+    }
+
     function formatDate(iso) {
         if (!iso) return '—';
         var p = String(iso).split('-');
@@ -2305,6 +2493,7 @@
                 costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
                 precioLista: Number(lista.precio) || 0,
                 precioMoneda: String(lista.moneda || '').toUpperCase() || '',
+                precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
                 unidad: String(lista.unidad || cta.unidad || '').trim(),
                 listaPrecioNombre: lista.lista || ''
             });
@@ -3214,13 +3403,14 @@
         return idx.label + (yy ? ' ’' + yy : '');
     }
 
-    /** Precio de lista (moneda nativa) → monto en la moneda de vista. */
-    function precioListaEnVista(precio, monedaNativa) {
+    /** Precio de lista (moneda nativa) → monto en la moneda de vista. Usa TC del mes si se indica. */
+    function precioListaEnVista(precio, monedaNativa, monthIdx) {
         var amount = Number(precio) || 0;
         var src = String(monedaNativa || 'MXN').toUpperCase();
         var view = isUsdView() ? 'USD' : 'MXN';
         if (src === view) return amount;
-        var tc = fxBaseRate();
+        var tc = fxRate(monthIdx);
+        if (!(tc > 0)) tc = fxBaseRate();
         if (src === 'USD' && view === 'MXN') return amount * tc;
         if (src === 'MXN' && view === 'USD') return tc > 0 ? amount / tc : amount;
         return amount;
@@ -3272,11 +3462,11 @@
         return qty * (mon === 'USD' ? precio * fxRate(i) : precio);
     }
 
-    /** Importe MXN de un mes proyectado: unidades capturadas × precio lista (TC del mes). */
+    /** Importe MXN de un mes proyectado: unidades × precio del mes (override o lista) × TC. */
     function importeMesProyMxn(cta, i) {
         if (!cta || !mesLleno(cta.ppto && cta.ppto[i])) return null;
         var uds = Number(cta.ppto[i]) || 0;
-        var precio = Number(cta.precioLista) || 0;
+        var precio = precioUnitarioMes(cta, i);
         if (!uds) return 0;
         if (!precio) return null;
         var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
@@ -3284,9 +3474,9 @@
         return uds * precioMxn;
     }
 
-    function moneyLista(precio, monedaNativa) {
+    function moneyLista(precio, monedaNativa, monthIdx) {
         var view = isUsdView() ? 'USD' : 'MXN';
-        var val = precioListaEnVista(precio, monedaNativa);
+        var val = precioListaEnVista(precio, monedaNativa, monthIdx);
         return (view === 'USD' ? 'US$' : '$') + val.toLocaleString('es-MX', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
@@ -3330,7 +3520,8 @@
         return {
             precio: Number(cta && cta.precioLista) || 0,
             moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN',
-            unidad: String((cta && cta.unidad) || '').trim()
+            unidad: String((cta && cta.unidad) || '').trim(),
+            porMes: precioMesesVarian(cta)
         };
     }
 
@@ -3354,7 +3545,19 @@
         if (unidad) {
             html += '<div class="cc-price-uom">' + escapeHtml(unidad) + '</div>';
         }
+        if (info.porMes) {
+            html += '<div class="cc-price-src is-custom">por mes</div>';
+        }
         return html;
+    }
+
+    function precioProyeccionCellHtml(cta) {
+        var info = precioProyeccionInfo(cta);
+        return '<button type="button" class="cc-price-edit' + (info.porMes ? ' is-custom' : '') + '" data-edit-precio="' +
+            escapeHtml(cta.codigo) + '" title="Clic para ajustar el precio por mes. El precio global aplica hasta que cambies un mes.">' +
+            precioInfoHtml(info) +
+            '<span class="cc-price-hint">Clic · variar por mes</span>' +
+            '</button>';
     }
 
     function precioUnitarioHtml(cta) {
@@ -3391,9 +3594,12 @@
         ctas = ctas || matrixCtas();
         var anioPast = CC.state.anioGasto || '';
         var semLabel = labelSemestreAnterior();
+        var cur = isUsdView() ? 'USD' : 'MXN';
         var head = '<tr><th class="sticky-col">Producto</th>' +
             '<th class="num">Uds. sem.<span class="cc-th-past">' + escapeHtml(semLabel) + '</span></th>' +
-            '<th class="num">Total uds<span class="cc-th-past">12 meses</span></th><th class="num">Δ%</th>';
+            '<th class="num">Total uds<span class="cc-th-past">12 meses</span></th>' +
+            '<th class="num">Precio<span class="cc-th-past">proy. ' + cur + '</span></th>' +
+            '<th class="num">Δ%</th>';
         MONTHS.forEach(function (m, mi) {
             var tcM = fxRate(mi);
             var base = fxBaseRate();
@@ -3406,7 +3612,7 @@
         head += '</tr>';
         thead.innerHTML = head;
         if (!ctas.length) {
-            tbody.innerHTML = '<tr><td colspan="16"><div class="cc-empty">' +
+            tbody.innerHTML = '<tr><td colspan="17"><div class="cc-empty">' +
                 (control.soloPendientes || control.prodQuery
                     ? 'Sin productos con ese filtro'
                     : 'Este cliente no tiene productos asignados') +
@@ -3425,6 +3631,9 @@
                 var shown = formatInputQty(cta.ppto[i]);
                 var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
                 var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
+                var pMes = precioUnitarioMes(cta, i);
+                var pCustom = precioMesTieneOverride(cta, i);
+                var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
                 cells += '<td class="' + pCls + '">' +
                     '<div class="cc-matrix-month">' +
                         '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
@@ -3435,6 +3644,11 @@
                         (control.locked ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '" title="' +
                         escapeHtml(MONTHS[i] + ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
                             (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
+                        (pCustom
+                            ? ('<div class="cc-month-price-tag is-custom" title="' +
+                                escapeHtml('Precio del mes: ' + moneyLista(pMes, mon, i) + ' · TC ' + fxRate(i).toFixed(2)) + '">' +
+                                escapeHtml(moneyLista(pMes, mon, i)) + '</div>')
+                            : '') +
                     '</div>' +
                     '</td>';
             }
@@ -3459,6 +3673,7 @@
                             (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
                         : '<span class="cc-price-empty">—</span>') +
                 '</td>' +
+                '<td class="num cc-price-cell" data-precio-unit>' + precioProyeccionCellHtml(cta) + '</td>' +
                 '<td class="num ' + dCls + '" data-delta>' + (cta.totP || done ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>' +
                 cells +
                 '</tr>';
@@ -3468,6 +3683,13 @@
             btn.addEventListener('click', function (ev) {
                 ev.preventDefault();
                 selectCuenta(btn.getAttribute('data-pick-cta'));
+            });
+        });
+        tbody.querySelectorAll('[data-edit-precio]').forEach(function (btn) {
+            btn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                openPrecioMesesModal(btn.getAttribute('data-edit-precio'));
             });
         });
         tbody.querySelectorAll('input[data-m]').forEach(function (inp) {
@@ -3529,6 +3751,7 @@
         row.classList.toggle('is-done', done);
         row.classList.toggle('is-on', String(control.cuenta || '') === String(codigo));
         var udsTotal = row.querySelector('[data-uds-total]');
+        var precioCell = row.querySelector('[data-precio-unit]');
         var delta = row.querySelector('[data-delta]');
         var status = row.querySelector('.cc-matrix-status');
         if (udsTotal) {
@@ -3537,6 +3760,17 @@
                 ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsAnio)) + '</div>' +
                     (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
                 : '<span class="cc-price-empty">—</span>';
+        }
+        if (precioCell) precioCell.innerHTML = precioProyeccionCellHtml(cta);
+        if (precioCell) {
+            var editBtn = precioCell.querySelector('[data-edit-precio]');
+            if (editBtn) {
+                editBtn.addEventListener('click', function (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    openPrecioMesesModal(editBtn.getAttribute('data-edit-precio'));
+                });
+            }
         }
         if (delta) {
             delta.className = 'num ' + dCls;
@@ -3551,7 +3785,27 @@
             if (String(inp.value) !== shown) inp.value = shown;
             inp.classList.toggle('is-neg', (Number(shown) || 0) < 0);
             var td = inp.closest('td');
-            if (td) td.className = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
+            if (td) {
+                td.className = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
+                var wrap = td.querySelector('.cc-matrix-month');
+                if (wrap) {
+                    var tag = wrap.querySelector('.cc-month-price-tag');
+                    var pMes = precioUnitarioMes(cta, i);
+                    var pCustom = precioMesTieneOverride(cta, i);
+                    var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+                    if (pCustom && pMes) {
+                        if (!tag) {
+                            tag = document.createElement('div');
+                            wrap.appendChild(tag);
+                        }
+                        tag.className = 'cc-month-price-tag is-custom';
+                        tag.textContent = moneyLista(pMes, mon, i);
+                        tag.title = 'Precio del mes: ' + moneyLista(pMes, mon, i) + ' · TC ' + fxRate(i).toFixed(2);
+                    } else if (tag) {
+                        tag.remove();
+                    }
+                }
+            }
         }
         updateFormTotalsCliente(statsDeCentro(c));
         paintFormEstadoCliente(statsDeCentro(c));
@@ -5038,6 +5292,7 @@
             flag.className = 'cc-sap-flag' + (CC.state.sapOk && (boot.centros || []).length ? '' : ' off');
         }
         bindTcMesesUi();
+        bindPrecioMesesUi();
         if (CC.state.page === 'admin') CC.initCiclos();
         if (CC.state.page === 'admin-ciclo' || CC.state.page === 'asignacion') {
             renderPeriodBanner();

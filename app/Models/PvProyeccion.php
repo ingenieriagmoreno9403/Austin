@@ -27,6 +27,7 @@ class PvProyeccion extends Model
         'mes_11',
         'mes_12',
         'costo_unitario',
+        'precio_meses',
         'moneda',
         'ajuste_pct',
         'completado',
@@ -37,6 +38,7 @@ class PvProyeccion extends Model
         'completado' => 'boolean',
         'costo_unitario' => 'float',
         'ajuste_pct' => 'float',
+        'precio_meses' => 'array',
     ];
 
     public function getCentroCodigoAttribute()
@@ -98,5 +100,51 @@ class PvProyeccion extends Model
                 $this->{$col} = round((float) $raw, 4);
             }
         }
+    }
+
+    /**
+     * Precio unitario por mes (null = usar precio de lista global).
+     *
+     * @return array<int, float|null>
+     */
+    public function precioMeses(): array
+    {
+        $src = is_array($this->precio_meses) ? array_values($this->precio_meses) : [];
+        $out = [];
+        for ($i = 0; $i < 12; $i++) {
+            $raw = $src[$i] ?? null;
+            if ($raw === null || $raw === '') {
+                $out[] = null;
+            } else {
+                $v = (float) $raw;
+                $out[] = $v > 0 ? round($v, 4) : null;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array<int, mixed>|null  $meses
+     */
+    public function setPrecioMeses($meses): void
+    {
+        if ($meses === null) {
+            $this->precio_meses = null;
+
+            return;
+        }
+        $src = is_array($meses) ? array_values($meses) : [];
+        $out = [];
+        for ($i = 0; $i < 12; $i++) {
+            $raw = $src[$i] ?? null;
+            if ($raw === null || $raw === '') {
+                $out[] = null;
+            } else {
+                $v = (float) $raw;
+                $out[] = $v > 0 ? round($v, 4) : null;
+            }
+        }
+        $this->precio_meses = $out;
     }
 }

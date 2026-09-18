@@ -3366,6 +3366,48 @@
 }
 .cc-vp-total .sticky-col { background: #f4f4f5; }
 
+.cc-price-edit {
+    display: block;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    text-align: right;
+    cursor: pointer;
+}
+.cc-price-edit:hover .cc-price-amt {
+    text-decoration: underline;
+}
+.cc-price-edit.is-custom .cc-price-amt {
+    color: #b45309;
+}
+.cc-price-hint {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.58rem;
+    font-weight: 650;
+    letter-spacing: .02em;
+    text-transform: uppercase;
+    color: #a1a1aa;
+}
+.cc-price-src.is-custom {
+    color: #b45309;
+    font-weight: 700;
+}
+.cc-month-price-tag {
+    font-size: 0.58rem;
+    font-weight: 650;
+    line-height: 1.1;
+    color: #a1a1aa;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    text-align: center;
+}
+.cc-month-price-tag.is-custom {
+    color: #b45309;
+    font-weight: 750;
+}
+
 /* API wait overlay */
 body.cc-api-waiting {
     cursor: wait;
