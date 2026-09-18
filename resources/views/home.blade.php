@@ -376,6 +376,8 @@
     $nombreCorto = auth()->user()->name ? explode(' ', auth()->user()->name)[0] : '';
     $cc = $resumenCentros ?? [];
     $pv = $resumenPv ?? [];
+    $ccAcceso = $ccAcceso ?? [];
+    $pvAcceso = $pvAcceso ?? [];
     $mm = $datosMantenimientoMaquinas ?? [];
 @endphp
 
@@ -392,6 +394,7 @@
     </header>
 
     @if(auth()->user()->tipo != 'alumno' && auth()->user()->tipo != 'empresa')
+    @if(!empty($ccAcceso['ver']))
     <section class="home-block home-panel" aria-label="Centros de costos">
         <div class="home-row">
             <h2>{{ $cc['nombre'] ?? 'Centros de costos' }}</h2>
@@ -422,10 +425,18 @@
         </dl>
 
         <nav class="home-nav">
+            @if(!empty($ccAcceso['captura']))
             <a href="{{ route('centros.control') }}">Captura</a>
+            @endif
+            @if(!empty($ccAcceso['visor']))
             <a href="{{ route('centros.control', ['vista' => 'visor']) }}">Visor</a>
+            @endif
+            @if(!empty($ccAcceso['analisis']))
             <a href="{{ route('centros.analisis') }}">Análisis</a>
+            @endif
+            @if(!empty($ccAcceso['admin']))
             <a href="{{ route('centros.admin') }}">Budgets</a>
+            @endif
         </nav>
 
         <p class="home-note">
@@ -445,7 +456,9 @@
             @endif
         </p>
     </section>
+    @endif
 
+    @if(!empty($pvAcceso['ver']))
     <section class="home-block home-panel" aria-label="Proyecciones de ventas">
         <div class="home-row">
             <h2>{{ $pv['nombre'] ?? 'Proyecciones de ventas' }}</h2>
@@ -476,10 +489,18 @@
         </dl>
 
         <nav class="home-nav">
+            @if(!empty($pvAcceso['captura']))
             <a href="{{ route('pv.control') }}">Captura</a>
+            @endif
+            @if(!empty($pvAcceso['visor']))
             <a href="{{ route('pv.control', ['vista' => 'visor']) }}">Visor</a>
+            @endif
+            @if(!empty($pvAcceso['analisis']))
             <a href="{{ route('pv.analisis') }}">Análisis</a>
+            @endif
+            @if(!empty($pvAcceso['admin']))
             <a href="{{ route('pv.admin') }}">Asignaciones</a>
+            @endif
         </nav>
 
         <p class="home-note">
@@ -499,6 +520,7 @@
             @endif
         </p>
     </section>
+    @endif
         <div>
             <div class="home-cal-head">
                 <h2>Mantenimiento</h2>

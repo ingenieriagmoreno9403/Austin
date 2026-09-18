@@ -50,9 +50,11 @@
                 <button type="button" class="cc-btn" onclick="CC.showModal('modalPeriodo')">
                     <i class="fa-solid fa-pen"></i> Editar
                 </button>
+                @if(!empty($modPermisos['eliminarCiclo']))
                 <button type="button" class="cc-btn cc-btn-danger" id="btn-eliminar-ciclo">
                     <i class="fa-solid fa-trash"></i> Eliminar
                 </button>
+                @endif
             </div>
         </div>
     </div>

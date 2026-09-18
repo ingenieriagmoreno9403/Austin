@@ -31,12 +31,16 @@
     </div>
 
     <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
+        @if(!empty($modPermisos['captura']))
         <button type="button" class="is-active" data-vista="captura">
             <i class="fa-solid fa-pen-to-square me-1"></i> Captura de presupuestos
         </button>
+        @endif
+        @if(!empty($modPermisos['visor']))
         <button type="button" data-vista="visor">
             <i class="fa-solid fa-table me-1"></i> Visor de centros
         </button>
+        @endif
     </nav>
 
     <div id="ctl-empty" class="cc-panel" hidden>

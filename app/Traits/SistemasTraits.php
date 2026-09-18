@@ -95,6 +95,39 @@ trait SistemasTraits{
         return $permisos;
     }
 
+    public function tieneAccion(string $permisobuscado): bool
+    {
+        return $this->forpermisos($permisobuscado) === $permisobuscado;
+    }
+
+    protected function esAdminErp(): bool
+    {
+        $usuario = auth()->user();
+        if (!$usuario) {
+            return false;
+        }
+
+        return strtolower((string) ($usuario->tipo ?? '')) === 'master'
+            && (int) ($usuario->id_empresa ?? 0) === 0;
+    }
+
+    protected function requireAccion(string $permisobuscado, string $mensaje = 'No tiene permiso para esta acción.'): void
+    {
+        if (!$this->tieneAccion($permisobuscado)) {
+            abort(403, $mensaje);
+        }
+    }
+
+    protected function requireAlgunaAccion(array $acciones, string $mensaje = 'No tiene permiso para esta pantalla.'): void
+    {
+        foreach ($acciones as $accion) {
+            if ($this->tieneAccion($accion)) {
+                return;
+            }
+        }
+        abort(403, $mensaje);
+    }
+
     public function forpermisoconid(string $permisobuscado){
         $idusuario=auth()->user()->id;
         $permisos = $this->obtener_permisosxusuario($idusuario);  

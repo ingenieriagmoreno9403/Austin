@@ -102,8 +102,10 @@ class HomeController extends Controller
             }
 
             $datosMantenimientoMaquinas = $this->obtenerDatosCalendarioMantenimiento();
-            $resumenCentros = $this->obtenerResumenCentrosHome();
-            $resumenPv = $this->obtenerResumenPvHome();
+            $ccAcceso = $this->accesoHomeCentros();
+            $pvAcceso = $this->accesoHomeProyecciones();
+            $resumenCentros = !empty($ccAcceso['ver']) ? $this->obtenerResumenCentrosHome() : [];
+            $resumenPv = !empty($pvAcceso['ver']) ? $this->obtenerResumenPvHome() : [];
 
             if(auth()->user()->tipo != "ext"){
             
@@ -121,7 +123,9 @@ class HomeController extends Controller
                     'visitasEmpresasCalendario',
                     'datosMantenimientoMaquinas',
                     'resumenCentros',
-                    'resumenPv'
+                    'resumenPv',
+                    'ccAcceso',
+                    'pvAcceso'
                 ));
             }else{
                 return redirect()->route('ext_licitaciones');
@@ -633,6 +637,78 @@ class HomeController extends Controller
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
         }
+    }
+
+    /**
+     * Botones del home de presupuesto (Captura, Visor, Análisis, Budgets).
+     *
+     * @return array<string, bool>
+     */
+    private function accesoHomeCentros(): array
+    {
+        if ($this->esAdminErp()) {
+            return [
+                'captura' => true,
+                'visor' => true,
+                'analisis' => true,
+                'admin' => true,
+                'ver' => true,
+            ];
+        }
+        $captura = $this->tieneAccion('ver_control_costos') || $this->usuarioAsignadoCentros();
+        $visor = $this->tieneAccion('visor_centros');
+        $analisis = $this->tieneAccion('ver_analisis_centros');
+        $admin = $this->tieneAccion('ver_admin_centro_costos');
+
+        return [
+            'captura' => $captura,
+            'visor' => $visor,
+            'analisis' => $analisis,
+            'admin' => $admin,
+            'ver' => $captura || $visor || $analisis || $admin,
+        ];
+    }
+
+    /**
+     * Botones del home de proyecciones (Captura, Visor, Análisis, Asignaciones).
+     *
+     * @return array<string, bool>
+     */
+    private function accesoHomeProyecciones(): array
+    {
+        if ($this->esAdminErp()) {
+            return [
+                'captura' => true,
+                'visor' => true,
+                'analisis' => true,
+                'admin' => true,
+                'ver' => true,
+            ];
+        }
+        $captura = $this->tieneAccion('ver_ventas_capturas') || $this->usuarioAsignadoProyecciones();
+        $visor = $this->tieneAccion('visor_ventas');
+        $analisis = $this->tieneAccion('ver_ventas_analisis');
+        $admin = $this->tieneAccion('ver_ventas_asignaciones');
+
+        return [
+            'captura' => $captura,
+            'visor' => $visor,
+            'analisis' => $analisis,
+            'admin' => $admin,
+            'ver' => $captura || $visor || $analisis || $admin,
+        ];
+    }
+
+    private function usuarioAsignadoCentros(): bool
+    {
+        return Schema::hasTable('tbl_cc_asignaciones')
+            && CcAsignacion::query()->where('user_id', auth()->id())->exists();
+    }
+
+    private function usuarioAsignadoProyecciones(): bool
+    {
+        return Schema::hasTable('tbl_pv_asignaciones')
+            && PvAsignacion::query()->where('user_id', auth()->id())->exists();
     }
 
     /**

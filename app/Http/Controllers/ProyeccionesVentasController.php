@@ -15,6 +15,7 @@ use App\Models\Empresas;
 use App\Models\User;
 use App\Services\AutinApiClient;
 use App\Traits\MenuTrait;
+use App\Traits\SistemasTraits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -30,12 +31,16 @@ use Throwable;
 class ProyeccionesVentasController extends Controller
 {
     use MenuTrait;
+    use SistemasTraits;
 
     /** @var array<string, bool> */
     protected $pvUserPermCache = [];
 
     /** @var array<string, string> */
     protected $pvCicloEstadoCache = [];
+
+    /** @var array<string, bool>|null */
+    protected $moduloPermisosCache;
 
     public function __construct()
     {
@@ -57,11 +62,13 @@ class ProyeccionesVentasController extends Controller
 
     public function control(Request $request)
     {
+        $vista = $this->vistaControlInicial((string) $request->get('vista', ''));
+
         return $this->page('control', 'ProyeccionesVentas.control', [
             'centroInicial' => (string) $request->get('cc', ''),
             'empresaInicial' => (string) $request->get('empresa', ''),
             'cicloInicial' => (string) $request->get('ciclo', ''),
-            'vistaInicial' => (string) $request->get('vista', ''),
+            'vistaInicial' => $vista,
             'detalleUrl' => route('pv.detalle'),
             'misAsignaciones' => $this->misAsignacionesList(''),
         ]);
@@ -91,6 +98,7 @@ class ProyeccionesVentasController extends Controller
 
     public function storeCiclo(Request $request): JsonResponse
     {
+        $this->requireAccion('ver_ventas_asignaciones', 'No tiene permiso para administrar asignaciones.');
         if (! Schema::hasTable('tbl_pv_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
@@ -139,6 +147,7 @@ class ProyeccionesVentasController extends Controller
 
     public function updateCicloEstado(Request $request, string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_ventas_asignaciones', 'No tiene permiso para administrar asignaciones.');
         if (! Schema::hasTable('tbl_pv_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
@@ -164,6 +173,7 @@ class ProyeccionesVentasController extends Controller
 
     public function destroyCiclo(string $ciclo): JsonResponse
     {
+        $this->requireAccion('eliminar_ciclo_ventas', 'No tiene permiso para eliminar la proyección.');
         if (! Schema::hasTable('tbl_pv_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
@@ -302,6 +312,7 @@ class ProyeccionesVentasController extends Controller
 
     public function listAsignaciones(string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_ventas_asignaciones', 'No tiene permiso para administrar asignaciones.');
         if (! Schema::hasTable('tbl_pv_asignaciones')) {
             return response()->json(['asignaciones' => []]);
         }
@@ -326,6 +337,7 @@ class ProyeccionesVentasController extends Controller
 
     public function storeAsignacion(Request $request, string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_ventas_asignaciones', 'No tiene permiso para administrar asignaciones.');
         if (! Schema::hasTable('tbl_pv_asignaciones')) {
             return response()->json(['message' => 'Falta ejecutar migraciones de asignaciones.'], 422);
         }
@@ -372,6 +384,7 @@ class ProyeccionesVentasController extends Controller
 
     public function updateAsignacion(Request $request, string $ciclo, int $id): JsonResponse
     {
+        $this->requireAccion('ver_ventas_asignaciones', 'No tiene permiso para administrar asignaciones.');
         $asig = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
             ->where('ciclo_codigo', $ciclo)
             ->where('id', $id)
@@ -413,6 +426,7 @@ class ProyeccionesVentasController extends Controller
 
     public function destroyAsignacion(string $ciclo, int $id): JsonResponse
     {
+        $this->requireAccion('ver_ventas_asignaciones', 'No tiene permiso para administrar asignaciones.');
         $asig = PvAsignacion::query()->where('ciclo_codigo', $ciclo)->where('id', $id)->first();
         if (! $asig) {
             return response()->json(['message' => 'Asignación no encontrada'], 404);
@@ -438,11 +452,13 @@ class ProyeccionesVentasController extends Controller
 
     public function listImportarUsuarios(string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_ventas_asignaciones', 'No tiene permiso para administrar asignaciones.');
         return response()->json(['usuarios' => $this->importarUsuariosPayload($ciclo)]);
     }
 
     public function syncImportarUsuarios(Request $request, string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_ventas_asignaciones', 'No tiene permiso para administrar asignaciones.');
         $data = $request->validate([
             'user_ids' => 'array',
             'user_ids.*' => 'integer|exists:users,id',
@@ -1375,11 +1391,92 @@ class ProyeccionesVentasController extends Controller
      */
     protected function page(string $ccPage, string $view, array $extra = [])
     {
+        $modPermisos = $this->moduloPermisos();
+        $this->assertPaginaModulo($ccPage, $modPermisos);
+
         $varpantallas = $this->Traermenuenc();
         $varsubmenus = $this->Traermenudet();
-        $bootstrap = array_merge($this->bootstrap(), $extra);
+        $bootstrap = array_merge($this->bootstrap(), $extra, ['permisos' => $modPermisos]);
 
-        return view($view, compact('varpantallas', 'varsubmenus', 'ccPage', 'bootstrap'));
+        return view($view, compact('varpantallas', 'varsubmenus', 'ccPage', 'bootstrap', 'modPermisos'));
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    protected function moduloPermisos(): array
+    {
+        if (is_array($this->moduloPermisosCache)) {
+            return $this->moduloPermisosCache;
+        }
+
+        if ($this->esAdminErp()) {
+            $this->moduloPermisosCache = [
+                'captura' => true,
+                'visor' => true,
+                'analisis' => true,
+                'admin' => true,
+                'eliminarCiclo' => true,
+            ];
+
+            return $this->moduloPermisosCache;
+        }
+
+        $captura = $this->tieneAccion('ver_ventas_capturas') || $this->usuarioAsignadoModulo();
+        $visor = $this->tieneAccion('visor_ventas');
+        $analisis = $this->tieneAccion('ver_ventas_analisis');
+        $admin = $this->tieneAccion('ver_ventas_asignaciones');
+        $eliminarCiclo = $this->tieneAccion('eliminar_ciclo_ventas');
+
+        $this->moduloPermisosCache = [
+            'captura' => $captura,
+            'visor' => $visor,
+            'analisis' => $analisis,
+            'admin' => $admin,
+            'eliminarCiclo' => $eliminarCiclo,
+        ];
+
+        return $this->moduloPermisosCache;
+    }
+
+    /**
+     * @param  array<string, bool>  $permisos
+     */
+    protected function assertPaginaModulo(string $page, array $permisos): void
+    {
+        $ok = false;
+        if (in_array($page, ['admin', 'admin-ciclo', 'asignacion'], true)) {
+            $ok = !empty($permisos['admin']);
+        } elseif ($page === 'control') {
+            $ok = !empty($permisos['captura']) || !empty($permisos['visor']);
+        } elseif ($page === 'analisis') {
+            $ok = !empty($permisos['analisis']);
+        } elseif ($page === 'detalle') {
+            $ok = !empty($permisos['captura']) || !empty($permisos['visor']) || !empty($permisos['analisis']);
+        }
+
+        if (!$ok) {
+            abort(403, 'No tiene permiso para esta pantalla.');
+        }
+    }
+
+    protected function vistaControlInicial(string $vista): string
+    {
+        $permisos = $this->moduloPermisos();
+        if ($vista === 'visor' && empty($permisos['visor'])) {
+            $vista = '';
+        }
+        if ($vista !== 'visor' && empty($permisos['captura']) && !empty($permisos['visor'])) {
+            return 'visor';
+        }
+
+        return $vista === 'visor' ? 'visor' : '';
+    }
+
+    protected function usuarioAsignadoModulo(): bool
+    {
+        return Schema::hasTable('tbl_pv_asignaciones')
+            && PvAsignacion::query()->where('user_id', auth()->id())->exists();
     }
 
     /**

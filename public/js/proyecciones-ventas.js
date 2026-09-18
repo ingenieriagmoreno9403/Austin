@@ -934,7 +934,7 @@
                 '<div class="actions">' +
                     '<span class="cc-ciclo-load">' + resumenCargaCiclo(c) + '</span>' +
                     '<span style="display:flex;gap:.4rem">' +
-                    '<button type="button" class="cc-btn cc-btn-danger" data-del-ciclo="' + escapeHtml(c.codigo) + '">Eliminar</button>' +
+                    (puede('eliminarCiclo') ? '<button type="button" class="cc-btn cc-btn-danger" data-del-ciclo="' + escapeHtml(c.codigo) + '">Eliminar</button>' : '') +
                     '<a class="cc-btn cc-btn-ink" href="' + cicloUrl(c.codigo) + '">Abrir</a>' +
                     '</span></div></article>';
         }).join('');
@@ -1115,6 +1115,10 @@
     }
 
     CC.eliminarCiclo = function (codigo) {
+        if (!puede('eliminarCiclo')) {
+            toast('error', 'Sin permiso', 'No tiene permiso para eliminar la proyección.');
+            return;
+        }
         var c = findCiclo(codigo) || { codigo: codigo, nombre: codigo, asignaciones: 0, cuentas: 0, usuarios: 0, centros: 0 };
         var go = function () {
             return fetch('/ProyeccionesVentas/api/ciclos/' + encodeURIComponent(c.codigo), {
@@ -2065,7 +2069,7 @@
             loadControlCentro();
             fillVisorFilters();
             renderVisorTable();
-            setVista(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura');
+            setVista(vistaControlPermitida(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura'));
         });
     };
 
@@ -2800,6 +2804,7 @@
     }
 
     function setVista(name) {
+        name = vistaControlPermitida(name);
         if (name !== 'captura' && name !== 'visor') name = 'captura';
         control.vista = name;
         var cap = document.getElementById('vista-captura');
@@ -3737,8 +3742,22 @@
 
     CC.showModal = showModal;
 
+    function puede(clave) {
+        var p = (CC.state && CC.state.permisos) || {};
+        if (!Object.prototype.hasOwnProperty.call(p, clave)) return true;
+        return !!p[clave];
+    }
+
+    function vistaControlPermitida(prefer) {
+        var wantVisor = prefer === 'visor';
+        if (wantVisor && !puede('visor')) wantVisor = false;
+        if (!wantVisor && !puede('captura') && puede('visor')) wantVisor = true;
+        return wantVisor ? 'visor' : 'captura';
+    }
+
     CC.boot = function (boot) {
         CC.state.page = boot.page;
+        CC.state.permisos = boot.permisos || {};
         CC.state.anioGasto = boot.anioGasto || 2026;
         CC.state.anioPresupuesto = boot.anioPresupuesto || 2027;
         CC.state.usuarios = boot.usuarios || [];

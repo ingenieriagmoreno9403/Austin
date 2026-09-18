@@ -15,7 +15,9 @@
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
             <select id="an-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
-            <a class="cc-btn" href="{{ route('centros.control', ['vista' => 'visor']) }}"><i class="fa-solid fa-pen-to-square"></i> Ir a captura</a>
+            @if(!empty($modPermisos['captura']) || !empty($modPermisos['visor']))
+            <a class="cc-btn" href="{{ route('centros.control', ['vista' => !empty($modPermisos['visor']) ? 'visor' : '']) }}"><i class="fa-solid fa-pen-to-square"></i> Ir a captura</a>
+            @endif
         </div>
     </div>
 

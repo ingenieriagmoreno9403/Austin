@@ -17,6 +17,7 @@ use App\Models\Empresas;
 use App\Models\User;
 use App\Services\AutinApiClient;
 use App\Traits\MenuTrait;
+use App\Traits\SistemasTraits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -33,12 +34,16 @@ use Throwable;
 class CentrosCostosController extends Controller
 {
     use MenuTrait;
+    use SistemasTraits;
 
     /** @var array<string, bool> */
     protected $ccUserPermCache = [];
 
     /** @var array<string, string> */
     protected $ccCicloEstadoCache = [];
+
+    /** @var array<string, bool>|null */
+    protected $moduloPermisosCache;
 
     public function __construct()
     {
@@ -60,11 +65,13 @@ class CentrosCostosController extends Controller
 
     public function control(Request $request)
     {
+        $vista = $this->vistaControlInicial((string) $request->get('vista', ''));
+
         return $this->page('control', 'CentrosCostos.control', [
             'centroInicial' => (string) $request->get('cc', ''),
             'empresaInicial' => (string) $request->get('empresa', ''),
             'cicloInicial' => (string) $request->get('ciclo', ''),
-            'vistaInicial' => (string) $request->get('vista', ''),
+            'vistaInicial' => $vista,
             'detalleUrl' => route('centros.detalle'),
             'misAsignaciones' => $this->misAsignacionesList(''),
         ]);
@@ -99,6 +106,7 @@ class CentrosCostosController extends Controller
 
     public function storeCiclo(Request $request): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         if (! Schema::hasTable('tbl_cc_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
@@ -149,6 +157,7 @@ class CentrosCostosController extends Controller
 
     public function updateCicloEstado(Request $request, string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         if (! Schema::hasTable('tbl_cc_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
@@ -174,6 +183,7 @@ class CentrosCostosController extends Controller
 
     public function destroyCiclo(string $ciclo): JsonResponse
     {
+        $this->requireAccion('eliminar_ciclo_centros', 'No tiene permiso para eliminar el presupuesto.');
         if (! Schema::hasTable('tbl_cc_ciclos')) {
             return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
         }
@@ -330,6 +340,7 @@ class CentrosCostosController extends Controller
 
     public function storeGrupo(Request $request): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         if (! Schema::hasTable('tbl_cc_grupos_cuenta')) {
             return response()->json(['message' => 'Falta ejecutar la migración de grupos de cuentas.'], 422);
         }
@@ -381,6 +392,7 @@ class CentrosCostosController extends Controller
 
     public function updateGrupo(Request $request, int $id): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         $grupo = CcGrupoCuenta::query()->with('cuentas')->find($id);
         if (! $grupo) {
             return response()->json(['message' => 'Grupo no encontrado.'], 404);
@@ -422,6 +434,7 @@ class CentrosCostosController extends Controller
 
     public function destroyGrupo(int $id): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         $grupo = CcGrupoCuenta::query()->find($id);
         if (! $grupo) {
             return response()->json(['message' => 'Grupo no encontrado.'], 404);
@@ -437,6 +450,7 @@ class CentrosCostosController extends Controller
 
     public function listAsignaciones(string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         if (! Schema::hasTable('tbl_cc_asignaciones')) {
             return response()->json(['asignaciones' => []]);
         }
@@ -461,6 +475,7 @@ class CentrosCostosController extends Controller
 
     public function storeAsignacion(Request $request, string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         if (! Schema::hasTable('tbl_cc_asignaciones')) {
             return response()->json(['message' => 'Falta ejecutar migraciones de asignaciones.'], 422);
         }
@@ -507,6 +522,7 @@ class CentrosCostosController extends Controller
 
     public function updateAsignacion(Request $request, string $ciclo, int $id): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         $asig = CcAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
             ->where('ciclo_codigo', $ciclo)
             ->where('id', $id)
@@ -548,6 +564,7 @@ class CentrosCostosController extends Controller
 
     public function destroyAsignacion(string $ciclo, int $id): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         $asig = CcAsignacion::query()->where('ciclo_codigo', $ciclo)->where('id', $id)->first();
         if (! $asig) {
             return response()->json(['message' => 'Asignación no encontrada'], 404);
@@ -573,11 +590,13 @@ class CentrosCostosController extends Controller
 
     public function listImportarUsuarios(string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         return response()->json(['usuarios' => $this->importarUsuariosPayload($ciclo)]);
     }
 
     public function syncImportarUsuarios(Request $request, string $ciclo): JsonResponse
     {
+        $this->requireAccion('ver_admin_centro_costos', 'No tiene permiso para administrar budgets.');
         $data = $request->validate([
             'user_ids' => 'array',
             'user_ids.*' => 'integer|exists:users,id',
@@ -1447,11 +1466,92 @@ class CentrosCostosController extends Controller
      */
     protected function page(string $ccPage, string $view, array $extra = [])
     {
+        $modPermisos = $this->moduloPermisos();
+        $this->assertPaginaModulo($ccPage, $modPermisos);
+
         $varpantallas = $this->Traermenuenc();
         $varsubmenus = $this->Traermenudet();
-        $bootstrap = array_merge($this->bootstrap(), $extra);
+        $bootstrap = array_merge($this->bootstrap(), $extra, ['permisos' => $modPermisos]);
 
-        return view($view, compact('varpantallas', 'varsubmenus', 'ccPage', 'bootstrap'));
+        return view($view, compact('varpantallas', 'varsubmenus', 'ccPage', 'bootstrap', 'modPermisos'));
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    protected function moduloPermisos(): array
+    {
+        if (is_array($this->moduloPermisosCache)) {
+            return $this->moduloPermisosCache;
+        }
+
+        if ($this->esAdminErp()) {
+            $this->moduloPermisosCache = [
+                'captura' => true,
+                'visor' => true,
+                'analisis' => true,
+                'admin' => true,
+                'eliminarCiclo' => true,
+            ];
+
+            return $this->moduloPermisosCache;
+        }
+
+        $captura = $this->tieneAccion('ver_control_costos') || $this->usuarioAsignadoModulo();
+        $visor = $this->tieneAccion('visor_centros');
+        $analisis = $this->tieneAccion('ver_analisis_centros');
+        $admin = $this->tieneAccion('ver_admin_centro_costos');
+        $eliminarCiclo = $this->tieneAccion('eliminar_ciclo_centros');
+
+        $this->moduloPermisosCache = [
+            'captura' => $captura,
+            'visor' => $visor,
+            'analisis' => $analisis,
+            'admin' => $admin,
+            'eliminarCiclo' => $eliminarCiclo,
+        ];
+
+        return $this->moduloPermisosCache;
+    }
+
+    /**
+     * @param  array<string, bool>  $permisos
+     */
+    protected function assertPaginaModulo(string $page, array $permisos): void
+    {
+        $ok = false;
+        if (in_array($page, ['admin', 'admin-ciclo', 'asignacion', 'grupos'], true)) {
+            $ok = !empty($permisos['admin']);
+        } elseif ($page === 'control') {
+            $ok = !empty($permisos['captura']) || !empty($permisos['visor']);
+        } elseif ($page === 'analisis') {
+            $ok = !empty($permisos['analisis']);
+        } elseif ($page === 'detalle') {
+            $ok = !empty($permisos['captura']) || !empty($permisos['visor']) || !empty($permisos['analisis']);
+        }
+
+        if (!$ok) {
+            abort(403, 'No tiene permiso para esta pantalla.');
+        }
+    }
+
+    protected function vistaControlInicial(string $vista): string
+    {
+        $permisos = $this->moduloPermisos();
+        if ($vista === 'visor' && empty($permisos['visor'])) {
+            $vista = '';
+        }
+        if ($vista !== 'visor' && empty($permisos['captura']) && !empty($permisos['visor'])) {
+            return 'visor';
+        }
+
+        return $vista === 'visor' ? 'visor' : '';
+    }
+
+    protected function usuarioAsignadoModulo(): bool
+    {
+        return Schema::hasTable('tbl_cc_asignaciones')
+            && CcAsignacion::query()->where('user_id', auth()->id())->exists();
     }
 
     /**
