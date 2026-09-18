@@ -19,6 +19,7 @@ class PvCiclo extends Model
         'revision_desde',
         'estado',
         'tipo_cambio',
+        'tipo_cambio_meses',
         'observaciones',
         'created_by',
         'updated_by',
@@ -32,6 +33,7 @@ class PvCiclo extends Model
         'captura_hasta' => 'date',
         'revision_desde' => 'date',
         'tipo_cambio' => 'float',
+        'tipo_cambio_meses' => 'array',
     ];
 
     public function asignaciones()

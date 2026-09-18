@@ -198,7 +198,7 @@
                             </div>
                             <div class="cc-matrix-fx">
                                 <span class="cc-fx-badge" id="ctl-fx-badge">Vista MXN · TC —</span>
-                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Los cambios se guardan al salir de cada celda.</small>
+                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
                             </div>
                         </div>
                         <div class="cc-matrix-wrap">

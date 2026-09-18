@@ -106,13 +106,15 @@ class ProyeccionesVentasController extends Controller
             'revisionDesde' => 'nullable|date',
             'estado' => 'nullable|in:abierto,en_revision,cerrado,en_proceso,terminado',
             'tipoCambio' => 'nullable|numeric',
+            'tipoCambioMeses' => 'nullable|array|size:12',
+            'tipoCambioMeses.*' => 'nullable|numeric|min:0',
             'observaciones' => 'nullable|string',
         ]);
 
         $codigo = strtoupper(trim($data['codigo']));
         $ciclo = PvCiclo::query()->firstOrNew(['codigo' => $codigo]);
         $nuevo = ! $ciclo->exists;
-        $ciclo->fill([
+        $fill = [
             'nombre' => $data['nombre'],
             'anio_referencia' => $data['anioReferencia'],
             'anio_presupuesto' => $data['anio'],
@@ -124,7 +126,14 @@ class ProyeccionesVentasController extends Controller
             'tipo_cambio' => $data['tipoCambio'] ?? 0,
             'observaciones' => $data['observaciones'] ?? null,
             'updated_by' => auth()->id(),
-        ]);
+        ];
+        if (array_key_exists('tipoCambioMeses', $data) && Schema::hasColumn('tbl_pv_ciclos', 'tipo_cambio_meses')) {
+            $fill['tipo_cambio_meses'] = $this->normalizeTipoCambioMeses(
+                $data['tipoCambioMeses'] ?? null,
+                (float) ($fill['tipo_cambio'] ?: 20)
+            );
+        }
+        $ciclo->fill($fill);
         if ($nuevo) {
             $ciclo->created_by = auth()->id();
         }
@@ -134,6 +143,41 @@ class ProyeccionesVentasController extends Controller
             'ok' => true,
             'nuevo' => $nuevo,
             'ciclo' => $this->cicloPayload($ciclo),
+        ]);
+    }
+
+    public function updateTipoCambioMeses(Request $request, string $ciclo): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_pv_ciclos')) {
+            return response()->json(['message' => 'Falta la tabla de ciclos.'], 422);
+        }
+        $row = PvCiclo::query()->where('codigo', strtoupper(trim($ciclo)))->first();
+        if (! $row) {
+            return response()->json(['message' => 'Ciclo no encontrado.'], 404);
+        }
+
+        $data = $request->validate([
+            'tipoCambio' => 'nullable|numeric|min:0',
+            'tipoCambioMeses' => 'nullable|array|size:12',
+            'tipoCambioMeses.*' => 'nullable|numeric|min:0',
+        ]);
+
+        if (array_key_exists('tipoCambio', $data) && $data['tipoCambio'] !== null) {
+            $row->tipo_cambio = (float) $data['tipoCambio'];
+        }
+        if (Schema::hasColumn('tbl_pv_ciclos', 'tipo_cambio_meses')) {
+            $base = (float) ($row->tipo_cambio ?: 20);
+            $row->tipo_cambio_meses = $this->normalizeTipoCambioMeses(
+                $data['tipoCambioMeses'] ?? $row->tipo_cambio_meses,
+                $base
+            );
+        }
+        $row->updated_by = auth()->id();
+        $row->save();
+
+        return response()->json([
+            'ok' => true,
+            'ciclo' => $this->cicloPayload($row),
         ]);
     }
 
@@ -534,6 +578,16 @@ class ProyeccionesVentasController extends Controller
         }
         if ($year < 2000 || $year > 2100) {
             $year = (int) date('Y');
+        }
+        $refYear = (int) ($request->get('ref') ?: ($request->get('anio_referencia') ?: date('Y')));
+        if ($refYear < 2000 || $refYear > 2100) {
+            $refYear = (int) date('Y');
+        }
+        if ($year > $refYear) {
+            $year = $refYear;
+        }
+        if ($year < ($refYear - 3)) {
+            $year = $refYear - 3;
         }
 
         $cacheKey = 'pv.venta-real.' . $empresa . '.' . $cc . '.' . $year;
@@ -2861,6 +2915,10 @@ class ProyeccionesVentasController extends Controller
             'estado' => $this->normalizeCicloEstado($c->estado),
             'inflacion' => (float) $c->inflacion,
             'tipoCambio' => (float) $c->tipo_cambio,
+            'tipoCambioMeses' => $this->normalizeTipoCambioMeses(
+                Schema::hasColumn('tbl_pv_ciclos', 'tipo_cambio_meses') ? $c->tipo_cambio_meses : null,
+                (float) ($c->tipo_cambio ?: 20)
+            ),
             'observaciones' => $c->observaciones,
             'asignaciones' => (int) ($stats['asignaciones'] ?? 0),
             'cuentas' => (int) ($stats['cuentas'] ?? 0),
@@ -2869,9 +2927,27 @@ class ProyeccionesVentasController extends Controller
         ];
     }
 
+    /**
+     * @param  mixed  $meses
+     * @return array<int, float>
+     */
+    protected function normalizeTipoCambioMeses($meses, float $fallback = 20.0): array
+    {
+        $base = $fallback > 0 ? $fallback : 20.0;
+        $out = [];
+        $src = is_array($meses) ? array_values($meses) : [];
+        for ($i = 0; $i < 12; $i++) {
+            $v = isset($src[$i]) ? (float) $src[$i] : $base;
+            $out[] = $v > 0 ? round($v, 4) : $base;
+        }
+
+        return $out;
+    }
+
     protected function normalizeCicloEstado(?string $estado): string
     {
         $e = strtolower(trim((string) $estado));
+
         if (in_array($e, ['cerrado', 'terminado', 'aceptado', 'rechazado'], true)) {
             return 'cerrado';
         }
