@@ -3403,9 +3403,23 @@
     white-space: nowrap;
     text-align: center;
 }
-.cc-month-price-tag.is-custom {
+.cc-matrix-cell.is-locked {
+    background: #f4f4f5 !important;
+}
+.cc-month-input.is-locked,
+.cc-month-input:disabled.is-locked {
+    background: #e4e4e7;
+    color: #52525b;
+    cursor: not-allowed;
+    border-color: transparent;
+}
+.cc-matrix-table thead th .cc-th-budget {
+    display: block;
+    margin-top: 0.08rem;
+    font-size: 0.58rem;
+    font-weight: 700;
     color: #b45309;
-    font-weight: 750;
+    text-transform: none;
 }
 
 /* API wait overlay */

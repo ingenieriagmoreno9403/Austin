@@ -278,18 +278,41 @@
     };
 
     function centroKey(c) {
-        return (c.empresa || '') + '|' + (c.codigo || '');
+        return String((c && c.empresa) || '').toUpperCase().trim() + '|' + String((c && c.codigo) || '').trim();
     }
 
     function budgetKey(empresa, cc, cuenta) {
-        return [empresa, cc, cuenta].join('|');
+        return [
+            String(empresa || '').toUpperCase().trim(),
+            String(cc || '').trim(),
+            String(cuenta || '').trim()
+        ].join('|');
+    }
+
+    /** Resuelve la clave real en budgets/completados (tolerante a mayúsculas). */
+    function resolveStateKey(map, empresa, cc, cuenta) {
+        map = map || {};
+        var primary = budgetKey(empresa, cc, cuenta);
+        if (Object.prototype.hasOwnProperty.call(map, primary)) return primary;
+        var needle = primary.toUpperCase();
+        var keys = Object.keys(map);
+        for (var i = 0; i < keys.length; i++) {
+            if (String(keys[i]).toUpperCase() === needle) return keys[i];
+        }
+        return primary;
+    }
+
+    function budgetMonthsOf(empresa, cc, cuenta) {
+        var key = resolveStateKey(CC.state.budgets, empresa, cc, cuenta);
+        var row = CC.state.budgets && CC.state.budgets[key];
+        return Array.isArray(row) ? row.slice() : null;
     }
 
     function cuentaMarcada(empresa, cc, codigo) {
         var done = CC.state.completados || {};
-        var k = budgetKey(empresa, cc, codigo);
+        var k = resolveStateKey(done, empresa, cc, codigo);
         if (done[k]) return true;
-        var needle = String(k).toUpperCase();
+        var needle = budgetKey(empresa, cc, codigo).toUpperCase();
         return Object.keys(done).some(function (key) {
             return done[key] && String(key).toUpperCase() === needle;
         });
@@ -553,6 +576,7 @@
         }
         if (!control.centro) return;
         control._allCtas = cuentasEnriquecidas(control.centro);
+        seedPresupuestoDesdeVentaReal(control.centro);
         updateControlProgress();
         renderNavCuentas();
         renderCtaChips();
@@ -980,7 +1004,8 @@
         var arr = (cta && cta.precioMeses) || [];
         var v = Number(arr[monthIdx]);
         if (isFinite(v) && v > 0) return v;
-        return base;
+        if (base > 0) return base;
+        return 0;
     }
 
     function precioMesTieneOverride(cta, monthIdx) {
@@ -996,14 +1021,32 @@
     }
 
     function pptoDe(empresa, cc, cuenta, gasto) {
-        var key = budgetKey(empresa, cc, cuenta.codigo);
-        if (CC.state.budgets[key]) return CC.state.budgets[key].slice();
-        if (cuenta.ppto) return cuenta.ppto.slice();
-        return (gasto || cuenta.gasto || [0,0,0,0,0,0,0,0,0,0,0,0]).map(function () { return null; });
+        var code = cuenta && typeof cuenta === 'object' ? cuenta.codigo : cuenta;
+        var found = budgetMonthsOf(empresa, cc, code);
+        if (found) return found;
+        if (cuenta && cuenta.ppto) return cuenta.ppto.slice();
+        return (gasto || (cuenta && cuenta.gasto) || [0,0,0,0,0,0,0,0,0,0,0,0]).map(function () { return null; });
+    }
+
+    function protectLockedMonths(empresa, cc, cuenta, months, opts) {
+        opts = opts || {};
+        var out = (months || []).slice();
+        while (out.length < 12) out.push(null);
+        out = out.slice(0, 12);
+        if (opts.allowLocked) return out;
+        var lock = budgetLockCount();
+        if (!lock) return out;
+        var prev = budgetMonthsOf(empresa, cc, cuenta);
+        if (!prev) return out;
+        for (var i = 0; i < lock; i++) {
+            out[i] = prev[i];
+        }
+        return out;
     }
 
     function persistBudget(empresa, cc, cuenta, months, opts) {
         opts = opts || {};
+        months = protectLockedMonths(empresa, cc, cuenta, months, opts);
         CC.state.budgets[budgetKey(empresa, cc, cuenta)] = months.slice();
         var ciclo = cicloActualCodigo();
         if (!ciclo) return;
@@ -1120,7 +1163,11 @@
     }
 
     function cicloActualCodigo() {
-        return String((CC.state.period && CC.state.period.codigo) || CC.state.cicloCodigo || '');
+        var fromCtl = document.getElementById('ctl-ciclo') ? val('ctl-ciclo') : '';
+        if (fromCtl) return String(fromCtl);
+        var fromAn = document.getElementById('an-ciclo') ? val('an-ciclo') : '';
+        if (fromAn) return String(fromAn);
+        return String(CC.state.cicloCodigo || (CC.state.period && CC.state.period.codigo) || '');
     }
 
     function persistPeriod() {
@@ -1204,6 +1251,7 @@
         CC._capturaReady = false;
         CC.state.overlays = {};
         CC.state.budgets = {};
+        CC.state.budgetsBase = {};
         CC.state.completados = {};
         CC.state.preciosMeses = {};
         if (!ciclo) {
@@ -1224,13 +1272,52 @@
                 CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
             });
             unscaleQtyBudgetsIfNeeded();
+            return loadBudgetsBaseForSeed();
+        }).then(function () {
             CC._capturaReady = true;
         }).catch(function () {
             CC.state.overlays = {};
             CC.state.budgets = {};
+            CC.state.budgetsBase = {};
             CC.state.completados = {};
             CC.state.preciosMeses = {};
             CC._capturaReady = true;
+        });
+    }
+
+    /** Ciclo "normal" (sin tipoBudget) del mismo año, para heredar proyección en 3+9/6+6/9+3. */
+    function cicloBaseProyeccion() {
+        var current = cicloActualCodigo();
+        var cur = findCiclo(current) || CC.state.period || {};
+        if (!(cur.tipoBudget || budgetTipo())) return '';
+        var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
+        var ciclos = CC.state.ciclos || [];
+        var sinBudget = ciclos.filter(function (c) {
+            return String(c.codigo) !== String(current)
+                && (!anio || Number(c.anio) === anio)
+                && !c.tipoBudget;
+        });
+        if (sinBudget.length) return sinBudget[0].codigo;
+        var sameYear = ciclos.filter(function (c) {
+            return String(c.codigo) !== String(current) && (!anio || Number(c.anio) === anio);
+        });
+        return (sameYear[0] && sameYear[0].codigo) || '';
+    }
+
+    function loadBudgetsBaseForSeed() {
+        var base = cicloBaseProyeccion();
+        CC.state.budgetsBase = {};
+        CC.state.cicloBaseCodigo = base || '';
+        if (!base) return Promise.resolve();
+        return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(base), {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) { return r.json(); }).then(function (json) {
+            var raw = json.budgets || {};
+            Object.keys(raw).forEach(function (k) {
+                CC.state.budgetsBase[k] = normalizeLoadedMonths(raw[k], false);
+            });
+        }).catch(function () {
+            CC.state.budgetsBase = {};
         });
     }
 
@@ -1279,8 +1366,120 @@
             estado: val('p-estado'),
             inflacion: Number(val('p-inflacion')) || 4,
             tipoCambio: Number(val('p-tc')) || 20,
+            tipoBudget: val('p-tipo-budget') || '3+9',
             observaciones: val('p-obs')
         };
+    }
+
+    function budgetTipo() {
+        var t = String((CC.state.period && CC.state.period.tipoBudget) || '').trim();
+        if (t === '3+9' || t === '6+6' || t === '9+3') return t;
+        return '';
+    }
+
+    /** Meses a precargar desde venta real (índices 0..n-1). */
+    function budgetSeedCount() {
+        var t = budgetTipo();
+        if (t === '6+6') return 6;
+        if (t === '9+3') return 9;
+        if (t === '3+9') return 3;
+        return 0;
+    }
+
+    /** Meses bloqueados (no editables). En 9+3 = 0. */
+    function budgetLockCount() {
+        var t = budgetTipo();
+        if (t === '3+9') return 3;
+        if (t === '6+6') return 6;
+        return 0;
+    }
+
+    function mesBloqueadoBudget(monthIdx) {
+        var i = Number(monthIdx);
+        if (!isFinite(i) || i < 0) return false;
+        return i < budgetLockCount();
+    }
+
+    function labelTipoBudget(t) {
+        t = String(t || budgetTipo() || '');
+        if (t === '6+6') return '6 + 6';
+        if (t === '9+3') return '9 + 3';
+        if (t === '3+9') return '3 + 9';
+        return '—';
+    }
+
+    /**
+     * Al abrir Captura de un cliente: si el producto aún no tiene proyección útil,
+     * precarga los primeros N meses desde la venta real y el resto desde la proyección
+     * normal del mismo año (si existe).
+     */
+    function budgetNecesitaSeed(months) {
+        if (!months || !months.length) return true;
+        var n = budgetSeedCount() || 0;
+        var i;
+        for (i = n; i < 12; i++) {
+            if (mesLleno(months[i])) return false;
+        }
+        for (i = 0; i < (n || 12); i++) {
+            if (mesLleno(months[i]) && Number(months[i]) > 0) return false;
+        }
+        return true;
+    }
+
+    function baseBudgetMonthsOf(empresa, cc, cuenta) {
+        var map = CC.state.budgetsBase || {};
+        var key = resolveStateKey(map, empresa, cc, cuenta);
+        var row = map[key];
+        return Array.isArray(row) ? row.slice() : null;
+    }
+
+    function seedPresupuestoDesdeVentaReal(c) {
+        if (!c || control.locked) return;
+        var n = budgetSeedCount();
+        if (!n) {
+            if (!budgetTipo() && (control._allCtas || []).length) {
+                console.warn('[PV] Ciclo sin tipoBudget; no se precarga 3+9/6+6/9+3');
+            }
+            return;
+        }
+        var ctas = control._allCtas || [];
+        if (!ctas.length) return;
+        var seeded = 0;
+        var fromBase = 0;
+        ctas.forEach(function (cta) {
+            var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            if (!budgetNecesitaSeed(existing)) return;
+            var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var gasto = cta.gasto || [];
+            var months = [];
+            var usedBase = false;
+            for (var i = 0; i < 12; i++) {
+                if (i < n) {
+                    months.push(toStoreQty(Number(gasto[i]) || 0));
+                } else if (baseRow && mesLleno(baseRow[i])) {
+                    months.push(toStoreQty(Number(baseRow[i]) || 0));
+                    usedBase = true;
+                } else {
+                    months.push(null);
+                }
+            }
+            var key = budgetKey(c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets = CC.state.budgets || {};
+            CC.state.budgets[key] = months.slice();
+            persistBudget(c.empresa, c.codigo, cta.codigo, months, { allowLocked: true });
+            seeded += 1;
+            if (usedBase) fromBase += 1;
+        });
+        if (seeded) {
+            control._allCtas = cuentasEnriquecidas(c);
+            var extra = fromBase
+                ? (' · ' + fromBase + (fromBase === 1 ? ' producto' : ' productos') +
+                    ' heredaron meses de ' + (CC.state.cicloBaseCodigo || 'proyección normal'))
+                : '';
+            toast('success', 'Budget ' + labelTipoBudget(), 'Se precargaron ' + seeded +
+                (seeded === 1 ? ' producto' : ' productos') + ' con la venta ' + (CC.state.anioGasto || '') +
+                (budgetLockCount() ? ' · meses iniciales bloqueados' : ' · meses editables') + extra);
+        }
     }
 
     function attachGasto(cuentas) {
@@ -1506,7 +1705,7 @@
                 '<div class="cc-ciclo-meta">' +
                     '<div><small>Año real</small><strong>' + (c.anioReferencia || '—') + '</strong></div>' +
                     '<div><small>Año proyección</small><strong>' + (c.anio || '—') + '</strong></div>' +
-                    '<div><small>Ventana</small><strong>' + formatDate(c.inicio) + ' — ' + formatDate(c.fin) + '</strong></div>' +
+                    '<div><small>Budget</small><strong>' + escapeHtml(labelTipoBudget(c.tipoBudget)) + '</strong></div>' +
                     '<div><small>Tipo de cambio</small><strong>USD $' + Number(c.tipoCambio || 0).toFixed(2) + '</strong></div>' +
                 '</div>' +
                 '<div class="cc-ciclo-obs">' + escapeHtml(c.observaciones || 'Sin observaciones') + '</div>' +
@@ -1810,7 +2009,8 @@
                 estadoEl.className = 'cc-badge ' + s.cls;
             }
         }
-        setText('period-fx', 'USD $' + Number(p.tipoCambio || 0).toFixed(2));
+        setText('period-fx', 'USD $' + Number(p.tipoCambio || 0).toFixed(2) +
+            (p.tipoBudget ? (' · Budget ' + labelTipoBudget(p.tipoBudget)) : ''));
         setText('th-gasto', 'Venta ' + (p.anioReferencia || 2026));
         setText('th-ppto', 'Proy. ' + (p.anio || 2027));
         setText('ind-inflacion', (p.inflacion || 0) + ' %');
@@ -2376,12 +2576,14 @@
     function centrosAgrupadosDesdeAsignaciones(list) {
         var map = {};
         (list || []).forEach(function (a) {
-            var emp = String(a.empresa || '').toUpperCase();
-            var k = emp + '|' + String(a.centro_codigo || '');
+            var emp = String(a.empresa || '').toUpperCase().trim();
+            var code = String(a.centro_codigo || '').trim();
+            var k = emp + '|' + code;
+            if (!emp || !code) return;
             if (!map[k]) {
                 map[k] = {
-                    codigo: a.centro_codigo,
-                    nombre: a.centro_nombre || a.centro_codigo,
+                    codigo: code,
+                    nombre: a.centro_nombre || code,
                     empresa: emp,
                     usuario: a.usuario || '',
                     usuarios: [],
@@ -2468,7 +2670,14 @@
         var ini = CC.state.cicloInicial || '';
         if (ini && mine.filter(function (c) { return c.codigo === ini; }).length) return ini;
         var ranked = mine.slice().sort(function (a, b) {
-            return scoreTemporadaCaptura(b.codigo) - scoreTemporadaCaptura(a.codigo);
+            var d = scoreTemporadaCaptura(b.codigo) - scoreTemporadaCaptura(a.codigo);
+            if (d) return d;
+            var tb = findCiclo(b.codigo) || {};
+            var ta = findCiclo(a.codigo) || {};
+            var hasB = tb.tipoBudget ? 1 : 0;
+            var hasA = ta.tipoBudget ? 1 : 0;
+            if (hasB !== hasA) return hasB - hasA;
+            return (Number(tb.id) || 0) - (Number(ta.id) || 0);
         });
         return (ranked[0] && ranked[0].codigo) || '';
     }
@@ -2648,7 +2857,8 @@
         var asigs = asignacionesDelCiclo(ciclo);
         var emps = {};
         asigs.forEach(function (a) {
-            var e = String(a.empresa || '').toUpperCase();
+            var e = String(a.empresa || '').toUpperCase().trim();
+            if (!e) return;
             (emps[e] = emps[e] || []).push(a);
         });
         return emps;
@@ -2716,7 +2926,7 @@
     function renderNavCentros() {
         var el = document.getElementById('ctl-centro');
         if (!el) return;
-        var emp = String(val('ctl-empresa') || '').toUpperCase();
+        var emp = String(val('ctl-empresa') || '').toUpperCase().trim();
         if (!emp) {
             el.innerHTML = '<option value="">Elige una empresa primero…</option>';
             el.disabled = true;
@@ -2724,8 +2934,16 @@
             paintNavStatus('ctl-cc-status', null, el);
             return;
         }
-        var list = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
-        var cur = val('ctl-centro');
+        var raw = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
+        var seenCc = {};
+        var list = [];
+        raw.forEach(function (a) {
+            var code = String(a.centro_codigo || '').trim();
+            if (!code || seenCc[code]) return;
+            seenCc[code] = true;
+            list.push(a);
+        });
+        var cur = String(val('ctl-centro') || '').trim();
         var html = '<option value="">Elige cliente…</option>';
         list.forEach(function (a) {
             var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
@@ -2739,17 +2957,17 @@
                 label += '   ·   ' + markPendLabel(pend);
             }
             var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
-            html += '<option' + (optClass ? ' class="' + optClass + '"' : '') + ' value="' + escapeHtml(a.centro_codigo) + '">' + escapeHtml(label) + '</option>';
+            html += '<option' + (optClass ? ' class="' + optClass + '"' : '') + ' value="' + escapeHtml(String(a.centro_codigo || '').trim()) + '">' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         el.disabled = !list.length;
-        var exists = list.filter(function (a) { return String(a.centro_codigo) === String(cur); }).length;
+        var exists = list.filter(function (a) { return String(a.centro_codigo || '').trim() === cur; }).length;
         if (exists) el.value = cur;
-        else if (CC.state.centroInicial && list.filter(function (a) { return String(a.centro_codigo) === String(CC.state.centroInicial); }).length) {
-            el.value = CC.state.centroInicial;
-        } else if (list.length === 1) el.value = list[0].centro_codigo;
+        else if (CC.state.centroInicial && list.filter(function (a) { return String(a.centro_codigo || '').trim() === String(CC.state.centroInicial).trim(); }).length) {
+            el.value = String(CC.state.centroInicial).trim();
+        } else if (list.length === 1) el.value = String(list[0].centro_codigo || '').trim();
         else el.value = '';
-        var chosen = list.filter(function (a) { return String(a.centro_codigo) === String(el.value); })[0];
+        var chosen = list.filter(function (a) { return String(a.centro_codigo || '').trim() === String(el.value || '').trim(); })[0];
         paintNavStatus('ctl-cc-status', (CC._capturaReady && chosen) ? statsDeCentro({
             codigo: chosen.centro_codigo,
             nombre: chosen.centro_nombre,
@@ -2830,10 +3048,15 @@
             if (empEl && emp) empEl.value = emp;
             renderNavCentros();
             if (ccEl && cc) {
-                ccEl.value = cc;
+                ccEl.value = String(cc).trim();
             } else if (ccEl && (cicloChanged || (emp && emp !== prevEmp))) {
-                ccEl.value = '';
-                control.cuenta = null;
+                // No borrar si renderNavCentros ya eligió el único cliente.
+                if (!ccEl.value) control.cuenta = null;
+            }
+            // Si quedó vacío pero hay exactamente un cliente, tomarlo.
+            if (ccEl && !String(ccEl.value || '').trim()) {
+                var opts = Array.prototype.slice.call(ccEl.options || []).filter(function (o) { return o.value; });
+                if (opts.length === 1) ccEl.value = opts[0].value;
             }
             var centroChanged = cicloChanged || val('ctl-empresa') !== prevEmp || val('ctl-centro') !== prevCc;
             if (centroChanged) control.cuenta = null;
@@ -2848,10 +3071,12 @@
             var period = findCiclo(ciclo);
             if (period) {
                 CC.state.period = Object.assign({}, CC.state.period, period);
-                syncFxMesesFromPeriod(CC.state.period);
-                if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
-                if (period.anio) CC.state.anioPresupuesto = period.anio;
+            } else {
+                CC.state.period = Object.assign({}, CC.state.period || {}, { codigo: ciclo });
             }
+            syncFxMesesFromPeriod(CC.state.period);
+            if (period && period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
+            if (period && period.anio) CC.state.anioPresupuesto = period.anio;
             CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
             if (empEl && !emp) empEl.value = '';
             fillVisorFilters();
@@ -3052,9 +3277,47 @@
         renderNavCentros();
     }
 
+    function centroDesdeAsignacion(emp, codigo, ciclo) {
+        var e = String(emp || '').toUpperCase().trim();
+        var code = String(codigo || '').trim();
+        if (!e || !code) return null;
+        var fromState = (CC.state.centros || []).map(mergedCentro).filter(function (c) {
+            return String(c.codigo || '').trim() === code
+                && String(c.empresa || '').toUpperCase().trim() === e;
+        })[0];
+        if (fromState) return fromState;
+        var list = asigsPorEmpresa(ciclo || val('ctl-ciclo') || CC.state.cicloCodigo)[e] || [];
+        var a = list.filter(function (x) {
+            return String(x.centro_codigo || '').trim() === code;
+        })[0];
+        if (!a) {
+            // Último recurso: buscar en todas las asignaciones del ciclo (por si empresa viene con otro casing).
+            a = asignacionesDelCiclo(ciclo || val('ctl-ciclo') || CC.state.cicloCodigo).filter(function (x) {
+                return String(x.centro_codigo || '').trim() === code
+                    && String(x.empresa || '').toUpperCase().trim() === e;
+            })[0] || null;
+        }
+        if (!a) return null;
+        return mergedCentro({
+            codigo: String(a.centro_codigo || '').trim(),
+            nombre: a.centro_nombre || a.centro_codigo,
+            empresa: e,
+            usuario: a.usuario || '',
+            estado: 'abierto',
+            modo: (a.capturar || a.editar) ? 'captura' : 'solo_revision',
+            departamento: '',
+            ciclo: a.ciclo || ciclo || CC.state.cicloCodigo || '',
+            capturar: !!a.capturar,
+            editar: !!a.editar,
+            revisar: !!a.revisar,
+            permisos: a.permisos || [],
+            sap: true
+        });
+    }
+
     function loadControlCentro() {
-        var emp = val('ctl-empresa');
-        var codigo = val('ctl-centro');
+        var emp = String(val('ctl-empresa') || '').trim();
+        var codigo = String(val('ctl-centro') || '').trim();
         if (!emp || !codigo) {
             control.centro = null;
             control.cuenta = null;
@@ -3073,12 +3336,23 @@
             renderVisorTable();
             return;
         }
-        control.centro = CC.state.centros.map(mergedCentro).filter(function (c) {
-            return c.codigo === codigo && c.empresa === emp;
-        })[0] || null;
+        // Mantener centros alineados al ciclo actual (evita combo con valor y tabla vacía).
+        var cicloNow = val('ctl-ciclo') || CC.state.cicloCodigo || '';
+        if (cicloNow && String(CC.state.cicloCodigo || '') !== String(cicloNow)) {
+            CC.state.cicloCodigo = cicloNow;
+            var periodNow = findCiclo(cicloNow);
+            if (periodNow) {
+                CC.state.period = Object.assign({}, CC.state.period, periodNow);
+                syncFxMesesFromPeriod(CC.state.period);
+                if (periodNow.anioReferencia) CC.state.anioGasto = periodNow.anioReferencia;
+                if (periodNow.anio) CC.state.anioPresupuesto = periodNow.anio;
+            }
+        }
+        CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(cicloNow));
+        control.centro = centroDesdeAsignacion(emp, codigo, cicloNow);
         if (!control.centro) {
             var tb = document.getElementById('ctl-tbody');
-            if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes clientes asignados en este ciclo. Pide una asignación.</div></td></tr>';
+            if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes este cliente asignado en el ciclo seleccionado.</div></td></tr>';
             setCapturaEnabled(false);
             control._allCtas = [];
             control._ctas = [];
@@ -3092,7 +3366,7 @@
         }
         var c = control.centro;
         var asig = asigDe(c) || c;
-        var cicloCode = c.ciclo || val('ctl-ciclo') || CC.state.cicloCodigo || '';
+        var cicloCode = c.ciclo || cicloNow;
         var locked = !puedeEscribirAsig(asig, cicloCode);
         control.locked = locked;
         setCapturaEnabled(!locked);
@@ -3238,15 +3512,33 @@
         var empty = document.getElementById('ctl-form-empty');
         var body = document.getElementById('ctl-form-body');
         if (!control.centro) {
-            if (empty) empty.hidden = false;
+            if (empty) {
+                empty.hidden = false;
+                empty.innerHTML = '<i class="fa-solid fa-table"></i>' +
+                    '<div>Elige empresa y cliente a la izquierda para capturar todos los productos en una sola tabla</div>';
+            }
+            if (body) body.hidden = true;
+            return;
+        }
+        var cc = control.centro;
+        var ctas = matrixCtas();
+        var st = statsDeCentro(cc);
+        if (!st.total) {
+            if (empty) {
+                empty.hidden = false;
+                empty.innerHTML = '<i class="fa-solid fa-boxes-stacked"></i>' +
+                    '<div><strong>Este cliente no tiene productos asignados</strong></div>' +
+                    '<div class="text-muted" style="font-size:.85rem;margin-top:.35rem">Ve a <b>Ventas → Asignaciones</b> del ciclo <b>' +
+                    escapeHtml(val('ctl-ciclo') || CC.state.cicloCodigo || '') +
+                    '</b>, elige el cliente y asígnale productos. Luego regresa a Captura: el budget <b>' +
+                    escapeHtml(labelTipoBudget() || '3+9') +
+                    '</b> precargará los meses del año de referencia.</div>';
+            }
             if (body) body.hidden = true;
             return;
         }
         if (empty) empty.hidden = true;
         if (body) body.hidden = false;
-        var cc = control.centro;
-        var ctas = matrixCtas();
-        var st = statsDeCentro(cc);
         paintNombreCodigo('ctl-form-cc', cc.nombre || '', cc.codigo || '');
         setText('ctl-form-cta', st.total + (st.total === 1 ? ' producto' : ' productos'));
         setText('ctl-form-grupo', ctas.length === st.total
@@ -3462,16 +3754,42 @@
         return qty * (mon === 'USD' ? precio * fxRate(i) : precio);
     }
 
-    /** Importe MXN de un mes proyectado: unidades × precio del mes (override o lista) × TC. */
+    /** Importe MXN de un mes proyectado: unidades × precio del mes (override o lista) × TC.
+     *  Si no hay precio de lista, usa el precio implícito de la venta real de ese mes. */
     function importeMesProyMxn(cta, i) {
         if (!cta || !mesLleno(cta.ppto && cta.ppto[i])) return null;
         var uds = Number(cta.ppto[i]) || 0;
-        var precio = precioUnitarioMes(cta, i);
         if (!uds) return 0;
-        if (!precio) return null;
-        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
-        var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
-        return uds * precioMxn;
+        var precio = precioUnitarioMes(cta, i);
+        if (precio > 0) {
+            var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
+            return uds * precioMxn;
+        }
+        var qtyVenta = Number((cta.gasto && cta.gasto[i]) || 0);
+        var impVenta = Number((cta.importe && cta.importe[i]) || 0);
+        if (qtyVenta > 0 && impVenta > 0) {
+            return uds * (impVenta / qtyVenta);
+        }
+        var precioImp = precioImplicitoVenta(cta);
+        if (precioImp > 0) return uds * precioImp;
+        return null;
+    }
+
+    /** Precio MXN/unidad promedio de la venta real (importe ÷ unidades). */
+    function precioImplicitoVenta(cta) {
+        if (!cta) return 0;
+        var qty = 0;
+        var imp = 0;
+        for (var i = 0; i < 12; i++) {
+            var q = Number((cta.gasto && cta.gasto[i]) || 0);
+            var m = Number((cta.importe && cta.importe[i]) || 0);
+            if (q > 0 && m > 0) {
+                qty += q;
+                imp += m;
+            }
+        }
+        return qty > 0 ? (imp / qty) : 0;
     }
 
     function moneyLista(precio, monedaNativa, monthIdx) {
@@ -3604,10 +3922,13 @@
             var tcM = fxRate(mi);
             var base = fxBaseRate();
             var diff = Math.abs(tcM - base) > 0.0001;
+            var lockedMes = mesBloqueadoBudget(mi);
             head += '<th class="num">' + m +
                 '<span class="cc-th-past">vs ' + String(anioPast).slice(2) + '</span>' +
                 '<span class="cc-th-tc' + (diff ? ' is-custom' : '') + '" title="Tipo de cambio del mes">TC ' +
-                tcM.toFixed(2) + '</span></th>';
+                tcM.toFixed(2) + '</span>' +
+                (lockedMes ? '<span class="cc-th-budget" title="Mes bloqueado por tipo de budget">fijo</span>' : '') +
+                '</th>';
         });
         head += '</tr>';
         thead.innerHTML = head;
@@ -3630,7 +3951,8 @@
             for (var i = 0; i < 12; i++) {
                 var shown = formatInputQty(cta.ppto[i]);
                 var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
-                var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
+                var lockedMes = mesBloqueadoBudget(i);
+                var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
                 var pMes = precioUnitarioMes(cta, i);
                 var pCustom = precioMesTieneOverride(cta, i);
                 var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
@@ -3641,8 +3963,10 @@
                             (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
                         '</div>' +
                         '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
-                        (control.locked ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '" title="' +
-                        escapeHtml(MONTHS[i] + ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
+                        ((control.locked || lockedMes) ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' +
+                        ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
+                        escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
+                            ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
                             (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
                         (pCustom
                             ? ('<div class="cc-month-price-tag is-custom" title="' +
@@ -4083,6 +4407,11 @@
         var m = Number(inp.getAttribute('data-m'));
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         if (!c || !cta) return;
+        if (mesBloqueadoBudget(m)) {
+            toast('warning', 'Mes bloqueado', 'Este mes viene del año de referencia (budget ' + labelTipoBudget() + ') y no se puede editar.');
+            refreshControlAfterEdit(codigo, { skipFormGrid: true });
+            return;
+        }
         var raw = String(inp.value || '').trim().replace(/,/g, '');
         var valN = raw === '' ? null : toStoreQty(Number(raw) || 0);
         var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
@@ -4095,13 +4424,13 @@
             var fake = { gasto: cta.gasto, ppto: months };
             var cls = monthCellClass(fake, m);
             if (cell.classList.contains('cc-matrix-cell') || cell.tagName === 'TD') {
-                cell.className = cls.replace('cc-month-cell', 'cc-matrix-cell');
+                cell.className = cls.replace('cc-month-cell', 'cc-matrix-cell') + (mesBloqueadoBudget(m) ? ' is-locked' : '');
             } else {
                 cell.className = cls;
             }
         }
 
-        if (wasEmpty && valN > 0 && m === 0 && !control.locked) {
+        if (wasEmpty && valN > 0 && m === 0 && !control.locked && !budgetLockCount()) {
             if (window.Swal) {
                 Swal.fire({
                     title: '¿Cantidad fija mensual?',
@@ -4113,8 +4442,11 @@
                     cancelButtonText: 'Solo enero'
                 }).then(function (res) {
                     if (res.isConfirmed) {
-                        persistBudget(c.empresa, c.codigo, codigo, months.map(function () { return valN; }));
-                        toast('success', 'Cantidad fija aplicada', 'Los 12 meses quedaron en ' + qtyLabel(valN));
+                        var filled = months.map(function (v, idx) {
+                            return mesBloqueadoBudget(idx) ? v : valN;
+                        });
+                        persistBudget(c.empresa, c.codigo, codigo, filled);
+                        toast('success', 'Cantidad fija aplicada', 'Los meses editables quedaron en ' + qtyLabel(valN));
                     }
                     refreshControlAfterEdit(codigo);
                 });
@@ -5222,6 +5554,7 @@
                     estado: 'abierto',
                     inflacion: 4,
                     tipoCambio: 20,
+                    tipoBudget: '3+9',
                     observaciones: ''
                 };
             setVal('p-codigo', p.codigo);
@@ -5231,7 +5564,21 @@
             setVal('p-inicio', p.inicio); setVal('p-fin', p.fin);
             setVal('p-captura', p.capturaHasta); setVal('p-revision', p.revisionDesde);
             setVal('p-estado', normalizeCicloEstado(p.estado)); setVal('p-inflacion', p.inflacion); setVal('p-tc', p.tipoCambio);
+            setVal('p-tipo-budget', p.tipoBudget || '3+9');
             setVal('p-obs', p.observaciones || '');
+            var tipoBudgetEl = document.getElementById('p-tipo-budget');
+            if (tipoBudgetEl) {
+                tipoBudgetEl.disabled = !!editing;
+                tipoBudgetEl.title = editing
+                    ? 'El tipo de budget queda fijo al crear el ciclo'
+                    : 'Define cuántos meses se copian del año de referencia';
+            }
+            var tipoHint = document.getElementById('p-tipo-budget-hint');
+            if (tipoHint) {
+                tipoHint.textContent = editing
+                    ? ('Fijo: ' + labelTipoBudget(p.tipoBudget) + ' (no se puede cambiar)')
+                    : 'Se fija al abrir el ciclo y no se puede cambiar después.';
+            }
         }
     }
     function hideModal(id) {

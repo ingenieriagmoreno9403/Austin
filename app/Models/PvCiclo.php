@@ -20,6 +20,7 @@ class PvCiclo extends Model
         'estado',
         'tipo_cambio',
         'tipo_cambio_meses',
+        'tipo_budget',
         'observaciones',
         'created_by',
         'updated_by',

@@ -108,6 +108,7 @@ class ProyeccionesVentasController extends Controller
             'tipoCambio' => 'nullable|numeric',
             'tipoCambioMeses' => 'nullable|array|size:12',
             'tipoCambioMeses.*' => 'nullable|numeric|min:0',
+            'tipoBudget' => 'nullable|in:3+9,6+6,9+3',
             'observaciones' => 'nullable|string',
         ]);
 
@@ -132,6 +133,10 @@ class ProyeccionesVentasController extends Controller
                 $data['tipoCambioMeses'] ?? null,
                 (float) ($fill['tipo_cambio'] ?: 20)
             );
+        }
+        // Tipo de budget: solo se fija al crear el ciclo.
+        if ($nuevo && Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget')) {
+            $fill['tipo_budget'] = $this->normalizeTipoBudget($data['tipoBudget'] ?? '3+9');
         }
         $ciclo->fill($fill);
         if ($nuevo) {
@@ -2930,6 +2935,9 @@ class ProyeccionesVentasController extends Controller
                 Schema::hasColumn('tbl_pv_ciclos', 'tipo_cambio_meses') ? $c->tipo_cambio_meses : null,
                 (float) ($c->tipo_cambio ?: 20)
             ),
+            'tipoBudget' => $this->normalizeTipoBudget(
+                Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $c->tipo_budget : null
+            ),
             'observaciones' => $c->observaciones,
             'asignaciones' => (int) ($stats['asignaciones'] ?? 0),
             'cuentas' => (int) ($stats['cuentas'] ?? 0),
@@ -2953,6 +2961,16 @@ class ProyeccionesVentasController extends Controller
         }
 
         return $out;
+    }
+
+    protected function normalizeTipoBudget($tipo): ?string
+    {
+        $t = trim((string) $tipo);
+        if (in_array($t, ['3+9', '6+6', '9+3'], true)) {
+            return $t;
+        }
+
+        return null;
     }
 
     protected function normalizeCicloEstado(?string $estado): string
