@@ -96,9 +96,14 @@
             <div class="cc-panel cc-asig-col">
                 <div class="cc-panel-head">
                     <h3><i class="fa-solid fa-list"></i> 4. Productos con acceso</h3>
-                    <label class="cc-todas-toggle">
-                        <input type="checkbox" id="asig-cta-todas"> Todas
-                    </label>
+                    <div class="cc-panel-head-tools">
+                        <label class="cc-todas-toggle" title="Muestra todos los productos de la empresa, no solo los vendidos a este cliente">
+                            <input type="checkbox" id="asig-cta-catalogo"> Ver todos los productos
+                        </label>
+                        <label class="cc-todas-toggle">
+                            <input type="checkbox" id="asig-cta-todas"> Todas
+                        </label>
+                    </div>
                 </div>
                 <div class="cc-grupos-cta-tools">
                     <select id="asig-cta-linea" class="cc-select" aria-label="Línea U_LINEA_QV" disabled>

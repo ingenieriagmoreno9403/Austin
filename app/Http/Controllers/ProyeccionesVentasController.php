@@ -335,8 +335,10 @@ class ProyeccionesVentasController extends Controller
             @set_time_limit(120);
         }
 
+        $todas = $request->boolean('todas');
+
         try {
-            $cargadas = $this->cargarProductosCliente($empresa, $cliente, $year);
+            $cargadas = $this->cargarProductosCliente($empresa, $cliente, $year, $todas);
 
             return response()->json([
                 'ok' => $cargadas['ok'],
@@ -1853,18 +1855,19 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Productos (ItemCode / ItemName) vendidos a un cliente (CardCode) en OINV + ORIN.
+     * Productos (ItemCode / ItemName) en OINV + ORIN.
+     * Por cliente (CardCode) o, con $todas, todo el catálogo vendido de la empresa.
      *
      * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
      */
-    protected function cargarProductosCliente(string $empresa, string $cliente, int $year): array
+    protected function cargarProductosCliente(string $empresa, string $cliente, int $year, bool $todas = false): array
     {
         $empresa = strtolower(trim($empresa));
         $cliente = trim($cliente);
         if ($year < 2000) {
             $year = (int) date('Y');
         }
-        if ($cliente === '') {
+        if (! $todas && $cliente === '') {
             return [
                 'ok' => true,
                 'productos' => [],
@@ -1872,13 +1875,15 @@ class ProyeccionesVentasController extends Controller
             ];
         }
 
-        $cacheKey = 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
+        $cacheKey = $todas
+            ? 'pv.productos.'.$empresa.'.'.$year.'.ALL'
+            : 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['productos'])) {
             return $cached;
         }
 
-        $pack = $this->filasVentasEmpresa($empresa, $year, ['CardCode' => $cliente]);
+        $pack = $this->filasVentasEmpresa($empresa, $year, $todas ? [] : ['CardCode' => $cliente]);
         $map = [];
         foreach ($pack['rows'] as $row) {
             $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
@@ -1918,7 +1923,9 @@ class ProyeccionesVentasController extends Controller
             'ok' => ! empty($pack['ok']),
             'productos' => $productos,
             'mensaje' => ! empty($pack['ok'])
-                ? ($productos ? null : 'Este cliente no tiene productos en ventas '.$year)
+                ? ($productos ? null : ($todas
+                    ? 'Esta empresa no tiene productos en ventas '.$year
+                    : 'Este cliente no tiene productos en ventas '.$year))
                 : ($pack['mensaje'] ?? 'Sin productos SAP'),
         ];
         if (! empty($payload['ok']) && $productos) {
@@ -1936,7 +1943,7 @@ class ProyeccionesVentasController extends Controller
         if ($year < 2000) {
             $year = (int) date('Y');
         }
-        $pack = $this->cargarProductosCliente($empresa, $cliente, $year);
+        $pack = $this->cargarProductosCliente($empresa, $cliente, $year, $todas);
 
         return [
             'ok' => $pack['ok'],

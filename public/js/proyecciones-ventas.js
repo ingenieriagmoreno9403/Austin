@@ -2147,7 +2147,7 @@
         paintFxBadge();
         var kicker = document.querySelector('.cc-kicker');
         if (kicker && CC.state.page === 'admin-ciclo') {
-            kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · centros y permisos';
+            kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · clientes y permisos';
         }
     }
 

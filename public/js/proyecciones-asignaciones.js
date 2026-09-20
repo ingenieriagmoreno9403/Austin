@@ -663,6 +663,9 @@
         if (maskSel) maskSel.value = '';
         var grupoSel = document.getElementById('asig-edit-grupo');
         if (grupoSel) grupoSel.value = '';
+        CCAsig._editCatalogo = false;
+        var catalogoEl = document.getElementById('asig-edit-catalogo');
+        if (catalogoEl) catalogoEl.checked = false;
         showModal('modalAsigEditar');
         loadGruposEditar(row.empresa);
         loadCuentasEditar(row.empresa, qEl ? qEl.value : '', row.centro_codigo);
@@ -671,7 +674,8 @@
     function loadCuentasEditar(empresa, q, cliente) {
         var year = Number((window.CC && CC.state && (CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia))) || new Date().getFullYear());
         var card = String(cliente || (CCAsig._activo && CCAsig._activo.centro_codigo) || '').trim();
-        var key = String(empresa || '').toLowerCase() + '|' + year + '|' + card.toUpperCase();
+        var todas = !!CCAsig._editCatalogo;
+        var key = String(empresa || '').toLowerCase() + '|' + year + '|' + (todas ? 'ALL' : card.toUpperCase());
         var apply = function (rows, groups) {
             CCAsig._editCuentasAll = rows || [];
             CCAsig._editCuentas = CCAsig._editCuentasAll;
@@ -689,10 +693,14 @@
             apply(CCAsig._cuentasCache[key], CCAsig._editAgrupaciones || []);
             return;
         }
-        getJSON('/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(String(empresa || '').toLowerCase()) +
-            '&year=' + encodeURIComponent(year) +
-            '&cliente=' + encodeURIComponent(card) +
-            '&cc=' + encodeURIComponent(card)).then(function (json) {
+        var box = document.getElementById('asig-edit-list');
+        if (box) box.innerHTML = '<div class="cc-empty">' + (todas ? 'Cargando catálogo de productos…' : 'Cargando productos SAP…') + '</div>';
+        var url = '/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(String(empresa || '').toLowerCase()) +
+            '&year=' + encodeURIComponent(year);
+        url += todas
+            ? '&todas=1'
+            : ('&cliente=' + encodeURIComponent(card) + '&cc=' + encodeURIComponent(card));
+        getJSON(url).then(function (json) {
             CCAsig._cuentasCache[key] = json.cuentas || [];
             apply(CCAsig._cuentasCache[key], json.agrupaciones || []);
         }).catch(function () {
@@ -1089,6 +1097,15 @@
             var on = this.checked;
             document.querySelectorAll('#asig-edit-list [data-edit-cta]').forEach(function (i) { i.checked = on; });
             syncEditSelectedFromDom();
+        });
+        var catalogoEdit = document.getElementById('asig-edit-catalogo');
+        if (catalogoEdit) catalogoEdit.addEventListener('change', function () {
+            CCAsig._editCatalogo = !!this.checked;
+            syncEditSelectedFromDom();
+            var qEl = document.getElementById('asig-edit-q');
+            var row = CCAsig._activo;
+            if (!row) return;
+            loadCuentasEditar(row.empresa, qEl ? qEl.value : '', row.centro_codigo);
         });
         var editList = document.getElementById('asig-edit-list');
         if (editList) editList.addEventListener('change', function (ev) {
@@ -1825,6 +1842,28 @@
             el.textContent = n + (n === 1 ? ' seleccionada' : ' seleccionadas');
         }
 
+        function catalogoCompleto() {
+            var el = document.getElementById('asig-cta-catalogo');
+            return !!(el && el.checked);
+        }
+
+        function mergeSelectedIntoCuentas(rows) {
+            var out = (rows || []).slice();
+            var seen = {};
+            out.forEach(function (c) { seen[normCode(c.codigo)] = true; });
+            Object.keys(ctaSelected).forEach(function (k) {
+                if (seen[k]) return;
+                var s = ctaSelected[k];
+                out.unshift({
+                    codigo: s.codigo,
+                    nombre: s.nombre || s.codigo,
+                    grupo: s.agrupacion || '',
+                    grupo_id: s.agrupacion || ''
+                });
+            });
+            return out;
+        }
+
         function loadCuentas() {
             var box = document.getElementById('asig-cta-list');
             var cliente = centroSel ? String(centroSel.value || '').trim() : '';
@@ -1833,10 +1872,13 @@
                 return;
             }
             var year = anioRef();
-            box.innerHTML = '<div class="cc-empty">Cargando productos de OINV + ORIN…</div>';
-            var key = String(cfg.empresa || '').toLowerCase() + '|' + year + '|' + cliente.toUpperCase();
+            var todas = catalogoCompleto();
+            box.innerHTML = '<div class="cc-empty">' + (todas
+                ? 'Cargando catálogo de productos de la empresa…'
+                : 'Cargando productos de OINV + ORIN…') + '</div>';
+            var key = String(cfg.empresa || '').toLowerCase() + '|' + year + '|' + (todas ? 'ALL' : cliente.toUpperCase());
             var apply = function (rows, groups) {
-                cuentas = rows || [];
+                cuentas = mergeSelectedIntoCuentas(rows || []);
                 if (groups && groups.length) agrupaciones = groups;
                 fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
                 fillGrupoUi('asig-cta-grupo', grupos, ctaGrupo, setCtaGrupo);
@@ -1851,10 +1893,12 @@
                 apply(cacheCuentas[key], agrupaciones);
                 return;
             }
-            getJSON('/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(cfg.empresa) +
-                '&year=' + encodeURIComponent(year) +
-                '&cliente=' + encodeURIComponent(cliente) +
-                '&cc=' + encodeURIComponent(cliente)).then(function (json) {
+            var url = '/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(cfg.empresa) +
+                '&year=' + encodeURIComponent(year);
+            url += todas
+                ? '&todas=1'
+                : ('&cliente=' + encodeURIComponent(cliente) + '&cc=' + encodeURIComponent(cliente));
+            getJSON(url).then(function (json) {
                 cacheCuentas[key] = json.cuentas || [];
                 apply(cacheCuentas[key], json.agrupaciones || []);
             }).catch(function () {
@@ -1875,7 +1919,9 @@
             if (!rows.length) {
                 box.innerHTML = '<div class="cc-empty">' + (ctaLinea
                     ? 'Sin productos en esta línea'
-                    : 'Sin productos para este catálogo') + '</div>';
+                    : (catalogoCompleto()
+                        ? 'Sin productos en el catálogo de la empresa'
+                        : 'Sin productos para este cliente')) + '</div>';
                 updateCtaSelCount();
                 return;
             }
@@ -2008,6 +2054,11 @@
             var on = this.checked;
             document.querySelectorAll('#asig-cta-list [data-cta]').forEach(function (i) { i.checked = on; });
             syncCtaSelectedFromDom();
+        });
+        var catalogoEl = document.getElementById('asig-cta-catalogo');
+        if (catalogoEl) catalogoEl.addEventListener('change', function () {
+            syncCtaSelectedFromDom();
+            if (centroSel && centroSel.value) loadCuentas();
         });
         var listEl = document.getElementById('asig-cta-list');
         if (listEl) listEl.addEventListener('change', function (ev) {
