@@ -1244,6 +1244,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/ProyeccionesVentas/api/ciclos', [ProyeccionesVentasController::class, 'listCiclos'])->name('pv.api.ciclos');
     Route::post('/ProyeccionesVentas/api/ciclos', [ProyeccionesVentasController::class, 'storeCiclo'])->name('pv.api.ciclos.store');
     Route::post('/ProyeccionesVentas/api/ciclos/{ciclo}/estado', [ProyeccionesVentasController::class, 'updateCicloEstado'])->name('pv.api.ciclos.estado');
+    Route::put('/ProyeccionesVentas/api/ciclos/{ciclo}/tipo-cambio-meses', [ProyeccionesVentasController::class, 'updateTipoCambioMeses'])->name('pv.api.ciclos.tc_meses');
     Route::delete('/ProyeccionesVentas/api/ciclos/{ciclo}', [ProyeccionesVentasController::class, 'destroyCiclo'])->name('pv.api.ciclos.destroy');
     Route::get('/ProyeccionesVentas/api/empresas', [ProyeccionesVentasController::class, 'empresasSap'])->name('pv.api.empresas');
     Route::get('/ProyeccionesVentas/api/centros', [ProyeccionesVentasController::class, 'centrosSap'])->name('pv.api.centros');

@@ -596,6 +596,41 @@
     color: #3f3f46;
     cursor: pointer;
 }
+.cc-group-totals {
+    white-space: nowrap;
+}
+.cc-group-tot {
+    display: inline-block;
+    font-variant-numeric: tabular-nums;
+    color: #71717a;
+    font-weight: 650;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.cc-group-tot em {
+    display: block;
+    font-style: normal;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: #a1a1aa;
+    margin-bottom: 0.05rem;
+}
+.cc-group-tot.is-proy {
+    color: #18181b;
+    font-weight: 750;
+}
+.cc-group-tot.is-proy em {
+    color: #71717a;
+}
+.cc-group-tot-sep {
+    display: inline-block;
+    margin: 0 0.45rem;
+    color: #a1a1aa;
+    font-weight: 600;
+    vertical-align: middle;
+}
 
 .cc-month-input {
     width: 88px;
@@ -3123,6 +3158,25 @@
     text-transform: uppercase;
 }
 .cc-price-empty { color: #a1a1aa; }
+.cc-sem-cell {
+    min-width: 4.8rem;
+    vertical-align: middle !important;
+    line-height: 1.15;
+}
+.cc-sem-qty {
+    font-weight: 700;
+    color: #18181b;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.cc-sem-uom {
+    margin-top: 0.08rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #71717a;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+}
 .cc-matrix-cell {
     min-width: 72px;
     text-align: center;
@@ -3166,7 +3220,8 @@
     letter-spacing: 0;
     text-transform: none;
 }
-.cc-matrix-table thead th .cc-th-past {
+.cc-matrix-table thead th .cc-th-past,
+.cc-table thead th .cc-th-past {
     display: block;
     margin-top: 0.1rem;
     font-size: 0.62rem;
@@ -3230,11 +3285,69 @@
     padding: 0.45rem 0.75rem;
     font-size: 0.78rem;
 }
+.cc-fx-chip.is-clickable,
+.cc-fx-badge.is-clickable {
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease;
+}
+.cc-fx-chip.is-clickable:hover,
+.cc-fx-badge.is-clickable:hover {
+    border-color: #a1a1aa;
+    background: #f4f4f5;
+}
 .cc-fx-chip.is-usd,
 .cc-fx-badge.is-usd {
     border-color: #67e8f9;
     background: #ecfeff;
     color: #0e7490;
+}
+.cc-matrix-table thead th .cc-th-tc {
+    display: block;
+    margin-top: 0.08rem;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    color: #a1a1aa;
+}
+.cc-matrix-table thead th .cc-th-tc.is-custom {
+    color: #b45309;
+    font-weight: 700;
+}
+.cc-tc-months {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.65rem;
+}
+.cc-tc-month {
+    border: 1px solid #e4e4e7;
+    border-radius: 10px;
+    padding: 0.55rem 0.65rem;
+    background: #fafafa;
+}
+.cc-tc-month.is-custom {
+    border-color: #fcd34d;
+    background: #fffbeb;
+}
+.cc-tc-month label {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: #71717a;
+}
+.cc-tc-month input {
+    width: 100%;
+    border: 1px solid #d4d4d8;
+    border-radius: 8px;
+    padding: 0.35rem 0.45rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+}
+@media (max-width: 720px) {
+    .cc-tc-months { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .cc-matrix-fx {
     display: flex;
@@ -3307,3 +3420,158 @@
     border-top: 1px solid #d4d4d8;
 }
 .cc-vp-total .sticky-col { background: #f4f4f5; }
+
+.cc-price-edit {
+    display: block;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    text-align: right;
+    cursor: pointer;
+}
+.cc-price-edit:hover .cc-price-amt {
+    text-decoration: underline;
+}
+.cc-price-edit.is-custom .cc-price-amt {
+    color: #b45309;
+}
+.cc-price-hint {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.58rem;
+    font-weight: 650;
+    letter-spacing: .02em;
+    text-transform: uppercase;
+    color: #a1a1aa;
+}
+.cc-price-src.is-custom {
+    color: #b45309;
+    font-weight: 700;
+}
+.cc-month-price-tag {
+    font-size: 0.58rem;
+    font-weight: 650;
+    line-height: 1.1;
+    color: #a1a1aa;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    text-align: center;
+}
+.cc-matrix-cell.is-locked {
+    background: #f4f4f5 !important;
+}
+.cc-month-input.is-locked,
+.cc-month-input:disabled.is-locked {
+    background: #e4e4e7;
+    color: #52525b;
+    cursor: not-allowed;
+    border-color: transparent;
+}
+.cc-matrix-table thead th .cc-th-budget {
+    display: block;
+    margin-top: 0.08rem;
+    font-size: 0.58rem;
+    font-weight: 700;
+    color: #b45309;
+    text-transform: none;
+}
+
+/* API wait overlay */
+body.cc-api-waiting {
+    cursor: wait;
+}
+.cc-api-wait {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+    background: rgba(24, 24, 27, 0.42);
+    backdrop-filter: blur(2px);
+}
+.cc-api-wait[hidden] {
+    display: none !important;
+}
+.cc-api-wait-card {
+    width: min(22rem, 100%);
+    padding: 1.35rem 1.4rem 1.2rem;
+    border-radius: 14px;
+    border: 1px solid #e4e4e7;
+    background: #fff;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+    text-align: center;
+}
+.cc-api-wait-spinner {
+    width: 2.35rem;
+    height: 2.35rem;
+    margin: 0 auto 0.85rem;
+    border-radius: 999px;
+    border: 3px solid #e4e4e7;
+    border-top-color: #18181b;
+    animation: cc-spin 0.75s linear infinite;
+}
+.cc-api-wait-spinner.is-sm {
+    width: 1.45rem;
+    height: 1.45rem;
+    margin: 0;
+    border-width: 2.5px;
+    flex: 0 0 auto;
+}
+.cc-api-wait-title {
+    font-size: 0.98rem;
+    font-weight: 750;
+    color: #18181b;
+    letter-spacing: -0.01em;
+}
+.cc-api-wait-msg {
+    margin-top: 0.3rem;
+    font-size: 0.82rem;
+    color: #71717a;
+    line-height: 1.35;
+}
+.cc-api-wait-bar {
+    margin-top: 1rem;
+    height: 3px;
+    border-radius: 999px;
+    background: #f4f4f5;
+    overflow: hidden;
+}
+.cc-api-wait-bar span {
+    display: block;
+    width: 38%;
+    height: 100%;
+    border-radius: inherit;
+    background: #18181b;
+    animation: cc-wait-bar 1.15s ease-in-out infinite;
+}
+.cc-loading-inline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 2.2rem 1rem;
+    text-align: left;
+}
+.cc-loading-inline-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+.cc-loading-inline-copy strong {
+    font-size: 0.9rem;
+    color: #18181b;
+}
+.cc-loading-inline-copy span {
+    font-size: 0.8rem;
+    color: #71717a;
+}
+@keyframes cc-spin {
+    to { transform: rotate(360deg); }
+}
+@keyframes cc-wait-bar {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(320%); }
+}

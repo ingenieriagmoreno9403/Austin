@@ -38,6 +38,15 @@
                             <input id="p-tc" class="form-control" type="number" step="0.01" min="0" placeholder="20.00">
                         </div>
                     </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="p-tipo-budget">Tipo de budget</label>
+                        <select id="p-tipo-budget" class="form-select" required>
+                            <option value="3+9">3 + 9 · copia ene–mar (bloqueados) · edita abr–dic</option>
+                            <option value="6+6">6 + 6 · copia ene–jun (bloqueados) · edita jul–dic</option>
+                            <option value="9+3">9 + 3 · copia ene–sep (editables) · edita también oct–dic</option>
+                        </select>
+                        <small class="text-muted" id="p-tipo-budget-hint">Se fija al abrir el ciclo y no se puede cambiar después.</small>
+                    </div>
 
                     <div class="col-12"><div class="cc-form-kicker">Ventana de captura</div></div>
                     <div class="col-md-4">

@@ -193,7 +193,7 @@
                             </div>
                             <div class="cc-matrix-fx">
                                 <span class="cc-fx-badge" id="ctl-fx-badge">Vista MXN · TC —</span>
-                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Los cambios se guardan al salir de cada celda.</small>
+                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
                             </div>
                         </div>
                         <div class="cc-matrix-wrap">
@@ -406,6 +406,41 @@
 </div>
 
 @include('ProyeccionesVentas.partials.modal-indicadores')
+
+<div class="modal fade cc-modal" id="modalPrecioMeses" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0">Precio por mes</h5>
+                    <p class="text-muted mb-0 mt-1" id="pm-sub" style="font-size:.82rem">Producto</p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted mb-3" style="font-size:.85rem">
+                    El precio global aplica a todo el año. Solo captura un valor en los meses que deban cambiar.
+                </p>
+                <div class="row g-2 align-items-end mb-3">
+                    <div class="col-sm-5">
+                        <label class="form-label" for="pm-base">Precio global (lista)</label>
+                        <input id="pm-base" class="form-control" type="number" step="0.0001" min="0" readonly>
+                        <small class="text-muted" id="pm-base-hint"></small>
+                    </div>
+                    <div class="col-sm-7 d-flex gap-2 flex-wrap">
+                        <button type="button" class="cc-btn" id="pm-apply-all">Usar global en los 12</button>
+                        <button type="button" class="cc-btn" id="pm-reset">Limpiar overrides</button>
+                    </div>
+                </div>
+                <div class="cc-tc-months" id="pm-months"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="cc-btn cc-btn-ink" id="pm-save">Guardar precios</button>
+            </div>
+        </div>
+    </div>
+</div>
 @endsection
 
 @section('js')
