@@ -113,7 +113,7 @@
                     </div>
                 </div>
                 <div class="cc-pick-list cc-check-list" id="asig-cta-list">
-                    <div class="cc-empty">Elige un centro (o Sin centro de costos) para ver las cuentas</div>
+                    <div class="cc-empty">Cargando cuentas…</div>
                 </div>
                 <div class="cc-asig-foot" id="asig-cta-foot">
                     <span class="text-muted" style="font-size:.78rem" id="asig-cta-sel">0 seleccionadas</span>

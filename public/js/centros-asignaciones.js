@@ -1146,8 +1146,15 @@
         var ctaSelected = {};
         var ctaMask = '';
         var ctaGrupo = '';
+        var ctaLoaded = false;
         var lastFlashKey = '';
         var currentUserId = 0;
+
+        function showCtaLoading() {
+            ctaLoaded = false;
+            var list = document.getElementById('asig-cta-list');
+            if (list) list.innerHTML = '<div class="cc-empty">Cargando cuentas…</div>';
+        }
 
         function normCode(s) {
             return String(s || '').replace(/\s+/g, '').toLowerCase();
@@ -1492,6 +1499,7 @@
             if (same && centros.length) {
                 fillCentros(ccQ ? ccQ.value : '');
                 loadGrupos();
+                loadCuentas();
                 return;
             }
             centros = [];
@@ -1509,12 +1517,12 @@
             if (ccList) ccList.innerHTML = '<div class="cc-empty">Cargando centros…</div>';
             if (ccQ) { ccQ.disabled = false; ccQ.value = ''; }
             if (ctaQ) { ctaQ.disabled = true; ctaQ.value = ''; }
-            var list = document.getElementById('asig-cta-list');
-            if (list) list.innerHTML = '<div class="cc-empty">Elige un centro (o Sin centro de costos) para ver las cuentas</div>';
+            showCtaLoading();
             fillMaskUi('asig-cta-mask', [], [], '', setCtaMask);
             fillGrupoUi('asig-cta-grupo', [], '', setCtaGrupo);
             loadCentros();
             loadGrupos();
+            loadCuentas();
         }
 
         function unlockEmpresas() {
@@ -1722,7 +1730,8 @@
                 return;
             }
             var box = document.getElementById('asig-cta-list');
-            if (box) box.innerHTML = '<div class="cc-empty">Cargando GroupMask ' + escapeHtml(ctaMask) + '…</div>';
+            ctaLoaded = false;
+            if (box) box.innerHTML = '<div class="cc-empty">Cargando cuentas…</div>';
             getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(cfg.empresa) +
                 '&group_mask=' + encodeURIComponent(ctaMask)).then(function (json) {
                 if (String(ctaMask) !== String(mask || '')) return;
@@ -1731,9 +1740,11 @@
                     agrupaciones = json.agrupaciones;
                 }
                 cuentas = cacheCuentas[key];
+                ctaLoaded = true;
                 fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
                 renderCuentas(ctaQ ? ctaQ.value : '');
             }).catch(function () {
+                ctaLoaded = true;
                 renderCuentas(ctaQ ? ctaQ.value : '');
             });
         }
@@ -1763,10 +1774,12 @@
 
         function loadCuentas() {
             var box = document.getElementById('asig-cta-list');
-            box.innerHTML = '<div class="cc-empty">Cargando cuentas SAP…</div>';
+            if (box) box.innerHTML = '<div class="cc-empty">Cargando cuentas…</div>';
+            ctaLoaded = false;
             var key = cfg.empresa;
             var apply = function (rows, groups) {
                 cuentas = rows || [];
+                ctaLoaded = true;
                 if (groups && groups.length) agrupaciones = groups;
                 fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
                 fillGrupoUi('asig-cta-grupo', grupos, ctaGrupo, setCtaGrupo);
@@ -1776,6 +1789,10 @@
                 }
                 renderCuentas(ctaQ ? ctaQ.value : '');
             };
+            if (!key) {
+                apply([], []);
+                return;
+            }
             if (cacheCuentas[key]) {
                 apply(cacheCuentas[key], agrupaciones);
                 return;
@@ -1783,12 +1800,22 @@
             getJSON('/CentrosCostos/api/cuentas?todas=1&empresa=' + encodeURIComponent(cfg.empresa)).then(function (json) {
                 cacheCuentas[key] = json.cuentas || [];
                 apply(cacheCuentas[key], json.agrupaciones || []);
+            }).catch(function () {
+                cuentas = [];
+                ctaLoaded = true;
+                renderCuentas(ctaQ ? ctaQ.value : '');
             });
         }
 
         function renderCuentas(q) {
             q = (q || '').toLowerCase();
             var box = document.getElementById('asig-cta-list');
+            if (!box) return;
+            if (!ctaLoaded) {
+                box.innerHTML = '<div class="cc-empty">Cargando cuentas…</div>';
+                updateCtaSelCount();
+                return;
+            }
             var mask = String(ctaMask || '');
             var grupoMap = grupoCuentaMap(grupos, ctaGrupo);
             var rows = filterRowsByGrupo(cuentas, grupoMap).filter(function (c) {
@@ -1860,8 +1887,11 @@
             ctaSelected = {};
             ctaMask = '';
             ctaGrupo = '';
-            var list = document.getElementById('asig-cta-list');
-            if (list) list.innerHTML = '<div class="cc-empty">Elige un centro (o Sin centro de costos) para ver las cuentas</div>';
+            if (ctaLoaded) {
+                renderCuentas(ctaQ ? ctaQ.value : '');
+            } else {
+                showCtaLoading();
+            }
             var todas = document.getElementById('asig-cta-todas');
             if (todas) todas.checked = false;
             fillMaskUi('asig-cta-mask', agrupaciones, cuentas, '', setCtaMask);
@@ -1893,7 +1923,7 @@
                 renderResumen();
                 if (cfg.empresa) {
                     fillCentros(ccQ ? ccQ.value : '');
-                    if (centroSel && centroSel.value) renderCuentas(ctaQ ? ctaQ.value : '');
+                    loadCuentas();
                 }
             });
         }

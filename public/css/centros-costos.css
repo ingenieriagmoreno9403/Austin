@@ -1475,6 +1475,33 @@
     height: 28px; border-radius: 6px;
     display: block;
 }
+.cc-heat-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 280px;
+    overflow: auto;
+}
+.cc-heat-row {
+    display: grid;
+    grid-template-columns: 118px 1fr;
+    gap: 8px;
+    align-items: center;
+}
+.cc-heat-row.is-click {
+    cursor: pointer;
+}
+.cc-heat-row.is-click:hover .cc-heat-name {
+    color: #0a0a0a;
+}
+.cc-heat-name {
+    font-size: 0.72rem;
+    line-height: 1.2;
+    color: var(--cc-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .cc-heat-months {
     display: grid;
     grid-template-columns: repeat(12, 1fr);
@@ -1483,6 +1510,15 @@
     font-size: 0.68rem;
     color: var(--cc-muted);
     text-align: center;
+}
+.cc-heat-months.is-labeled {
+    grid-template-columns: 118px 1fr;
+    gap: 8px;
+}
+.cc-heat-months-cells {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 4px;
 }
 .cc-an-emp {
     cursor: pointer;
@@ -1494,6 +1530,14 @@
 
 .cc-legend { display: flex; gap: 0.8rem; flex-wrap: wrap; font-size: 0.75rem; color: var(--cc-muted); }
 .cc-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 0.25rem; }
+.cc-legend .cc-swatch { width: 12px; height: 12px; vertical-align: -1px; }
+.cc-legend .cc-swatch.is-empty { background: #fee2e2; border: 1px solid #ef4444; }
+.cc-legend .cc-swatch.is-ok { background: #ecfdf5; border: 1px solid #6ee7b7; }
+.cc-legend .cc-swatch.is-over { background: #fff7ed; border: 1px solid #fdba74; }
+.cc-month-legend {
+    margin: -0.55rem 0 0.7rem;
+    gap: 1rem;
+}
 .cc-panel-head-tools {
     display: flex;
     align-items: center;

@@ -69,11 +69,11 @@
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-grip"></i> Estacionalidad</h3>
             </div>
-            <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Gasto {{ $bootstrap['anioGasto'] }}</p>
-            <div class="cc-heat mb-2" id="an-heat"></div>
-            <div class="cc-heat-months" id="an-heat-months"></div>
+            <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Gasto {{ $bootstrap['anioGasto'] }} · por empresa</p>
+            <div class="cc-heat-stack mb-2" id="an-heat"></div>
+            <div class="cc-heat-months is-labeled" id="an-heat-months"></div>
             <div class="cc-legend">
-                <span>Ene → Dic · intensidad = gasto real del año de referencia</span>
+                <span>Ene → Dic · intensidad = gasto real · elige una empresa para ver centros</span>
             </div>
         </div>
     </div>

@@ -161,6 +161,11 @@
                             <div class="cc-progress warn" id="ctl-form-avance-wrap"><span id="ctl-form-avance-bar" style="width:0%"></span></div>
                             <div class="cc-cta-fill-meta" id="ctl-form-avance-meta">0 de 12 meses capturados</div>
                         </div>
+                        <div class="cc-legend cc-month-legend" aria-label="Guía de color de los meses">
+                            <span><i class="cc-swatch is-empty"></i> Sin capturar</span>
+                            <span><i class="cc-swatch is-ok"></i> Capturado</span>
+                            <span class="js-legend-over"><i class="cc-swatch is-over"></i> Sobre inflación vs gasto {{ $bootstrap['anioGasto'] }}</span>
+                        </div>
                         <div class="cc-month-row">
                             <div class="cc-month-grid" id="ctl-month-grid"></div>
                             <div class="cc-captura-quick">
@@ -206,9 +211,9 @@
                         <input type="checkbox" id="ctl-chart-todas"> Ver todas
                     </label>
                     <div class="cc-legend">
-                        <span><i style="background:#fee2e2;border:1px solid #ef4444"></i> Sin capturar</span>
-                        <span><i style="background:#ecfdf5"></i> Capturado</span>
-                        <span><i style="background:#fff7ed;border:1px solid #fdba74"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                        <span><i class="cc-swatch is-empty"></i> Sin capturar</span>
+                        <span><i class="cc-swatch is-ok"></i> Capturado</span>
+                        <span class="js-legend-over"><i class="cc-swatch is-over"></i> Sobre inflación vs {{ $bootstrap['anioGasto'] }}</span>
                     </div>
                 </div>
             </div>

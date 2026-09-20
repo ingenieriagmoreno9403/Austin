@@ -183,7 +183,7 @@ class AutinApiClient
      * @param  array<int, string>  $nombres
      * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>}
      */
-    public function gastoRealPorNombres(string $empresa, int $year, array $nombres, int $maxPages = 12, int $concurrency = 8): array
+    public function gastoRealPorNombres(string $empresa, int $year, array $nombres, int $maxPages = 12, int $concurrency = 8, string $cc = ''): array
     {
         $nombres = array_values(array_unique(array_filter(array_map('trim', $nombres))));
         if (! $nombres) {
@@ -197,6 +197,10 @@ class AutinApiClient
             'fecha_hasta' => $year . '-12-31',
             'per_page' => 500,
         ];
+        $cc = trim($cc);
+        if ($cc !== '') {
+            $base['CC'] = $cc;
+        }
         $url = $this->baseUrl.'/gasto-real';
         $rows = [];
         $lastByName = [];
@@ -257,6 +261,71 @@ class AutinApiClient
             'ok' => $ok,
             'message' => $ok ? null : ($message ?: 'Sin conexión a gasto real SAP'),
             'rows' => $rows,
+        ];
+    }
+
+    /**
+     * Una fila de gasto-real por centro para leer DEPTO.
+     *
+     * @param  array<int, string>  $ccs
+     * @return array{ok: bool, message: string|null, por_cc: array<string, string>}
+     */
+    public function gastoRealDeptoPorCentros(string $empresa, int $year, array $ccs, int $concurrency = 8): array
+    {
+        $ccs = array_values(array_unique(array_filter(array_map('trim', $ccs))));
+        if (! $ccs) {
+            return ['ok' => true, 'message' => null, 'por_cc' => []];
+        }
+
+        $url = $this->baseUrl.'/gasto-real';
+        $base = [
+            'Empresa' => $empresa,
+            'year' => $year,
+            'fecha_desde' => $year . '-01-01',
+            'fecha_hasta' => $year . '-12-31',
+            'per_page' => 1,
+            'page' => 1,
+        ];
+        $porCc = [];
+        $ok = false;
+        $message = null;
+
+        $reqs = function () use ($url, $base, $ccs) {
+            foreach ($ccs as $i => $cc) {
+                $query = array_filter(array_merge($base, ['CC' => $cc]));
+                yield $i => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        };
+        $pool = new Pool($this->client, $reqs(), [
+            'concurrency' => max(1, $concurrency),
+            'fulfilled' => function ($response, $i) use (&$porCc, &$ok, $ccs) {
+                $ok = true;
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                $row = is_array($data[0] ?? null) ? $data[0] : [];
+                $depto = trim((string) ($row['DEPTO'] ?? $row['Depto'] ?? $row['depto'] ?? $row['departamento'] ?? ''));
+                if ($depto === '' || preg_match('/^\d+$/', $depto)) {
+                    return;
+                }
+                $cc = (string) ($ccs[$i] ?? '');
+                if ($cc !== '') {
+                    $porCc[$cc] = $depto;
+                }
+                $rowCc = trim((string) ($row['CC'] ?? $row['PrcCode'] ?? ''));
+                if ($rowCc !== '') {
+                    $porCc[$rowCc] = $depto;
+                }
+            },
+            'rejected' => function ($reason) use (&$message) {
+                $message = $message ?: ('No se pudo conectar con AutinApi: ' . $reason);
+            },
+        ]);
+        $pool->promise()->wait();
+
+        return [
+            'ok' => $ok,
+            'message' => $ok ? null : ($message ?: 'Sin conexión a gasto real SAP'),
+            'por_cc' => $porCc,
         ];
     }
 

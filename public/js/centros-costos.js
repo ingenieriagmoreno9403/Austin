@@ -27,6 +27,32 @@
         return String(raw).toUpperCase() === 'USD' ? 'USD' : 'MXN';
     }
 
+    function inflacionPct() {
+        var n = Number(CC.state.period && CC.state.period.inflacion);
+        return isFinite(n) && n >= 0 ? n : 4;
+    }
+
+    function inflacionLabel() {
+        var n = inflacionPct();
+        var rounded = Math.round(n * 10) / 10;
+        return String(rounded);
+    }
+
+    function pptoSobreInflacion(ppto, gasto) {
+        var g = Number(gasto) || 0;
+        if (g <= 0) return false;
+        return Number(ppto) > g * (1 + inflacionPct() / 100);
+    }
+
+    function paintOverLegends() {
+        var y = CC.state.anioGasto || '';
+        var label = '+' + inflacionLabel() + '% inflación vs gasto ' + y;
+        document.querySelectorAll('.js-legend-over').forEach(function (el) {
+            var swatch = el.querySelector('i');
+            el.innerHTML = (swatch ? swatch.outerHTML + ' ' : '') + label;
+        });
+    }
+
     function fxRate() {
         var p = CC.state.period || {};
         var n = Number(p.tipoCambio != null && p.tipoCambio !== '' ? p.tipoCambio : p.tipo_cambio);
@@ -434,7 +460,7 @@
 
     function gastoCacheKey(c) {
         var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        return String(c.empresa || '').toUpperCase() + '|' + year;
+        return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
     }
 
     function gastoLookupDeCentro(c) {
@@ -541,10 +567,16 @@
         if (!c || !CC.state.gastoUrl) return;
         var key = gastoCacheKey(c);
         control._gastoReq = key;
+        var cached = CC.state.gastoCache && CC.state.gastoCache[key];
+        if (cached) {
+            applyGastoMap(cached);
+        } else {
+            control._gastoMap = {};
+            control._gastoNombres = [];
+        }
         var all = nombresAsignadosCentro(c);
         var pend = all.filter(function (n) { return !nombreGastoCargado(n); });
         if (!pend.length) {
-            if (CC.state.gastoCache && CC.state.gastoCache[key]) applyGastoMap(CC.state.gastoCache[key]);
             return;
         }
         var actual = currentCta();
@@ -816,7 +848,7 @@
         var sapCuentas = boot.cuentas || [];
         var demoC = demoCentros();
         var demoA = demoCuentas();
-        if (sapCentros.length) CC.state.sapCentros = sapCentros;
+        if (sapCentros.length) mergeSapCentros(sapCentros);
 
         if (!lockCentros) {
             if (sapCentros.length) {
@@ -1325,6 +1357,7 @@
         setText('th-gasto', 'Gasto ' + (p.anioReferencia || 2026));
         setText('th-ppto', 'Ppto ' + (p.anio || 2027));
         setText('ind-inflacion', (p.inflacion || 0) + ' %');
+        paintOverLegends();
         setText('ind-tc', '$ ' + Number(p.tipoCambio || 0).toFixed(2));
         setText('ind-anio-ref', p.anioReferencia || 2026);
         setText('ind-anio', p.anio || 2027);
@@ -2053,6 +2086,7 @@
                 CC.state.period = Object.assign({}, CC.state.period, period);
                 if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
                 if (period.anio) CC.state.anioPresupuesto = period.anio;
+                paintOverLegends();
             }
             CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
             if (empEl && !emp) empEl.value = '';
@@ -2167,6 +2201,7 @@
             fillVisorFilters();
             renderVisorTable();
             setVista(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura');
+            loadDeptosVisor();
         });
     };
 
@@ -2197,6 +2232,7 @@
                 CC.state.period = Object.assign({}, CC.state.period, period);
                 if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
                 if (period.anio) CC.state.anioPresupuesto = period.anio;
+                paintOverLegends();
             }
         }
         renderPeriodBanner();
@@ -2497,7 +2533,7 @@
             return cls;
         }
         var val = Number(raw);
-        if (cta.gasto[i] && val > cta.gasto[i] * 1.2) cls += ' is-over';
+        if (pptoSobreInflacion(val, cta.gasto[i])) cls += ' is-over';
         else cls += ' is-ok';
         return cls;
     }
@@ -2677,7 +2713,7 @@
                     for (var i = 0; i < 12; i++) {
                         var lleno = mesLleno(cta.ppto[i]);
                         var pCls = lleno
-                            ? (cta.gasto[i] && cta.ppto[i] > cta.gasto[i] * 1.2 ? 'is-over' : 'is-ok')
+                            ? (pptoSobreInflacion(cta.ppto[i], cta.gasto[i]) ? 'is-over' : 'is-ok')
                             : 'is-empty';
                         html += '<td class="num text-muted" style="font-size:.75rem">' + moneyGasto(cta.gasto[i] || 0) + '</td>';
                         html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem">' +
@@ -2801,18 +2837,115 @@
         });
     }
 
+    function empresaSapKey(emp) {
+        var e = String(emp || '').toUpperCase();
+        return e === 'ABSA' ? 'AUSTIN' : e;
+    }
+
+    function codigoCcKey(code) {
+        var s = String(code || '').trim();
+        var n = s.replace(/^0+/, '');
+        return n || s;
+    }
+
+    function sapCentroDe(c) {
+        var code = codigoCcKey(c && c.codigo);
+        var emp = empresaSapKey(c && c.empresa);
+        return (CC.state.sapCentros || []).filter(function (s) {
+            if (codigoCcKey(s.codigo) !== code) return false;
+            if (s.empresa && emp && empresaSapKey(s.empresa) !== emp) return false;
+            return true;
+        })[0];
+    }
+
+    function deptoLabel(val) {
+        var d = String(val || '').trim();
+        if (!d || /^\d+$/.test(d)) return '';
+        return d;
+    }
+
     function deptoDeCentro(c) {
-        if (c && c.departamento) return c.departamento;
-        var emp = String((c && c.empresa) || '').toUpperCase();
-        var code = String((c && c.codigo) || '');
-        var sap = (CC.state.sapCentros || []).filter(function (s) {
-            return String(s.codigo) === code && (!s.empresa || String(s.empresa).toUpperCase() === emp);
-        })[0];
-        if (sap && sap.departamento) return sap.departamento;
-        var demo = demoCentros().filter(function (d) {
-            return String(d.codigo) === code && (!emp || d.empresa === emp);
-        })[0];
-        return (demo && demo.departamento) || '—';
+        var own = deptoLabel(c && c.departamento);
+        if (own) return own;
+        var sap = sapCentroDe(c);
+        var d = deptoLabel(sap && sap.departamento);
+        return d || '—';
+    }
+
+    function sapCentroKey(s) {
+        return empresaSapKey(s && s.empresa) + '|' + codigoCcKey(s && s.codigo);
+    }
+
+    function mergeSapCentros(list) {
+        CC.state.sapCentros = CC.state.sapCentros || [];
+        var byKey = {};
+        CC.state.sapCentros.forEach(function (s) {
+            byKey[sapCentroKey(s)] = s;
+        });
+        (list || []).forEach(function (s) {
+            var k = sapCentroKey(s);
+            var prev = byKey[k];
+            if (!prev) {
+                byKey[k] = s;
+                CC.state.sapCentros.push(s);
+                return;
+            }
+            if (!deptoLabel(prev.departamento) && deptoLabel(s.departamento)) {
+                prev.departamento = s.departamento;
+            }
+            if (!prev.nombre && s.nombre) prev.nombre = s.nombre;
+        });
+    }
+
+    function loadDeptosVisor() {
+        if (CC.state.page !== 'control') return;
+        var groups = {};
+        (CC.state.centros || []).forEach(function (c) {
+            if (deptoDeCentro(c) !== '—') return;
+            var emp = empresaSapKey(c.empresa);
+            if (!emp || !c.codigo) return;
+            if (!groups[emp]) groups[emp] = [];
+            groups[emp].push(c.codigo);
+        });
+        var emps = Object.keys(groups);
+        if (!emps.length) {
+            fillVisorFilters();
+            renderVisorTable();
+            return;
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        var key = emps.slice().sort().join(',') + '|' + year;
+        if (CC._deptoReq === key) {
+            fillVisorFilters();
+            renderVisorTable();
+            return;
+        }
+        CC._deptoReq = key;
+        var left = emps.length;
+        emps.forEach(function (emp) {
+            var params = new URLSearchParams();
+            params.set('empresa', emp);
+            params.set('year', String(year));
+            groups[emp].forEach(function (cc) { params.append('ccs[]', cc); });
+            fetch('/CentrosCostos/api/departamentos?' + params.toString(), {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(function (res) { return res.json(); }).then(function (json) {
+                var map = (json && json.por_cc) || {};
+                (CC.state.centros || []).forEach(function (c) {
+                    if (empresaSapKey(c.empresa) !== emp) return;
+                    var d = deptoLabel(map[c.codigo] || map[codigoCcKey(c.codigo)]);
+                    if (d) c.departamento = d;
+                });
+                mergeSapCentros(Object.keys(map).map(function (cc) {
+                    return { codigo: cc, empresa: emp, departamento: map[cc] };
+                }));
+            }).catch(function () { /* sin depto SAP */ }).then(function () {
+                left -= 1;
+                if (left > 0) return;
+                fillVisorFilters();
+                renderVisorTable();
+            });
+        });
     }
 
     function rememberPageHeader() {
@@ -3405,7 +3538,12 @@
         setText('an-th-gasto', 'Gasto ' + g);
         setText('an-th-ppto', 'Ppto ' + p);
         var months = document.getElementById('an-heat-months');
-        if (months) months.innerHTML = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
+        if (months) {
+            var cells = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
+            months.innerHTML = months.classList.contains('is-labeled')
+                ? '<span></span><span class="cc-heat-months-cells">' + cells + '</span>'
+                : cells;
+        }
     }
 
     function fillAnalisisFilters() {
@@ -3467,11 +3605,15 @@
                 empBox.addEventListener('click', function (e) {
                     var hit = e.target.closest('[data-emp]');
                     if (!hit) return;
-                    var sel = document.getElementById('an-empresa');
-                    if (!sel) return;
-                    var next = hit.getAttribute('data-emp') || '';
-                    sel.value = sel.value === next ? '' : next;
-                    renderAnalisis();
+                    toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
+                });
+            }
+            var heatBox = document.getElementById('an-heat');
+            if (heatBox) {
+                heatBox.addEventListener('click', function (e) {
+                    var hit = e.target.closest('[data-emp]');
+                    if (!hit) return;
+                    toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
                 });
             }
             CC._analisisBound = true;
@@ -3595,6 +3737,28 @@
         });
     }
 
+    function toggleAnalisisEmpresa(next) {
+        var sel = document.getElementById('an-empresa');
+        if (!sel) return;
+        sel.value = sel.value === next ? '' : next;
+        renderAnalisis();
+    }
+
+    function heatMonthCells(monthG, max) {
+        max = max || 1;
+        return (monthG || MONTHS.map(function () { return 0; })).map(function (v, i) {
+            var t = (v || 0) / max;
+            var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
+            return '<span title="' + MONTHS[i] + ': ' + money(v || 0) + '" style="background:' + bg + '"></span>';
+        }).join('');
+    }
+
+    function emptyMonthCells() {
+        return MONTHS.map(function () {
+            return '<span style="background:rgba(10,10,10,.08)"></span>';
+        }).join('');
+    }
+
     function renderAnalisis() {
         var q = (val('an-q') || '').toLowerCase();
         var emp = val('an-empresa');
@@ -3694,21 +3858,48 @@
 
         var heat = document.getElementById('an-heat');
         if (heat) {
-            var focus = rows.slice().sort(function (a, b) { return b.gasto - a.gasto; })[0];
-            if (focus) {
-                var monthG = focus.monthGasto || MONTHS.map(function () { return 0; });
-                var max = Math.max.apply(null, monthG.concat([1]));
-                heat.innerHTML = monthG.map(function (v, i) {
-                    var t = v / max;
-                    var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
-                    return '<span title="' + MONTHS[i] + ': ' + money(v) + '" style="background:' + bg + '"></span>';
-                }).join('');
-                setText('an-heat-label', 'Gasto ' + gYear + ' · ' + focus.codigo + ' ' + focus.nombre);
+            var heatItems = [];
+            if (emp) {
+                heatItems = rows.slice().sort(function (a, b) { return b.gasto - a.gasto; }).map(function (c) {
+                    return {
+                        label: (c.codigo || '') + (c.nombre ? (' ' + c.nombre) : ''),
+                        months: c.monthGasto || MONTHS.map(function () { return 0; }),
+                        attr: ''
+                    };
+                });
+                setText('an-heat-label', 'Gasto ' + gYear + ' · por centro · ' + emp);
             } else {
-                heat.innerHTML = MONTHS.map(function () {
-                    return '<span style="background:rgba(10,10,10,.08)"></span>';
+                var byEmpHeat = {};
+                rows.forEach(function (c) {
+                    var key = c.empresa || '—';
+                    byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
+                    (c.monthGasto || []).forEach(function (v, i) {
+                        byEmpHeat[key][i] += v || 0;
+                    });
+                });
+                heatItems = Object.keys(byEmpHeat).map(function (e) {
+                    var months = byEmpHeat[e];
+                    var tot = months.reduce(function (a, v) { return a + (v || 0); }, 0);
+                    return { label: e, months: months, tot: tot, attr: ' data-emp="' + escapeHtml(e) + '"' };
+                }).sort(function (a, b) { return b.tot - a.tot; });
+                setText('an-heat-label', 'Gasto ' + gYear + ' · por empresa');
+            }
+
+            if (!heatItems.length) {
+                heat.innerHTML = '<div class="cc-heat-row"><div class="cc-heat-name">—</div><div class="cc-heat">' + emptyMonthCells() + '</div></div>';
+            } else {
+                var max = 1;
+                heatItems.forEach(function (item) {
+                    var local = Math.max.apply(null, (item.months || []).concat([0]));
+                    if (local > max) max = local;
+                });
+                heat.innerHTML = heatItems.map(function (item) {
+                    var click = item.attr ? ' is-click' : '';
+                    return '<div class="cc-heat-row' + click + '"' + item.attr + '>' +
+                        '<div class="cc-heat-name" title="' + escapeHtml(item.label) + '">' + escapeHtml(item.label) + '</div>' +
+                        '<div class="cc-heat">' + heatMonthCells(item.months, max) + '</div>' +
+                        '</div>';
                 }).join('');
-                setText('an-heat-label', 'Gasto ' + gYear);
             }
         }
     }
@@ -3874,6 +4065,7 @@
         CC.state.period = Object.assign({}, boot.periodoDefault || {}, actual);
         if (CC.state.period.anioReferencia) CC.state.anioGasto = CC.state.period.anioReferencia;
         if (CC.state.period.anio) CC.state.anioPresupuesto = CC.state.period.anio;
+        paintOverLegends();
         CC.state.overlays = {};
         CC.state.budgets = {};
         CC.state.completados = {};

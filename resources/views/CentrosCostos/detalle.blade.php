@@ -47,7 +47,7 @@
                 <div class="cc-legend">
                     <span><i style="background:#fffbeb"></i> Sin capturar</span>
                     <span><i style="background:#ecfdf5"></i> Capturado</span>
-                    <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                    <span class="js-legend-over"><i style="background:#fef2f2"></i> Sobre inflación vs {{ $bootstrap['anioGasto'] }}</span>
                 </div>
             </div>
         </div>

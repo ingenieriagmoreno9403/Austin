@@ -1217,6 +1217,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::delete('/CentrosCostos/api/ciclos/{ciclo}', [CentrosCostosController::class, 'destroyCiclo'])->name('centros.api.ciclos.destroy');
     Route::get('/CentrosCostos/api/empresas', [CentrosCostosController::class, 'empresasSap'])->name('centros.api.empresas');
     Route::get('/CentrosCostos/api/centros', [CentrosCostosController::class, 'centrosSap'])->name('centros.api.centros');
+    Route::get('/CentrosCostos/api/departamentos', [CentrosCostosController::class, 'departamentosCentros'])->name('centros.api.departamentos');
     Route::get('/CentrosCostos/api/cuentas', [CentrosCostosController::class, 'cuentasSap'])->name('centros.api.cuentas');
     Route::get('/CentrosCostos/api/mis-asignaciones', [CentrosCostosController::class, 'misAsignaciones'])->name('centros.api.mis');
     Route::get('/ControlCentros', [CentrosCostosController::class, 'control'])->name('centros.control');
