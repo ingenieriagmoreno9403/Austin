@@ -336,11 +336,10 @@ class ProyeccionesVentasController extends Controller
         $empresa = strtolower((string) $request->get('empresa', 'austin'));
         $cliente = trim((string) $request->get('cliente', $request->get('cc', '')));
         $year = (int) $request->get('year', date('Y'));
-        if (function_exists('set_time_limit')) {
-            @set_time_limit(120);
-        }
-
         $todas = $request->boolean('todas');
+        if (function_exists('set_time_limit')) {
+            @set_time_limit($todas ? 180 : 120);
+        }
 
         try {
             $cargadas = $this->cargarProductosCliente($empresa, $cliente, $year, $todas);
@@ -1815,7 +1814,7 @@ class ProyeccionesVentasController extends Controller
      * @param  array<string, mixed>  $extra
      * @return array{ok: bool, rows: array<int, array<string, mixed>>, mensaje: string|null}
      */
-    protected function filasVentasEmpresa(string $empresa, int $year, array $extra = []): array
+    protected function filasVentasEmpresa(string $empresa, int $year, array $extra = [], int $maxPages = 30): array
     {
         $api = app(AutinApiClient::class);
         $rows = [];
@@ -1825,7 +1824,7 @@ class ProyeccionesVentasController extends Controller
             $pack = $api->ventasTodasPaginas(array_merge([
                 'year' => $year,
                 'Empresa' => $empFiltro,
-            ], $extra), 30, 6);
+            ], $extra), $maxPages, 6);
             if (empty($pack['ok'])) {
                 if (! $ok) {
                     $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
@@ -1867,7 +1866,7 @@ class ProyeccionesVentasController extends Controller
         $requested = $year;
         $last = null;
         for ($y = $year; $y >= $year - 3 && $y >= 2000; $y--) {
-            $pack = $this->cargarProductosClienteAnio($empresa, $cliente, $y);
+            $pack = $this->cargarProductosClienteAnio($empresa, $cliente, $y, $todas);
             $last = $pack;
             if (! empty($pack['productos'])) {
                 if ($y !== $requested) {
@@ -1888,15 +1887,17 @@ class ProyeccionesVentasController extends Controller
     /**
      * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
      */
-    protected function cargarProductosClienteAnio(string $empresa, string $cliente, int $year): array
+    protected function cargarProductosClienteAnio(string $empresa, string $cliente, int $year, bool $todas = false): array
     {
-        $cacheKey = 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
+        $cacheKey = $todas
+            ? 'pv.productos.'.$empresa.'.'.$year.'.ALL'
+            : 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['productos'])) {
             return $cached;
         }
 
-        $pack = $this->filasVentasEmpresa($empresa, $year, $todas ? [] : ['CardCode' => $cliente]);
+        $pack = $this->filasVentasEmpresa($empresa, $year, $todas ? [] : ['CardCode' => $cliente], $todas ? 80 : 30);
         $map = [];
         foreach ($pack['rows'] as $row) {
             $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));

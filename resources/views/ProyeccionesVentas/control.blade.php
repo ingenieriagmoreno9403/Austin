@@ -198,8 +198,8 @@
                         </div>
                         <div class="cc-matrix-legend" id="ctl-matrix-legend" aria-label="Indicadores de color">
                             <span class="cc-legend-label">Indicadores</span>
-                            <span class="cc-legend-item is-ok"><span class="cc-legend-swatch" aria-hidden="true"></span> Mayor o igual a venta pasada</span>
-                            <span class="cc-legend-item is-over"><span class="cc-legend-swatch" aria-hidden="true"></span> Menor a venta pasada</span>
+                            <span class="cc-legend-item is-ok"><span class="cc-legend-swatch" aria-hidden="true"></span> <span id="ctl-legend-ok">Mayor o igual a venta pasada</span></span>
+                            <span class="cc-legend-item is-over"><span class="cc-legend-swatch" aria-hidden="true"></span> <span id="ctl-legend-over">Menor a venta pasada</span></span>
                             <span class="cc-legend-item is-empty"><span class="cc-legend-swatch" aria-hidden="true"></span> Pendiente de capturar</span>
                         </div>
                         <div class="cc-matrix-wrap">

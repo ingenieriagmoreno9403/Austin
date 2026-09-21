@@ -1409,12 +1409,41 @@
         renderVisorTable();
     }
 
+    function cicloSortKey(c) {
+        c = c || {};
+        var id = Number(c.id) || 0;
+        if (id) return id;
+        return Date.parse(String(c.inicio || c.fin || c.capturaHasta || '')) || 0;
+    }
+
+    /** Ciclo previo del mismo año de presupuesto (el más reciente entre los más antiguos). */
+    function cicloProyectoAnterior() {
+        var current = cicloActualCodigo();
+        var cur = findCiclo(current) || CC.state.period || {};
+        var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
+        var curKey = cicloSortKey(cur);
+        var sameYear = (CC.state.ciclos || []).filter(function (c) {
+            return String(c.codigo || '').toUpperCase() !== String(current || '').toUpperCase()
+                && (!anio || Number(c.anio) === anio);
+        });
+        var earlier = sameYear.filter(function (c) {
+            return curKey > 0 && cicloSortKey(c) < curKey;
+        }).sort(function (a, b) {
+            return cicloSortKey(b) - cicloSortKey(a);
+        });
+        if (earlier[0] && earlier[0].codigo) return earlier[0].codigo;
+        // Si el SIOP se dio de alta primero, usar el único otro ciclo del mismo año.
+        if (sameYear.length === 1 && sameYear[0].codigo) return sameYear[0].codigo;
+        return '';
+    }
+
     /** Ciclo Budget del mismo año (SIOP o sin forecast), para heredar meses editables. */
     function cicloBaseProyeccion() {
         var current = cicloActualCodigo();
         var cur = findCiclo(current) || CC.state.period || {};
         var tipo = cur.tipoBudget || budgetTipo();
-        if (!esForecastTipo(tipo) && !esSiopTipo(tipo)) return '';
+        if (esSiopTipo(tipo)) return cicloProyectoAnterior();
+        if (!esForecastTipo(tipo)) return '';
         var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
         var ciclos = CC.state.ciclos || [];
         var sameYear = ciclos.filter(function (c) {
@@ -1432,6 +1461,26 @@
         // 3) Cualquier otro del mismo año que no sea forecast.
         var other = sameYear.filter(function (c) { return !esForecastTipo(c.tipoBudget); });
         return (other[0] && other[0].codigo) || '';
+    }
+
+    /** En SIOP, la fila de arriba compara contra el proyecto anterior (0 si no hay dato). */
+    function pastQtyMes(cta, monthIdx) {
+        if (esSiopTipo()) {
+            var c = control.centro;
+            if (!c || !cta) return 0;
+            var row = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            if (row && mesLleno(row[monthIdx])) return Number(row[monthIdx]) || 0;
+            return 0;
+        }
+        return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
+    }
+
+    function pastQtyCaption() {
+        if (esSiopTipo()) {
+            var code = CC.state.cicloBaseCodigo || '';
+            return code ? ('proy. ' + code) : 'proy. anterior';
+        }
+        return 'venta ' + (CC.state.anioGasto || '');
     }
 
     function loadBudgetsBaseForSeed(gen, cicloEsperado) {
@@ -1666,7 +1715,8 @@
             var usedVenta = false;
             for (var i = 0; i < 12; i++) {
                 if (esSiopTipo(tipo)) {
-                    // SIOP: todo el año desde Budget; editable.
+                    // SIOP: captura hereda el proyecto anterior. Las celdas vacías no se pisan con 0
+                    // (el 0 de “sin dato” va en la fila precargada de comparación).
                     if (baseRow && mesLleno(baseRow[i])) {
                         months.push(toStoreQty(Number(baseRow[i]) || 0));
                         usedBase = true;
@@ -1703,7 +1753,7 @@
             control._allCtas = cuentasEnriquecidas(c);
             var parts = [];
             if (esSiopTipo(tipo)) {
-                parts.push('Budget precargado' + (fromBase ? (' en ' + fromBase + (fromBase === 1 ? ' producto' : ' productos')) : ''));
+                parts.push('Proyecto anterior precargado' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : ' (0 si no había captura)'));
                 parts.push('todos los meses editables');
             } else {
                 if (fromVenta) {
@@ -3816,17 +3866,31 @@
         if (wrap) wrap.className = 'cc-progress ' + (st.pendientes ? 'warn' : 'good');
     }
 
-    function paintMatrixHint() {
-        var hint = document.getElementById('ctl-matrix-hint');
-        if (!hint) return;
-        var cta = currentCta();
-        var anio = CC.state.anioGasto || '';
-        if (cta) {
-            hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
-                '. Arriba = venta ' + anio + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
+    function paintMatrixLegend() {
+        var ok = document.getElementById('ctl-legend-ok');
+        var over = document.getElementById('ctl-legend-over');
+        if (esSiopTipo()) {
+            var src = CC.state.cicloBaseCodigo || 'proyecto anterior';
+            if (ok) ok.textContent = 'Mayor o igual a ' + src;
+            if (over) over.textContent = 'Menor a ' + src;
             return;
         }
-        hint.textContent = 'Arriba de cada mes: venta ' + anio + '. Abajo: proyección. Clic en un producto para herramientas puntuales.';
+        if (ok) ok.textContent = 'Mayor o igual a venta pasada';
+        if (over) over.textContent = 'Menor a venta pasada';
+    }
+
+    function paintMatrixHint() {
+        var hint = document.getElementById('ctl-matrix-hint');
+        paintMatrixLegend();
+        if (!hint) return;
+        var cta = currentCta();
+        var arriba = pastQtyCaption();
+        if (cta) {
+            hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
+                '. Arriba = ' + arriba + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
+            return;
+        }
+        hint.textContent = 'Arriba de cada mes: ' + arriba + '. Abajo: proyección. Clic en un producto para herramientas puntuales.';
     }
 
     function nombrePresupuestoActual() {
@@ -4221,8 +4285,13 @@
         var thead = document.getElementById('ctl-matrix-thead');
         var tbody = document.getElementById('ctl-matrix-tbody');
         if (!thead || !tbody) return;
+        paintMatrixLegend();
         ctas = ctas || matrixCtas();
         var anioPast = CC.state.anioGasto || '';
+        var siop = esSiopTipo();
+        var pastHead = siop
+            ? (CC.state.cicloBaseCodigo ? String(CC.state.cicloBaseCodigo) : 'proy. ant.')
+            : String(anioPast).slice(2);
         var cur = isUsdView() ? 'USD' : 'MXN';
         var head = '<tr><th class="sticky-col">Producto</th>' +
             '<th class="num">Costo<span class="cc-th-past">pieza ’' + String(anioPast).slice(2) + '</span></th>' +
@@ -4236,7 +4305,7 @@
             var diff = Math.abs(tcM - base) > 0.0001;
             var lockedMes = mesBloqueadoBudget(mi);
             head += '<th class="num">' + m +
-                '<span class="cc-th-past">vs ' + String(anioPast).slice(2) + '</span>' +
+                '<span class="cc-th-past">vs ' + escapeHtml(pastHead) + '</span>' +
                 '<span class="cc-th-tc' + (diff ? ' is-custom' : '') + '" title="Tipo de cambio del mes">TC ' +
                 tcM.toFixed(2) + '</span>' +
                 (lockedMes ? '<span class="cc-th-budget" title="Mes bloqueado por tipo de budget">fijo</span>' : '') +
@@ -4264,24 +4333,27 @@
             var cells = '';
             for (var i = 0; i < 12; i++) {
                 var shown = formatInputQty(cta.ppto[i]);
-                var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
+                var pastQty = pastQtyMes(cta, i);
                 var lockedMes = mesBloqueadoBudget(i);
                 var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
                 var pMes = precioUnitarioMes(cta, i);
                 var pCustom = precioMesTieneOverride(cta, i);
                 var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+                var pastTxt = (siop || pastQty) ? qtyLabel(pastQty) : '—';
+                var pastTitle = (siop ? pastQtyCaption() : ('Venta ' + anioPast)) +
+                    ' · ' + MONTHS[i] + (cta.unidad ? ' · ' + cta.unidad : '') +
+                    ' · ' + qtyLabel(pastQty) + ' uds';
                 cells += '<td class="' + pCls + '">' +
                     '<div class="cc-matrix-month">' +
                         '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
-                            escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (cta.unidad ? ' · ' + cta.unidad : '') +
-                                (pastQty ? ' · ' + qtyLabel(pastQty) + ' uds' : '')) + '">' +
-                            (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
+                            escapeHtml(pastTitle) + '">' +
+                            escapeHtml(pastTxt) +
                         '</div>' +
                         '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
                         ((control.locked || lockedMes) ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' +
                         ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
                         escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
-                            ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
+                            ' · proyección (unidades) · ' + pastQtyCaption() + ': ' + qtyLabel(pastQty) +
                             (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
                         (pCustom
                             ? ('<div class="cc-month-price-tag is-custom" title="' +
@@ -4474,9 +4546,9 @@
             return cls;
         }
         var val = Number(raw) || 0;
-        var past = Number((cta.gasto && cta.gasto[i]) || 0);
-        // Verde: unidades proyectadas mayores (o iguales) a la venta pasada.
-        // Rojo: unidades proyectadas menores a la venta pasada.
+        var past = pastQtyMes(cta, i);
+        // Verde: unidades proyectadas mayores (o iguales) a la referencia (venta o SIOP anterior).
+        // Rojo: unidades proyectadas menores a esa referencia.
         if (past > 0 && val < past) cls += ' is-over';
         else cls += ' is-ok';
         return cls;
@@ -5473,7 +5545,12 @@
         setText('an-th-gasto', 'Venta ' + g);
         setText('an-th-ppto', 'Proy. ' + p);
         var months = document.getElementById('an-heat-months');
-        if (months) months.innerHTML = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
+        if (months) {
+            var cells = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
+            months.innerHTML = months.classList.contains('is-labeled')
+                ? '<span></span><span class="cc-heat-months-cells">' + cells + '</span>'
+                : cells;
+        }
     }
 
     function fillAnalisisFilters() {
@@ -5529,11 +5606,15 @@
                 empBox.addEventListener('click', function (e) {
                     var hit = e.target.closest('[data-emp]');
                     if (!hit) return;
-                    var sel = document.getElementById('an-empresa');
-                    if (!sel) return;
-                    var next = hit.getAttribute('data-emp') || '';
-                    sel.value = sel.value === next ? '' : next;
-                    renderAnalisis();
+                    toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
+                });
+            }
+            var heatBox = document.getElementById('an-heat');
+            if (heatBox) {
+                heatBox.addEventListener('click', function (e) {
+                    var hit = e.target.closest('[data-emp]');
+                    if (!hit) return;
+                    toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
                 });
             }
             CC._analisisBound = true;
@@ -5649,9 +5730,38 @@
                 usuarios: users,
                 monthGasto: MONTHS.map(function (_, i) {
                     return ctas.reduce(function (a, x) { return a + ((x.gasto || [])[i] || 0); }, 0);
+                }),
+                productos: ctas.map(function (cta) {
+                    return {
+                        codigo: cta.codigo,
+                        nombre: cta.nombre || cta.codigo,
+                        months: MONTHS.map(function (_, i) { return (cta.gasto || [])[i] || 0; })
+                    };
                 })
             });
         });
+    }
+
+    function toggleAnalisisEmpresa(next) {
+        var sel = document.getElementById('an-empresa');
+        if (!sel) return;
+        sel.value = sel.value === next ? '' : next;
+        renderAnalisis();
+    }
+
+    function heatMonthCells(monthG, max) {
+        max = max || 1;
+        return (monthG || MONTHS.map(function () { return 0; })).map(function (v, i) {
+            var t = (v || 0) / max;
+            var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
+            return '<span title="' + MONTHS[i] + ': ' + money(v || 0) + '" style="background:' + bg + '"></span>';
+        }).join('');
+    }
+
+    function emptyMonthCells() {
+        return MONTHS.map(function () {
+            return '<span style="background:rgba(10,10,10,.08)"></span>';
+        }).join('');
     }
 
     function renderAnalisis() {
@@ -5753,21 +5863,62 @@
 
         var heat = document.getElementById('an-heat');
         if (heat) {
-            var focus = rows.slice().sort(function (a, b) { return b.gasto - a.gasto; })[0];
-            if (focus) {
-                var monthG = focus.monthGasto || MONTHS.map(function () { return 0; });
-                var max = Math.max.apply(null, monthG.concat([1]));
-                heat.innerHTML = monthG.map(function (v, i) {
-                    var t = v / max;
-                    var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
-                    return '<span title="' + MONTHS[i] + ': ' + money(v) + '" style="background:' + bg + '"></span>';
-                }).join('');
-                setText('an-heat-label', 'Gasto ' + gYear + ' · ' + focus.codigo + ' ' + focus.nombre);
+            var heatItems = [];
+            if (emp) {
+                var byProd = {};
+                rows.forEach(function (c) {
+                    (c.productos || []).forEach(function (p) {
+                        var key = String(p.codigo || p.nombre || '');
+                        if (!key) return;
+                        if (!byProd[key]) {
+                            byProd[key] = {
+                                label: (p.codigo || '') + (p.nombre && p.nombre !== p.codigo ? (' ' + p.nombre) : ''),
+                                months: MONTHS.map(function () { return 0; })
+                            };
+                        }
+                        (p.months || []).forEach(function (v, i) {
+                            byProd[key].months[i] += v || 0;
+                        });
+                    });
+                });
+                heatItems = Object.keys(byProd).map(function (k) {
+                    var item = byProd[k];
+                    var tot = item.months.reduce(function (a, v) { return a + (v || 0); }, 0);
+                    return { label: item.label, months: item.months, tot: tot, attr: '' };
+                }).sort(function (a, b) { return b.tot - a.tot; });
+                setText('an-heat-label', 'Venta ' + gYear + ' · por producto · ' + emp);
             } else {
-                heat.innerHTML = MONTHS.map(function () {
-                    return '<span style="background:rgba(10,10,10,.08)"></span>';
+                var byEmpHeat = {};
+                rows.forEach(function (c) {
+                    var key = c.empresa || '—';
+                    byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
+                    (c.monthGasto || []).forEach(function (v, i) {
+                        byEmpHeat[key][i] += v || 0;
+                    });
+                });
+                heatItems = Object.keys(byEmpHeat).map(function (e) {
+                    var months = byEmpHeat[e];
+                    var tot = months.reduce(function (a, v) { return a + (v || 0); }, 0);
+                    return { label: e, months: months, tot: tot, attr: ' data-emp="' + escapeHtml(e) + '"' };
+                }).sort(function (a, b) { return b.tot - a.tot; });
+                setText('an-heat-label', 'Venta ' + gYear + ' · por empresa');
+            }
+
+            if (!heatItems.length) {
+                heat.innerHTML = '<div class="cc-heat-row"><div class="cc-heat-name">—</div><div class="cc-heat">' + emptyMonthCells() + '</div></div>';
+            } else {
+                var maxHeat = 1;
+                heatItems.forEach(function (item) {
+                    var local = Math.max.apply(null, (item.months || []).concat([0]));
+                    if (local > maxHeat) maxHeat = local;
+                });
+                heat.innerHTML = heatItems.map(function (item) {
+                    var click = item.attr ? ' is-click' : '';
+                    return '<div class="cc-heat-row' + click + '"' + item.attr + '>' +
+                        '<div class="cc-heat-name" title="' + escapeHtml(item.label) + '">' + escapeHtml(item.label) + '</div>' +
+                        '<div class="cc-heat">' + heatMonthCells(item.months, maxHeat) + '</div>' +
+                        '</div>';
                 }).join('');
-                setText('an-heat-label', 'Gasto ' + gYear);
             }
         }
     }
