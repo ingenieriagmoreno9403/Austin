@@ -68,9 +68,15 @@
         <div class="cc-panel">
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-grip"></i> Estacionalidad</h3>
+                <div class="cc-panel-head-tools">
+                    <input id="an-heat-q" class="cc-input cc-heat-search" type="search" placeholder="Buscar empresa o centro…" aria-label="Buscar en estacionalidad">
+                </div>
             </div>
             <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Gasto {{ $bootstrap['anioGasto'] }} · por empresa</p>
-            <div class="cc-heat-stack mb-2" id="an-heat"></div>
+            <div class="cc-heat-scroll">
+                <div class="cc-heat-stack" id="an-heat"></div>
+                <div class="cc-heat-empty" id="an-heat-empty" hidden>Sin coincidencias</div>
+            </div>
             <div class="cc-heat-months is-labeled" id="an-heat-months"></div>
             <div class="cc-legend">
                 <span>Ene → Dic · intensidad = gasto real · elige una empresa para ver centros</span>

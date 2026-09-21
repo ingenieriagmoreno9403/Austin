@@ -3596,6 +3596,8 @@
                 if (el) el.addEventListener('input', renderAnalisis);
                 if (el && el.tagName === 'SELECT') el.addEventListener('change', renderAnalisis);
             });
+            var heatQ = document.getElementById('an-heat-q');
+            if (heatQ) heatQ.addEventListener('input', applyHeatFilter);
             var cicloEl = document.getElementById('an-ciclo');
             if (cicloEl) cicloEl.addEventListener('change', function () {
                 applyAnalisisCiclo(this.value);
@@ -3744,6 +3746,23 @@
         renderAnalisis();
     }
 
+    function applyHeatFilter() {
+        var q = (val('an-heat-q') || '').toLowerCase().trim();
+        var heat = document.getElementById('an-heat');
+        var empty = document.getElementById('an-heat-empty');
+        if (!heat) return;
+        var rows = heat.querySelectorAll('.cc-heat-row');
+        var shown = 0;
+        rows.forEach(function (row) {
+            var nameEl = row.querySelector('.cc-heat-name');
+            var name = ((nameEl && nameEl.textContent) || '').toLowerCase();
+            var ok = !q || name.indexOf(q) !== -1;
+            row.hidden = !ok;
+            if (ok) shown += 1;
+        });
+        if (empty) empty.hidden = !q || shown > 0;
+    }
+
     function heatMonthCells(monthG, max) {
         max = max || 1;
         return (monthG || MONTHS.map(function () { return 0; })).map(function (v, i) {
@@ -3868,6 +3887,8 @@
                     };
                 });
                 setText('an-heat-label', 'Gasto ' + gYear + ' · por centro · ' + emp);
+                var heatInput = document.getElementById('an-heat-q');
+                if (heatInput) heatInput.placeholder = 'Buscar centro…';
             } else {
                 var byEmpHeat = {};
                 rows.forEach(function (c) {
@@ -3883,6 +3904,8 @@
                     return { label: e, months: months, tot: tot, attr: ' data-emp="' + escapeHtml(e) + '"' };
                 }).sort(function (a, b) { return b.tot - a.tot; });
                 setText('an-heat-label', 'Gasto ' + gYear + ' · por empresa');
+                var heatInputAll = document.getElementById('an-heat-q');
+                if (heatInputAll) heatInputAll.placeholder = 'Buscar empresa o centro…';
             }
 
             if (!heatItems.length) {
@@ -3901,6 +3924,7 @@
                         '</div>';
                 }).join('');
             }
+            applyHeatFilter();
         }
     }
 

@@ -614,6 +614,7 @@
             CC.state.gastoLookup[control._gastoReq] = built;
         }
         if (!control.centro) return;
+        stripSiopSeedLocalOnce(control.centro);
         control._allCtas = cuentasEnriquecidas(control.centro);
         if (CC._capturaReady) seedPresupuestoDesdeVentaReal(control.centro);
         updateControlProgress();
@@ -1059,6 +1060,25 @@
         return false;
     }
 
+    function mesesVacios12() {
+        return [null, null, null, null, null, null, null, null, null, null, null, null];
+    }
+
+    function qtyMesIgual(a, b) {
+        var av = mesLleno(a) ? (Number(a) || 0) : 0;
+        var bv = mesLleno(b) ? (Number(b) || 0) : 0;
+        return av === bv;
+    }
+
+    function monthsIgualReferencia(months, ref) {
+        if (!Array.isArray(months)) return false;
+        ref = Array.isArray(ref) ? ref : [];
+        for (var i = 0; i < 12; i++) {
+            if (!qtyMesIgual(months[i], ref[i])) return false;
+        }
+        return true;
+    }
+
     function pptoDe(empresa, cc, cuenta, gasto) {
         var code = cuenta && typeof cuenta === 'object' ? cuenta.codigo : cuenta;
         var found = budgetMonthsOf(empresa, cc, code);
@@ -1342,6 +1362,8 @@
             CC._capturaLoadGen = (CC._capturaLoadGen || 0) + 1;
             var gen = CC._capturaLoadGen;
             CC._seedDoneFor = {};
+            CC._siopStrippedFor = '';
+            CC._budgetsBaseLoaded = false;
             CC._capturaReady = false;
             CC.state.overlays = {};
             CC.state.budgets = {};
@@ -1352,6 +1374,7 @@
             CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
             if (!ciclo) {
                 CC._capturaReady = true;
+                CC._budgetsBaseLoaded = true;
                 return;
             }
             return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
@@ -1400,6 +1423,7 @@
     function refreshCapturaAfterBudgetsLoaded() {
         if (!(val('ctl-empresa') && val('ctl-centro'))) return;
         if (!control.centro) return;
+        stripSiopSeedLocalOnce(control.centro);
         control._allCtas = cuentasEnriquecidas(control.centro);
         seedPresupuestoDesdeVentaReal(control.centro);
         updateControlProgress();
@@ -1487,14 +1511,15 @@
         return (other[0] && other[0].codigo) || '';
     }
 
-    /** En SIOP, la fila de arriba compara contra el proyecto anterior (0 si no hay dato). */
+    /** En SIOP, la fila de arriba compara contra el proyecto anterior; si no hay, la venta real. */
     function pastQtyMes(cta, monthIdx) {
         if (esSiopTipo()) {
             var c = control.centro;
-            if (!c || !cta) return 0;
-            var row = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
-            if (row && mesLleno(row[monthIdx])) return Number(row[monthIdx]) || 0;
-            return 0;
+            if (c && cta) {
+                var row = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+                if (row && mesLleno(row[monthIdx])) return Number(row[monthIdx]) || 0;
+            }
+            return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
         }
         return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
     }
@@ -1511,7 +1536,11 @@
         var base = cicloBaseProyeccion();
         CC.state.budgetsBase = {};
         CC.state.cicloBaseCodigo = base || '';
-        if (!base) return Promise.resolve();
+        CC._budgetsBaseLoaded = false;
+        if (!base) {
+            CC._budgetsBaseLoaded = true;
+            return Promise.resolve();
+        }
         return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(base), {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (r) {
@@ -1523,9 +1552,11 @@
             Object.keys(raw).forEach(function (k) {
                 CC.state.budgetsBase[k] = normalizeLoadedMonths(raw[k], false);
             });
+            CC._budgetsBaseLoaded = true;
         }).catch(function () {
             if (gen != null && gen !== CC._capturaLoadGen) return;
             CC.state.budgetsBase = {};
+            CC._budgetsBaseLoaded = true;
         });
     }
 
@@ -1663,7 +1694,7 @@
             return '<strong>Forecast 9+3:</strong> los 9 primeros meses (ene–sep) se cargan con la venta real del año en curso y quedan fijos. Los 3 restantes se cargan del Budget y se pueden modificar.';
         }
         if (t === 'SIOP') {
-            return '<strong>SIOP:</strong> se precargan las cantidades del ciclo anterior (si no hay, la venta real). Mes sin cantidad → 0. Todos los meses son editables.';
+            return '<strong>SIOP:</strong> las cantidades del ciclo anterior (o la venta real) se muestran arriba de cada mes. El input queda vacío para capturar. Todos los meses son editables.';
         }
         return 'Selecciona el tipo de forecast o SIOP.';
     }
@@ -1675,7 +1706,7 @@
         var hint = document.getElementById('p-tipo-budget-hint');
         if (hint && !document.getElementById('p-tipo-budget').disabled) {
             hint.textContent = esSiopTipo(tipo)
-                ? 'SIOP: precarga ciclo anterior (o venta real) · meses vacíos en 0 · todos editables.'
+                ? 'SIOP: ciclo anterior (o venta real) arriba de cada mes · el input es la nueva captura · todos editables.'
                 : 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
         }
     }
@@ -1683,8 +1714,8 @@
     /**
      * Al abrir Captura de un cliente: solo precarga si el producto NO tiene fila
      * guardada en este ciclo. Nunca pisa capturas ya persistidas al cambiar de ciclo.
-     * SIOP: 12 meses desde ciclo anterior; si el mes no tiene cantidad → 0.
-     * Si el producto no existe en el ciclo anterior → venta real del año de referencia (o 0).
+     * Forecast: primeros N meses = venta real (fijos); el resto = Budget.
+     * SIOP: no precarga el input; el ciclo anterior / venta se ve arriba de cada mes.
      */
     function budgetTieneFilaEnServidor(empresa, cc, cuenta) {
         var map = CC.state.budgetKeysFromServer || {};
@@ -1708,9 +1739,26 @@
         return Array.isArray(row) ? row.slice() : null;
     }
 
-    function gastoListoParaSeed() {
-        return !!(control._gastoReq && control._gastoLoadedFor &&
-            String(control._gastoLoadedFor) === String(control._gastoReq));
+    /** SIOP: si el input es copia del ciclo anterior, vaciarlo (el dato queda arriba). Una vez por cliente/ciclo. */
+    function stripSiopSeedLocalOnce(c) {
+        if (!c || !esSiopTipo()) return;
+        if (!CC._budgetsBaseLoaded) return;
+        var stamp = String(cicloActualCodigo() || '').toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
+        if (CC._siopStrippedFor === stamp) return;
+        CC._siopStrippedFor = stamp;
+        var list = cuentasDeCentro(c);
+        list.forEach(function (cta) {
+            var found = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var base = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            if (!found || !base || !base.some(mesLleno)) return;
+            if (!monthsIgualReferencia(found, base)) return;
+            var key = resolveStateKey(CC.state.budgets, c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets[key] = mesesVacios12();
+            if (CC.state.completados) {
+                delete CC.state.completados[key];
+                delete CC.state.completados[budgetKey(c.empresa, c.codigo, cta.codigo)];
+            }
+        });
     }
 
     function seedPresupuestoDesdeVentaReal(c) {
@@ -1725,7 +1773,8 @@
             }
             return;
         }
-        var n = budgetSeedCount(); // 0 en SIOP (solo Budget); 3/6/9 en Forecast
+        if (esSiopTipo(tipo)) return;
+        var n = budgetSeedCount(); // 3/6/9 en Forecast
         var seedKey = String(cicloSeed).toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
         CC._seedDoneFor = CC._seedDoneFor || {};
         if (CC._seedDoneFor[seedKey]) return;
@@ -1735,34 +1784,17 @@
         var seeded = 0;
         var fromBase = 0;
         var fromVenta = 0;
-        var waitingGasto = false;
         var loadGen = CC._capturaLoadGen || 0;
         ctas.forEach(function (cta) {
             var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
             if (!budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
             var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
-            var hasBaseQty = !!(baseRow && baseRow.some(mesLleno));
             var gasto = cta.gasto || [];
-            // SIOP sin fila en ciclo anterior: esperar venta real para no grabar ceros prematuros.
-            if (esSiopTipo(tipo) && !hasBaseQty && !gastoListoParaSeed()) {
-                waitingGasto = true;
-                return;
-            }
             var months = [];
             var usedBase = false;
             var usedVenta = false;
             for (var i = 0; i < 12; i++) {
-                if (esSiopTipo(tipo)) {
-                    if (hasBaseQty) {
-                        // Ciclo anterior: cantidad si existe, si no 0.
-                        months.push(mesLleno(baseRow[i]) ? toStoreQty(Number(baseRow[i]) || 0) : 0);
-                        usedBase = true;
-                    } else {
-                        // Sin proyección previa del producto → venta real (o 0).
-                        months.push(toStoreQty(Number(gasto[i]) || 0));
-                        usedVenta = true;
-                    }
-                } else if (i < n) {
+                if (i < n) {
                     // Forecast: primeros N meses = venta real del año en curso (fijos).
                     months.push(toStoreQty(Number(gasto[i]) || 0));
                     usedVenta = true;
@@ -1774,8 +1806,7 @@
                     months.push(null);
                 }
             }
-            // SIOP siempre persiste los 12 meses (cantidad o 0). Forecast: solo si hay algo.
-            if (!esSiopTipo(tipo) && !months.some(mesLleno)) return;
+            if (!months.some(mesLleno)) return;
             var key = budgetKey(c.empresa, c.codigo, cta.codigo);
             CC.state.budgets = CC.state.budgets || {};
             CC.state.budgets[key] = months.slice();
@@ -1786,32 +1817,18 @@
             if (usedBase) fromBase += 1;
             if (usedVenta) fromVenta += 1;
         });
-        // Si aún falta la venta SAP para completar SIOP, reintentar cuando llegue applyGastoMap.
-        if (!waitingGasto) CC._seedDoneFor[seedKey] = true;
+        CC._seedDoneFor[seedKey] = true;
         if (seeded && loadGen === (CC._capturaLoadGen || 0)
             && String(cicloActualCodigo() || '').toUpperCase() === String(cicloSeed).toUpperCase()) {
             control._allCtas = cuentasEnriquecidas(c);
             var parts = [];
-            if (esSiopTipo(tipo)) {
-                if (fromBase) {
-                    parts.push('ciclo anterior' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : '') +
-                        ' en ' + fromBase + (fromBase === 1 ? ' producto' : ' productos'));
-                }
-                if (fromVenta) {
-                    parts.push('venta ' + (CC.state.anioGasto || '') + ' en ' + fromVenta +
-                        (fromVenta === 1 ? ' producto' : ' productos'));
-                }
-                parts.push('meses sin cantidad → 0');
-                parts.push('todos los meses editables');
-            } else {
-                if (fromVenta) {
-                    parts.push(n + ' mes' + (n === 1 ? '' : 'es') + ' de venta ' + (CC.state.anioGasto || '') + ' (fijos)');
-                }
-                if (fromBase) {
-                    parts.push('resto desde Budget' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : ''));
-                }
-                if (budgetLockCount()) parts.push('meses iniciales bloqueados');
+            if (fromVenta) {
+                parts.push(n + ' mes' + (n === 1 ? '' : 'es') + ' de venta ' + (CC.state.anioGasto || '') + ' (fijos)');
             }
+            if (fromBase) {
+                parts.push('resto desde Budget' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : ''));
+            }
+            if (budgetLockCount()) parts.push('meses iniciales bloqueados');
             toast('success', labelTipoBudget(tipo), 'Se precargaron ' + seeded +
                 (seeded === 1 ? ' producto' : ' productos') +
                 (parts.length ? (' · ' + parts.join(' · ')) : ''));
@@ -3713,6 +3730,7 @@
         }
         loadGastoRealCentro(c);
         loadListasPreciosCentro(c);
+        stripSiopSeedLocalOnce(c);
         control._allCtas = cuentasEnriquecidas(c);
         if (control.cuenta && !control._allCtas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
             control.cuenta = null;
@@ -5645,6 +5663,8 @@
                 if (el) el.addEventListener('input', renderAnalisis);
                 if (el && el.tagName === 'SELECT') el.addEventListener('change', renderAnalisis);
             });
+            var heatQ = document.getElementById('an-heat-q');
+            if (heatQ) heatQ.addEventListener('input', applyHeatFilter);
             var cicloEl = document.getElementById('an-ciclo');
             if (cicloEl) cicloEl.addEventListener('change', function () {
                 applyAnalisisCiclo(this.value);
@@ -5797,6 +5817,23 @@
         renderAnalisis();
     }
 
+    function applyHeatFilter() {
+        var q = (val('an-heat-q') || '').toLowerCase().trim();
+        var heat = document.getElementById('an-heat');
+        var empty = document.getElementById('an-heat-empty');
+        if (!heat) return;
+        var rows = heat.querySelectorAll('.cc-heat-row');
+        var shown = 0;
+        rows.forEach(function (row) {
+            var nameEl = row.querySelector('.cc-heat-name');
+            var name = ((nameEl && nameEl.textContent) || '').toLowerCase();
+            var ok = !q || name.indexOf(q) !== -1;
+            row.hidden = !ok;
+            if (ok) shown += 1;
+        });
+        if (empty) empty.hidden = !q || shown > 0;
+    }
+
     function heatMonthCells(monthG, max) {
         max = max || 1;
         return (monthG || MONTHS.map(function () { return 0; })).map(function (v, i) {
@@ -5935,6 +5972,8 @@
                     return { label: item.label, months: item.months, tot: tot, attr: '' };
                 }).sort(function (a, b) { return b.tot - a.tot; });
                 setText('an-heat-label', 'Venta ' + gYear + ' · por producto · ' + emp);
+                var heatInput = document.getElementById('an-heat-q');
+                if (heatInput) heatInput.placeholder = 'Buscar producto…';
             } else {
                 var byEmpHeat = {};
                 rows.forEach(function (c) {
@@ -5950,6 +5989,8 @@
                     return { label: e, months: months, tot: tot, attr: ' data-emp="' + escapeHtml(e) + '"' };
                 }).sort(function (a, b) { return b.tot - a.tot; });
                 setText('an-heat-label', 'Venta ' + gYear + ' · por empresa');
+                var heatInputAll = document.getElementById('an-heat-q');
+                if (heatInputAll) heatInputAll.placeholder = 'Buscar empresa o producto…';
             }
 
             if (!heatItems.length) {
@@ -5968,6 +6009,7 @@
                         '</div>';
                 }).join('');
             }
+            applyHeatFilter();
         }
     }
 
@@ -6101,7 +6143,7 @@
                     ? 'El tipo queda fijo al crear el ciclo'
                     : (editing
                         ? 'Este ciclo aún no tenía tipo: elige Forecast o SIOP y guarda'
-                        : 'Forecast: venta real + Budget · SIOP: Budget editable');
+                        : 'Forecast: venta real + Budget · SIOP: dato anterior arriba, captura en el input');
             }
             syncTipoBudgetModalUi();
             if (editing) {
