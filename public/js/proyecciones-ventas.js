@@ -4179,7 +4179,7 @@
         }
         var info = precioVentaPasadaInfo(cta);
         info.title = 'Precio unitario promedio de la venta ' + (CC.state.anioGasto || '') + ' (importe SAP ÷ uds).';
-        info.decimals = 4;
+        info.decimals = 2;
         return info;
     }
 
@@ -4208,7 +4208,7 @@
                 precio: Math.abs(usdTot / qtyTot),
                 moneda: 'USD',
                 unidad: unidad,
-                decimals: 4,
+                decimals: 2,
                 title: 'Promedio ponderado (LineTotalUSD ÷ uds). VENTA es la suma SAP; uds × precio a 2 decimales puede diferir unos dólares.'
             };
         }
@@ -4217,7 +4217,7 @@
                 precio: Math.abs(mxnTot / qtyTot),
                 moneda: 'MXN',
                 unidad: unidad,
-                decimals: 4,
+                decimals: 2,
                 title: 'Promedio ponderado (LineTotal ÷ uds). VENTA es la suma SAP; el redondeo del precio puede diferir unos pesos.'
             };
         }
@@ -4349,7 +4349,7 @@
             '<td class="num cc-price-cell" data-costo-venta title="' +
                 escapeHtml(costoPieza.title || ('Costo / precio unitario promedio de la venta ' + anioPast)) + '">' +
                 (costoPieza.precio
-                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(costoPieza.precio, costoPieza.moneda, null, 4)) + '</div>' +
+                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(costoPieza.precio, costoPieza.moneda, null, 2)) + '</div>' +
                         (cta.unidad ? '<div class="cc-price-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
                     : '<span class="cc-price-empty">—</span>') +
             '</td>' +
