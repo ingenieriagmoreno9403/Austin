@@ -2853,7 +2853,7 @@
     }
 
     /* ---------- Control ---------- */
-    var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, vista: 'captura', scopeTabla: 'centro', chartVerTodas: false, prodQuery: '' };
+    var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, grupoCerradoMatrix: {}, vista: 'captura', scopeTabla: 'centro', chartVerTodas: false, prodQuery: '' };
 
     function asignacionesDelCiclo(ciclo) {
         return (CC.state.misAsignaciones || []).filter(function (a) {
@@ -3129,10 +3129,12 @@
     function paintVisibleTableTotals(ctas, prefix) {
         prefix = prefix || 'ctl';
         if (!document.getElementById(prefix + '-tot-gasto')) return;
+        var mesesEl = document.getElementById(prefix + '-tot-meses');
         if (!ctas) {
             setText(prefix + '-tot-gasto', '—');
             setText(prefix + '-tot-ppto', '—');
             setText(prefix + '-pend', '—');
+            if (mesesEl) mesesEl.innerHTML = '';
             return;
         }
         var totG = ctas.reduce(function (a, x) {
@@ -3143,6 +3145,27 @@
         setText(prefix + '-tot-gasto', moneyGasto(totG));
         setText(prefix + '-tot-ppto', moneyGasto(totP));
         setText(prefix + '-pend', pend);
+
+        if (mesesEl) {
+            var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            ctas.forEach(function (cta) {
+                for (var i = 0; i < 12; i++) {
+                    mesG[i] += Number(importeMesVentaVista(cta, i)) || 0;
+                    var mp = importeMesProyVista(cta, i);
+                    if (mp != null) mesP[i] += Number(mp) || 0;
+                }
+            });
+            var yyG = String(CC.state.anioGasto).slice(2);
+            var yyP = String(CC.state.anioPresupuesto).slice(2);
+            mesesEl.innerHTML = MONTHS.map(function (m, i) {
+                return '<div class="cc-sticky-mes">' +
+                    '<span class="cc-sticky-mes-label">' + m + '</span>' +
+                    '<span class="cc-sticky-mes-venta" title="Venta ’' + yyG + '">' + (mesG[i] ? moneyGasto(mesG[i]) : '—') + '</span>' +
+                    '<span class="cc-sticky-mes-proy" title="Proy. ’' + yyP + '">' + (mesP[i] ? moneyGasto(mesP[i]) : '—') + '</span>' +
+                    '</div>';
+            }).join('');
+        }
     }
 
     function renderMisCentros() {
@@ -3756,6 +3779,17 @@
         if (el && String(el.value || '') !== String(control.cuenta || '')) {
             el.value = control.cuenta || '';
         }
+        // Si el producto está en un grupo colapsado de la matriz, abrirlo.
+        if (codigo) {
+            var ctaSel = (control._allCtas || []).filter(function (x) {
+                return String(x.codigo) === String(codigo);
+            })[0];
+            var gName = ctaSel && (ctaSel.grupo || 'Sin agrupación');
+            if (gName && control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]) {
+                control.grupoCerradoMatrix[gName] = false;
+                drawMatrixTable();
+            }
+        }
         renderCtaChips();
         paintMatrixSelection();
         paintMatrixHint();
@@ -4266,117 +4300,91 @@
         drawMatrixTable(matrixCtas());
     }
 
-    function drawMatrixTable(ctas) {
-        var thead = document.getElementById('ctl-matrix-thead');
-        var tbody = document.getElementById('ctl-matrix-tbody');
-        if (!thead || !tbody) return;
-        ctas = ctas || matrixCtas();
-        var anioPast = CC.state.anioGasto || '';
-        var cur = isUsdView() ? 'USD' : 'MXN';
-        var head = '<tr><th class="sticky-col">Producto</th>' +
-            '<th class="num">Costo<span class="cc-th-past">pieza ’' + String(anioPast).slice(2) + '</span></th>' +
-            '<th class="num">Uds. venta<span class="cc-th-past">' + escapeHtml(String(anioPast || '')) + '</span></th>' +
-            '<th class="num">Total uds<span class="cc-th-past">proy. 12 meses</span></th>' +
-            '<th class="num">Precio<span class="cc-th-past">proy. ' + cur + '</span></th>' +
-            '<th class="num">Δ%</th>';
-        MONTHS.forEach(function (m, mi) {
-            var tcM = fxRate(mi);
-            var base = fxBaseRate();
-            var diff = Math.abs(tcM - base) > 0.0001;
-            var lockedMes = mesBloqueadoBudget(mi);
-            head += '<th class="num">' + m +
-                '<span class="cc-th-past">vs ' + String(anioPast).slice(2) + '</span>' +
-                '<span class="cc-th-tc' + (diff ? ' is-custom' : '') + '" title="Tipo de cambio del mes">TC ' +
-                tcM.toFixed(2) + '</span>' +
-                (lockedMes ? '<span class="cc-th-budget" title="Mes bloqueado por tipo de budget">fijo</span>' : '') +
-                '</th>';
-        });
-        head += '</tr>';
-        thead.innerHTML = head;
-        if (!ctas.length) {
-            tbody.innerHTML = '<tr><td colspan="18"><div class="cc-empty">' +
-                (control.soloPendientes || control.prodQuery
-                    ? 'Sin productos con ese filtro'
-                    : 'Este cliente no tiene productos asignados') +
-                '</div></td></tr>';
-            return;
-        }
-        tbody.innerHTML = ctas.map(function (cta) {
-            var d = deltaPct(cta.totP, cta.totG);
-            var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
-            var selected = String(cta.codigo) === String(control.cuenta || '');
-            var done = !ctaPendiente(cta);
-            var udsVentaAnio = sum((cta.gasto || []).slice(0, 12));
-            var udsSem = unidadesSemestreAnterior(cta);
-            var udsAnio = cta.unidadesAnio != null ? cta.unidadesAnio : unidadesAnuales(cta.ppto);
-            var costoPieza = costoPiezaVentaAnio(cta);
-            var cells = '';
-            for (var i = 0; i < 12; i++) {
-                var shown = formatInputQty(cta.ppto[i]);
-                var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
-                var lockedMes = mesBloqueadoBudget(i);
-                var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
-                var pMes = precioUnitarioMes(cta, i);
-                var pCustom = precioMesTieneOverride(cta, i);
-                var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
-                cells += '<td class="' + pCls + '">' +
-                    '<div class="cc-matrix-month">' +
-                        '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
-                            escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (cta.unidad ? ' · ' + cta.unidad : '') +
-                                (pastQty ? ' · ' + qtyLabel(pastQty) + ' uds' : '')) + '">' +
-                            (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
-                        '</div>' +
-                        '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
-                        ((control.locked || lockedMes) ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' +
-                        ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
-                        escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
-                            ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
-                            (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
-                        (pCustom
-                            ? ('<div class="cc-month-price-tag is-custom" title="' +
-                                escapeHtml('Precio del mes: ' + moneyLista(pMes, mon, i) + ' · TC ' + fxRate(i).toFixed(2)) + '">' +
-                                escapeHtml(moneyLista(pMes, mon, i)) + '</div>')
-                            : '') +
+    function matrixProductRowHtml(cta, anioPast) {
+        var d = deltaPct(cta.totP, cta.totG);
+        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var selected = String(cta.codigo) === String(control.cuenta || '');
+        var done = !ctaPendiente(cta);
+        var udsVentaAnio = sum((cta.gasto || []).slice(0, 12));
+        var udsSem = unidadesSemestreAnterior(cta);
+        var udsAnio = cta.unidadesAnio != null ? cta.unidadesAnio : unidadesAnuales(cta.ppto);
+        var costoPieza = costoPiezaVentaAnio(cta);
+        var cells = '';
+        for (var i = 0; i < 12; i++) {
+            var shown = formatInputQty(cta.ppto[i]);
+            var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
+            var lockedMes = mesBloqueadoBudget(i);
+            var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
+            var pMes = precioUnitarioMes(cta, i);
+            var pCustom = precioMesTieneOverride(cta, i);
+            var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            cells += '<td class="' + pCls + '">' +
+                '<div class="cc-matrix-month">' +
+                    '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
+                        escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (cta.unidad ? ' · ' + cta.unidad : '') +
+                            (pastQty ? ' · ' + qtyLabel(pastQty) + ' uds' : '')) + '">' +
+                        (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
                     '</div>' +
-                    '</td>';
-            }
-            return '<tr class="cc-matrix-row' + (selected ? ' is-on' : '') + (done ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '">' +
-                '<td class="sticky-col">' +
-                    '<button type="button" class="cc-matrix-prod" data-pick-cta="' + escapeHtml(cta.codigo) + '">' +
-                        htmlNombreCodigo(cta.nombre, cta.codigo) +
-                    '</button>' +
-                    '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
-                '</td>' +
-                '<td class="num cc-price-cell" data-costo-venta title="' +
-                    escapeHtml(costoPieza.title || ('Costo / precio unitario promedio de la venta ' + anioPast)) + '">' +
-                    (costoPieza.precio
-                        ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(costoPieza.precio, costoPieza.moneda, null, 4)) + '</div>' +
-                            (cta.unidad ? '<div class="cc-price-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
-                        : '<span class="cc-price-empty">—</span>') +
-                '</td>' +
-                '<td class="num cc-sem-cell" data-uds-venta title="' +
-                    escapeHtml('Total unidades vendidas en ' + anioPast +
-                        ' (misma fuente que Ventas pasadas · TOT. UDS)' +
-                        (cta.unidad ? ' · ' + cta.unidad : '') +
-                        (udsSem ? '' : (udsVentaAnio ? ' · Ene–Jun: 0; venta en Jul–Dic' : ''))) + '">' +
-                    (udsVentaAnio
-                        ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsVentaAnio)) + '</div>' +
-                            (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
-                        : '<span class="cc-price-empty">—</span>') +
-                '</td>' +
-                '<td class="num cc-sem-cell" data-uds-total title="' +
-                    escapeHtml('Suma de unidades proyectadas Ene–Dic' + (cta.unidad ? ' · ' + cta.unidad : '')) + '">' +
-                    (udsAnio
-                        ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsAnio)) + '</div>' +
-                            (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
-                        : '<span class="cc-price-empty">—</span>') +
-                '</td>' +
-                '<td class="num cc-price-cell" data-precio-unit>' + precioProyeccionCellHtml(cta) + '</td>' +
-                '<td class="num ' + dCls + '" data-delta>' + (cta.totP || done ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>' +
-                cells +
-                '</tr>';
-        }).join('');
+                    '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
+                    ((control.locked || lockedMes) ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' +
+                    ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
+                    escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
+                        ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
+                        (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
+                    (pCustom
+                        ? ('<div class="cc-month-price-tag is-custom" title="' +
+                            escapeHtml('Precio del mes: ' + moneyLista(pMes, mon, i) + ' · TC ' + fxRate(i).toFixed(2)) + '">' +
+                            escapeHtml(moneyLista(pMes, mon, i)) + '</div>')
+                        : '') +
+                '</div>' +
+                '</td>';
+        }
+        return '<tr class="cc-matrix-row' + (selected ? ' is-on' : '') + (done ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '" data-group="' + escapeHtml(cta.grupo || 'Sin agrupación') + '">' +
+            '<td class="sticky-col">' +
+                '<button type="button" class="cc-matrix-prod" data-pick-cta="' + escapeHtml(cta.codigo) + '">' +
+                    htmlNombreCodigo(cta.nombre, cta.codigo) +
+                '</button>' +
+                '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
+            '</td>' +
+            '<td class="num cc-price-cell" data-costo-venta title="' +
+                escapeHtml(costoPieza.title || ('Costo / precio unitario promedio de la venta ' + anioPast)) + '">' +
+                (costoPieza.precio
+                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(costoPieza.precio, costoPieza.moneda, null, 4)) + '</div>' +
+                        (cta.unidad ? '<div class="cc-price-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
+                    : '<span class="cc-price-empty">—</span>') +
+            '</td>' +
+            '<td class="num cc-sem-cell" data-uds-venta title="' +
+                escapeHtml('Total unidades vendidas en ' + anioPast +
+                    ' (misma fuente que Ventas pasadas · TOT. UDS)' +
+                    (cta.unidad ? ' · ' + cta.unidad : '') +
+                    (udsSem ? '' : (udsVentaAnio ? ' · Ene–Jun: 0; venta en jul–Dic' : ''))) + '">' +
+                (udsVentaAnio
+                    ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsVentaAnio)) + '</div>' +
+                        (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
+                    : '<span class="cc-price-empty">—</span>') +
+            '</td>' +
+            '<td class="num cc-sem-cell" data-uds-total title="' +
+                escapeHtml('Suma de unidades proyectadas Ene–Dic' + (cta.unidad ? ' · ' + cta.unidad : '')) + '">' +
+                (udsAnio
+                    ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsAnio)) + '</div>' +
+                        (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
+                    : '<span class="cc-price-empty">—</span>') +
+            '</td>' +
+            '<td class="num cc-price-cell" data-precio-unit>' + precioProyeccionCellHtml(cta) + '</td>' +
+            '<td class="num ' + dCls + '" data-delta>' + (cta.totP || done ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>' +
+            cells +
+            '</tr>';
+    }
 
+    function bindMatrixTableEvents(tbody) {
+        tbody.querySelectorAll('.cc-matrix-group-row').forEach(function (row) {
+            row.addEventListener('click', function () {
+                var g = row.getAttribute('data-group');
+                var map = control.grupoCerradoMatrix || (control.grupoCerradoMatrix = {});
+                map[g] = !map[g];
+                drawMatrixTable();
+            });
+        });
         tbody.querySelectorAll('[data-pick-cta]').forEach(function (btn) {
             btn.addEventListener('click', function (ev) {
                 ev.preventDefault();
@@ -4426,6 +4434,80 @@
         });
     }
 
+    function drawMatrixTable(ctas) {
+        var thead = document.getElementById('ctl-matrix-thead');
+        var tbody = document.getElementById('ctl-matrix-tbody');
+        if (!thead || !tbody) return;
+        ctas = ctas || matrixCtas();
+        var anioPast = CC.state.anioGasto || '';
+        var cur = isUsdView() ? 'USD' : 'MXN';
+        var head = '<tr><th class="sticky-col">Producto</th>' +
+            '<th class="num">Costo<span class="cc-th-past">pieza ’' + String(anioPast).slice(2) + '</span></th>' +
+            '<th class="num">Uds. venta<span class="cc-th-past">' + escapeHtml(String(anioPast || '')) + '</span></th>' +
+            '<th class="num">Total uds<span class="cc-th-past">proy. 12 meses</span></th>' +
+            '<th class="num">Precio<span class="cc-th-past">proy. ' + cur + '</span></th>' +
+            '<th class="num">Δ%</th>';
+        MONTHS.forEach(function (m, mi) {
+            var tcM = fxRate(mi);
+            var base = fxBaseRate();
+            var diff = Math.abs(tcM - base) > 0.0001;
+            var lockedMes = mesBloqueadoBudget(mi);
+            head += '<th class="num">' + m +
+                '<span class="cc-th-past">vs ' + String(anioPast).slice(2) + '</span>' +
+                '<span class="cc-th-tc' + (diff ? ' is-custom' : '') + '" title="Tipo de cambio del mes">TC ' +
+                tcM.toFixed(2) + '</span>' +
+                (lockedMes ? '<span class="cc-th-budget" title="Mes bloqueado por tipo de budget">fijo</span>' : '') +
+                '</th>';
+        });
+        head += '</tr>';
+        thead.innerHTML = head;
+        if (!ctas.length) {
+            tbody.innerHTML = '<tr><td colspan="18"><div class="cc-empty">' +
+                (control.soloPendientes || control.prodQuery
+                    ? 'Sin productos con ese filtro'
+                    : 'Este cliente no tiene productos asignados') +
+                '</div></td></tr>';
+            return;
+        }
+
+        var groups = {};
+        var groupOrder = [];
+        ctas.forEach(function (cta) {
+            var g = cta.grupo || 'Sin agrupación';
+            if (!groups[g]) {
+                groups[g] = [];
+                groupOrder.push(g);
+            }
+            groups[g].push(cta);
+        });
+        var closedMap = control.grupoCerradoMatrix || (control.grupoCerradoMatrix = {});
+        var html = '';
+        groupOrder.forEach(function (g) {
+            var list = groups[g];
+            var closed = !!closedMap[g];
+            var capturados = list.filter(function (x) { return !ctaPendiente(x); }).length;
+            var udsGrupo = list.reduce(function (a, x) {
+                return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto));
+            }, 0);
+            html += '<tr class="cc-group-row cc-matrix-group-row" data-group="' + escapeHtml(g) + '">' +
+                '<td class="sticky-col" colspan="6">' +
+                    '<i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' +
+                    escapeHtml(g) + ' · ' + list.length + (list.length === 1 ? ' producto' : ' productos') +
+                    '<span class="cc-matrix-group-meta">' + capturados + '/' + list.length + ' capturados' +
+                    (udsGrupo ? (' · ' + qtyLabel(udsGrupo) + ' uds proy.') : '') + '</span>' +
+                '</td>' +
+                '<td colspan="12" class="cc-matrix-group-spacer"></td>' +
+                '</tr>';
+            if (!closed) {
+                list.forEach(function (cta) {
+                    html += matrixProductRowHtml(cta, anioPast);
+                });
+            }
+        });
+        tbody.innerHTML = html;
+        bindMatrixTableEvents(tbody);
+    }
+
     function paintMatrixSelection() {
         var tbody = document.getElementById('ctl-matrix-tbody');
         if (!tbody) return;
@@ -4438,8 +4520,15 @@
         var c = control.centro;
         if (!c || !codigo) return;
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
-        var row = document.querySelector('#ctl-matrix-tbody tr[data-cta="' + cssEscape(codigo) + '"]');
+        var row = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
         if (!cta || !row) {
+            // Puede estar en un grupo cerrado: reabrir y redibujar.
+            if (cta) {
+                var gName = cta.grupo || 'Sin agrupación';
+                if (control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]) {
+                    control.grupoCerradoMatrix[gName] = false;
+                }
+            }
             drawMatrixTable();
             return;
         }
@@ -4692,7 +4781,7 @@
 
         var yyG = String(CC.state.anioGasto).slice(2);
         var yyP = String(CC.state.anioPresupuesto).slice(2);
-        var head = '<tr><th class="sticky-col">Cuenta</th>' +
+        var head = '<tr><th class="sticky-col">Producto</th>' +
             '<th class="num">Precio<span class="cc-th-past">venta ’' + yyG + '</span></th>' +
             '<th class="num">Venta ' + CC.state.anioGasto + '</th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. ’' + yyP + '</span></th>' +
@@ -4715,7 +4804,7 @@
                 html += '<td class="num cc-group-totals" colspan="2">' +
                     '<span class="cc-group-tot"><em>Venta ' + CC.state.anioGasto + '</em> ' + moneyGasto(gTotG) + '</span>' +
                     '<span class="cc-group-tot-sep">→</span>' +
-                    '<span class="cc-group-tot is-proy"><em>Proy. ' + CC.state.anioPresupuesto + '</em> ' + money(gTotP) + '</span>' +
+                    '<span class="cc-group-tot is-proy"><em>Proy. ' + CC.state.anioPresupuesto + '</em> ' + moneyGasto(gTotP) + '</span>' +
                     '</td><td colspan="22"></td></tr>';
             }
             if (!closed || hideGroups) {
@@ -4762,7 +4851,42 @@
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
             ? 'No hay filas para este producto con los filtros actuales'
             : 'Sin productos asignados a este cliente';
-        tbody.innerHTML = html || '<tr><td colspan="30"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
+        if (!html) {
+            tbody.innerHTML = '<tr><td colspan="30"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
+        } else {
+            // Fila de totales por mes (todas las cuentas filtradas, aunque el grupo esté cerrado).
+            var sumG = 0;
+            var sumP = 0;
+            var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            ctas.forEach(function (cta) {
+                sumG += cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+                sumP += importeProyeccionVista(cta);
+                for (var mi = 0; mi < 12; mi++) {
+                    mesG[mi] += Number(importeMesVentaVista(cta, mi)) || 0;
+                    var mp = importeMesProyVista(cta, mi);
+                    if (mp != null) mesP[mi] += Number(mp) || 0;
+                }
+            });
+            var dTot = deltaPct(sumP, sumG);
+            var dTotCls = dTot > 15 ? 'text-danger' : (dTot < 0 ? 'text-success' : 'text-muted');
+            html += '<tr class="cc-month-totals-row">' +
+                '<td class="sticky-col"><strong>Totales</strong>' +
+                '<span class="cc-month-totals-sub">' + ctas.length + (ctas.length === 1 ? ' producto' : ' productos') + '</span></td>' +
+                '<td class="num">—</td>' +
+                '<td class="num fw-semibold">' + moneyGasto(sumG) + '</td>' +
+                '<td class="num">—</td>' +
+                '<td class="num fw-semibold">' + moneyGasto(sumP) + '</td>' +
+                '<td class="num ' + dTotCls + '">' + ((dTot > 0 ? '+' : '') + dTot + '%') + '</td>';
+            for (var ti = 0; ti < 12; ti++) {
+                html += '<td class="num" title="' + escapeHtml('Total venta ' + MONTHS[ti] + ' ' + CC.state.anioGasto) + '">' +
+                    (mesG[ti] ? moneyGasto(mesG[ti]) : '—') + '</td>';
+                html += '<td class="num fw-semibold" title="' + escapeHtml('Total proy. ' + MONTHS[ti] + ' ' + CC.state.anioPresupuesto) + '">' +
+                    (mesP[ti] ? moneyGasto(mesP[ti]) : '—') + '</td>';
+            }
+            html += '</tr>';
+            tbody.innerHTML = html;
+        }
 
         tbody.querySelectorAll('.cc-group-row').forEach(function (row) {
             row.addEventListener('click', function () {

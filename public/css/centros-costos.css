@@ -1632,6 +1632,68 @@
 }
 .cc-sticky-totales strong { font-family: 'Space Grotesk', sans-serif; font-size: 1.05rem; }
 
+.cc-sticky-meses {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(4.5rem, 1fr));
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+    padding: 0.5rem 0.15rem 0.25rem;
+    overflow-x: auto;
+    border-top: 1px dashed #e4e4e7;
+}
+.cc-sticky-mes {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 4.5rem;
+    padding: 0.35rem 0.4rem;
+    border-radius: 8px;
+    background: #fafafa;
+    border: 1px solid #f4f4f5;
+}
+.cc-sticky-mes-label {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #71717a;
+}
+.cc-sticky-mes-venta {
+    font-size: 0.68rem;
+    color: #71717a;
+    font-variant-numeric: tabular-nums;
+}
+.cc-sticky-mes-proy {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #18181b;
+    font-variant-numeric: tabular-nums;
+}
+
+.cc-month-totals-row td {
+    background: #18181b !important;
+    color: #fafafa !important;
+    border-top: 2px solid #09090b !important;
+    font-size: 0.8rem;
+    font-weight: 650;
+    vertical-align: middle !important;
+    white-space: nowrap;
+}
+.cc-month-totals-row td.sticky-col {
+    background: #18181b !important;
+    color: #fafafa !important;
+}
+.cc-month-totals-row .cc-month-totals-sub {
+    display: block;
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: #a1a1aa;
+    margin-top: 0.1rem;
+}
+.cc-month-totals-row .text-danger { color: #fca5a5 !important; }
+.cc-month-totals-row .text-success { color: #6ee7b7 !important; }
+.cc-month-totals-row .text-muted { color: #a1a1aa !important; }
+
 @media (max-width: 768px) {
     .cc-page { padding: 0.85rem 0.75rem 2rem; }
     .cc-filters,
@@ -3183,6 +3245,35 @@
     background: #fffbeb;
     border-color: #fcd34d;
 }
+.cc-matrix-table .cc-matrix-group-row td {
+    background: #f4f4f5;
+    font-weight: 700;
+    font-size: 0.78rem;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: #3f3f46;
+    cursor: pointer;
+    vertical-align: middle !important;
+}
+.cc-matrix-table .cc-matrix-group-row td.sticky-col {
+    background: #f4f4f5;
+    position: sticky;
+    left: 0;
+    z-index: 2;
+}
+.cc-matrix-table .cc-matrix-group-row .cc-matrix-group-meta {
+    display: inline-block;
+    margin-left: 0.55rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    color: #71717a;
+}
+.cc-matrix-table .cc-matrix-group-row .cc-matrix-group-spacer {
+    background: #f4f4f5;
+}
+
 .cc-matrix-cell {
     min-width: 72px;
     text-align: center;

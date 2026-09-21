@@ -259,6 +259,7 @@
                 <div>Total proyección {{ $bootstrap['anioPresupuesto'] }} <strong id="ctl-tot-ppto">—</strong></div>
                 <div>Productos pendientes <strong id="ctl-pend">—</strong></div>
             </div>
+            <div class="cc-sticky-meses" id="ctl-tot-meses" aria-label="Totales por mes"></div>
         </div>
 
         <div class="cc-panel cc-captura-chart">
