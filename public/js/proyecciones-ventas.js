@@ -2951,6 +2951,7 @@
             });
             enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
             enriched.importeProy = importeProyeccionMxn(enriched);
+            enriched.importeProyVista = importeProyeccionVista(enriched);
             enriched.importeVenta = importeVentaMxn(enriched);
             enriched.importeVentaVista = importeVentaVista(enriched);
             return enriched;
@@ -2969,6 +2970,9 @@
                 return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
             }, 0),
             totP: ctas.reduce(function (a, x) { return a + (x.importeProy || 0); }, 0),
+            totPVista: ctas.reduce(function (a, x) {
+                return a + (x.importeProyVista != null ? x.importeProyVista : importeProyeccionVista(x));
+            }, 0),
             totUnitsG: ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0),
             totUnitsP: ctas.reduce(function (a, x) { return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto)); }, 0),
             avance: pct(ctas.length - pend, ctas.length || 1)
@@ -3085,10 +3089,10 @@
         var totG = ctas.reduce(function (a, x) {
             return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
         }, 0);
-        var totP = ctas.reduce(function (a, x) { return a + (x.importeProy != null ? x.importeProy : importeProyeccionMxn(x)); }, 0);
+        var totP = ctas.reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
         var pend = ctas.filter(ctaPendiente).length;
         setText(prefix + '-tot-gasto', moneyGasto(totG));
-        setText(prefix + '-tot-ppto', money(totP));
+        setText(prefix + '-tot-ppto', moneyGasto(totP));
         setText(prefix + '-pend', pend);
     }
 
@@ -3794,10 +3798,12 @@
     }
 
     function updateFormTotalsCliente(st) {
-        st = st || (control.centro ? statsDeCentro(control.centro) : { totG: 0, totP: 0, capturadas: 0, total: 0, pendientes: 0, avance: 0 });
-        setText('ctl-form-gasto', moneyGasto(st.totGVista != null ? st.totGVista : st.totG));
-        setText('ctl-form-ppto', money(st.totP));
-        var d = deltaPct(st.totP, st.totG);
+        st = st || (control.centro ? statsDeCentro(control.centro) : { totG: 0, totP: 0, totGVista: 0, totPVista: 0, capturadas: 0, total: 0, pendientes: 0, avance: 0 });
+        var ventaVista = st.totGVista != null ? st.totGVista : st.totG;
+        var proyVista = st.totPVista != null ? st.totPVista : st.totP;
+        setText('ctl-form-gasto', moneyGasto(ventaVista));
+        setText('ctl-form-ppto', moneyGasto(proyVista));
+        var d = deltaPct(proyVista, ventaVista);
         var el = document.getElementById('ctl-form-delta');
         if (el) el.textContent = st.pendientes
             ? (st.pendientes + (st.pendientes === 1 ? ' producto pendiente' : ' productos pendientes'))
@@ -3881,12 +3887,11 @@
             updateFormTotalsCliente();
             return;
         }
-        setText('ctl-form-gasto', moneyGasto(cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta)));
-        setText('ctl-form-ppto', money(cta.importeProy != null ? cta.importeProy : importeProyeccionMxn(cta)));
-        var d = deltaPct(
-            cta.importeProy != null ? cta.importeProy : importeProyeccionMxn(cta),
-            cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta)
-        );
+        var ventaVista = cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+        var proyVista = importeProyeccionVista(cta);
+        setText('ctl-form-gasto', moneyGasto(ventaVista));
+        setText('ctl-form-ppto', moneyGasto(proyVista));
+        var d = deltaPct(proyVista, ventaVista);
         var el = document.getElementById('ctl-form-delta');
         if (el) el.textContent = !ctaPendiente(cta)
             ? ((cta.importeProy || cta.totP) ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada en 0')
@@ -4006,6 +4011,24 @@
         if (!qty || !precio) return 0;
         var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
         return qty * (mon === 'USD' ? precio * fxRate(i) : precio);
+    }
+
+    /** Importe proyectado del mes ya en moneda de vista (USD/MXN). */
+    function importeMesProyVista(cta, i) {
+        var m = importeMesProyMxn(cta, i);
+        if (m == null) return null;
+        return toDisplayAmount(m, i);
+    }
+
+    /** Total proyección en moneda de vista (misma base que VENTA en pantalla). */
+    function importeProyeccionVista(cta) {
+        if (!cta) return 0;
+        var total = 0;
+        for (var i = 0; i < 12; i++) {
+            var m = importeMesProyVista(cta, i);
+            if (m != null) total += Number(m) || 0;
+        }
+        return total;
     }
 
     /** Importe MXN de un mes proyectado: unidades × precio del mes (override o lista) × TC.
@@ -4445,13 +4468,16 @@
     function monthCellClass(cta, i) {
         var cls = 'cc-month-cell';
         var raw = cta.ppto && cta.ppto[i];
+        // Amarillo: mes pendiente de capturar.
         if (!mesLleno(raw)) {
             cls += ' is-empty';
             return cls;
         }
         var val = Number(raw) || 0;
         var past = Number((cta.gasto && cta.gasto[i]) || 0);
-        if (past && val > past * 1.2) cls += ' is-over';
+        // Verde: unidades proyectadas mayores (o iguales) a la venta pasada.
+        // Rojo: unidades proyectadas menores a la venta pasada.
+        if (past > 0 && val < past) cls += ' is-over';
         else cls += ' is-ok';
         return cls;
     }
@@ -4633,7 +4659,7 @@
             var gTotG = groups[g].reduce(function (a, x) {
                 return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
             }, 0);
-            var gTotP = groups[g].reduce(function (a, x) { return a + (x.importeProy != null ? x.importeProy : importeProyeccionMxn(x)); }, 0);
+            var gTotP = groups[g].reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
             var closed = !!closedMap[g];
             if (!hideGroups) {
                 html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="6"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
@@ -4646,8 +4672,9 @@
             if (!closed || hideGroups) {
                 groups[g].forEach(function (cta) {
                     var impG = cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
-                    var impP = cta.importeProy != null ? cta.importeProy : importeProyeccionMxn(cta);
-                    var d = deltaPct(impP, cta.importeVenta != null ? cta.importeVenta : importeVentaMxn(cta));
+                    var impP = importeProyeccionVista(cta);
+                    // Δ% en la misma moneda que se muestra (evita mezclar LineTotal MXN vs proy×TC).
+                    var d = deltaPct(impP, impG);
                     var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
@@ -4658,24 +4685,25 @@
                         precioInfoHtml(pPast) + '</td>';
                     html += '<td class="num" title="Suma de LineTotalUSD (SAP). No es uds × precio redondeado.">' + moneyGasto(impG) + '</td>';
                     html += '<td class="num cc-price-cell" title="Precio de lista actual (proyección ' + CC.state.anioPresupuesto + ')">' + precioInfoHtml(precioProyeccionInfo(cta)) + '</td>';
-                    html += '<td class="num fw-semibold">' + money(impP) + '</td>';
-                    html += '<td class="num ' + dCls + '">' + (impP || !ctaPendiente(cta) ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
+                    html += '<td class="num fw-semibold">' + moneyGasto(impP) + '</td>';
+                    html += '<td class="num ' + dCls + '" title="Variación de importe en la moneda de vista (VENTA vs PROY)">' +
+                        (impP || !ctaPendiente(cta) ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
                     for (var i = 0; i < 12; i++) {
                         var lleno = mesLleno(cta.ppto[i]);
                         var udsProy = lleno ? (Number(cta.ppto[i]) || 0) : 0;
                         var udsPast = Number((cta.gasto && cta.gasto[i]) || 0);
                         var pCls = lleno
-                            ? (udsPast && udsProy > udsPast * 1.2 ? 'is-over' : 'is-ok')
+                            ? (udsPast > 0 && udsProy < udsPast ? 'is-over' : 'is-ok')
                             : 'is-empty';
                         var impMesG = importeMesVentaVista(cta, i);
-                        var impMesP = importeMesProyMxn(cta, i);
+                        var impMesP = importeMesProyVista(cta, i);
                         html += '<td class="num text-muted" style="font-size:.75rem" title="' +
                             escapeHtml('Venta ' + CC.state.anioGasto + (udsPast ? ' · ' + qtyLabel(udsPast) + ' uds' : '') + (isUsdView() ? ' · LineTotalUSD' : ' · LineTotal')) + '">' +
                             (impMesG ? moneyGasto(impMesG) : (udsPast ? qtyLabel(udsPast) : '—')) + '</td>';
                         html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem" title="' +
                             escapeHtml('Proy. ' + CC.state.anioPresupuesto + (lleno ? ' · ' + qtyLabel(udsProy) + ' uds' : '') + ' · TC ' + fxRate(i).toFixed(2)) + '">' +
                             (lleno
-                                ? (impMesP != null ? money(impMesP, null, i) : qtyLabel(udsProy))
+                                ? (impMesP != null ? moneyGasto(impMesP) : qtyLabel(udsProy))
                                 : '—') + '</td>';
                     }
                     html += '</tr>';

@@ -3137,6 +3137,52 @@
     letter-spacing: .03em;
     text-transform: uppercase;
 }
+.cc-matrix-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.65rem 1.1rem;
+    margin: 0.35rem 0 0.55rem;
+    padding: 0.45rem 0.75rem;
+    border: 1px solid #e4e4e7;
+    border-radius: 10px;
+    background: #fafafa;
+    font-size: 0.78rem;
+    color: #52525b;
+}
+.cc-matrix-legend .cc-legend-label {
+    font-weight: 700;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #71717a;
+}
+.cc-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-weight: 550;
+    white-space: nowrap;
+}
+.cc-legend-swatch {
+    width: 0.85rem;
+    height: 0.85rem;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    flex-shrink: 0;
+}
+.cc-legend-item.is-ok .cc-legend-swatch {
+    background: #ecfdf5;
+    border-color: #6ee7b7;
+}
+.cc-legend-item.is-over .cc-legend-swatch {
+    background: #fef2f2;
+    border-color: #fca5a5;
+}
+.cc-legend-item.is-empty .cc-legend-swatch {
+    background: #fffbeb;
+    border-color: #fcd34d;
+}
 .cc-matrix-cell {
     min-width: 72px;
     text-align: center;

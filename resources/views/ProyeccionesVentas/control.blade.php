@@ -201,6 +201,12 @@
                                 <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
                             </div>
                         </div>
+                        <div class="cc-matrix-legend" id="ctl-matrix-legend" aria-label="Indicadores de color">
+                            <span class="cc-legend-label">Indicadores</span>
+                            <span class="cc-legend-item is-ok"><span class="cc-legend-swatch" aria-hidden="true"></span> Mayor o igual a venta pasada</span>
+                            <span class="cc-legend-item is-over"><span class="cc-legend-swatch" aria-hidden="true"></span> Menor a venta pasada</span>
+                            <span class="cc-legend-item is-empty"><span class="cc-legend-swatch" aria-hidden="true"></span> Pendiente de capturar</span>
+                        </div>
                         <div class="cc-matrix-wrap">
                             <table class="cc-matrix-table" id="ctl-matrix-table">
                                 <thead id="ctl-matrix-thead"></thead>
