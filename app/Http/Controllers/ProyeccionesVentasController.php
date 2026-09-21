@@ -108,7 +108,7 @@ class ProyeccionesVentasController extends Controller
             'tipoCambio' => 'nullable|numeric',
             'tipoCambioMeses' => 'nullable|array|size:12',
             'tipoCambioMeses.*' => 'nullable|numeric|min:0',
-            'tipoBudget' => 'nullable|in:3+9,6+6,9+3,SIOP',
+            'tipoBudget' => 'nullable|in:3+9,6+6,9+3',
             'observaciones' => 'nullable|string',
         ]);
 
@@ -134,14 +134,9 @@ class ProyeccionesVentasController extends Controller
                 (float) ($fill['tipo_cambio'] ?: 20)
             );
         }
-        // Tipo de budget/forecast: al crear siempre; al editar solo si aún no estaba fijado.
-        if (Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget')) {
-            $incoming = $this->normalizeTipoBudget($data['tipoBudget'] ?? null);
-            if ($nuevo) {
-                $fill['tipo_budget'] = $incoming ?: '3+9';
-            } elseif (($ciclo->tipo_budget === null || trim((string) $ciclo->tipo_budget) === '') && $incoming) {
-                $fill['tipo_budget'] = $incoming;
-            }
+        // Tipo de budget: solo se fija al crear el ciclo.
+        if ($nuevo && Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget')) {
+            $fill['tipo_budget'] = $this->normalizeTipoBudget($data['tipoBudget'] ?? '3+9');
         }
         $ciclo->fill($fill);
         if ($nuevo) {
@@ -602,7 +597,7 @@ class ProyeccionesVentasController extends Controller
             $year = $refYear - 3;
         }
 
-        $cacheKey = 'pv.venta-real.v3.' . $empresa . '.' . $cc . '.' . $year;
+        $cacheKey = 'pv.venta-real.' . $empresa . '.' . $cc . '.' . $year;
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok'])) {
             return response()->json($cached);
@@ -1344,77 +1339,108 @@ class ProyeccionesVentasController extends Controller
      */
     protected function cargarGastoRealCentro(string $empresa, string $cc, int $year): array
     {
-        $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
-            'CardCode' => $cc,
-            'fecha_desde' => $year.'/01/01',
-            'fecha_hasta' => $year.'/12/31',
-        ]);
-
+        $api = app(AutinApiClient::class);
         $porCuenta = [];
-        $ok = ! empty($pack['ok']);
-        $mensaje = $pack['mensaje'] ?? null;
+        $ok = false;
+        $mensaje = null;
+        $perPage = 200;
+        $maxPages = 20;
 
-        foreach ($pack['rows'] as $row) {
-            if (! is_array($row)) {
-                continue;
+        for ($page = 1; $page <= $maxPages; $page++) {
+            $res = $api->ventas([
+                'Empresa' => strtoupper($empresa),
+                'CardCode' => $cc,
+                'year' => $year,
+                'fecha_desde' => $year . '/01/01',
+                'fecha_hasta' => $year . '/12/31',
+                'per_page' => $perPage,
+                'page' => $page,
+            ]);
+
+            if (empty($res['ok'])) {
+                if ($page === 1) {
+                    $mensaje = $res['message'] ?? 'Sin conexión a ventas SAP';
+                }
+                break;
             }
-            $rowCc = (string) ($row['CardCode'] ?? $row['Cardcode'] ?? $row['CC'] ?? '');
-            if ($cc !== '' && ! $this->mismoCentroCodigo($rowCc, $cc)) {
-                continue;
+
+            $ok = true;
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+            $rows = $body['data'] ?? [];
+            if (! is_array($rows) || ! $rows) {
+                break;
             }
-            $codigo = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
-            if ($codigo === '') {
-                continue;
+
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $rowCc = (string) ($row['CardCode'] ?? $row['Cardcode'] ?? $row['CC'] ?? '');
+                if ($cc !== '' && ! $this->mismoCentroCodigo($rowCc, $cc)) {
+                    continue;
+                }
+                $codigo = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+                if ($codigo === '') {
+                    continue;
+                }
+                $fecha = (string) ($row['DocDate'] ?? $row['Fecha'] ?? $row['fecha'] ?? $row['TaxDate'] ?? '');
+                $ts = strtotime(substr($fecha, 0, 19));
+                if ($ts && (int) date('Y', $ts) !== $year) {
+                    continue;
+                }
+                $mes = $this->mesDeFecha($fecha);
+                if ($mes < 0) {
+                    continue;
+                }
+                $qty = $this->cantidadVenta($row);
+                $importe = $this->importeVenta($row, ['LineTotal', 'linetotal', 'GTotal']);
+                $importeUsd = $this->importeVenta($row, ['LineTotalUSD', 'LineTotalUsd', 'LineTotalFC', 'TotalFrgn']);
+                $price = $this->numeroVenta($row, ['Price', 'Precio', 'UnitPrice', 'PriceBefDi']);
+                $costo = $this->costoVenta($row);
+                $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
+                $unidad = trim((string) ($row['SalPackMsr'] ?? $row['SalUnitMsr'] ?? $row['unidad'] ?? ''));
+                $key = $this->codigoCuentaKey($codigo);
+                if (! isset($porCuenta[$key])) {
+                    $porCuenta[$key] = [
+                        'codigo' => $codigo,
+                        'nombre' => $nombre,
+                        'unidad' => $unidad,
+                        'gasto' => array_fill(0, 12, 0.0),
+                        'importe' => array_fill(0, 12, 0.0),
+                        'importe_usd' => array_fill(0, 12, 0.0),
+                        'precio_w' => array_fill(0, 12, 0.0),
+                        'precio_q' => array_fill(0, 12, 0.0),
+                        'costo' => $costo,
+                    ];
+                } elseif ($nombre !== '' && $porCuenta[$key]['nombre'] === '') {
+                    $porCuenta[$key]['nombre'] = $nombre;
+                }
+                if ($unidad !== '' && ($porCuenta[$key]['unidad'] ?? '') === '') {
+                    $porCuenta[$key]['unidad'] = $unidad;
+                }
+                $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $qty, 4);
+                $porCuenta[$key]['importe'][$mes] = round($porCuenta[$key]['importe'][$mes] + $importe, 2);
+                $porCuenta[$key]['importe_usd'][$mes] = round($porCuenta[$key]['importe_usd'][$mes] + $importeUsd, 2);
+                $peso = abs($qty);
+                if ($price == 0.0 && abs($qty) > 0.0001) {
+                    $price = $importe / $qty;
+                }
+                if ($peso > 0 && $price != 0.0) {
+                    $porCuenta[$key]['precio_w'][$mes] += $peso * $price;
+                    $porCuenta[$key]['precio_q'][$mes] += $peso;
+                }
+                if ($costo > 0) {
+                    $porCuenta[$key]['costo'] = $costo;
+                }
             }
-            $fecha = (string) ($row['DocDate'] ?? $row['Fecha'] ?? $row['fecha'] ?? $row['TaxDate'] ?? '');
-            $ts = strtotime(substr($fecha, 0, 19));
-            if ($ts && (int) date('Y', $ts) !== $year) {
-                continue;
+
+            $pag = $this->paginacionDe($body);
+            $lastPage = (int) ($pag['last_page'] ?? 0);
+            if ($lastPage > 0 && $page >= $lastPage) {
+                break;
             }
-            $mes = $this->mesDeFecha($fecha);
-            if ($mes < 0) {
-                continue;
-            }
-            $qty = $this->cantidadVenta($row);
-            $importe = $this->importeVenta($row, ['LineTotal', 'linetotal', 'GTotal']);
-            $importeUsd = $this->importeVenta($row, ['LineTotalUSD', 'LineTotalUsd', 'LineTotalFC', 'TotalFrgn']);
-            $price = $this->numeroVenta($row, ['Price', 'Precio', 'UnitPrice', 'PriceBefDi']);
-            $costoInv = $this->costoInventarioVenta($row);
-            $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
-            $unidad = trim((string) ($row['SalPackMsr'] ?? $row['SalUnitMsr'] ?? $row['unidad'] ?? ''));
-            $key = $this->codigoCuentaKey($codigo);
-            if (! isset($porCuenta[$key])) {
-                $porCuenta[$key] = [
-                    'codigo' => $codigo,
-                    'nombre' => $nombre,
-                    'unidad' => $unidad,
-                    'gasto' => array_fill(0, 12, 0.0),
-                    'importe' => array_fill(0, 12, 0.0),
-                    'importe_usd' => array_fill(0, 12, 0.0),
-                    'precio_w' => array_fill(0, 12, 0.0),
-                    'precio_q' => array_fill(0, 12, 0.0),
-                    'costo' => $costoInv,
-                    'costo_moneda' => 'MXN',
-                ];
-            } elseif ($nombre !== '' && $porCuenta[$key]['nombre'] === '') {
-                $porCuenta[$key]['nombre'] = $nombre;
-            }
-            if ($unidad !== '' && ($porCuenta[$key]['unidad'] ?? '') === '') {
-                $porCuenta[$key]['unidad'] = $unidad;
-            }
-            $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $qty, 4);
-            $porCuenta[$key]['importe'][$mes] = round($porCuenta[$key]['importe'][$mes] + $importe, 2);
-            $porCuenta[$key]['importe_usd'][$mes] = round($porCuenta[$key]['importe_usd'][$mes] + $importeUsd, 2);
-            $peso = abs($qty);
-            if ($price == 0.0 && abs($qty) > 0.0001) {
-                $price = $importe / $qty;
-            }
-            if ($peso > 0 && $price != 0.0) {
-                $porCuenta[$key]['precio_w'][$mes] += $peso * $price;
-                $porCuenta[$key]['precio_q'][$mes] += $peso;
-            }
-            if ($costoInv > 0) {
-                $porCuenta[$key]['costo'] = $costoInv;
+            if ($lastPage < 1 && count($rows) < $perPage) {
+                break;
             }
         }
 
@@ -1428,21 +1454,6 @@ class ProyeccionesVentasController extends Controller
             }
             $item['precio'] = $precio;
             unset($item['precio_w'], $item['precio_q']);
-
-            // Precio/costo unitario del año: promedio ponderado de la venta (USD si hay LineTotalUSD).
-            $qtyTot = array_sum($item['gasto'] ?? []);
-            $usdTot = array_sum($item['importe_usd'] ?? []);
-            $mxnTot = array_sum($item['importe'] ?? []);
-            if ($qtyTot != 0.0 && abs($usdTot) > 0.0001) {
-                $item['costo'] = round(abs($usdTot / $qtyTot), 4);
-                $item['costo_moneda'] = 'USD';
-            } elseif ($qtyTot != 0.0 && abs($mxnTot) > 0.0001) {
-                $item['costo'] = round(abs($mxnTot / $qtyTot), 4);
-                $item['costo_moneda'] = 'MXN';
-            } elseif (empty($item['costo'])) {
-                $item['costo'] = 0.0;
-                $item['costo_moneda'] = 'MXN';
-            }
         }
         unset($item);
 
@@ -1450,7 +1461,7 @@ class ProyeccionesVentasController extends Controller
             'ok' => $ok,
             'year' => $year,
             'por_cuenta' => $porCuenta,
-            'mensaje' => $ok ? null : $mensaje,
+            'mensaje' => $mensaje,
         ];
     }
 
@@ -1844,8 +1855,8 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Productos (ItemCode / ItemName) vendidos a un cliente (CardCode) en OINV + ORIN.
-     * Si el año del ciclo (p. ej. Forecast 2027) aún no tiene ventas, prueba hasta 3 años atrás.
+     * Productos (ItemCode / ItemName) en OINV + ORIN.
+     * Por cliente (CardCode) o, con $todas, todo el catálogo vendido de la empresa.
      *
      * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
      */
@@ -1864,7 +1875,9 @@ class ProyeccionesVentasController extends Controller
             ];
         }
 
-        $cacheKey = 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
+        $cacheKey = $todas
+            ? 'pv.productos.'.$empresa.'.'.$year.'.ALL'
+            : 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['productos'])) {
             return $cached;
@@ -1942,7 +1955,6 @@ class ProyeccionesVentasController extends Controller
 
     /**
      * Clientes SAP de la empresa (CardCode únicos en ventas del año de referencia).
-     * Si el año del ciclo aún no tiene ventas (Forecast futuro), prueba hasta 3 años atrás.
      *
      * @return array{ok: bool, clientes: array<int, array<string, mixed>>, mensaje: string|null}
      */
@@ -1952,33 +1964,6 @@ class ProyeccionesVentasController extends Controller
         if ($year < 2000) {
             $year = (int) date('Y');
         }
-
-        $requested = $year;
-        $last = null;
-        for ($y = $year; $y >= $year - 3 && $y >= 2000; $y--) {
-            $pack = $this->cargarClientesEmpresaAnio($empresa, $y);
-            $last = $pack;
-            if (! empty($pack['clientes'])) {
-                if ($y !== $requested) {
-                    $pack['mensaje'] = 'Mostrando clientes con venta en '.$y.' (aún no hay en '.$requested.')';
-                }
-
-                return $pack;
-            }
-        }
-
-        return $last ?? [
-            'ok' => false,
-            'clientes' => [],
-            'mensaje' => 'Sin clientes SAP',
-        ];
-    }
-
-    /**
-     * @return array{ok: bool, clientes: array<int, array<string, mixed>>, mensaje: string|null}
-     */
-    protected function cargarClientesEmpresaAnio(string $empresa, int $year): array
-    {
         $cacheKey = 'pv.clientes.'.$empresa.'.'.$year;
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['clientes'])) {
@@ -2217,31 +2202,16 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Costo de inventario SAP si viene en la fila (no usar Price de venta).
-     *
      * @param  array<string, mixed>  $row
      */
-    protected function costoInventarioVenta(array $row): float
+    protected function costoVenta(array $row): float
     {
-        foreach (['StockPrice', 'Costo', 'costo', 'GrossBuyPrice', 'AvgPrice', 'LastPurPrc'] as $k) {
+        foreach (['StockPrice', 'Costo', 'costo', 'GrossBuyPrice', 'Price', 'Precio', 'UnitPrice'] as $k) {
             if (isset($row[$k]) && is_numeric($row[$k]) && (float) $row[$k] != 0.0) {
                 return (float) $row[$k];
             }
         }
 
-        return 0.0;
-    }
-
-    /**
-     * @param  array<string, mixed>  $row
-     */
-    protected function costoVenta(array $row): float
-    {
-        $inv = $this->costoInventarioVenta($row);
-        if ($inv > 0) {
-            return $inv;
-        }
-        // Compat: si no hay costo de inventario, no inventar con Price de venta.
         return 0.0;
     }
 
@@ -3002,27 +2972,9 @@ class ProyeccionesVentasController extends Controller
 
     protected function normalizeTipoBudget($tipo): ?string
     {
-        $t = strtoupper(trim((string) $tipo));
-        // Acepta códigos canónicos y alias con prefijo Forecast.
-        $map = [
-            '3+9' => '3+9',
-            '6+6' => '6+6',
-            '9+3' => '9+3',
-            'SIOP' => 'SIOP',
-            'FORECAST 3+9' => '3+9',
-            'FORECAST 6+6' => '6+6',
-            'FORECAST 9+3' => '9+3',
-            'FORECAST3+9' => '3+9',
-            'FORECAST6+6' => '6+6',
-            'FORECAST9+3' => '9+3',
-        ];
-        // Conserva mayúsculas solo en SIOP; el resto queda como 3+9 / 6+6 / 9+3.
-        $raw = trim((string) $tipo);
-        if (isset($map[strtoupper($raw)])) {
-            return $map[strtoupper($raw)];
-        }
-        if (in_array($raw, ['3+9', '6+6', '9+3', 'SIOP'], true)) {
-            return $raw;
+        $t = trim((string) $tipo);
+        if (in_array($t, ['3+9', '6+6', '9+3'], true)) {
+            return $t;
         }
 
         return null;

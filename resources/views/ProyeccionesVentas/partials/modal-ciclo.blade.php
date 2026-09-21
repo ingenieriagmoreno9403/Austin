@@ -6,7 +6,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body">
-                <p class="text-muted mb-3" style="font-size:.85rem">Identifica el ciclo, el tipo de forecast/budget y la ventana en la que se puede capturar la proyección.</p>
+                <p class="text-muted mb-3" style="font-size:.85rem">Identifica el ciclo, el tipo de cambio y la ventana en la que se puede capturar la proyección.</p>
                 <div class="row g-3">
                     <div class="col-12"><div class="cc-form-kicker">Identidad</div></div>
                     <div class="col-md-4">
@@ -15,17 +15,16 @@
                     </div>
                     <div class="col-md-8">
                         <label class="form-label" for="p-nombre">Nombre</label>
-                        <input id="p-nombre" class="form-control" type="text" required placeholder="Forecast 3+9 · Abril 2027">
+                        <input id="p-nombre" class="form-control" type="text" required placeholder="Proyección de ventas 2027">
                     </div>
 
                     <div class="col-12"><div class="cc-form-kicker">Años y parámetros</div></div>
                     <div class="col-md-6">
-                        <label class="form-label" for="p-anio-ref">Año venta real (año en curso)</label>
+                        <label class="form-label" for="p-anio-ref">Año de referencia (venta real)</label>
                         <input id="p-anio-ref" class="form-control" type="number" min="2000" max="2100" required>
-                        <small class="text-muted">Año de la venta real SAP (puede ser distinto al de proyección; ej. real 2026, Budget 2027).</small>
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label" for="p-anio">Año de proyección / Budget</label>
+                        <label class="form-label" for="p-anio">Año de proyección</label>
                         <input id="p-anio" class="form-control" type="number" min="2000" max="2100" required>
                     </div>
                     <div class="col-md-6" hidden>
@@ -40,19 +39,13 @@
                         </div>
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label" for="p-tipo-budget">Tipo</label>
+                        <label class="form-label" for="p-tipo-budget">Tipo de budget</label>
                         <select id="p-tipo-budget" class="form-select" required>
-                            <option value="3+9">Forecast 3+9</option>
-                            <option value="6+6">Forecast 6+6</option>
-                            <option value="9+3">Forecast 9+3</option>
-                            <option value="SIOP">SIOP</option>
+                            <option value="3+9">3 + 9 · copia ene–mar (bloqueados) · edita abr–dic</option>
+                            <option value="6+6">6 + 6 · copia ene–jun (bloqueados) · edita jul–dic</option>
+                            <option value="9+3">9 + 3 · copia ene–sep (editables) · edita también oct–dic</option>
                         </select>
                         <small class="text-muted" id="p-tipo-budget-hint">Se fija al abrir el ciclo y no se puede cambiar después.</small>
-                    </div>
-                    <div class="col-12">
-                        <div class="alert alert-light border mb-0 py-2 px-3" id="p-tipo-budget-desc" style="font-size:.82rem;line-height:1.35">
-                            <strong>Forecast 3+9:</strong> ene–mar con venta real (bloqueados); abr–dic desde el Budget (editables).
-                        </div>
                     </div>
 
                     <div class="col-12"><div class="cc-form-kicker">Ventana de captura</div></div>
