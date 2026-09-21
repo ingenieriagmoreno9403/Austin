@@ -608,6 +608,7 @@
         control._gastoMap = built.map;
         control._gastoExtras = built.extras;
         control._gastoNombres = built.nombres;
+        control._gastoLoadedFor = control._gastoReq || '';
         if (control._gastoReq) {
             CC.state.gastoLookup = CC.state.gastoLookup || {};
             CC.state.gastoLookup[control._gastoReq] = built;
@@ -1400,6 +1401,7 @@
         if (!(val('ctl-empresa') && val('ctl-centro'))) return;
         if (!control.centro) return;
         control._allCtas = cuentasEnriquecidas(control.centro);
+        seedPresupuestoDesdeVentaReal(control.centro);
         updateControlProgress();
         renderNavCuentas();
         renderCtaChips();
@@ -1409,27 +1411,49 @@
         renderVisorTable();
     }
 
-    /** Ciclo Budget del mismo año (SIOP o sin forecast), para heredar meses editables. */
+    /** Ciclo base para heredar cantidades (Forecast/SIOP). */
     function cicloBaseProyeccion() {
         var current = cicloActualCodigo();
         var cur = findCiclo(current) || CC.state.period || {};
         var tipo = cur.tipoBudget || budgetTipo();
         if (!esForecastTipo(tipo) && !esSiopTipo(tipo)) return '';
         var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
+        var curId = Number(cur.id) || 0;
         var ciclos = CC.state.ciclos || [];
         var sameYear = ciclos.filter(function (c) {
             return String(c.codigo) !== String(current) && (!anio || Number(c.anio) === anio);
         });
-        // 1) Preferir SIOP del mismo año (Budget operativo), si el ciclo actual no es ese.
+
+        // SIOP: tomar el ciclo anterior del mismo año (el de mayor id < actual),
+        // incluyendo Forecast 3+9 / 6+6 / 9+3. Si no hay, el más reciente del año previo.
+        if (esSiopTipo(tipo)) {
+            var ranked = sameYear.slice().sort(function (a, b) {
+                var idA = Number(a.id) || 0;
+                var idB = Number(b.id) || 0;
+                if (curId) {
+                    var beforeA = idA > 0 && idA < curId ? 1 : 0;
+                    var beforeB = idB > 0 && idB < curId ? 1 : 0;
+                    if (beforeA !== beforeB) return beforeB - beforeA;
+                }
+                return idB - idA;
+            });
+            if (ranked.length) return ranked[0].codigo;
+            var prevYear = ciclos.filter(function (c) {
+                return String(c.codigo) !== String(current) && Number(c.anio) === (anio - 1);
+            }).sort(function (a, b) {
+                return (Number(b.id) || 0) - (Number(a.id) || 0);
+            });
+            return (prevYear[0] && prevYear[0].codigo) || '';
+        }
+
+        // Forecast: preferir SIOP / Budget del mismo año (no otro Forecast).
         var siop = sameYear.filter(function (c) { return String(c.tipoBudget || '') === 'SIOP'; });
         if (siop.length) return siop[0].codigo;
-        // 2) Ciclo sin tipo o no-forecast (Budget anual clásico).
         var plain = sameYear.filter(function (c) {
             var t = String(c.tipoBudget || '');
             return !t || (!esForecastTipo(t) && t !== 'SIOP');
         });
         if (plain.length) return plain[0].codigo;
-        // 3) Cualquier otro del mismo año que no sea forecast.
         var other = sameYear.filter(function (c) { return !esForecastTipo(c.tipoBudget); });
         return (other[0] && other[0].codigo) || '';
     }
@@ -1590,7 +1614,7 @@
             return '<strong>Forecast 9+3:</strong> los 9 primeros meses (ene–sep) se cargan con la venta real del año en curso y quedan fijos. Los 3 restantes se cargan del Budget y se pueden modificar.';
         }
         if (t === 'SIOP') {
-            return '<strong>SIOP:</strong> se precarga el Budget completo. Todos los meses son editables y el ciclo se puede abrir/cerrar las veces que haga falta en el año.';
+            return '<strong>SIOP:</strong> se precargan las cantidades del ciclo anterior (si no hay, la venta real). Mes sin cantidad → 0. Todos los meses son editables.';
         }
         return 'Selecciona el tipo de forecast o SIOP.';
     }
@@ -1602,7 +1626,7 @@
         var hint = document.getElementById('p-tipo-budget-hint');
         if (hint && !document.getElementById('p-tipo-budget').disabled) {
             hint.textContent = esSiopTipo(tipo)
-                ? 'SIOP: precarga Budget · todos los meses editables · se puede reabrir en el año.'
+                ? 'SIOP: precarga ciclo anterior (o venta real) · meses vacíos en 0 · todos editables.'
                 : 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
         }
     }
@@ -1610,6 +1634,8 @@
     /**
      * Al abrir Captura de un cliente: solo precarga si el producto NO tiene fila
      * guardada en este ciclo. Nunca pisa capturas ya persistidas al cambiar de ciclo.
+     * SIOP: 12 meses desde ciclo anterior; si el mes no tiene cantidad → 0.
+     * Si el producto no existe en el ciclo anterior → venta real del año de referencia (o 0).
      */
     function budgetTieneFilaEnServidor(empresa, cc, cuenta) {
         var map = CC.state.budgetKeysFromServer || {};
@@ -1631,6 +1657,11 @@
         var key = resolveStateKey(map, empresa, cc, cuenta);
         var row = map[key];
         return Array.isArray(row) ? row.slice() : null;
+    }
+
+    function gastoListoParaSeed() {
+        return !!(control._gastoReq && control._gastoLoadedFor &&
+            String(control._gastoLoadedFor) === String(control._gastoReq));
     }
 
     function seedPresupuestoDesdeVentaReal(c) {
@@ -1655,23 +1686,32 @@
         var seeded = 0;
         var fromBase = 0;
         var fromVenta = 0;
+        var waitingGasto = false;
         var loadGen = CC._capturaLoadGen || 0;
         ctas.forEach(function (cta) {
             var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
             if (!budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
             var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var hasBaseQty = !!(baseRow && baseRow.some(mesLleno));
             var gasto = cta.gasto || [];
+            // SIOP sin fila en ciclo anterior: esperar venta real para no grabar ceros prematuros.
+            if (esSiopTipo(tipo) && !hasBaseQty && !gastoListoParaSeed()) {
+                waitingGasto = true;
+                return;
+            }
             var months = [];
             var usedBase = false;
             var usedVenta = false;
             for (var i = 0; i < 12; i++) {
                 if (esSiopTipo(tipo)) {
-                    // SIOP: todo el año desde Budget; editable.
-                    if (baseRow && mesLleno(baseRow[i])) {
-                        months.push(toStoreQty(Number(baseRow[i]) || 0));
+                    if (hasBaseQty) {
+                        // Ciclo anterior: cantidad si existe, si no 0.
+                        months.push(mesLleno(baseRow[i]) ? toStoreQty(Number(baseRow[i]) || 0) : 0);
                         usedBase = true;
                     } else {
-                        months.push(null);
+                        // Sin proyección previa del producto → venta real (o 0).
+                        months.push(toStoreQty(Number(gasto[i]) || 0));
+                        usedVenta = true;
                     }
                 } else if (i < n) {
                     // Forecast: primeros N meses = venta real del año en curso (fijos).
@@ -1685,8 +1725,8 @@
                     months.push(null);
                 }
             }
-            // Si no hubo ni venta ni budget, no persistir fila vacía inútil.
-            if (!months.some(mesLleno)) return;
+            // SIOP siempre persiste los 12 meses (cantidad o 0). Forecast: solo si hay algo.
+            if (!esSiopTipo(tipo) && !months.some(mesLleno)) return;
             var key = budgetKey(c.empresa, c.codigo, cta.codigo);
             CC.state.budgets = CC.state.budgets || {};
             CC.state.budgets[key] = months.slice();
@@ -1697,13 +1737,22 @@
             if (usedBase) fromBase += 1;
             if (usedVenta) fromVenta += 1;
         });
-        CC._seedDoneFor[seedKey] = true;
+        // Si aún falta la venta SAP para completar SIOP, reintentar cuando llegue applyGastoMap.
+        if (!waitingGasto) CC._seedDoneFor[seedKey] = true;
         if (seeded && loadGen === (CC._capturaLoadGen || 0)
             && String(cicloActualCodigo() || '').toUpperCase() === String(cicloSeed).toUpperCase()) {
             control._allCtas = cuentasEnriquecidas(c);
             var parts = [];
             if (esSiopTipo(tipo)) {
-                parts.push('Budget precargado' + (fromBase ? (' en ' + fromBase + (fromBase === 1 ? ' producto' : ' productos')) : ''));
+                if (fromBase) {
+                    parts.push('ciclo anterior' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : '') +
+                        ' en ' + fromBase + (fromBase === 1 ? ' producto' : ' productos'));
+                }
+                if (fromVenta) {
+                    parts.push('venta ' + (CC.state.anioGasto || '') + ' en ' + fromVenta +
+                        (fromVenta === 1 ? ' producto' : ' productos'));
+                }
+                parts.push('meses sin cantidad → 0');
                 parts.push('todos los meses editables');
             } else {
                 if (fromVenta) {
