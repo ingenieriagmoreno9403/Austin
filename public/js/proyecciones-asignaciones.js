@@ -1636,9 +1636,13 @@
                 syncCentroSelect(centros);
                 fillCentros(ccQ ? ccQ.value : '');
                 if (meta) {
-                    meta.textContent = centros.length
-                        ? (centros.length + ' clientes en ' + String(cfg.empresa).toUpperCase() + (savedDeEmpresa(cfg.empresa).length ? ' · ' + savedDeEmpresa(cfg.empresa).length + ' ya asignados' : ''))
-                        : (mensaje || 'Sin clientes en AutinApi');
+                    if (centros.length) {
+                        var base = centros.length + ' clientes en ' + String(cfg.empresa).toUpperCase()
+                            + (savedDeEmpresa(cfg.empresa).length ? ' · ' + savedDeEmpresa(cfg.empresa).length + ' ya asignados' : '');
+                        meta.textContent = mensaje ? (base + ' · ' + mensaje) : base;
+                    } else {
+                        meta.textContent = mensaje || 'Sin clientes en AutinApi';
+                    }
                 }
             };
             if (cacheCentros[key]) {
@@ -1899,8 +1903,14 @@
                 ? '&todas=1'
                 : ('&cliente=' + encodeURIComponent(cliente) + '&cc=' + encodeURIComponent(cliente));
             getJSON(url).then(function (json) {
-                cacheCuentas[key] = json.cuentas || [];
-                apply(cacheCuentas[key], json.agrupaciones || []);
+                var rows = json.cuentas || [];
+                if (json.ok && rows.length) cacheCuentas[key] = rows;
+                if (!rows.length && json.mensaje) {
+                    box.innerHTML = '<div class="cc-empty">' + String(json.mensaje) + '</div>';
+                    cuentas = [];
+                    return;
+                }
+                apply(rows, json.agrupaciones || []);
             }).catch(function () {
                 apply([], []);
             });
