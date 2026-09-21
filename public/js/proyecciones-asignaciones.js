@@ -131,64 +131,6 @@
         sel.onchange = function () { onPick(sel.value || ''); };
     }
 
-    function lineaKey(c) {
-        return String((c && (c.grupo_id || c.grupo || c.agrupacion)) || '').trim();
-    }
-
-    function lineasFromCuentas(rows) {
-        var map = {};
-        (rows || []).forEach(function (c) {
-            var id = lineaKey(c) || 'SIN_LINEA';
-            if (!map[id]) {
-                map[id] = { id: id, nombre: id === 'SIN_LINEA' ? 'Sin línea' : id, n: 0 };
-            }
-            map[id].n += 1;
-        });
-        return Object.keys(map).sort(function (a, b) {
-            if (a === 'SIN_LINEA') return 1;
-            if (b === 'SIN_LINEA') return -1;
-            return a.localeCompare(b, 'es', { sensitivity: 'base' });
-        }).map(function (k) { return map[k]; });
-    }
-
-    function fillLineaUi(selId, rows, current, onPick) {
-        var sel = document.getElementById(selId);
-        if (!sel) return;
-        current = String(current || '');
-        var lineas = lineasFromCuentas(rows);
-        var opts = '<option value="">Todas las líneas</option>';
-        if (!lineas.length) {
-            opts += '<option value="_none" disabled>Sin U_LINEA_QV</option>';
-        } else {
-            opts += lineas.map(function (g) {
-                return '<option value="' + escapeHtml(g.id) + '"' + (current === String(g.id) ? ' selected' : '') + '>' +
-                    escapeHtml(g.nombre + ' · ' + g.n) + '</option>';
-            }).join('');
-        }
-        sel.innerHTML = opts;
-        if (current && !lineas.some(function (g) { return String(g.id) === current; })) {
-            current = '';
-        }
-        sel.value = current;
-        sel.onchange = function () { onPick(sel.value || ''); };
-    }
-
-    function groupByLinea(rows) {
-        var groups = {};
-        (rows || []).forEach(function (c) {
-            var id = lineaKey(c) || 'SIN_LINEA';
-            if (!groups[id]) {
-                groups[id] = { id: id, label: id === 'SIN_LINEA' ? 'Sin línea' : id, rows: [] };
-            }
-            groups[id].rows.push(c);
-        });
-        return Object.keys(groups).sort(function (a, b) {
-            if (a === 'SIN_LINEA') return 1;
-            if (b === 'SIN_LINEA') return -1;
-            return a.localeCompare(b, 'es', { sensitivity: 'base' });
-        }).map(function (k) { return groups[k]; });
-    }
-
     function fillGrupoUi(selId, grupos, current, onPick) {
         var sel = document.getElementById(selId);
         if (!sel) return;
@@ -663,9 +605,6 @@
         if (maskSel) maskSel.value = '';
         var grupoSel = document.getElementById('asig-edit-grupo');
         if (grupoSel) grupoSel.value = '';
-        CCAsig._editCatalogo = false;
-        var catalogoEl = document.getElementById('asig-edit-catalogo');
-        if (catalogoEl) catalogoEl.checked = false;
         showModal('modalAsigEditar');
         loadGruposEditar(row.empresa);
         loadCuentasEditar(row.empresa, qEl ? qEl.value : '', row.centro_codigo);
@@ -674,8 +613,7 @@
     function loadCuentasEditar(empresa, q, cliente) {
         var year = Number((window.CC && CC.state && (CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia))) || new Date().getFullYear());
         var card = String(cliente || (CCAsig._activo && CCAsig._activo.centro_codigo) || '').trim();
-        var todas = !!CCAsig._editCatalogo;
-        var key = String(empresa || '').toLowerCase() + '|' + year + '|' + (todas ? 'ALL' : card.toUpperCase());
+        var key = String(empresa || '').toLowerCase() + '|' + year + '|' + card.toUpperCase();
         var apply = function (rows, groups) {
             CCAsig._editCuentasAll = rows || [];
             CCAsig._editCuentas = CCAsig._editCuentasAll;
@@ -693,14 +631,10 @@
             apply(CCAsig._cuentasCache[key], CCAsig._editAgrupaciones || []);
             return;
         }
-        var box = document.getElementById('asig-edit-list');
-        if (box) box.innerHTML = '<div class="cc-empty">' + (todas ? 'Cargando catálogo de productos…' : 'Cargando productos SAP…') + '</div>';
-        var url = '/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(String(empresa || '').toLowerCase()) +
-            '&year=' + encodeURIComponent(year);
-        url += todas
-            ? '&todas=1'
-            : ('&cliente=' + encodeURIComponent(card) + '&cc=' + encodeURIComponent(card));
-        getJSON(url).then(function (json) {
+        getJSON('/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(String(empresa || '').toLowerCase()) +
+            '&year=' + encodeURIComponent(year) +
+            '&cliente=' + encodeURIComponent(card) +
+            '&cc=' + encodeURIComponent(card)).then(function (json) {
             CCAsig._cuentasCache[key] = json.cuentas || [];
             apply(CCAsig._cuentasCache[key], json.agrupaciones || []);
         }).catch(function () {
@@ -1098,15 +1032,6 @@
             document.querySelectorAll('#asig-edit-list [data-edit-cta]').forEach(function (i) { i.checked = on; });
             syncEditSelectedFromDom();
         });
-        var catalogoEdit = document.getElementById('asig-edit-catalogo');
-        if (catalogoEdit) catalogoEdit.addEventListener('change', function () {
-            CCAsig._editCatalogo = !!this.checked;
-            syncEditSelectedFromDom();
-            var qEl = document.getElementById('asig-edit-q');
-            var row = CCAsig._activo;
-            if (!row) return;
-            loadCuentasEditar(row.empresa, qEl ? qEl.value : '', row.centro_codigo);
-        });
         var editList = document.getElementById('asig-edit-list');
         if (editList) editList.addEventListener('change', function (ev) {
             var t = ev.target;
@@ -1220,7 +1145,6 @@
         var ctaSelected = {};
         var ctaMask = '';
         var ctaGrupo = '';
-        var ctaLinea = '';
         var lastFlashKey = '';
         var currentUserId = 0;
 
@@ -1576,7 +1500,6 @@
             ctaSelected = {};
             ctaMask = '';
             ctaGrupo = '';
-            ctaLinea = '';
             if (centroSel) {
                 centroSel.innerHTML = '<option value="">Cargando clientes…</option>';
                 centroSel.disabled = false;
@@ -1585,13 +1508,10 @@
             if (ccList) ccList.innerHTML = '<div class="cc-empty">Cargando centros…</div>';
             if (ccQ) { ccQ.disabled = false; ccQ.value = ''; }
             if (ctaQ) { ctaQ.disabled = true; ctaQ.value = ''; }
-            var lineaSelReset = document.getElementById('asig-cta-linea');
-            if (lineaSelReset) { lineaSelReset.disabled = true; }
             var list = document.getElementById('asig-cta-list');
             if (list) list.innerHTML = '<div class="cc-empty">Elige un cliente para ver los productos</div>';
             fillMaskUi('asig-cta-mask', [], [], '', setCtaMask);
             fillGrupoUi('asig-cta-grupo', [], '', setCtaGrupo);
-            fillLineaUi('asig-cta-linea', [], '', setCtaLinea);
             loadCentros();
             loadGrupos();
         }
@@ -1636,9 +1556,13 @@
                 syncCentroSelect(centros);
                 fillCentros(ccQ ? ccQ.value : '');
                 if (meta) {
-                    meta.textContent = centros.length
-                        ? (centros.length + ' clientes en ' + String(cfg.empresa).toUpperCase() + (savedDeEmpresa(cfg.empresa).length ? ' · ' + savedDeEmpresa(cfg.empresa).length + ' ya asignados' : ''))
-                        : (mensaje || 'Sin clientes en AutinApi');
+                    if (centros.length) {
+                        var base = centros.length + ' clientes en ' + String(cfg.empresa).toUpperCase()
+                            + (savedDeEmpresa(cfg.empresa).length ? ' · ' + savedDeEmpresa(cfg.empresa).length + ' ya asignados' : '');
+                        meta.textContent = mensaje ? (base + ' · ' + mensaje) : base;
+                    } else {
+                        meta.textContent = mensaje || 'Sin clientes en AutinApi';
+                    }
                 }
             };
             if (cacheCentros[key]) {
@@ -1739,9 +1663,6 @@
             if (codigo) {
                 setStep(4);
                 if (ctaQ) ctaQ.disabled = false;
-                ctaLinea = '';
-                var lineaSelPick = document.getElementById('asig-cta-linea');
-                if (lineaSelPick) lineaSelPick.disabled = false;
                 seedCtaSelected();
                 loadCuentas();
             }
@@ -1773,12 +1694,6 @@
             if (map) {
                 mergeGrupoCuentas(ctaSelected, map, cacheCuentas[cfg.empresa] || cuentas, normCode);
             }
-            renderCuentas(ctaQ ? ctaQ.value : '');
-        }
-
-        function setCtaLinea(id) {
-            ctaLinea = String(id || '');
-            fillLineaUi('asig-cta-linea', cuentas, ctaLinea, setCtaLinea);
             renderCuentas(ctaQ ? ctaQ.value : '');
         }
 
@@ -1842,28 +1757,6 @@
             el.textContent = n + (n === 1 ? ' seleccionada' : ' seleccionadas');
         }
 
-        function catalogoCompleto() {
-            var el = document.getElementById('asig-cta-catalogo');
-            return !!(el && el.checked);
-        }
-
-        function mergeSelectedIntoCuentas(rows) {
-            var out = (rows || []).slice();
-            var seen = {};
-            out.forEach(function (c) { seen[normCode(c.codigo)] = true; });
-            Object.keys(ctaSelected).forEach(function (k) {
-                if (seen[k]) return;
-                var s = ctaSelected[k];
-                out.unshift({
-                    codigo: s.codigo,
-                    nombre: s.nombre || s.codigo,
-                    grupo: s.agrupacion || '',
-                    grupo_id: s.agrupacion || ''
-                });
-            });
-            return out;
-        }
-
         function loadCuentas() {
             var box = document.getElementById('asig-cta-list');
             var cliente = centroSel ? String(centroSel.value || '').trim() : '';
@@ -1872,17 +1765,13 @@
                 return;
             }
             var year = anioRef();
-            var todas = catalogoCompleto();
-            box.innerHTML = '<div class="cc-empty">' + (todas
-                ? 'Cargando catálogo de productos de la empresa…'
-                : 'Cargando productos de OINV + ORIN…') + '</div>';
-            var key = String(cfg.empresa || '').toLowerCase() + '|' + year + '|' + (todas ? 'ALL' : cliente.toUpperCase());
+            box.innerHTML = '<div class="cc-empty">Cargando productos de OINV + ORIN…</div>';
+            var key = String(cfg.empresa || '').toLowerCase() + '|' + year + '|' + cliente.toUpperCase();
             var apply = function (rows, groups) {
-                cuentas = mergeSelectedIntoCuentas(rows || []);
+                cuentas = rows || [];
                 if (groups && groups.length) agrupaciones = groups;
                 fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
                 fillGrupoUi('asig-cta-grupo', grupos, ctaGrupo, setCtaGrupo);
-                fillLineaUi('asig-cta-linea', cuentas, ctaLinea, setCtaLinea);
                 if (ctaMask) {
                     setCtaMask(ctaMask);
                     return;
@@ -1893,14 +1782,18 @@
                 apply(cacheCuentas[key], agrupaciones);
                 return;
             }
-            var url = '/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(cfg.empresa) +
-                '&year=' + encodeURIComponent(year);
-            url += todas
-                ? '&todas=1'
-                : ('&cliente=' + encodeURIComponent(cliente) + '&cc=' + encodeURIComponent(cliente));
-            getJSON(url).then(function (json) {
-                cacheCuentas[key] = json.cuentas || [];
-                apply(cacheCuentas[key], json.agrupaciones || []);
+            getJSON('/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(cfg.empresa) +
+                '&year=' + encodeURIComponent(year) +
+                '&cliente=' + encodeURIComponent(cliente) +
+                '&cc=' + encodeURIComponent(cliente)).then(function (json) {
+                var rows = json.cuentas || [];
+                if (json.ok && rows.length) cacheCuentas[key] = rows;
+                if (!rows.length && json.mensaje) {
+                    box.innerHTML = '<div class="cc-empty">' + String(json.mensaje) + '</div>';
+                    cuentas = [];
+                    return;
+                }
+                apply(rows, json.agrupaciones || []);
             }).catch(function () {
                 apply([], []);
             });
@@ -1912,38 +1805,23 @@
             var mask = String(ctaMask || '');
             var grupoMap = grupoCuentaMap(grupos, ctaGrupo);
             var rows = filterRowsByGrupo(cuentas, grupoMap).filter(function (c) {
-                var linea = lineaKey(c) || 'SIN_LINEA';
-                if (ctaLinea && linea !== ctaLinea) return false;
-                return matchQuery((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || '') + ' ' + (c.grupo || ''), q);
+                return matchQuery((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || ''), q);
             });
             if (!rows.length) {
-                box.innerHTML = '<div class="cc-empty">' + (ctaLinea
-                    ? 'Sin productos en esta línea'
-                    : (catalogoCompleto()
-                        ? 'Sin productos en el catálogo de la empresa'
-                        : 'Sin productos para este cliente')) + '</div>';
+                box.innerHTML = '<div class="cc-empty">Sin productos para este catálogo</div>';
                 updateCtaSelCount();
                 return;
             }
             var current = centroSel ? centroSel.value : '';
             var prev = asignacionDeCentro(cfg.empresa, current);
-            box.innerHTML = groupByLinea(rows).map(function (pack) {
-                var nOn = 0;
-                pack.rows.forEach(function (c) { if (ctaSelected[normCode(c.codigo)]) nOn += 1; });
-                var allOn = pack.rows.length > 0 && nOn === pack.rows.length;
-                return '<div class="cc-cta-group">' +
-                    '<label class="cc-cta-group-h cc-cta-mask-h"><input type="checkbox" data-cta-mask="' + escapeHtml(pack.id) + '"' + (allOn ? ' checked' : '') + '>' +
-                    escapeHtml(pack.label) + ' · ' + pack.rows.length + '</label>' +
-                    pack.rows.map(function (c) {
+            box.innerHTML = '<div class="cc-cta-group">' + rows.map(function (c) {
                         var checked = ctaSelected[normCode(c.codigo)] ? ' checked' : '';
-                        var maskId = lineaKey(c) || 'SIN_LINEA';
                         return '<label class="cc-cta-item"><input type="checkbox" data-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                             ' data-nombre="' + escapeHtml(c.nombre) + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
-                            ' data-mask="' + escapeHtml(maskId) + '"' + checked + '>' +
+                            ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + checked + '>' +
                             '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
                             '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                     }).join('') + '</div>';
-            }).join('');
             syncPermisos(prev ? prev.permisos : null);
             var boxes = box.querySelectorAll('[data-cta]');
             var nOn = 0;
@@ -1985,16 +1863,12 @@
             ctaSelected = {};
             ctaMask = '';
             ctaGrupo = '';
-            ctaLinea = '';
             var list = document.getElementById('asig-cta-list');
             if (list) list.innerHTML = '<div class="cc-empty">Elige un cliente para ver los productos</div>';
             var todas = document.getElementById('asig-cta-todas');
             if (todas) todas.checked = false;
             fillMaskUi('asig-cta-mask', agrupaciones, cuentas, '', setCtaMask);
             fillGrupoUi('asig-cta-grupo', grupos, '', setCtaGrupo);
-            fillLineaUi('asig-cta-linea', [], '', setCtaLinea);
-            var lineaSelParcial = document.getElementById('asig-cta-linea');
-            if (lineaSelParcial) lineaSelParcial.disabled = true;
             updateCtaSelCount();
             setStep(cfg.empresa ? 3 : (userId() ? 2 : 1));
         }
@@ -2040,8 +1914,6 @@
             if (!centroSel.value) return;
             setStep(4);
             if (ctaQ) ctaQ.disabled = false;
-            var lineaSelChange = document.getElementById('asig-cta-linea');
-            if (lineaSelChange) lineaSelChange.disabled = false;
             loadCuentas();
         });
 
@@ -2054,11 +1926,6 @@
             var on = this.checked;
             document.querySelectorAll('#asig-cta-list [data-cta]').forEach(function (i) { i.checked = on; });
             syncCtaSelectedFromDom();
-        });
-        var catalogoEl = document.getElementById('asig-cta-catalogo');
-        if (catalogoEl) catalogoEl.addEventListener('change', function () {
-            syncCtaSelectedFromDom();
-            if (centroSel && centroSel.value) loadCuentas();
         });
         var listEl = document.getElementById('asig-cta-list');
         if (listEl) listEl.addEventListener('change', function (ev) {
