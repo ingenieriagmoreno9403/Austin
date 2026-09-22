@@ -42,6 +42,7 @@
                     <div class="col-md-6">
                         <label class="form-label" for="p-tipo-budget">Tipo</label>
                         <select id="p-tipo-budget" class="form-select" required>
+                            <option value="BUDGET">Budget</option>
                             <option value="3+9">Forecast 3+9</option>
                             <option value="6+6">Forecast 6+6</option>
                             <option value="9+3">Forecast 9+3</option>
@@ -51,7 +52,7 @@
                     </div>
                     <div class="col-12">
                         <div class="alert alert-light border mb-0 py-2 px-3" id="p-tipo-budget-desc" style="font-size:.82rem;line-height:1.35">
-                            <strong>Forecast 3+9:</strong> ene–mar con venta real (bloqueados); abr–dic desde el Budget (editables).
+                            <strong>Budget:</strong> los 12 meses quedan en blanco y editables para capturar la proyección.
                         </div>
                     </div>
 

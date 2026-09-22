@@ -74,19 +74,10 @@
                         <option value="">Elige una empresa primero…</option>
                     </select>
                 </div>
-                <div class="cc-nav-field">
-                    <button type="button" class="cc-btn cc-btn-block" id="ctl-btn-ventas-pasadas" disabled>
-                        <i class="fa-solid fa-clock-rotate-left"></i> Ventas pasadas
-                    </button>
-                </div>
-                <div class="cc-nav-field">
-                    <label for="ctl-prod-q">Buscar producto</label>
-                    <input id="ctl-prod-q" class="cc-input" type="search" placeholder="Filtrar por código o nombre…" disabled>
-                    <select id="ctl-cuenta" hidden aria-hidden="true" tabindex="-1">
-                        <option value="">Elige producto…</option>
-                    </select>
-                    <em class="cc-nav-status" id="ctl-cta-status" hidden></em>
-                </div>
+                <select id="ctl-cuenta" hidden aria-hidden="true" tabindex="-1">
+                    <option value="">Elige producto…</option>
+                </select>
+                <em class="cc-nav-status" id="ctl-cta-status" hidden></em>
                 <div class="cc-nav-tools">
                     <div class="cc-nav-currency">
                         <select id="ctl-moneda" class="cc-select" aria-label="Moneda">
@@ -98,6 +89,12 @@
                     <label class="cc-nav-pend-toggle">
                         <input type="checkbox" id="ctl-pendientes"> Solo pendientes
                     </label>
+                    <button type="button" class="cc-btn cc-btn-block" id="ctl-btn-ventas-pasadas" disabled>
+                        <i class="fa-solid fa-clock-rotate-left"></i> Ventas pasadas
+                    </button>
+                    <button type="button" class="cc-btn cc-btn-block" id="ctl-add-btn" disabled>
+                        <i class="fa-solid fa-plus"></i> Agregar producto
+                    </button>
                 </div>
                 <div class="cc-nav-progress">
                     <div class="cc-nav-progress-top">
@@ -184,6 +181,10 @@
                                 <button type="button" class="cc-btn" id="ctl-completar">
                                     <i class="fa-solid fa-check"></i> Completado
                                 </button>
+                                <label class="cc-prod-filter" for="ctl-prod-q">
+                                    <span>Buscar</span>
+                                    <input id="ctl-prod-q" class="cc-input" type="search" placeholder="Código o nombre…" disabled>
+                                </label>
                                 <div class="cc-ajuste-ctrl" title="Sugerir % sobre la venta real. Se aplica a los productos visibles (o al seleccionado). Puede ser negativo.">
                                     <label for="ctl-ajuste-pct">% venta</label>
                                     <input id="ctl-ajuste-pct" type="number" step="0.1" placeholder="-30" aria-label="Porcentaje de ajuste sobre la venta real">
@@ -403,6 +404,32 @@
                             <tr><td colspan="16"><div class="cc-empty">Elige un año y pulsa Cargar</div></td></tr>
                         </tbody>
                     </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cerrar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade cc-modal" id="modalAgregarProducto" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0">Agregar producto</h5>
+                    <p class="text-muted mb-0 mt-1" id="ctl-add-sub" style="font-size:.82rem">Catálogo de la empresa, aunque no se le haya vendido a este cliente.</p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="cc-pick-search">
+                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+                    <input id="ctl-add-q" class="cc-input" type="search" placeholder="Buscar por código o nombre…" autocomplete="off">
+                </div>
+                <div class="cc-add-prod-list" id="ctl-add-list">
+                    <div class="cc-add-prod-empty">Cargando productos…</div>
                 </div>
             </div>
             <div class="modal-footer">

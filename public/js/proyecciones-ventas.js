@@ -1579,6 +1579,7 @@
     /** Normaliza tipo de budget del ciclo ('' = sin bloqueo Forecast). */
     function normalizeTipoBudgetClient(t) {
         t = String(t || '').trim();
+        if (/^budget$/i.test(t)) return 'BUDGET';
         if (t === '3+9' || t === '6+6' || t === '9+3' || t === 'SIOP') return t;
         return '';
     }
@@ -1631,7 +1632,7 @@
             estado: val('p-estado'),
             inflacion: Number(val('p-inflacion')) || 4,
             tipoCambio: Number(val('p-tc')) || 20,
-            tipoBudget: val('p-tipo-budget') || '3+9',
+            tipoBudget: val('p-tipo-budget') || 'BUDGET',
             observaciones: val('p-obs')
         };
     }
@@ -1647,6 +1648,11 @@
 
     function esSiopTipo(t) {
         return String(t || budgetTipo() || '') === 'SIOP';
+    }
+
+    /** Budget: captura normal, meses en blanco y editables. */
+    function esBudgetTipo(t) {
+        return String(t || budgetTipo() || '') === 'BUDGET';
     }
 
     /** Meses a precargar desde venta real del año en curso (índices 0..n-1). SIOP = 0. */
@@ -1675,6 +1681,7 @@
 
     function labelTipoBudget(t) {
         t = String(t || budgetTipo() || '');
+        if (t === 'BUDGET') return 'Budget';
         if (t === '3+9') return 'Forecast 3+9';
         if (t === '6+6') return 'Forecast 6+6';
         if (t === '9+3') return 'Forecast 9+3';
@@ -1684,6 +1691,9 @@
 
     function descTipoBudget(t) {
         t = String(t || budgetTipo() || '');
+        if (t === 'BUDGET') {
+            return '<strong>Budget:</strong> los 12 meses quedan en blanco y editables. Ahí se captura la proyección; no se precarga venta real ni se bloquea ningún mes.';
+        }
         if (t === '3+9') {
             return '<strong>Forecast 3+9:</strong> los 3 primeros meses (ene–mar) se cargan con la venta real del año en curso y quedan fijos. Los 9 restantes se cargan del Budget y se pueden modificar.';
         }
@@ -1700,14 +1710,18 @@
     }
 
     function syncTipoBudgetModalUi() {
-        var tipo = val('p-tipo-budget') || '3+9';
+        var tipo = val('p-tipo-budget') || 'BUDGET';
         var desc = document.getElementById('p-tipo-budget-desc');
         if (desc) desc.innerHTML = descTipoBudget(tipo);
         var hint = document.getElementById('p-tipo-budget-hint');
         if (hint && !document.getElementById('p-tipo-budget').disabled) {
-            hint.textContent = esSiopTipo(tipo)
-                ? 'SIOP: ciclo anterior (o venta real) arriba de cada mes · el input es la nueva captura · todos editables.'
-                : 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
+            if (esBudgetTipo(tipo)) {
+                hint.textContent = 'Budget: los 12 meses quedan en blanco para capturar la proyección.';
+            } else if (esSiopTipo(tipo)) {
+                hint.textContent = 'SIOP: ciclo anterior (o venta real) arriba de cada mes · el input es la nueva captura · todos editables.';
+            } else {
+                hint.textContent = 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
+            }
         }
     }
 
@@ -1773,7 +1787,7 @@
             }
             return;
         }
-        if (esSiopTipo(tipo)) return;
+        if (esSiopTipo(tipo) || esBudgetTipo(tipo)) return;
         var n = budgetSeedCount(); // 3/6/9 en Forecast
         var seedKey = String(cicloSeed).toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
         CC._seedDoneFor = CC._seedDoneFor || {};
@@ -3041,7 +3055,7 @@
     }
 
     function setCapturaEnabled(on) {
-        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q'].forEach(function (id) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q', 'ctl-add-btn'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.disabled = !on;
         });
@@ -3564,6 +3578,7 @@
                 renderControlTable();
             });
             bindControlTools();
+            bindAgregarProducto();
             bindImportMasivo();
             bindCapturaQuick();
             bindVentasPasadas();
@@ -3698,6 +3713,11 @@
     function loadControlCentro() {
         var emp = String(val('ctl-empresa') || '').trim();
         var codigo = String(val('ctl-centro') || '').trim();
+        if (control._addClienteKey !== (emp + '|' + codigo)) {
+            control._addClienteKey = emp + '|' + codigo;
+            var addQ = document.getElementById('ctl-add-q');
+            if (addQ) addQ.value = '';
+        }
         if (!emp || !codigo) {
             control.centro = null;
             control.cuenta = null;
@@ -3909,27 +3929,15 @@
         var cc = control.centro;
         var ctas = matrixCtas();
         var st = statsDeCentro(cc);
-        if (!st.total) {
-            if (empty) {
-                empty.hidden = false;
-                empty.innerHTML = '<i class="fa-solid fa-boxes-stacked"></i>' +
-                    '<div><strong>Este cliente no tiene productos asignados</strong></div>' +
-                    '<div class="text-muted" style="font-size:.85rem;margin-top:.35rem">Ve a <b>Ventas → Asignaciones</b> del ciclo <b>' +
-                    escapeHtml(val('ctl-ciclo') || CC.state.cicloCodigo || '') +
-                    '</b>, elige el cliente y asígnale productos. Luego regresa a Captura: el budget <b>' +
-                    escapeHtml(labelTipoBudget() || '3+9') +
-                    '</b> precargará los meses del año de referencia.</div>';
-            }
-            if (body) body.hidden = true;
-            return;
-        }
         if (empty) empty.hidden = true;
         if (body) body.hidden = false;
         paintNombreCodigo('ctl-form-cc', cc.nombre || '', cc.codigo || '');
         setText('ctl-form-cta', st.total + (st.total === 1 ? ' producto' : ' productos'));
-        setText('ctl-form-grupo', ctas.length === st.total
-            ? 'Edita Ene–Dic por fila'
-            : ('Mostrando ' + ctas.length + ' de ' + st.total));
+        setText('ctl-form-grupo', !st.total
+            ? 'Agrega un producto para capturarlo aquí'
+            : (ctas.length === st.total
+                ? 'Edita Ene–Dic por fila'
+                : ('Mostrando ' + ctas.length + ' de ' + st.total)));
         paintFormPresupuestoLabel();
         paintFormEstadoCliente(st);
         paintCompletarBtn(currentCta() || ctas[0] || null);
@@ -3967,8 +3975,14 @@
     }
 
     function paintMatrixLegend() {
+        var legend = document.getElementById('ctl-matrix-legend');
         var ok = document.getElementById('ctl-legend-ok');
         var over = document.getElementById('ctl-legend-over');
+        if (esBudgetTipo()) {
+            if (legend) legend.hidden = true;
+            return;
+        }
+        if (legend) legend.hidden = false;
         if (esSiopTipo()) {
             var src = CC.state.cicloBaseCodigo || 'proyecto anterior';
             if (ok) ok.textContent = 'Mayor o igual a ' + src;
@@ -3985,6 +3999,12 @@
         if (!hint) return;
         var cta = currentCta();
         var arriba = pastQtyCaption();
+        if (esBudgetTipo()) {
+            hint.textContent = cta
+                ? ('Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Los meses quedan en blanco: captura la proyección en cada celda.')
+                : 'Budget: los 12 meses quedan en blanco para capturar la proyección.';
+            return;
+        }
         if (cta) {
             hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
                 '. Arriba = ' + arriba + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
@@ -4546,7 +4566,7 @@
             tbody.innerHTML = '<tr><td colspan="18"><div class="cc-empty">' +
                 (control.soloPendientes || control.prodQuery
                     ? 'Sin productos con ese filtro'
-                    : 'Este cliente no tiene productos asignados') +
+                    : 'Usa Agregar producto, a la izquierda, para asignarlo y capturarlo aquí') +
                 '</div></td></tr>';
             return;
         }
@@ -4686,6 +4706,7 @@
 
     function monthCellClass(cta, i) {
         var cls = 'cc-month-cell';
+        if (esBudgetTipo()) return cls + ' is-plain';
         var raw = cta.ppto && cta.ppto[i];
         // Amarillo: mes pendiente de capturar.
         if (!mesLleno(raw)) {
@@ -5401,6 +5422,224 @@
         }
     }
 
+    var catalogoEmpresaCache = {};
+
+    function miAsignacionCliente() {
+        var c = control.centro;
+        if (!c) return null;
+        var list = asigsDe(c).filter(function (a) { return a && a.id; });
+        if (!list.length) return null;
+        return list.filter(function (a) { return a.es_principal; })[0] || list[0];
+    }
+
+    function productoYaAsignado(codigo) {
+        var c = control.centro;
+        var asig = c ? asigDe(c) : null;
+        var key = String(codigo || '').toUpperCase();
+        if (!key || !asig) return false;
+        return (asig.cuentas || []).some(function (x) {
+            return String(x.codigo || '').toUpperCase() === key;
+        });
+    }
+
+    function cargarCatalogoEmpresa(done) {
+        var c = control.centro;
+        if (!c) {
+            done([]);
+            return;
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        var key = String(c.empresa || '').toLowerCase() + '|' + year;
+        if (catalogoEmpresaCache[key]) {
+            done(catalogoEmpresaCache[key]);
+            return;
+        }
+        var url = '/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(c.empresa) +
+            '&year=' + encodeURIComponent(year) + '&todas=1';
+        fetch(url, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (json) {
+                var rows = (json && json.cuentas) || [];
+                if (json && json.ok && rows.length) catalogoEmpresaCache[key] = rows;
+                done(rows, json && json.mensaje);
+            })
+            .catch(function () { done([], 'No se pudo cargar el catálogo'); });
+    }
+
+    function pintarResultadosAgregar(q, rows, mensaje) {
+        var box = document.getElementById('ctl-add-list');
+        if (!box) return;
+        q = normSearch(q || '');
+        var pending = (rows || []).filter(function (p) { return !productoYaAsignado(p.codigo); });
+        var hits = q
+            ? pending.filter(function (p) {
+                return normSearch((p.codigo || '') + ' ' + (p.nombre || '') + ' ' + (p.grupo || '')).indexOf(q) !== -1;
+            })
+            : pending;
+        var limit = q ? 40 : 30;
+        var shown = hits.slice(0, limit);
+        if (!shown.length) {
+            box.innerHTML = '<div class="cc-add-prod-empty">' + escapeHtml(mensaje || (q
+                ? 'Sin productos con ese texto, o ya están en el cliente.'
+                : 'Este catálogo no tiene productos para agregar.')) + '</div>';
+            return;
+        }
+        var more = '';
+        if (hits.length > shown.length) {
+            more = '<div class="cc-add-prod-empty">' + (q
+                ? ('Mostrando ' + shown.length + ' de ' + hits.length + '. Sigue escribiendo para acotar.')
+                : ('Mostrando ' + shown.length + ' de ' + hits.length + '. Usa el buscador para encontrar el producto.')) + '</div>';
+        }
+        box.innerHTML = shown.map(function (p) {
+            return '<button type="button" class="cc-add-prod-item" data-add-codigo="' + escapeHtml(p.codigo) + '">' +
+                '<span class="cc-cta-name">' + escapeHtml(p.nombre || p.codigo) + '</span>' +
+                '<span class="cc-cta-code">' + escapeHtml(p.codigo) + '</span>' +
+                '<span class="cc-add-prod-go">Agregar</span></button>';
+        }).join('') + more;
+    }
+
+    function buscarCatalogoParaAgregar(q) {
+        var box = document.getElementById('ctl-add-list');
+        if (box && !catalogoEmpresaCache[catalogoKeyActual()]) {
+            box.innerHTML = '<div class="cc-add-prod-empty">Cargando productos…</div>';
+        }
+        cargarCatalogoEmpresa(function (rows, mensaje) {
+            var input = document.getElementById('ctl-add-q');
+            if (!input || normSearch(input.value) !== normSearch(q)) return;
+            pintarResultadosAgregar(q, rows, mensaje);
+        });
+    }
+
+    function catalogoKeyActual() {
+        var c = control.centro;
+        if (!c) return '';
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        return String(c.empresa || '').toLowerCase() + '|' + year;
+    }
+
+    function abrirModalAgregarProducto() {
+        if (!control.centro || control.locked) {
+            toast('warning', 'Elige un cliente', 'Selecciona empresa y cliente para agregar productos.');
+            return;
+        }
+        var sub = document.getElementById('ctl-add-sub');
+        if (sub) {
+            sub.textContent = 'Catálogo de ' + String(control.centro.empresa || 'la empresa') +
+                ', aunque no se le haya vendido a este cliente.';
+        }
+        var input = document.getElementById('ctl-add-q');
+        if (input) input.value = '';
+        var box = document.getElementById('ctl-add-list');
+        if (box) box.innerHTML = '<div class="cc-add-prod-empty">Cargando productos…</div>';
+        showModal('modalAgregarProducto');
+        cargarCatalogoEmpresa(function (rows, mensaje) {
+            pintarResultadosAgregar('', rows, mensaje);
+            if (input) input.focus();
+        });
+    }
+
+    function enfocarProductoAgregado(codigo) {
+        control.prodQuery = '';
+        var filtro = document.getElementById('ctl-prod-q');
+        if (filtro) filtro.value = '';
+        var addQ = document.getElementById('ctl-add-q');
+        if (addQ) addQ.value = '';
+        hideModal('modalAgregarProducto');
+        control.cuenta = codigo;
+        loadControlCentro();
+        selectCuenta(codigo);
+        var row = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
+        if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        var first = row && row.querySelector('input[data-m]:not([disabled])');
+        if (first && !first.disabled) first.focus();
+    }
+
+    function agregarProductoAlCliente(codigo) {
+        var c = control.centro;
+        var asig = miAsignacionCliente();
+        if (!c || !asig || control.locked) {
+            toast('warning', 'No se puede agregar', 'Este cliente no está abierto para captura.');
+            return;
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        var cacheKey = String(c.empresa || '').toLowerCase() + '|' + year;
+        var prod = (catalogoEmpresaCache[cacheKey] || []).filter(function (p) {
+            return String(p.codigo) === String(codigo);
+        })[0];
+        if (!prod) {
+            toast('warning', 'Producto', 'No se encontró el producto en el catálogo.');
+            return;
+        }
+        if (productoYaAsignado(prod.codigo)) {
+            enfocarProductoAgregado(prod.codigo);
+            toast('warning', 'Ya está en el cliente', prod.nombre || prod.codigo);
+            return;
+        }
+        var cuentas = (asig.cuentas || []).map(function (x) {
+            return {
+                codigo: x.codigo,
+                nombre: x.nombre || '',
+                agrupacion: x.agrupacion || x.grupo || ''
+            };
+        });
+        cuentas.push({
+            codigo: prod.codigo,
+            nombre: prod.nombre || prod.codigo,
+            agrupacion: prod.grupo || ''
+        });
+        var ciclo = cicloActualCodigo();
+        var box = document.getElementById('ctl-add-list');
+        if (box) box.innerHTML = '<div class="cc-add-prod-empty">Agregando ' + escapeHtml(prod.nombre || prod.codigo) + '…</div>';
+        fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones/' + encodeURIComponent(asig.id), {
+            method: 'PUT',
+            headers: apiJsonHeaders(),
+            body: JSON.stringify({ cuentas: cuentas })
+        }).then(function (r) {
+            return r.json().then(function (json) { return { ok: r.ok, json: json }; });
+        }).then(function (res) {
+            if (!res.ok || !res.json || !res.json.asignacion) {
+                throw new Error((res.json && res.json.message) || 'No se pudo asignar el producto');
+            }
+            var saved = res.json.asignacion;
+            CC.state.misAsignaciones = (CC.state.misAsignaciones || []).map(function (a) {
+                return String(a.id) === String(saved.id) ? saved : a;
+            });
+            enfocarProductoAgregado(prod.codigo);
+            toast('success', 'Producto agregado', (prod.nombre || prod.codigo) + ' ya se puede capturar');
+        }).catch(function (err) {
+            var input = document.getElementById('ctl-add-q');
+            buscarCatalogoParaAgregar(input ? input.value : '');
+            toast('error', 'No se agregó', err && err.message ? err.message : 'Error de red');
+        });
+    }
+
+    function bindAgregarProducto() {
+        var openBtn = document.getElementById('ctl-add-btn');
+        var input = document.getElementById('ctl-add-q');
+        var list = document.getElementById('ctl-add-list');
+        if (!openBtn || openBtn._addBound) return;
+        openBtn._addBound = true;
+        openBtn.addEventListener('click', function () {
+            if (openBtn.disabled) return;
+            abrirModalAgregarProducto();
+        });
+        if (input) {
+            var timer = null;
+            input.addEventListener('input', function () {
+                clearTimeout(timer);
+                var q = input.value;
+                timer = setTimeout(function () { buscarCatalogoParaAgregar(q); }, 220);
+            });
+        }
+        if (list) {
+            list.addEventListener('click', function (ev) {
+                var btn = ev.target.closest ? ev.target.closest('[data-add-codigo]') : null;
+                if (!btn) return;
+                agregarProductoAlCliente(btn.getAttribute('data-add-codigo'));
+            });
+        }
+    }
+
     function bindControlTools() {
         var formDisp = document.getElementById('form-dispersar');
         if (formDisp) {
@@ -5668,7 +5907,7 @@
             data: {
                 labels: MONTHS,
                 datasets: [
-                    { type: 'bar', label: 'Gasto ' + CC.state.anioGasto, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
+                    { type: 'bar', label: 'Ventas ' + CC.state.anioGasto, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
                     { type: 'bar', label: 'Ppto ' + CC.state.anioPresupuesto, data: p, backgroundColor: '#a1a1aa', borderRadius: 4, yAxisID: 'y' },
                     { type: 'line', label: 'Contraste %', data: d, borderColor: '#b45309', backgroundColor: 'transparent', tension: 0.3, yAxisID: 'y1', pointRadius: 3, borderWidth: 2 }
                 ]
@@ -6239,7 +6478,7 @@
                     estado: 'abierto',
                     inflacion: 4,
                     tipoCambio: 20,
-                    tipoBudget: '3+9',
+                    tipoBudget: 'BUDGET',
                     observaciones: ''
                 };
             setVal('p-codigo', p.codigo);
@@ -6249,7 +6488,7 @@
             setVal('p-inicio', p.inicio); setVal('p-fin', p.fin);
             setVal('p-captura', p.capturaHasta); setVal('p-revision', p.revisionDesde);
             setVal('p-estado', normalizeCicloEstado(p.estado)); setVal('p-inflacion', p.inflacion); setVal('p-tc', p.tipoCambio);
-            setVal('p-tipo-budget', p.tipoBudget || '3+9');
+            setVal('p-tipo-budget', p.tipoBudget || 'BUDGET');
             setVal('p-obs', p.observaciones || '');
             var tipoBudgetEl = document.getElementById('p-tipo-budget');
             var tipoFijo = editing && !!normalizeTipoBudgetClient(p.tipoBudget);
@@ -6258,8 +6497,8 @@
                 tipoBudgetEl.title = tipoFijo
                     ? 'El tipo queda fijo al crear el ciclo'
                     : (editing
-                        ? 'Este ciclo aún no tenía tipo: elige Forecast o SIOP y guarda'
-                        : 'Forecast: venta real + Budget · SIOP: dato anterior arriba, captura en el input');
+                        ? 'Este ciclo aún no tenía tipo: elige Budget, Forecast o SIOP y guarda'
+                        : 'Budget: meses en blanco · Forecast: venta real + Budget · SIOP: dato anterior arriba, captura en el input');
             }
             syncTipoBudgetModalUi();
             if (editing) {
@@ -6267,7 +6506,7 @@
                 if (tipoHint) {
                     tipoHint.textContent = tipoFijo
                         ? ('Fijo: ' + labelTipoBudget(p.tipoBudget) + ' (no se puede cambiar)')
-                        : 'Aún sin tipo: elige 3+9 / 6+6 / 9+3 / SIOP y guarda para fijarlo.';
+                        : 'Aún sin tipo: elige Budget / 3+9 / 6+6 / 9+3 / SIOP y guarda para fijarlo.';
                 }
             }
         }

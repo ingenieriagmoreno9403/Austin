@@ -108,7 +108,7 @@ class ProyeccionesVentasController extends Controller
             'tipoCambio' => 'nullable|numeric',
             'tipoCambioMeses' => 'nullable|array|size:12',
             'tipoCambioMeses.*' => 'nullable|numeric|min:0',
-            'tipoBudget' => 'nullable|in:3+9,6+6,9+3,SIOP',
+            'tipoBudget' => 'nullable|in:BUDGET,3+9,6+6,9+3,SIOP',
             'observaciones' => 'nullable|string',
         ]);
 
@@ -138,7 +138,7 @@ class ProyeccionesVentasController extends Controller
         if (Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget')) {
             $incoming = $this->normalizeTipoBudget($data['tipoBudget'] ?? null);
             if ($nuevo) {
-                $fill['tipo_budget'] = $incoming ?: '3+9';
+                $fill['tipo_budget'] = $incoming ?: 'BUDGET';
             } elseif (($ciclo->tipo_budget === null || trim((string) $ciclo->tipo_budget) === '') && $incoming) {
                 $fill['tipo_budget'] = $incoming;
             }
@@ -3032,6 +3032,7 @@ class ProyeccionesVentasController extends Controller
         $t = strtoupper(trim((string) $tipo));
         // Acepta códigos canónicos y alias con prefijo Forecast.
         $map = [
+            'BUDGET' => 'BUDGET',
             '3+9' => '3+9',
             '6+6' => '6+6',
             '9+3' => '9+3',
@@ -3048,7 +3049,7 @@ class ProyeccionesVentasController extends Controller
         if (isset($map[strtoupper($raw)])) {
             return $map[strtoupper($raw)];
         }
-        if (in_array($raw, ['3+9', '6+6', '9+3', 'SIOP'], true)) {
+        if (in_array($raw, ['BUDGET', '3+9', '6+6', '9+3', 'SIOP'], true)) {
             return $raw;
         }
 

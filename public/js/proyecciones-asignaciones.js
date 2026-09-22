@@ -1522,7 +1522,7 @@
                 centroSel.disabled = false;
             }
             var ccList = document.getElementById('asig-cc-list');
-            if (ccList) ccList.innerHTML = '<div class="cc-empty">Cargando centros…</div>';
+            if (ccList) ccList.innerHTML = '<div class="cc-empty">Cargando clientes…</div>';
             if (ccQ) { ccQ.disabled = false; ccQ.value = ''; }
             if (ctaQ) { ctaQ.disabled = true; ctaQ.value = ''; }
             var list = document.getElementById('asig-cta-list');
