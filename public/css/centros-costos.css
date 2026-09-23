@@ -3270,9 +3270,20 @@
     text-transform: none;
     color: #71717a;
 }
-.cc-matrix-table .cc-matrix-group-row .cc-matrix-group-spacer {
-    background: #f4f4f5;
+.cc-btn-sm {
+    padding: 0.28rem 0.55rem;
+    font-size: 0.75rem;
+    min-height: auto;
 }
+.cc-actions-row {
+    display: flex;
+    gap: 0.35rem;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+.cc-hist-up { color: #15803d; font-weight: 650; }
+.cc-hist-down { color: #b91c1c; font-weight: 650; }
+.cc-hist-flat { color: #71717a; }
 
 .cc-matrix-cell {
     min-width: 72px;

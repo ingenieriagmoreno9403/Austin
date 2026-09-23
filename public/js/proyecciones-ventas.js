@@ -356,6 +356,7 @@
                     importeUsd: extra.importe_usd,
                     precio: extra.precio,
                     unidad: extra.unidad || '',
+                    unidadNombre: extra.unidad_nombre || '',
                     costoVenta: Number(extra.costo) || 0,
                     costoVentaMoneda: String(extra.costo_moneda || 'MXN').toUpperCase(),
                     empresa: c.empresa
@@ -508,6 +509,7 @@
             importe_usd: (row && row.importe_usd && row.importe_usd.length === 12) ? row.importe_usd : zeros12(),
             precio: (row && row.precio && row.precio.length === 12) ? row.precio : zeros12(),
             unidad: (row && row.unidad) ? String(row.unidad) : '',
+            unidad_nombre: (row && row.unidad_nombre) ? String(row.unidad_nombre) : '',
             costo: Number(row && row.costo) || 0,
             costo_moneda: String((row && row.costo_moneda) || 'MXN').toUpperCase()
         };
@@ -732,6 +734,7 @@
                 precio: Number(row.precio) || 0,
                 moneda: String(row.moneda || 'MXN').toUpperCase(),
                 unidad: String(row.unidad || '').trim(),
+                unidad_nombre: String(row.unidad_nombre || '').trim(),
                 lista: row.lista || '',
                 no_lista: row.no_lista || ''
             };
@@ -1367,6 +1370,7 @@
                 CC.state.completados = json.completados || {};
                 CC.state.ajustes = json.ajustes || {};
                 CC.state.costos = json.costos || {};
+                CC.state.costosMaster = json.costosMaster || {};
                 CC.state.preciosMeses = json.preciosMeses || {};
                 CC.state.budgets = {};
                 CC.state.budgetKeysFromServer = {};
@@ -2986,19 +2990,39 @@
             var ppto = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
             var totP = sum(ppto);
             var lista = lookupPrecioLista(cta.codigo) || {};
+            var costKey = String(c.empresa || '').toUpperCase() + '|' + String(cta.codigo || '');
+            var master = (CC.state.costosMaster || {})[costKey] || (CC.state.costosMaster || {})[String(cta.codigo || '')];
+            var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
+            var masterPrecio = (master && Number(master.costo)) || 0;
+            var precioLista = Number(lista.precio) || 0;
+            // Sin precio de lista del cliente → usar maestro local (tbl_pv_productos_costo).
+            if (!(precioLista > 0) && masterPrecio > 0) {
+                precioLista = masterPrecio;
+            }
+            var precioMoneda = String(lista.moneda || '').toUpperCase() || '';
+            if (!precioMoneda && master && master.moneda) {
+                precioMoneda = String(master.moneda).toUpperCase();
+            }
             var enriched = Object.assign({}, cta, {
                 ppto: ppto,
                 totG: sum(cta.gasto),
                 totP: totP,
                 listo: mesesTodosLlenos(ppto) || cuentaMarcada(c.empresa, c.codigo, cta.codigo),
                 costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
-                precioLista: Number(lista.precio) || 0,
-                precioMoneda: String(lista.moneda || '').toUpperCase() || '',
+                precioLista: precioLista,
+                precioMoneda: precioMoneda,
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
                 unidad: String(lista.unidad || cta.unidad || '').trim(),
-                listaPrecioNombre: lista.lista || ''
+                unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
+                listaPrecioNombre: lista.lista || (masterPrecio > 0 && !(Number(lista.precio) > 0) ? 'Maestro local' : '')
             });
             enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
+            if (!enriched.unidadNombre && enriched.unidad) {
+                enriched.unidadNombre = nombreUnidadMedida(enriched.unidad);
+            }
+            var costoLocal = Number(cta.costo) || snap || masterPrecio || 0;
+            enriched.costo = costoLocal;
+            enriched.costoMoneda = (master && master.moneda) || 'MXN';
             enriched.importeProy = importeProyeccionMxn(enriched);
             enriched.importeProyVista = importeProyeccionVista(enriched);
             enriched.importeVenta = importeVentaMxn(enriched);
@@ -4163,10 +4187,21 @@
         });
     }
 
-    /** Costo/precio unitario promedio de la venta del año de referencia. */
+    /** Costo/precio unitario: prioriza maestro local / snapshot de proyección; si no, promedio SAP. */
     function costoPiezaVentaAnio(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
-        if (!cta) return { precio: 0, moneda: 'MXN', unidad: unidad, title: '' };
+        var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
+        if (!cta) return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre, title: '' };
+        var local = Number(cta.costo) || 0;
+        if (local > 0) {
+            return {
+                precio: local,
+                moneda: String(cta.costoMoneda || 'MXN').toUpperCase() || 'MXN',
+                unidad: unidad,
+                unidadNombre: unidadNombre,
+                title: 'Costo unitario local (maestro / proyección).'
+            };
+        }
         var fromSap = Number(cta.costoVenta) || 0;
         var monSap = String(cta.costoVentaMoneda || '').toUpperCase();
         if (fromSap > 0) {
@@ -4174,19 +4209,22 @@
                 precio: fromSap,
                 moneda: monSap === 'USD' || monSap === 'MXN' ? monSap : 'USD',
                 unidad: unidad,
+                unidadNombre: unidadNombre,
                 title: 'Precio unitario promedio de la venta ' + (CC.state.anioGasto || '') + ' (importe SAP ÷ uds). AutinApi /ventas no envía costo de inventario.'
             };
         }
         var info = precioVentaPasadaInfo(cta);
         info.title = 'Precio unitario promedio de la venta ' + (CC.state.anioGasto || '') + ' (importe SAP ÷ uds).';
         info.decimals = 2;
+        info.unidadNombre = unidadNombre || info.unidadNombre || '';
         return info;
     }
 
     /** Precio unitario promedio de la venta del año de referencia (ponderado por unidades). */
     function precioVentaPasadaInfo(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
-        if (!cta) return { precio: 0, moneda: 'MXN', unidad: unidad };
+        var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
+        if (!cta) return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
         var qtyTot = 0;
         var mxnTot = 0;
         var usdTot = 0;
@@ -4208,6 +4246,7 @@
                 precio: Math.abs(usdTot / qtyTot),
                 moneda: 'USD',
                 unidad: unidad,
+                unidadNombre: unidadNombre,
                 decimals: 2,
                 title: 'Promedio ponderado (LineTotalUSD ÷ uds). VENTA es la suma SAP; uds × precio a 2 decimales puede diferir unos dólares.'
             };
@@ -4217,14 +4256,15 @@
                 precio: Math.abs(mxnTot / qtyTot),
                 moneda: 'MXN',
                 unidad: unidad,
+                unidadNombre: unidadNombre,
                 decimals: 2,
                 title: 'Promedio ponderado (LineTotal ÷ uds). VENTA es la suma SAP; el redondeo del precio puede diferir unos pesos.'
             };
         }
         if (wQty) {
-            return { precio: wPrice / wQty, moneda: 'MXN', unidad: unidad };
+            return { precio: wPrice / wQty, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
         }
-        return { precio: 0, moneda: 'MXN', unidad: unidad };
+        return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
     }
 
     /** Precio de lista actual (proyección). */
@@ -4233,15 +4273,39 @@
             precio: Number(cta && cta.precioLista) || 0,
             moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN',
             unidad: String((cta && cta.unidad) || '').trim(),
+            unidadNombre: String((cta && cta.unidadNombre) || '').trim(),
             porMes: precioMesesVarian(cta)
         };
+    }
+
+    function nombreUnidadMedida(codigo) {
+        var code = String(codigo || '').trim();
+        if (!code) return '';
+        var map = CC.state.unidadesMedida || {};
+        return String(map[code.toUpperCase()] || map[code] || '').trim();
+    }
+
+    /** Etiqueta visible: "PIEZAS (PZA)" o solo el código si no hay nombre. */
+    function formatUnidadLabel(codigo, nombre) {
+        var code = String(codigo || '').trim();
+        var name = String(nombre || '').trim() || nombreUnidadMedida(code);
+        if (!code && !name) return '';
+        if (name && code && name.toUpperCase() !== code.toUpperCase()) {
+            return name + ' (' + code + ')';
+        }
+        return name || code;
+    }
+
+    function unidadDe(cta) {
+        if (!cta) return '';
+        return formatUnidadLabel(cta.unidad, cta.unidadNombre);
     }
 
     function precioInfoHtml(info) {
         info = info || {};
         var precio = Number(info.precio) || 0;
         var mon = String(info.moneda || 'MXN').toUpperCase();
-        var unidad = String(info.unidad || '').trim();
+        var unidad = formatUnidadLabel(info.unidad, info.unidadNombre);
         var dec = info.decimals != null ? info.decimals : 2;
         if (!precio && !unidad) {
             return '<span class="cc-price-empty">—</span>';
@@ -4256,7 +4320,7 @@
             html += '<div class="cc-price-amt text-muted">Sin precio</div>';
         }
         if (unidad) {
-            html += '<div class="cc-price-uom">' + escapeHtml(unidad) + '</div>';
+            html += '<div class="cc-price-uom" title="' + escapeHtml(String(info.unidad || '')) + '">' + escapeHtml(unidad) + '</div>';
         }
         if (info.porMes) {
             html += '<div class="cc-price-src is-custom">por mes</div>';
@@ -4309,6 +4373,7 @@
         var udsSem = unidadesSemestreAnterior(cta);
         var udsAnio = cta.unidadesAnio != null ? cta.unidadesAnio : unidadesAnuales(cta.ppto);
         var costoPieza = costoPiezaVentaAnio(cta);
+        var uomLabel = unidadDe(cta);
         var cells = '';
         for (var i = 0; i < 12; i++) {
             var shown = formatInputQty(cta.ppto[i]);
@@ -4321,7 +4386,7 @@
             cells += '<td class="' + pCls + '">' +
                 '<div class="cc-matrix-month">' +
                     '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
-                        escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (cta.unidad ? ' · ' + cta.unidad : '') +
+                        escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (uomLabel ? ' · ' + uomLabel : '') +
                             (pastQty ? ' · ' + qtyLabel(pastQty) + ' uds' : '')) + '">' +
                         (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
                     '</div>' +
@@ -4330,7 +4395,7 @@
                     ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
                     escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
                         ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
-                        (cta.unidad ? ' ' + cta.unidad : '')) + '">' +
+                        (uomLabel ? ' ' + uomLabel : '')) + '">' +
                     (pCustom
                         ? ('<div class="cc-month-price-tag is-custom" title="' +
                             escapeHtml('Precio del mes: ' + moneyLista(pMes, mon, i) + ' · TC ' + fxRate(i).toFixed(2)) + '">' +
@@ -4350,24 +4415,24 @@
                 escapeHtml(costoPieza.title || ('Costo / precio unitario promedio de la venta ' + anioPast)) + '">' +
                 (costoPieza.precio
                     ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(costoPieza.precio, costoPieza.moneda, null, 2)) + '</div>' +
-                        (cta.unidad ? '<div class="cc-price-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
+                        (uomLabel ? '<div class="cc-price-uom" title="' + escapeHtml(cta.unidad || '') + '">' + escapeHtml(uomLabel) + '</div>' : ''))
                     : '<span class="cc-price-empty">—</span>') +
             '</td>' +
             '<td class="num cc-sem-cell" data-uds-venta title="' +
                 escapeHtml('Total unidades vendidas en ' + anioPast +
                     ' (misma fuente que Ventas pasadas · TOT. UDS)' +
-                    (cta.unidad ? ' · ' + cta.unidad : '') +
+                    (uomLabel ? ' · ' + uomLabel : '') +
                     (udsSem ? '' : (udsVentaAnio ? ' · Ene–Jun: 0; venta en jul–Dic' : ''))) + '">' +
                 (udsVentaAnio
                     ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsVentaAnio)) + '</div>' +
-                        (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
+                        (uomLabel ? '<div class="cc-sem-uom">' + escapeHtml(uomLabel) + '</div>' : ''))
                     : '<span class="cc-price-empty">—</span>') +
             '</td>' +
             '<td class="num cc-sem-cell" data-uds-total title="' +
-                escapeHtml('Suma de unidades proyectadas Ene–Dic' + (cta.unidad ? ' · ' + cta.unidad : '')) + '">' +
+                escapeHtml('Suma de unidades proyectadas Ene–Dic' + (uomLabel ? ' · ' + uomLabel : '')) + '">' +
                 (udsAnio
                     ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsAnio)) + '</div>' +
-                        (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
+                        (uomLabel ? '<div class="cc-sem-uom">' + escapeHtml(uomLabel) + '</div>' : ''))
                     : '<span class="cc-price-empty">—</span>') +
             '</td>' +
             '<td class="num cc-price-cell" data-precio-unit>' + precioProyeccionCellHtml(cta) + '</td>' +
@@ -4423,7 +4488,7 @@
                     var udsLive = unidadesAnuales(fake.ppto);
                     totalEl.innerHTML = udsLive
                         ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsLive)) + '</div>' +
-                            (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
+                            (unidadDe(cta) ? '<div class="cc-sem-uom">' + escapeHtml(unidadDe(cta)) + '</div>' : ''))
                         : '<span class="cc-price-empty">—</span>';
                 }
             });
@@ -4545,7 +4610,7 @@
             var udsAnio = cta.unidadesAnio != null ? cta.unidadesAnio : unidadesAnuales(cta.ppto);
             udsTotal.innerHTML = udsAnio
                 ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsAnio)) + '</div>' +
-                    (cta.unidad ? '<div class="cc-sem-uom">' + escapeHtml(cta.unidad) + '</div>' : ''))
+                    (unidadDe(cta) ? '<div class="cc-sem-uom">' + escapeHtml(unidadDe(cta)) + '</div>' : ''))
                 : '<span class="cc-price-empty">—</span>';
         }
         if (precioCell) precioCell.innerHTML = precioProyeccionCellHtml(cta);
@@ -6103,6 +6168,349 @@
 
     CC.showModal = showModal;
 
+    function initCostos() {
+        var url = CC.state.costosUrl || '/ProyeccionesVentas/api/costos';
+        var items = [];
+        var empSel = document.getElementById('pv-costos-empresa');
+        var qEl = document.getElementById('pv-costos-q');
+        var tbody = document.getElementById('pv-costos-tbody');
+        var hint = document.getElementById('pv-costos-hint');
+        if (!tbody) return;
+
+        function fillEmpresas() {
+            if (!empSel) return;
+            var cur = empSel.value || '';
+            var set = {};
+            (CC.state.empresasLocales || []).forEach(function (e) {
+                var code = String(e.codigo || e.id || e.nombre || '').toUpperCase();
+                if (code) set[code] = e.nombre || code;
+            });
+            (CC.state.ciclos || []).forEach(function () { /* noop */ });
+            items.forEach(function (it) {
+                if (it.empresa) set[String(it.empresa).toUpperCase()] = it.empresa;
+            });
+            var opts = '<option value="">Todas las empresas</option>';
+            Object.keys(set).sort().forEach(function (k) {
+                opts += '<option value="' + escapeHtml(k) + '"' + (k === cur ? ' selected' : '') + '>' +
+                    escapeHtml(set[k]) + '</option>';
+            });
+            empSel.innerHTML = opts;
+            if (cur) empSel.value = cur;
+        }
+
+        function render() {
+            var emp = empSel ? String(empSel.value || '').toUpperCase() : '';
+            var q = normSearch(qEl ? qEl.value : '');
+            var rows = items.filter(function (it) {
+                if (emp && String(it.empresa || '').toUpperCase() !== emp) return false;
+                if (!q) return true;
+                return normSearch((it.empresa || '') + ' ' + (it.producto_codigo || '') + ' ' + (it.producto_nombre || '')).indexOf(q) !== -1;
+            });
+            if (hint) hint.textContent = rows.length + (rows.length === 1 ? ' producto' : ' productos');
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="7"><div class="cc-empty">Sin productos para mostrar</div></td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(function (it) {
+                var mon = String(it.moneda || 'MXN').toUpperCase();
+                var costoTxt = (mon === 'USD' ? 'US$' : '$') +
+                    (Number(it.costo_unitario) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                return '<tr data-emp="' + escapeHtml(it.empresa) + '" data-cod="' + escapeHtml(it.producto_codigo) + '">' +
+                    '<td>' + escapeHtml(it.empresa) + '</td>' +
+                    '<td>' + htmlNombreCodigo(it.producto_nombre || it.producto_codigo, it.producto_codigo) + '</td>' +
+                    '<td class="num fw-semibold">' + escapeHtml(costoTxt) + '</td>' +
+                    '<td>' + escapeHtml(mon) + '</td>' +
+                    '<td>' + (it.tiene_maestro
+                        ? '<span class="cc-badge cc-badge-aceptado">Maestro</span>'
+                        : '<span class="cc-badge cc-badge-en_proceso">Sin maestro</span>') + '</td>' +
+                    '<td>' + escapeHtml(it.updated_at || '—') + '</td>' +
+                    '<td class="num"><div class="cc-actions-row">' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-hist-costo' +
+                    ' data-emp="' + escapeHtml(it.empresa) + '"' +
+                    ' data-cod="' + escapeHtml(it.producto_codigo) + '"' +
+                    ' data-nom="' + escapeHtml(it.producto_nombre || '') + '"' +
+                    ' title="Ver historial de cambios">' +
+                    '<i class="fa-solid fa-clock-rotate-left"></i> Historial</button>' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-edit-costo' +
+                    ' data-emp="' + escapeHtml(it.empresa) + '"' +
+                    ' data-cod="' + escapeHtml(it.producto_codigo) + '"' +
+                    ' data-nom="' + escapeHtml(it.producto_nombre || '') + '"' +
+                    ' data-costo="' + escapeHtml(String(it.costo_unitario || 0)) + '"' +
+                    ' data-mon="' + escapeHtml(mon) + '">' +
+                    '<i class="fa-solid fa-pen"></i> Editar</button>' +
+                    '</div></td>' +
+                    '</tr>';
+            }).join('');
+            tbody.querySelectorAll('[data-edit-costo]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    setVal('pv-costo-empresa', btn.getAttribute('data-emp') || '');
+                    setVal('pv-costo-codigo', btn.getAttribute('data-cod') || '');
+                    setVal('pv-costo-nombre', btn.getAttribute('data-nom') || '');
+                    setVal('pv-costo-valor', btn.getAttribute('data-costo') || '0');
+                    setVal('pv-costo-moneda', btn.getAttribute('data-mon') || 'MXN');
+                    setText('pv-costo-prod-label', (btn.getAttribute('data-nom') || btn.getAttribute('data-cod') || '') +
+                        ' · ' + (btn.getAttribute('data-cod') || ''));
+                    showModal('modalPvCosto');
+                });
+            });
+            tbody.querySelectorAll('[data-hist-costo]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    openHistorialPrecio(
+                        btn.getAttribute('data-emp') || '',
+                        btn.getAttribute('data-cod') || '',
+                        btn.getAttribute('data-nom') || ''
+                    );
+                });
+            });
+        }
+
+        function load() {
+            if (hint) hint.textContent = 'Cargando…';
+            var emp = empSel ? empSel.value : '';
+            var qs = emp ? ('?empresa=' + encodeURIComponent(emp)) : '';
+            fetch(url + qs, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function (r) { return r.json(); })
+                .then(function (json) {
+                    items = (json && json.items) || [];
+                    fillEmpresas();
+                    render();
+                })
+                .catch(function () {
+                    items = [];
+                    tbody.innerHTML = '<tr><td colspan="7"><div class="cc-empty">No se pudieron cargar los precios</div></td></tr>';
+                    if (hint) hint.textContent = 'Error al cargar';
+                });
+        }
+
+        function moneyTxt(valor, moneda) {
+            var mon = String(moneda || 'MXN').toUpperCase();
+            if (valor === null || valor === undefined || valor === '') return '—';
+            return (mon === 'USD' ? 'US$' : '$') +
+                Number(valor).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+        }
+
+        function openHistorialPrecio(emp, cod, nom) {
+            var histTbody = document.getElementById('pv-hist-tbody');
+            var histHint = document.getElementById('pv-hist-hint');
+            setText('pv-hist-prod-label', (nom || cod || '—') + ' · ' + (cod || '') + (emp ? ' · ' + emp : ''));
+            if (histTbody) {
+                histTbody.innerHTML = '<tr><td colspan="6"><div class="cc-empty">Cargando historial…</div></td></tr>';
+            }
+            if (histHint) histHint.textContent = 'Consultando movimientos del precio unitario…';
+            showModal('modalPvHistorialPrecio');
+            var histUrl = CC.state.costosHistorialUrl || (url + '/historial');
+            var qs = '?empresa=' + encodeURIComponent(emp) + '&producto_codigo=' + encodeURIComponent(cod);
+            fetch(histUrl + qs, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo cargar el historial');
+                        return json;
+                    });
+                })
+                .then(function (json) {
+                    var rows = (json && json.items) || [];
+                    var actual = json.precio_actual != null
+                        ? moneyTxt(json.precio_actual, json.moneda_actual)
+                        : '—';
+                    if (histHint) {
+                        histHint.textContent = rows.length
+                            ? (rows.length + (rows.length === 1 ? ' movimiento' : ' movimientos') + ' · precio actual ' + actual)
+                            : ('Aún no hay cambios. El precio actual es ' + actual + '.');
+                    }
+                    if (!histTbody) return;
+                    if (!rows.length) {
+                        histTbody.innerHTML = '<tr><td colspan="6"><div class="cc-empty">Este producto todavía no tiene movimientos de precio.</div></td></tr>';
+                        return;
+                    }
+                    histTbody.innerHTML = rows.map(function (it) {
+                        var mon = String(it.moneda_nueva || 'MXN').toUpperCase();
+                        var delta = it.variacion;
+                        var cls = 'cc-hist-flat';
+                        var deltaTxt = 'Alta';
+                        if (delta !== null && delta !== undefined) {
+                            if (delta > 0) {
+                                cls = 'cc-hist-up';
+                                deltaTxt = '+' + moneyTxt(delta, mon);
+                            } else if (delta < 0) {
+                                cls = 'cc-hist-down';
+                                deltaTxt = moneyTxt(delta, mon);
+                            } else {
+                                deltaTxt = 'Sin cambio';
+                            }
+                            if (it.variacion_pct !== null && it.variacion_pct !== undefined && delta !== 0) {
+                                deltaTxt += ' (' + (it.variacion_pct > 0 ? '+' : '') +
+                                    Number(it.variacion_pct).toLocaleString('es-MX', { maximumFractionDigits: 2 }) + '%)';
+                            }
+                        }
+                        return '<tr>' +
+                            '<td>' + escapeHtml(it.fecha || '—') + '</td>' +
+                            '<td class="num">' + escapeHtml(moneyTxt(it.precio_anterior, it.moneda_anterior || mon)) + '</td>' +
+                            '<td class="num fw-semibold">' + escapeHtml(moneyTxt(it.precio_nuevo, mon)) + '</td>' +
+                            '<td class="num"><span class="' + cls + '">' + escapeHtml(deltaTxt) + '</span></td>' +
+                            '<td>' + escapeHtml(it.origen_label || it.origen || '—') + '</td>' +
+                            '<td>' + escapeHtml(it.usuario || 'Sistema') + '</td>' +
+                            '</tr>';
+                    }).join('');
+                })
+                .catch(function (err) {
+                    if (histHint) histHint.textContent = 'No se pudo cargar el historial.';
+                    if (histTbody) {
+                        histTbody.innerHTML = '<tr><td colspan="6"><div class="cc-empty">' +
+                            escapeHtml(err && err.message ? err.message : 'Error al cargar') +
+                            '</div></td></tr>';
+                    }
+                });
+        }
+
+        var saveBtn = document.getElementById('pv-costo-guardar');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', function () {
+                var payload = {
+                    empresa: val('pv-costo-empresa'),
+                    producto_codigo: val('pv-costo-codigo'),
+                    producto_nombre: val('pv-costo-nombre'),
+                    costo_unitario: Number(val('pv-costo-valor')) || 0,
+                    moneda: val('pv-costo-moneda') || 'MXN'
+                };
+                if (!payload.empresa || !payload.producto_codigo) {
+                    toast('warning', 'Faltan datos', 'Empresa y producto son obligatorios.');
+                    return;
+                }
+                saveBtn.disabled = true;
+                fetch(url, {
+                    method: 'PUT',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify(payload)
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo guardar');
+                        return json;
+                    });
+                }).then(function (json) {
+                    toast('success', 'Precio guardado', json.message || 'Actualizado en maestro local.');
+                    var modal = document.getElementById('modalPvCosto');
+                    if (modal && window.bootstrap && bootstrap.Modal) {
+                        var inst = bootstrap.Modal.getInstance(modal);
+                        if (inst) inst.hide();
+                    }
+                    load();
+                }).catch(function (err) {
+                    toast('error', 'No se guardó', err && err.message ? err.message : 'Error');
+                }).then(function () {
+                    saveBtn.disabled = false;
+                });
+            });
+        }
+
+        if (empSel) empSel.addEventListener('change', function () { load(); });
+        if (qEl) qEl.addEventListener('input', render);
+        var reload = document.getElementById('pv-costos-reload');
+        if (reload) reload.addEventListener('click', load);
+        var importBtn = document.getElementById('pv-costos-import-api');
+        if (importBtn) {
+            importBtn.addEventListener('click', function () {
+                if (!window.confirm('¿Cargar precios de venta desde la API (todas las empresas)?\nSe usa el precio unitario promedio del año (importe ÷ uds / Price SAP) y se actualizan también los que ya tienen valor.')) {
+                    return;
+                }
+                importBtn.disabled = true;
+                if (hint) hint.textContent = 'Importando precios desde API…';
+                fetch(url + '/importar-api', {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify({
+                        empresa: '',
+                        todas_empresas: true,
+                        anio: CC.state.anioGasto || 2026,
+                        solo_vacios: false
+                    })
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo importar');
+                        return json;
+                    });
+                }).then(function (json) {
+                    toast('success', 'Importación lista', json.message || 'Precios cargados.');
+                    load();
+                }).catch(function (err) {
+                    toast('error', 'No se importó', err && err.message ? err.message : 'Error');
+                    if (hint) hint.textContent = 'Error al importar';
+                }).then(function () {
+                    importBtn.disabled = false;
+                });
+            });
+        }
+
+        var excelBtn = document.getElementById('pv-costos-excel');
+        if (excelBtn) {
+            excelBtn.addEventListener('click', function () {
+                showModal('modalPvPreciosExcel');
+            });
+        }
+        var dlBtn = document.getElementById('pv-precios-descargar');
+        if (dlBtn) {
+            dlBtn.addEventListener('click', function () {
+                var plantillaUrl = CC.state.costosPlantillaUrl || (url + '/plantilla');
+                var emp = empSel ? String(empSel.value || '') : '';
+                var qs = emp ? ('?empresa=' + encodeURIComponent(emp)) : '';
+                window.location.href = plantillaUrl + qs;
+            });
+        }
+        var upBtn = document.getElementById('pv-precios-subir');
+        var fileEl = document.getElementById('pv-precios-archivo');
+        var excelHint = document.getElementById('pv-precios-excel-hint');
+        if (upBtn && fileEl) {
+            upBtn.addEventListener('click', function () {
+                var file = fileEl.files && fileEl.files[0];
+                if (!file) {
+                    toast('warning', 'Falta archivo', 'Selecciona el Excel editado.');
+                    return;
+                }
+                var importUrl = CC.state.costosImportExcelUrl || (url + '/importar-excel');
+                var fd = new FormData();
+                fd.append('archivo', file);
+                upBtn.disabled = true;
+                if (excelHint) excelHint.textContent = 'Subiendo y actualizando…';
+                fetch(importUrl, {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': csrfToken()
+                    },
+                    body: fd
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo importar');
+                        return json;
+                    });
+                }).then(function (json) {
+                    var extra = '';
+                    if (json.errores && json.errores.length) {
+                        extra = ' · ' + json.errores.length + ' fila(s) con aviso';
+                    }
+                    toast('success', 'Excel aplicado', (json.message || 'Precios actualizados.') + extra);
+                    fileEl.value = '';
+                    if (excelHint) {
+                        excelHint.textContent = 'Se actualiza por Empresa + ItemCode y se propaga a ciclos abiertos.';
+                    }
+                    var modal = document.getElementById('modalPvPreciosExcel');
+                    if (modal && window.bootstrap && bootstrap.Modal) {
+                        var inst = bootstrap.Modal.getInstance(modal);
+                        if (inst) inst.hide();
+                    }
+                    load();
+                }).catch(function (err) {
+                    toast('error', 'No se importó', err && err.message ? err.message : 'Error');
+                    if (excelHint) excelHint.textContent = 'Error al importar. Revisa columnas Empresa, ItemCode y Precio.';
+                }).then(function () {
+                    upBtn.disabled = false;
+                });
+            });
+        }
+
+        load();
+    }
+
     CC.boot = function (boot) {
         CC.state.page = boot.page;
         CC.state.anioGasto = boot.anioGasto || 2026;
@@ -6115,6 +6523,12 @@
         CC.state.detalleUrl = boot.detalleUrl || '/Ventas/Captura/detalle';
         CC.state.gastoUrl = boot.gastoUrl || '/ProyeccionesVentas/api/gasto-real';
         CC.state.listasPreciosUrl = boot.listasPreciosUrl || '/ProyeccionesVentas/api/listas-precios';
+        CC.state.costosUrl = boot.costosUrl || '/ProyeccionesVentas/api/costos';
+        CC.state.costosPlantillaUrl = boot.costosPlantillaUrl || '/ProyeccionesVentas/api/costos/plantilla';
+        CC.state.costosImportExcelUrl = boot.costosImportExcelUrl || '/ProyeccionesVentas/api/costos/importar-excel';
+        CC.state.costosHistorialUrl = boot.costosHistorialUrl || '/ProyeccionesVentas/api/costos/historial';
+        CC.state.empresasLocales = boot.empresasLocales || [];
+        CC.state.unidadesMedida = boot.unidadesMedida || {};
         CC.state.gastoCache = {};
         CC.state.preciosCache = {};
         CC.state.cicloCodigo = boot.cicloCodigo || boot.cicloInicial || '';
@@ -6159,6 +6573,7 @@
         if (CC.state.page === 'control') CC.initControl();
         if (CC.state.page === 'detalle') CC.initDetalle();
         if (CC.state.page === 'analisis') CC.initAnalisis();
+        if (CC.state.page === 'costos') initCostos();
         if (CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis') refreshSap(boot.catalogoUrl);
     };
 

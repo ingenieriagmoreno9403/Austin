@@ -11,4 +11,7 @@
     <a href="{{ route('pv.analisis') }}" class="{{ $ccPage === 'analisis' ? 'is-active' : '' }}">
         <i class="fa-solid fa-chart-line me-1"></i> Análisis de Proyecciones
     </a>
+    <a href="{{ route('pv.costos') }}" class="{{ $ccPage === 'costos' ? 'is-active' : '' }}">
+        <i class="fa-solid fa-tags me-1"></i> Precios de productos
+    </a>
 </nav>
