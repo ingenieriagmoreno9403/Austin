@@ -3424,12 +3424,25 @@
 }
 .cc-tc-month label {
     display: block;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.15rem;
     font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: .04em;
     text-transform: uppercase;
     color: #71717a;
+}
+.cc-tc-month-ref {
+    font-size: 0.72rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    color: #b45309;
+    line-height: 1.2;
+    margin-bottom: 0.2rem;
+    min-height: 1rem;
+}
+.cc-tc-month-ref.is-empty {
+    color: #a1a1aa;
+    font-weight: 500;
 }
 .cc-tc-month input {
     width: 100%;

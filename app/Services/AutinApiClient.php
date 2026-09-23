@@ -144,6 +144,19 @@ class AutinApiClient
     }
 
     /**
+     * Precios mensuales por empresa / cliente / artículo.
+     * Filtros: year, Empresa, CardCode, Mes, ItemCode, per_page, page.
+     * Campos: Empresa, CardCode, CardName, ItemCode, Mes, Precio.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, status: int, body: array|null, message: string|null}
+     */
+    public function preciosMensuales(array $filters = []): array
+    {
+        return $this->request('GET', 'precios-mensuales', $filters);
+    }
+
+    /**
      * Recorre todas las páginas de /ventas (tope 500 por página en AutinApi).
      *
      * @param  array<string, mixed>  $filters

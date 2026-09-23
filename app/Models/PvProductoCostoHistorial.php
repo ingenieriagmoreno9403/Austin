@@ -12,8 +12,11 @@ class PvProductoCostoHistorial extends Model
 
     protected $fillable = [
         'empresa',
+        'card_code',
+        'card_name',
         'producto_codigo',
         'producto_nombre',
+        'mes',
         'precio_anterior',
         'precio_nuevo',
         'moneda_anterior',
@@ -26,6 +29,7 @@ class PvProductoCostoHistorial extends Model
     protected $casts = [
         'precio_anterior' => 'float',
         'precio_nuevo' => 'float',
+        'mes' => 'integer',
         'created_at' => 'datetime',
     ];
 }

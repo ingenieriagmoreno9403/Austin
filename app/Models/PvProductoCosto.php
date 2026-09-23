@@ -10,8 +10,11 @@ class PvProductoCosto extends Model
 
     protected $fillable = [
         'empresa',
+        'card_code',
+        'card_name',
         'producto_codigo',
         'producto_nombre',
+        'mes',
         'costo_unitario',
         'moneda',
         'updated_by',
@@ -19,5 +22,6 @@ class PvProductoCosto extends Model
 
     protected $casts = [
         'costo_unitario' => 'float',
+        'mes' => 'integer',
     ];
 }

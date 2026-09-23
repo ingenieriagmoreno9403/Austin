@@ -1741,7 +1741,10 @@
                     ctaSelected[key] = {
                         codigo: i.value,
                         nombre: i.getAttribute('data-nombre') || '',
-                        agrupacion: i.getAttribute('data-grupo') || ''
+                        agrupacion: i.getAttribute('data-grupo') || '',
+                        costo: Number(i.getAttribute('data-costo') || 0) || 0,
+                        precio: Number(i.getAttribute('data-costo') || 0) || 0,
+                        moneda: String(i.getAttribute('data-moneda') || 'MXN').toUpperCase()
                     };
                 } else {
                     delete ctaSelected[key];
@@ -1816,9 +1819,13 @@
             var prev = asignacionDeCentro(cfg.empresa, current);
             box.innerHTML = '<div class="cc-cta-group">' + rows.map(function (c) {
                         var checked = ctaSelected[normCode(c.codigo)] ? ' checked' : '';
+                        var costo = Number(c.costo || c.precio || 0) || 0;
+                        var moneda = String(c.costo_moneda || c.moneda || 'MXN').toUpperCase();
                         return '<label class="cc-cta-item"><input type="checkbox" data-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                             ' data-nombre="' + escapeHtml(c.nombre) + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
-                            ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + checked + '>' +
+                            ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' +
+                            ' data-costo="' + escapeHtml(String(costo)) + '"' +
+                            ' data-moneda="' + escapeHtml(moneda) + '"' + checked + '>' +
                             '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
                             '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                     }).join('') + '</div>';
@@ -2029,6 +2036,18 @@
                     renderEmpresaCards();
                     markEmpresaCard(cfg.empresa);
                     fillCentros(ccQ ? ccQ.value : '');
+                    var nMaestro = Number(res.json && res.json.maestro_creados) || 0;
+                    if (nMaestro > 0 && window.Swal) {
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Asignación guardada',
+                            text: nMaestro + (nMaestro === 1
+                                ? ' producto nuevo en el maestro de precios.'
+                                : ' productos nuevos en el maestro de precios.'),
+                            timer: 1600,
+                            showConfirmButton: false
+                        });
+                    }
                 }).catch(function () {
                     if (window.Swal) Swal.fire({ icon: 'error', title: 'No se guardó en servidor', text: 'La fila ya está en la tabla de resultados.' });
                 });

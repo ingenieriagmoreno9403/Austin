@@ -432,6 +432,7 @@
             <div class="modal-body">
                 <p class="text-muted mb-3" style="font-size:.85rem">
                     El precio global aplica a todo el año. Solo captura un valor en los meses que deban cambiar.
+                    Arriba de cada casilla se muestra el precio de <strong>Precios de productos</strong> de ese mes (referencia).
                 </p>
                 <div class="row g-2 align-items-end mb-3">
                     <div class="col-sm-5">

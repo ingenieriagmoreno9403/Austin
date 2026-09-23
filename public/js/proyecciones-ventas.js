@@ -1371,6 +1371,7 @@
                 CC.state.ajustes = json.ajustes || {};
                 CC.state.costos = json.costos || {};
                 CC.state.costosMaster = json.costosMaster || {};
+                CC.state.costosMeses = json.costosMeses || {};
                 CC.state.preciosMeses = json.preciosMeses || {};
                 CC.state.budgets = {};
                 CC.state.budgetKeysFromServer = {};
@@ -2504,12 +2505,22 @@
         var box = document.getElementById('pm-months');
         if (box) {
             var meses = cta.precioMeses || preciosMesesDe(c.empresa, c.codigo, codigo);
+            var maestro = lookupMaestroMeses(c.empresa, c.codigo, codigo);
+            var refMeses = (maestro && maestro.meses) || [];
+            var refMons = (maestro && maestro.monedas) || [];
             box.innerHTML = MONTHS.map(function (m, i) {
                 var ov = Number(meses[i]);
                 var custom = isFinite(ov) && ov > 0;
                 var shown = custom ? ov : base;
+                var ref = Number(refMeses[i]);
+                var refMon = String(refMons[i] || mon || 'MXN').toUpperCase();
+                var refHtml = (isFinite(ref) && ref > 0)
+                    ? ('<div class="cc-tc-month-ref" title="Precio en Precios de productos (mes ' + (i + 1) + ')">' +
+                        escapeHtml(moneyLista(ref, refMon)) + '</div>')
+                    : '<div class="cc-tc-month-ref is-empty" title="Sin precio en Precios de productos para este mes">—</div>';
                 return '<div class="cc-tc-month' + (custom ? ' is-custom' : '') + '">' +
                     '<label for="pm-m-' + i + '">' + m + '</label>' +
+                    refHtml +
                     '<input id="pm-m-' + i + '" type="number" step="0.0001" min="0" placeholder="' +
                     (base > 0 ? base.toFixed(2) : '0') + '" value="' + (custom ? shown.toFixed(4) : '') + '">' +
                     '</div>';
@@ -2985,23 +2996,56 @@
         });
     }
 
+    function lookupMaestroLocal(empresa, cliente, codigo) {
+        var map = CC.state.costosMaster || {};
+        if (!codigo) return null;
+        var emp = String(empresa || '').toUpperCase();
+        var card = String(cliente || '').trim();
+        var cod = String(codigo || '').trim();
+        var hit = null;
+        if (emp && card && cod) {
+            hit = map[emp + '|' + card + '|' + cod];
+        }
+        if (!hit && emp && cod) {
+            hit = map[emp + '|' + cod];
+        }
+        if (!hit) {
+            hit = map[cod] || map[cod.toUpperCase()] || null;
+        }
+        return hit || null;
+    }
+
+    /** Precios mensuales del maestro Precios de productos (Empresa+CardCode+ItemCode). */
+    function lookupMaestroMeses(empresa, cliente, codigo) {
+        var map = CC.state.costosMeses || {};
+        if (!codigo) return null;
+        var emp = String(empresa || '').toUpperCase();
+        var card = String(cliente || '').trim();
+        var cod = String(codigo || '').trim();
+        var hit = null;
+        if (emp && card && cod) hit = map[emp + '|' + card + '|' + cod];
+        if (!hit && emp && cod) hit = map[emp + '|' + cod];
+        if (!hit) hit = map[cod] || map[cod.toUpperCase()] || null;
+        if (!hit || !hit.meses) return null;
+        return hit;
+    }
+
     function cuentasEnriquecidas(c) {
         return cuentasDeCentro(c).map(function (cta) {
             var ppto = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
             var totP = sum(ppto);
             var lista = lookupPrecioLista(cta.codigo) || {};
-            var costKey = String(c.empresa || '').toUpperCase() + '|' + String(cta.codigo || '');
-            var master = (CC.state.costosMaster || {})[costKey] || (CC.state.costosMaster || {})[String(cta.codigo || '')];
+            var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
             var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
             var masterPrecio = (master && Number(master.costo)) || 0;
-            var precioLista = Number(lista.precio) || 0;
-            // Sin precio de lista del cliente → usar maestro local (tbl_pv_productos_costo).
-            if (!(precioLista > 0) && masterPrecio > 0) {
-                precioLista = masterPrecio;
-            }
-            var precioMoneda = String(lista.moneda || '').toUpperCase() || '';
-            if (!precioMoneda && master && master.moneda) {
+            var masterMes = (master && Number(master.mes)) || 0;
+            // Preferir precio local (último mes) sobre lista SAP.
+            var precioLista = masterPrecio > 0 ? masterPrecio : (Number(lista.precio) || 0);
+            var precioMoneda = '';
+            if (masterPrecio > 0 && master && master.moneda) {
                 precioMoneda = String(master.moneda).toUpperCase();
+            } else {
+                precioMoneda = String(lista.moneda || '').toUpperCase() || '';
             }
             var enriched = Object.assign({}, cta, {
                 ppto: ppto,
@@ -3012,9 +3056,12 @@
                 precioLista: precioLista,
                 precioMoneda: precioMoneda,
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
+                precioLocalMes: masterMes > 0 ? masterMes : null,
                 unidad: String(lista.unidad || cta.unidad || '').trim(),
                 unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
-                listaPrecioNombre: lista.lista || (masterPrecio > 0 && !(Number(lista.precio) > 0) ? 'Maestro local' : '')
+                listaPrecioNombre: masterPrecio > 0
+                    ? ('Maestro local' + (masterMes > 0 ? (' · mes ' + masterMes) : ''))
+                    : (lista.lista || '')
             });
             enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
             if (!enriched.unidadNombre && enriched.unidad) {
@@ -4187,37 +4234,50 @@
         });
     }
 
-    /** Costo/precio unitario: prioriza maestro local / snapshot de proyección; si no, promedio SAP. */
-    function costoPiezaVentaAnio(cta) {
+    /** Precio local del último mes (tbl_pv_productos_costo). Si no hay, promedio de venta SAP. */
+    function precioVentaAnioRef(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
-        if (!cta) return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre, title: '' };
-        var local = Number(cta.costo) || 0;
-        if (local > 0) {
+        var local = Number(cta && cta.precioLista) || 0;
+        var mon = String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var mes = Number(cta && cta.precioLocalMes) || 0;
+        var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+        if (local > 0 && (cta.listaPrecioNombre || '').indexOf('Maestro local') === 0) {
             return {
                 precio: local,
-                moneda: String(cta.costoMoneda || 'MXN').toUpperCase() || 'MXN',
+                moneda: mon,
                 unidad: unidad,
                 unidadNombre: unidadNombre,
-                title: 'Costo unitario local (maestro / proyección).'
+                decimals: 2,
+                title: 'Precio local (último mes' + (mes >= 1 && mes <= 12 ? ': ' + MESES[mes] : '') + ') · tbl_pv_productos_costo'
             };
         }
-        var fromSap = Number(cta.costoVenta) || 0;
-        var monSap = String(cta.costoVentaMoneda || '').toUpperCase();
-        if (fromSap > 0) {
-            return {
-                precio: fromSap,
-                moneda: monSap === 'USD' || monSap === 'MXN' ? monSap : 'USD',
-                unidad: unidad,
-                unidadNombre: unidadNombre,
-                title: 'Precio unitario promedio de la venta ' + (CC.state.anioGasto || '') + ' (importe SAP ÷ uds). AutinApi /ventas no envía costo de inventario.'
-            };
+        // Si precioLista vino de lista SAP pero hay maestro, preferir maestro via lookup otra vez.
+        var c = control.centro;
+        if (c) {
+            var master = lookupMaestroLocal(c.empresa, c.codigo, cta && cta.codigo);
+            if (master && Number(master.costo) > 0) {
+                var mMes = Number(master.mes) || 0;
+                return {
+                    precio: Number(master.costo),
+                    moneda: String(master.moneda || 'MXN').toUpperCase(),
+                    unidad: unidad,
+                    unidadNombre: unidadNombre,
+                    decimals: 2,
+                    title: 'Precio local (último mes' + (mMes >= 1 && mMes <= 12 ? ': ' + MESES[mMes] : '') + ') · tbl_pv_productos_costo'
+                };
+            }
         }
         var info = precioVentaPasadaInfo(cta);
-        info.title = 'Precio unitario promedio de la venta ' + (CC.state.anioGasto || '') + ' (importe SAP ÷ uds).';
-        info.decimals = 2;
-        info.unidadNombre = unidadNombre || info.unidadNombre || '';
+        if (!info.title) {
+            info.title = 'Precio unitario promedio de la venta ' + (CC.state.anioGasto || '') + ' (importe SAP ÷ uds).';
+        }
         return info;
+    }
+
+    /** @deprecated Preferir precioVentaAnioRef en Captura (vista de ventas). */
+    function costoPiezaVentaAnio(cta) {
+        return precioVentaAnioRef(cta);
     }
 
     /** Precio unitario promedio de la venta del año de referencia (ponderado por unidades). */
@@ -4267,14 +4327,20 @@
         return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
     }
 
-    /** Precio de lista actual (proyección). */
+    /** Precio de lista / proyección: prioriza maestro local (último mes). */
     function precioProyeccionInfo(cta) {
+        var mes = Number(cta && cta.precioLocalMes) || 0;
+        var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+        var fromLocal = (cta && cta.listaPrecioNombre && String(cta.listaPrecioNombre).indexOf('Maestro local') === 0);
         return {
             precio: Number(cta && cta.precioLista) || 0,
             moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN',
             unidad: String((cta && cta.unidad) || '').trim(),
             unidadNombre: String((cta && cta.unidadNombre) || '').trim(),
-            porMes: precioMesesVarian(cta)
+            porMes: precioMesesVarian(cta),
+            title: fromLocal
+                ? ('Precio local (último mes' + (mes >= 1 && mes <= 12 ? ': ' + MESES[mes] : '') + ')')
+                : 'Precio de lista / proyección'
         };
     }
 
@@ -4372,7 +4438,7 @@
         var udsVentaAnio = sum((cta.gasto || []).slice(0, 12));
         var udsSem = unidadesSemestreAnterior(cta);
         var udsAnio = cta.unidadesAnio != null ? cta.unidadesAnio : unidadesAnuales(cta.ppto);
-        var costoPieza = costoPiezaVentaAnio(cta);
+        var precioVenta = precioVentaAnioRef(cta);
         var uomLabel = unidadDe(cta);
         var cells = '';
         for (var i = 0; i < 12; i++) {
@@ -4411,10 +4477,10 @@
                 '</button>' +
                 '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
             '</td>' +
-            '<td class="num cc-price-cell" data-costo-venta title="' +
-                escapeHtml(costoPieza.title || ('Costo / precio unitario promedio de la venta ' + anioPast)) + '">' +
-                (costoPieza.precio
-                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(costoPieza.precio, costoPieza.moneda, null, 2)) + '</div>' +
+            '<td class="num cc-price-cell" data-precio-venta title="' +
+                escapeHtml(precioVenta.title || ('Precio unitario promedio de la venta ' + anioPast)) + '">' +
+                (precioVenta.precio
+                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(precioVenta.precio, precioVenta.moneda, null, 2)) + '</div>' +
                         (uomLabel ? '<div class="cc-price-uom" title="' + escapeHtml(cta.unidad || '') + '">' + escapeHtml(uomLabel) + '</div>' : ''))
                     : '<span class="cc-price-empty">—</span>') +
             '</td>' +
@@ -4507,10 +4573,10 @@
         var anioPast = CC.state.anioGasto || '';
         var cur = isUsdView() ? 'USD' : 'MXN';
         var head = '<tr><th class="sticky-col">Producto</th>' +
-            '<th class="num">Costo<span class="cc-th-past">pieza ’' + String(anioPast).slice(2) + '</span></th>' +
+            '<th class="num">Precio<span class="cc-th-past">local · último mes</span></th>' +
             '<th class="num">Uds. venta<span class="cc-th-past">' + escapeHtml(String(anioPast || '')) + '</span></th>' +
             '<th class="num">Total uds<span class="cc-th-past">proy. 12 meses</span></th>' +
-            '<th class="num">Precio<span class="cc-th-past">proy. ' + cur + '</span></th>' +
+            '<th class="num">Precio<span class="cc-th-past">proy. local</span></th>' +
             '<th class="num">Δ%</th>';
         MONTHS.forEach(function (m, mi) {
             var tcM = fxRate(mi);
@@ -6171,10 +6237,22 @@
     function initCostos() {
         var url = CC.state.costosUrl || '/ProyeccionesVentas/api/costos';
         var items = [];
+        var page = 1;
+        var lastPage = 1;
+        var total = 0;
+        var from = 0;
+        var to = 0;
+        var searchTimer = null;
         var empSel = document.getElementById('pv-costos-empresa');
-        var qEl = document.getElementById('pv-costos-q');
+        var clienteEl = document.getElementById('pv-costos-cliente');
+        var itemEl = document.getElementById('pv-costos-itemcode');
+        var perPageEl = document.getElementById('pv-costos-per-page');
         var tbody = document.getElementById('pv-costos-tbody');
         var hint = document.getElementById('pv-costos-hint');
+        var pageInfo = document.getElementById('pv-costos-page-info');
+        var pageLabel = document.getElementById('pv-costos-page-label');
+        var prevBtn = document.getElementById('pv-costos-prev');
+        var nextBtn = document.getElementById('pv-costos-next');
         if (!tbody) return;
 
         function fillEmpresas() {
@@ -6185,7 +6263,9 @@
                 var code = String(e.codigo || e.id || e.nombre || '').toUpperCase();
                 if (code) set[code] = e.nombre || code;
             });
-            (CC.state.ciclos || []).forEach(function () { /* noop */ });
+            ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'].forEach(function (k) {
+                if (!set[k]) set[k] = k;
+            });
             items.forEach(function (it) {
                 if (it.empresa) set[String(it.empresa).toUpperCase()] = it.empresa;
             });
@@ -6198,26 +6278,42 @@
             if (cur) empSel.value = cur;
         }
 
+        function updatePager() {
+            if (hint) {
+                hint.textContent = total + (total === 1 ? ' registro' : ' registros');
+            }
+            if (pageInfo) {
+                pageInfo.textContent = total
+                    ? ('Mostrando ' + from + '–' + to + ' de ' + total)
+                    : 'Sin resultados';
+            }
+            if (pageLabel) pageLabel.textContent = page + ' / ' + lastPage;
+            if (prevBtn) prevBtn.disabled = page <= 1;
+            if (nextBtn) nextBtn.disabled = page >= lastPage;
+        }
+
         function render() {
-            var emp = empSel ? String(empSel.value || '').toUpperCase() : '';
-            var q = normSearch(qEl ? qEl.value : '');
-            var rows = items.filter(function (it) {
-                if (emp && String(it.empresa || '').toUpperCase() !== emp) return false;
-                if (!q) return true;
-                return normSearch((it.empresa || '') + ' ' + (it.producto_codigo || '') + ' ' + (it.producto_nombre || '')).indexOf(q) !== -1;
-            });
-            if (hint) hint.textContent = rows.length + (rows.length === 1 ? ' producto' : ' productos');
-            if (!rows.length) {
-                tbody.innerHTML = '<tr><td colspan="7"><div class="cc-empty">Sin productos para mostrar</div></td></tr>';
+            var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+            updatePager();
+            if (!items.length) {
+                tbody.innerHTML = '<tr><td colspan="11"><div class="cc-empty">Sin productos para mostrar</div></td></tr>';
                 return;
             }
-            tbody.innerHTML = rows.map(function (it) {
+            tbody.innerHTML = items.map(function (it, idx) {
                 var mon = String(it.moneda || 'MXN').toUpperCase();
                 var costoTxt = (mon === 'USD' ? 'US$' : '$') +
                     (Number(it.costo_unitario) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                return '<tr data-emp="' + escapeHtml(it.empresa) + '" data-cod="' + escapeHtml(it.producto_codigo) + '">' +
-                    '<td>' + escapeHtml(it.empresa) + '</td>' +
-                    '<td>' + htmlNombreCodigo(it.producto_nombre || it.producto_codigo, it.producto_codigo) + '</td>' +
+                var codigo = String(it.producto_codigo || '').trim();
+                var nombre = String(it.producto_nombre || '').trim();
+                if (nombre && nombre.toUpperCase() === codigo.toUpperCase()) nombre = '';
+                var mesesLabel = it.meses_label || '—';
+                return '<tr data-idx="' + idx + '">' +
+                    '<td>' + escapeHtml(it.empresa || '—') + '</td>' +
+                    '<td><code>' + escapeHtml(it.card_code || '—') + '</code></td>' +
+                    '<td>' + escapeHtml(it.card_name || '—') + '</td>' +
+                    '<td><code>' + escapeHtml(codigo || '—') + '</code></td>' +
+                    '<td>' + escapeHtml(nombre || '—') + '</td>' +
+                    '<td>' + escapeHtml(mesesLabel) + '</td>' +
                     '<td class="num fw-semibold">' + escapeHtml(costoTxt) + '</td>' +
                     '<td>' + escapeHtml(mon) + '</td>' +
                     '<td>' + (it.tiene_maestro
@@ -6227,30 +6323,31 @@
                     '<td class="num"><div class="cc-actions-row">' +
                     '<button type="button" class="cc-btn cc-btn-sm" data-hist-costo' +
                     ' data-emp="' + escapeHtml(it.empresa) + '"' +
-                    ' data-cod="' + escapeHtml(it.producto_codigo) + '"' +
-                    ' data-nom="' + escapeHtml(it.producto_nombre || '') + '"' +
+                    ' data-cod="' + escapeHtml(codigo) + '"' +
+                    ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
+                    ' data-card="' + escapeHtml(it.card_code || '') + '"' +
+                    ' data-card-name="' + escapeHtml(it.card_name || '') + '"' +
+                    ' data-mes="0"' +
                     ' title="Ver historial de cambios">' +
-                    '<i class="fa-solid fa-clock-rotate-left"></i> Historial</button>' +
-                    '<button type="button" class="cc-btn cc-btn-sm" data-edit-costo' +
+                    '<i class="fa-solid fa-clock-rotate-left"></i></button>' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-sync-api-costo' +
                     ' data-emp="' + escapeHtml(it.empresa) + '"' +
-                    ' data-cod="' + escapeHtml(it.producto_codigo) + '"' +
-                    ' data-nom="' + escapeHtml(it.producto_nombre || '') + '"' +
-                    ' data-costo="' + escapeHtml(String(it.costo_unitario || 0)) + '"' +
-                    ' data-mon="' + escapeHtml(mon) + '">' +
-                    '<i class="fa-solid fa-pen"></i> Editar</button>' +
+                    ' data-cod="' + escapeHtml(codigo) + '"' +
+                    ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
+                    ' data-card="' + escapeHtml(it.card_code || '') + '"' +
+                    ' data-mes="' + escapeHtml(String(it.mes || lastMesConPrecio(it) || 0)) + '"' +
+                    ' title="Actualizar desde API el mes de referencia">' +
+                    '<i class="fa-solid fa-cloud-arrow-down"></i></button>' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
+                    ' title="Editar precios por mes">' +
+                    '<i class="fa-solid fa-calendar-days"></i></button>' +
                     '</div></td>' +
                     '</tr>';
             }).join('');
-            tbody.querySelectorAll('[data-edit-costo]').forEach(function (btn) {
+            tbody.querySelectorAll('[data-edit-meses-costo]').forEach(function (btn) {
                 btn.addEventListener('click', function () {
-                    setVal('pv-costo-empresa', btn.getAttribute('data-emp') || '');
-                    setVal('pv-costo-codigo', btn.getAttribute('data-cod') || '');
-                    setVal('pv-costo-nombre', btn.getAttribute('data-nom') || '');
-                    setVal('pv-costo-valor', btn.getAttribute('data-costo') || '0');
-                    setVal('pv-costo-moneda', btn.getAttribute('data-mon') || 'MXN');
-                    setText('pv-costo-prod-label', (btn.getAttribute('data-nom') || btn.getAttribute('data-cod') || '') +
-                        ' · ' + (btn.getAttribute('data-cod') || ''));
-                    showModal('modalPvCosto');
+                    var i = Number(btn.getAttribute('data-idx'));
+                    openCostoMesesModal(items[i]);
                 });
             });
             tbody.querySelectorAll('[data-hist-costo]').forEach(function (btn) {
@@ -6258,28 +6355,326 @@
                     openHistorialPrecio(
                         btn.getAttribute('data-emp') || '',
                         btn.getAttribute('data-cod') || '',
-                        btn.getAttribute('data-nom') || ''
+                        btn.getAttribute('data-nom') || '',
+                        btn.getAttribute('data-card') || '',
+                        btn.getAttribute('data-card-name') || '',
+                        btn.getAttribute('data-mes') || '0'
                     );
+                });
+            });
+            tbody.querySelectorAll('[data-sync-api-costo]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    actualizarPrecioDesdeApi(btn);
                 });
             });
         }
 
-        function load() {
+        function lastMesConPrecio(it) {
+            var arr = (it && it.precio_meses) || [];
+            for (var i = 11; i >= 0; i--) {
+                if (Number(arr[i]) > 0) return i + 1;
+            }
+            return 0;
+        }
+
+        function openCostoMesesModal(it) {
+            if (!it) return;
+            var MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+            var codigo = String(it.producto_codigo || '').trim();
+            var nombre = String(it.producto_nombre || '').trim();
+            if (nombre && nombre.toUpperCase() === codigo.toUpperCase()) nombre = '';
+            var base = Number(it.costo_unitario) || 0;
+            var mon = String(it.moneda || 'MXN').toUpperCase();
+            var meses = Array.isArray(it.precio_meses) ? it.precio_meses.slice(0, 12) : [];
+            while (meses.length < 12) meses.push(null);
+
+            setVal('pcm-empresa', it.empresa || '');
+            setVal('pcm-codigo', codigo);
+            setVal('pcm-nombre', nombre || codigo);
+            setVal('pcm-card', it.card_code || '');
+            setVal('pcm-card-name', it.card_name || '');
+            setVal('pcm-base', base > 0 ? String(base) : '');
+            setVal('pcm-moneda', mon);
+            setText('pcm-sub', (nombre || codigo) + ' · ' + codigo +
+                (it.card_code ? (' · ' + it.card_code) : '') +
+                (it.empresa ? (' · ' + it.empresa) : ''));
+            var hint = document.getElementById('pcm-base-hint');
+            if (hint) {
+                hint.textContent = base > 0
+                    ? ('Global: ' + moneyTxt(base, mon) + ' · deja vacío un mes para no tocarlo al guardar')
+                    : 'Captura un global o valores por mes.';
+            }
+            var box = document.getElementById('pcm-months');
+            if (box) {
+                box.innerHTML = MESES.map(function (m, i) {
+                    var ov = Number(meses[i]);
+                    var custom = isFinite(ov) && ov > 0 && Math.abs(ov - base) > 0.0001;
+                    var has = isFinite(ov) && ov > 0;
+                    return '<div class="cc-tc-month' + (custom ? ' is-custom' : '') + '">' +
+                        '<label for="pcm-m-' + i + '">' + m + '</label>' +
+                        '<input id="pcm-m-' + i + '" type="number" step="0.0001" min="0" placeholder="' +
+                        (base > 0 ? base.toFixed(2) : '0') + '" value="' + (has ? ov.toFixed(4) : '') + '">' +
+                        '</div>';
+                }).join('');
+            }
+            highlightCostoMesesEditor();
+            showModal('modalPvCostoMeses');
+        }
+
+        function highlightCostoMesesEditor() {
+            var base = Number(val('pcm-base')) || 0;
+            for (var i = 0; i < 12; i++) {
+                var wrap = document.querySelector('#pcm-months .cc-tc-month:nth-child(' + (i + 1) + ')');
+                var el = document.getElementById('pcm-m-' + i);
+                if (!wrap || !el) continue;
+                var raw = String(el.value || '').trim();
+                var v = Number(raw);
+                var custom = raw !== '' && isFinite(v) && v > 0 && Math.abs(v - base) > 0.0001;
+                wrap.classList.toggle('is-custom', custom || (raw !== '' && isFinite(v) && v > 0));
+            }
+        }
+
+        function readCostoMesesFromEditor() {
+            var out = [];
+            for (var i = 0; i < 12; i++) {
+                var el = document.getElementById('pcm-m-' + i);
+                var raw = el ? String(el.value || '').trim() : '';
+                var v = Number(raw);
+                out.push(raw !== '' && isFinite(v) && v > 0 ? Math.round(v * 10000) / 10000 : null);
+            }
+            return out;
+        }
+
+        function saveCostoMesesModal() {
+            var emp = val('pcm-empresa');
+            var cod = val('pcm-codigo');
+            var nom = val('pcm-nombre');
+            var card = val('pcm-card');
+            var cardName = val('pcm-card-name');
+            var mon = val('pcm-moneda') || 'MXN';
+            var base = Number(val('pcm-base')) || 0;
+            var meses = readCostoMesesFromEditor();
+            if (!emp || !cod) {
+                toast('warning', 'Faltan datos', 'Empresa e ItemCode son obligatorios.');
+                return;
+            }
+            var jobs = [];
+            for (var i = 0; i < 12; i++) {
+                var p = meses[i];
+                if (p === null || !(p > 0)) continue;
+                jobs.push({
+                    empresa: emp,
+                    producto_codigo: cod,
+                    producto_nombre: nom || cod,
+                    card_code: card,
+                    card_name: cardName,
+                    mes: i + 1,
+                    costo_unitario: p,
+                    moneda: mon
+                });
+            }
+            // Si no hay ningún mes capturado pero sí global, guarda los 12 con el global.
+            if (!jobs.length && base > 0) {
+                for (var j = 0; j < 12; j++) {
+                    jobs.push({
+                        empresa: emp,
+                        producto_codigo: cod,
+                        producto_nombre: nom || cod,
+                        card_code: card,
+                        card_name: cardName,
+                        mes: j + 1,
+                        costo_unitario: base,
+                        moneda: mon
+                    });
+                }
+            }
+            if (!jobs.length) {
+                toast('warning', 'Sin precios', 'Captura al menos un mes o un precio global.');
+                return;
+            }
+            var saveBtn = document.getElementById('pcm-save');
+            if (saveBtn) saveBtn.disabled = true;
+            var chain = Promise.resolve();
+            var okCount = 0;
+            jobs.forEach(function (payload) {
+                chain = chain.then(function () {
+                    return fetch(url, {
+                        method: 'PUT',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify(payload)
+                    }).then(function (r) {
+                        return r.json().then(function (json) {
+                            if (!r.ok) throw new Error((json && json.message) || 'Error al guardar mes ' + payload.mes);
+                            okCount++;
+                            return json;
+                        });
+                    });
+                });
+            });
+            chain.then(function () {
+                toast('success', 'Precios guardados', okCount + ' mes' + (okCount === 1 ? '' : 'es') + ' actualizado(s).');
+                hideModal('modalPvCostoMeses');
+                load(page);
+            }).catch(function (err) {
+                toast('error', 'No se guardó', err && err.message ? err.message : 'Error');
+            }).then(function () {
+                if (saveBtn) saveBtn.disabled = false;
+            });
+        }
+
+        function bindCostoMesesUi() {
+            if (CC._costoMesesBound) return;
+            CC._costoMesesBound = true;
+            var applyAll = document.getElementById('pcm-apply-all');
+            if (applyAll) applyAll.addEventListener('click', function () {
+                var base = Number(val('pcm-base'));
+                if (!(base > 0)) {
+                    toast('warning', 'Precio global', 'Captura un precio global válido.');
+                    return;
+                }
+                for (var i = 0; i < 12; i++) {
+                    var el = document.getElementById('pcm-m-' + i);
+                    if (el) el.value = base.toFixed(4);
+                }
+                highlightCostoMesesEditor();
+            });
+            var reset = document.getElementById('pcm-reset');
+            if (reset) reset.addEventListener('click', function () {
+                for (var i = 0; i < 12; i++) {
+                    var el = document.getElementById('pcm-m-' + i);
+                    if (el) el.value = '';
+                }
+                highlightCostoMesesEditor();
+            });
+            var save = document.getElementById('pcm-save');
+            if (save) save.addEventListener('click', saveCostoMesesModal);
+            var monthsBox = document.getElementById('pcm-months');
+            if (monthsBox) {
+                monthsBox.addEventListener('input', function (ev) {
+                    if (ev.target && ev.target.id && ev.target.id.indexOf('pcm-m-') === 0) {
+                        highlightCostoMesesEditor();
+                    }
+                });
+            }
+            var baseEl = document.getElementById('pcm-base');
+            if (baseEl) baseEl.addEventListener('input', highlightCostoMesesEditor);
+        }
+
+        bindCostoMesesUi();
+
+        function actualizarPrecioDesdeApi(btn) {
+            var emp = btn.getAttribute('data-emp') || '';
+            var cod = btn.getAttribute('data-cod') || '';
+            var card = btn.getAttribute('data-card') || '';
+            var mes = Number(btn.getAttribute('data-mes') || 0) || 0;
+            var nom = btn.getAttribute('data-nom') || cod;
+            if (!emp || !cod) {
+                toast('error', 'Datos incompletos', 'Falta empresa o ItemCode.');
+                return;
+            }
+            btn.disabled = true;
+            var payloadBase = {
+                empresa: emp,
+                card_code: card,
+                producto_codigo: cod,
+                mes: mes,
+                anio: CC.state.anioGasto || new Date().getFullYear()
+            };
+            fetch(url + '/actualizar-desde-api', {
+                method: 'POST',
+                headers: apiJsonHeaders(),
+                body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: false }))
+            }).then(function (r) {
+                return r.json().then(function (json) {
+                    if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar la API');
+                    return json;
+                });
+            }).then(function (json) {
+                if (json.igual) {
+                    toast('info', 'Sin cambios', 'El precio local ya coincide con la API (' +
+                        moneyTxt(json.precio_api, json.moneda_api) + ').');
+                    return;
+                }
+                var msg = 'Producto: ' + (nom || cod) + '\n' +
+                    'ItemCode: ' + cod + (card ? (' · CardCode: ' + card) : '') +
+                    (mes ? (' · Mes: ' + mes) : '') + '\n\n' +
+                    'Local: ' + moneyTxt(json.precio_local, json.moneda_local) + '\n' +
+                    'API:   ' + moneyTxt(json.precio_api, json.moneda_api) + '\n\n' +
+                    '¿Actualizar solo el precio con el valor de la API?';
+                if (!window.confirm(msg)) return;
+
+                return fetch(url + '/actualizar-desde-api', {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: true }))
+                }).then(function (r) {
+                    return r.json().then(function (j2) {
+                        if (!r.ok) throw new Error((j2 && j2.message) || 'No se pudo actualizar');
+                        return j2;
+                    });
+                }).then(function (j2) {
+                    if (j2.actualizado) {
+                        toast('success', 'Precio actualizado',
+                            moneyTxt(j2.precio_anterior, j2.moneda_anterior) + ' → ' +
+                            moneyTxt(j2.precio_nuevo, j2.moneda_nueva));
+                        load(page);
+                    } else {
+                        toast('info', 'Sin cambios', j2.message || 'El precio ya era el mismo.');
+                    }
+                });
+            }).catch(function (err) {
+                toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+            }).then(function () {
+                btn.disabled = false;
+            });
+        }
+
+        function buildQuery(goPage) {
+            var params = [];
+            var emp = empSel ? String(empSel.value || '') : '';
+            var cliente = clienteEl ? String(clienteEl.value || '').trim() : '';
+            var itemcode = itemEl ? String(itemEl.value || '').trim() : '';
+            var perPage = perPageEl ? (Number(perPageEl.value) || 25) : 25;
+            if (emp) params.push('empresa=' + encodeURIComponent(emp));
+            if (cliente) params.push('cliente=' + encodeURIComponent(cliente));
+            if (itemcode) params.push('itemcode=' + encodeURIComponent(itemcode));
+            params.push('page=' + encodeURIComponent(String(goPage || page || 1)));
+            params.push('per_page=' + encodeURIComponent(String(perPage)));
+            return params.length ? ('?' + params.join('&')) : '';
+        }
+
+        function load(goPage) {
+            if (goPage) page = goPage;
             if (hint) hint.textContent = 'Cargando…';
-            var emp = empSel ? empSel.value : '';
-            var qs = emp ? ('?empresa=' + encodeURIComponent(emp)) : '';
-            fetch(url + qs, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+            fetch(url + buildQuery(page), {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            })
                 .then(function (r) { return r.json(); })
                 .then(function (json) {
                     items = (json && json.items) || [];
+                    total = Number(json && json.total) || items.length;
+                    page = Number(json && json.page) || page || 1;
+                    lastPage = Number(json && json.last_page) || 1;
+                    from = Number(json && json.from) || 0;
+                    to = Number(json && json.to) || 0;
                     fillEmpresas();
                     render();
                 })
                 .catch(function () {
                     items = [];
-                    tbody.innerHTML = '<tr><td colspan="7"><div class="cc-empty">No se pudieron cargar los precios</div></td></tr>';
+                    total = 0;
+                    from = 0;
+                    to = 0;
+                    lastPage = 1;
+                    tbody.innerHTML = '<tr><td colspan="11"><div class="cc-empty">No se pudieron cargar los precios</div></td></tr>';
                     if (hint) hint.textContent = 'Error al cargar';
+                    updatePager();
                 });
+        }
+
+        function scheduleSearch() {
+            if (searchTimer) clearTimeout(searchTimer);
+            searchTimer = setTimeout(function () { load(1); }, 320);
         }
 
         function moneyTxt(valor, moneda) {
@@ -6289,17 +6684,28 @@
                 Number(valor).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
         }
 
-        function openHistorialPrecio(emp, cod, nom) {
+        function openHistorialPrecio(emp, cod, nom, card, cardName, mes) {
+            var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
             var histTbody = document.getElementById('pv-hist-tbody');
             var histHint = document.getElementById('pv-hist-hint');
-            setText('pv-hist-prod-label', (nom || cod || '—') + ' · ' + (cod || '') + (emp ? ' · ' + emp : ''));
+            var mesN = Number(mes) || 0;
+            var mesTxt = mesN >= 1 && mesN <= 12 ? (MESES[mesN] + ' (' + mesN + ')') : '—';
+            var clienteTxt = (card || '') + (cardName ? (' — ' + cardName) : '');
+            setText('pv-hist-prod-label', (emp || '—') + (clienteTxt ? (' · ' + clienteTxt) : ''));
+            setText('pv-hist-nombre', nom || cod || '—');
+            setText('pv-hist-itemcode', cod || '—');
+            setText('pv-hist-mes', mesTxt);
+            setText('pv-hist-cliente', clienteTxt || '—');
             if (histTbody) {
-                histTbody.innerHTML = '<tr><td colspan="6"><div class="cc-empty">Cargando historial…</div></td></tr>';
+                histTbody.innerHTML = '<tr><td colspan="9"><div class="cc-empty">Cargando historial…</div></td></tr>';
             }
             if (histHint) histHint.textContent = 'Consultando movimientos del precio unitario…';
             showModal('modalPvHistorialPrecio');
             var histUrl = CC.state.costosHistorialUrl || (url + '/historial');
-            var qs = '?empresa=' + encodeURIComponent(emp) + '&producto_codigo=' + encodeURIComponent(cod);
+            var qs = '?empresa=' + encodeURIComponent(emp) +
+                '&producto_codigo=' + encodeURIComponent(cod);
+            if (card) qs += '&card_code=' + encodeURIComponent(card);
+            if (mesN > 0) qs += '&mes=' + encodeURIComponent(String(mesN));
             fetch(histUrl + qs, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
                 .then(function (r) {
                     return r.json().then(function (json) {
@@ -6312,6 +6718,18 @@
                     var actual = json.precio_actual != null
                         ? moneyTxt(json.precio_actual, json.moneda_actual)
                         : '—';
+                    if (json.producto_nombre) setText('pv-hist-nombre', json.producto_nombre);
+                    if (json.producto_codigo) setText('pv-hist-itemcode', json.producto_codigo);
+                    if (json.mes_label) setText('pv-hist-mes', json.mes_label);
+                    var cli = (json.card_code || card || '');
+                    if (json.card_name || cardName) {
+                        cli += (cli ? ' — ' : '') + (json.card_name || cardName);
+                    }
+                    if (cli) setText('pv-hist-cliente', cli);
+                    setText('pv-hist-prod-label',
+                        (json.empresa || emp || '—') +
+                        (cli ? (' · ' + cli) : '')
+                    );
                     if (histHint) {
                         histHint.textContent = rows.length
                             ? (rows.length + (rows.length === 1 ? ' movimiento' : ' movimientos') + ' · precio actual ' + actual)
@@ -6319,7 +6737,7 @@
                     }
                     if (!histTbody) return;
                     if (!rows.length) {
-                        histTbody.innerHTML = '<tr><td colspan="6"><div class="cc-empty">Este producto todavía no tiene movimientos de precio.</div></td></tr>';
+                        histTbody.innerHTML = '<tr><td colspan="9"><div class="cc-empty">Este producto todavía no tiene movimientos de precio.</div></td></tr>';
                         return;
                     }
                     histTbody.innerHTML = rows.map(function (it) {
@@ -6342,8 +6760,17 @@
                                     Number(it.variacion_pct).toLocaleString('es-MX', { maximumFractionDigits: 2 }) + '%)';
                             }
                         }
+                        var mesRow = it.mes_label || '—';
+                        var codRow = it.producto_codigo || cod || '—';
+                        var nomRow = String(it.producto_nombre || '').trim();
+                        if (!nomRow || nomRow.toUpperCase() === String(codRow).toUpperCase()) {
+                            nomRow = json.producto_nombre || nom || codRow;
+                        }
                         return '<tr>' +
                             '<td>' + escapeHtml(it.fecha || '—') + '</td>' +
+                            '<td>' + escapeHtml(mesRow) + '</td>' +
+                            '<td><code>' + escapeHtml(codRow) + '</code></td>' +
+                            '<td>' + escapeHtml(nomRow) + '</td>' +
                             '<td class="num">' + escapeHtml(moneyTxt(it.precio_anterior, it.moneda_anterior || mon)) + '</td>' +
                             '<td class="num fw-semibold">' + escapeHtml(moneyTxt(it.precio_nuevo, mon)) + '</td>' +
                             '<td class="num"><span class="' + cls + '">' + escapeHtml(deltaTxt) + '</span></td>' +
@@ -6355,7 +6782,7 @@
                 .catch(function (err) {
                     if (histHint) histHint.textContent = 'No se pudo cargar el historial.';
                     if (histTbody) {
-                        histTbody.innerHTML = '<tr><td colspan="6"><div class="cc-empty">' +
+                        histTbody.innerHTML = '<tr><td colspan="9"><div class="cc-empty">' +
                             escapeHtml(err && err.message ? err.message : 'Error al cargar') +
                             '</div></td></tr>';
                     }
@@ -6369,6 +6796,9 @@
                     empresa: val('pv-costo-empresa'),
                     producto_codigo: val('pv-costo-codigo'),
                     producto_nombre: val('pv-costo-nombre'),
+                    card_code: val('pv-costo-card'),
+                    card_name: val('pv-costo-card-name'),
+                    mes: Number(val('pv-costo-mes')) || 0,
                     costo_unitario: Number(val('pv-costo-valor')) || 0,
                     moneda: val('pv-costo-moneda') || 'MXN'
                 };
@@ -6402,14 +6832,18 @@
             });
         }
 
-        if (empSel) empSel.addEventListener('change', function () { load(); });
-        if (qEl) qEl.addEventListener('input', render);
+        if (empSel) empSel.addEventListener('change', function () { load(1); });
+        if (clienteEl) clienteEl.addEventListener('input', scheduleSearch);
+        if (itemEl) itemEl.addEventListener('input', scheduleSearch);
+        if (perPageEl) perPageEl.addEventListener('change', function () { load(1); });
+        if (prevBtn) prevBtn.addEventListener('click', function () { if (page > 1) load(page - 1); });
+        if (nextBtn) nextBtn.addEventListener('click', function () { if (page < lastPage) load(page + 1); });
         var reload = document.getElementById('pv-costos-reload');
-        if (reload) reload.addEventListener('click', load);
+        if (reload) reload.addEventListener('click', function () { load(page); });
         var importBtn = document.getElementById('pv-costos-import-api');
         if (importBtn) {
             importBtn.addEventListener('click', function () {
-                if (!window.confirm('¿Cargar precios de venta desde la API (todas las empresas)?\nSe usa el precio unitario promedio del año (importe ÷ uds / Price SAP) y se actualizan también los que ya tienen valor.')) {
+                if (!window.confirm('¿Cargar precios mensuales desde la API (todas las empresas)?\nSe importan CardCode, ItemCode, Mes y Precio desde /precios-mensuales y se actualizan también los que ya tienen valor.')) {
                     return;
                 }
                 importBtn.disabled = true;
