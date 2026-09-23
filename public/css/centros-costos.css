@@ -285,15 +285,22 @@
     align-items: stretch;
 }
 .cc-kpis-equal .cc-kpi {
+    margin: 0;
+    width: 100%;
     height: 100%;
-    min-height: 7.4rem;
+    min-height: 8.75rem;
+    align-self: stretch;
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
 }
+.cc-kpis-equal .cc-kpi .label,
+.cc-kpis-equal .cc-kpi .value {
+    flex: 0 0 auto;
+}
 .cc-kpis-equal .cc-kpi .hint {
     margin-top: auto;
-    min-height: 2.5em;
+    min-height: 2.7em;
 }
 
 .cc-kpi {
@@ -326,7 +333,12 @@
     color: var(--cc-muted);
     letter-spacing: -0.02em;
 }
-.cc-kpi.alert { border-color: #fecaca; background: linear-gradient(#fff, #fff5f5); }
+.cc-kpi.alert,
+.cc-kpi.is-warn {
+    margin: 0;
+    border-color: #fecaca;
+    background: linear-gradient(#fff, #fff5f5);
+}
 
 .cc-panel {
     background: var(--cc-white);

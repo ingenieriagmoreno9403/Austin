@@ -2,6 +2,39 @@
 
 @section('css')
 <link href="{{ asset('css/centros-costos.css') }}" rel="stylesheet">
+<style>
+    #an-kpis {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        align-items: stretch;
+        gap: 0.75rem;
+    }
+    #an-kpis > .cc-kpi {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        min-height: 8.75rem;
+        align-self: stretch;
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+    }
+    #an-kpis > .cc-kpi .label,
+    #an-kpis > .cc-kpi .value {
+        flex: 0 0 auto;
+    }
+    #an-kpis > .cc-kpi .hint {
+        margin-top: auto;
+        min-height: 2.7em;
+    }
+    #an-kpis > .cc-kpi.is-warn {
+        border-color: #fecaca;
+        background: linear-gradient(#fff, #fff5f5);
+    }
+    @media (max-width: 768px) {
+        #an-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+</style>
 @endsection
 
 @section('content')
@@ -43,9 +76,9 @@
     </div>
 
     <div id="an-work">
-    <div class="cc-kpis cc-kpis-equal">
+    <div class="cc-kpis cc-kpis-equal" id="an-kpis">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Cuentas ya capturadas</div></div>
-        <div class="cc-kpi alert"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Centros debajo del 40%</div></div>
+        <div class="cc-kpi is-warn"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Centros debajo del 40%</div></div>
         <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Ppto &gt; 110% del gasto real</div></div>
         <div class="cc-kpi"><div class="label">Variación vs gasto</div><div class="value" id="an-kpi-yoy">—</div><div class="hint" id="an-kpi-yoy-hint">Promedio de aumento</div></div>
     </div>
