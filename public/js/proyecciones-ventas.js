@@ -419,14 +419,23 @@
         return all;
     }
 
+    function codigoClienteAsig(a) {
+        return String((a && (a.centro_codigo || a.cliente_codigo)) || '').trim();
+    }
+
+    function nombreClienteAsig(a) {
+        return String((a && (a.centro_nombre || a.cliente_nombre)) || '').trim();
+    }
+
     function asigsDe(c) {
         var ciclo = (document.getElementById('ctl-ciclo') && val('ctl-ciclo'))
             || (document.getElementById('an-ciclo') && val('an-ciclo'))
             || CC.state.cicloCodigo || '';
+        var cicloNeedle = String(ciclo || '').toUpperCase();
         return (CC.state.misAsignaciones || []).filter(function (a) {
-            var sameCc = String(a.centro_codigo) === String(c.codigo);
+            var sameCc = codigoClienteAsig(a) === String(c.codigo || '').trim();
             var sameEmp = String(a.empresa || '').toLowerCase() === String(c.empresa || a.empresa || '').toLowerCase();
-            var sameCiclo = !ciclo || String(a.ciclo || '') === String(ciclo);
+            var sameCiclo = !cicloNeedle || String(a.ciclo || '').toUpperCase() === cicloNeedle;
             return sameCc && sameEmp && sameCiclo;
         });
     }
@@ -494,6 +503,34 @@
         // n ya viene en la moneda de vista (LineTotal / LineTotalUSD de SAP).
         return (isUsdView() ? 'US$' : '$') + n.toLocaleString('es-MX', {
             minimumFractionDigits: 0,
+            maximumFractionDigits: 2
+        });
+    }
+
+    /** Misma regla que el control de centros de costos: más de 3 decimales se recortan, no se suben. */
+    function decimalPlaces(n) {
+        var v = Math.abs(Number(n) || 0);
+        if (!isFinite(v)) return 0;
+        var s = v.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+        var dot = s.indexOf('.');
+        return dot < 0 ? 0 : (s.length - dot - 1);
+    }
+
+    function round2(n) {
+        var v = Number(n);
+        if (!isFinite(v)) return 0;
+        if (decimalPlaces(v) > 3) {
+            var sign = v < 0 ? -1 : 1;
+            return sign * Math.floor(Math.abs(v) * 100 + 1e-8) / 100;
+        }
+        return Math.round(v * 100) / 100;
+    }
+
+    function moneyDosDecimales(n) {
+        var v = round2(n);
+        if (!v) return '—';
+        return (isUsdView() ? 'US$' : '$') + v.toLocaleString('es-MX', {
+            minimumFractionDigits: 2,
             maximumFractionDigits: 2
         });
     }
@@ -774,7 +811,7 @@
             || null;
     }
 
-    function applyPreciosMap(porArticulo) {
+    function mapaPreciosArticulo(porArticulo) {
         var map = {};
         Object.keys(porArticulo || {}).forEach(function (key) {
             var row = porArticulo[key];
@@ -795,6 +832,11 @@
             map[codigo.toUpperCase()] = entry;
             map[codigoCuentaKey(codigo)] = entry;
         });
+        return map;
+    }
+
+    function applyPreciosMap(porArticulo) {
+        var map = mapaPreciosArticulo(porArticulo);
         control._preciosMap = map;
         if (control._preciosReq) {
             CC.state.preciosCache = CC.state.preciosCache || {};
@@ -2283,7 +2325,7 @@
         if (!a && !ctas) return 'Sin asignaciones todavía';
         var bits = [];
         if (a) bits.push(a + (a === 1 ? ' asignación' : ' asignaciones'));
-        if (cc) bits.push(cc + (cc === 1 ? ' centro' : ' centros'));
+        if (cc) bits.push(cc + (cc === 1 ? ' cliente' : ' clientes'));
         if (ctas) bits.push(ctas + (ctas === 1 ? ' cuenta' : ' cuentas'));
         if (us) bits.push(us + (us === 1 ? ' usuario' : ' usuarios'));
         return bits.join(' · ');
@@ -2300,7 +2342,7 @@
         }
         return head + '<p style="margin:.75rem 0 .35rem">También se borra lo que ya tiene cargado:</p><ul style="text-align:left;margin:.2rem 0 0;padding-left:1.2rem">' +
             (a ? '<li>' + a + (a === 1 ? ' asignación' : ' asignaciones') + '</li>' : '') +
-            (cc ? '<li>' + cc + (cc === 1 ? ' centro de costos' : ' centros de costo') + '</li>' : '') +
+            (cc ? '<li>' + cc + (cc === 1 ? ' cliente' : ' clientes') + '</li>' : '') +
             (ctas ? '<li>' + ctas + (ctas === 1 ? ' cuenta' : ' cuentas') + '</li>' : '') +
             (us ? '<li>' + us + (us === 1 ? ' usuario asignado' : ' usuarios asignados') + '</li>' : '') +
             '</ul>';
@@ -2447,7 +2489,7 @@
         paintFxBadge();
         var kicker = document.querySelector('.cc-kicker');
         if (kicker && CC.state.page === 'admin-ciclo') {
-            kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · centros y permisos';
+            kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · clientes y permisos';
         }
     }
 
@@ -2992,8 +3034,9 @@
     var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, grupoCerradoMatrix: {}, vista: 'captura', scopeTabla: 'centro', chartVerTodas: false, prodQuery: '' };
 
     function asignacionesDelCiclo(ciclo) {
+        var needle = String(ciclo || '').toUpperCase();
         return (CC.state.misAsignaciones || []).filter(function (a) {
-            return !ciclo || String(a.ciclo || '') === String(ciclo);
+            return !needle || String(a.ciclo || '').toUpperCase() === needle;
         });
     }
 
@@ -3005,13 +3048,13 @@
         var map = {};
         (list || []).forEach(function (a) {
             var emp = String(a.empresa || '').toUpperCase().trim();
-            var code = String(a.centro_codigo || '').trim();
+            var code = codigoClienteAsig(a);
             var k = emp + '|' + code;
             if (!emp || !code) return;
             if (!map[k]) {
                 map[k] = {
                     codigo: code,
-                    nombre: a.centro_nombre || code,
+                    nombre: nombreClienteAsig(a) || code,
                     empresa: emp,
                     usuario: a.usuario || '',
                     usuarios: [],
@@ -3030,7 +3073,7 @@
             var row = map[k];
             if (a.es_principal || !row.usuario) row.usuario = a.usuario || row.usuario;
             if (a.usuario && row.usuarios.indexOf(a.usuario) === -1) row.usuarios.push(a.usuario);
-            if (a.centro_nombre) row.nombre = a.centro_nombre;
+            if (nombreClienteAsig(a)) row.nombre = nombreClienteAsig(a);
             row.capturar = row.capturar || !!a.capturar;
             row.editar = row.editar || !!a.editar;
             row.revisar = row.revisar || !!a.revisar;
@@ -6387,12 +6430,18 @@
         var cicloEl = document.getElementById('an-ciclo');
         if (cicloEl && ciclo) cicloEl.value = ciclo;
         CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
-        if (CC._anCapturaCiclo !== String(CC.state.cicloCodigo || '')) {
-            CC._anCapturaCiclo = String(CC.state.cicloCodigo || '');
-            loadOverlaysForCycle().then(function () { CC.initAnalisis(); });
-            return;
+        var cicloKey = String(CC.state.cicloCodigo || '');
+        if (CC._anCapturaCiclo !== cicloKey) {
+            CC._anCapturaCiclo = cicloKey;
+            paintAnalisisLoading();
+            loadOverlaysForCycle().then(function () {
+                if (CC.state.page !== 'analisis') return;
+                if (String(CC.state.cicloCodigo || '') !== cicloKey) return;
+                renderAnalisis();
+            });
         }
 
+        paintAnalisisLoading();
         if (!CC._anAsigLoaded) {
             if (CC._anAsigLoading) return;
             if (!ciclo) {
@@ -6403,24 +6452,19 @@
                 renderAnalisis();
                 return;
             }
+            CC._anAsigGen = (CC._anAsigGen || 0) + 1;
+            var asigGen = CC._anAsigGen;
             CC._anAsigLoading = true;
-            fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones', {
-                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).then(function (r) { return r.json(); }).then(function (json) {
-                CC.state.misAsignaciones = json.asignaciones || [];
+            fetchAnalisisAsignaciones(ciclo).then(function (list) {
+                if (asigGen !== CC._anAsigGen) return;
+                CC._anAsigLoading = false;
+                if (String(val('an-ciclo') || CC.state.cicloCodigo || '').toUpperCase() !== String(ciclo).toUpperCase()) return;
+                CC.state.misAsignaciones = list || [];
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
                 fillAnalisisFilters();
                 renderAnalisis();
                 queueAnalisisGastos();
-            }).catch(function () {
-                CC.state.misAsignaciones = CC.state.misAsignaciones || [];
-                CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
-                fillAnalisisFilters();
-                renderAnalisis();
             });
             return;
         }
@@ -6431,48 +6475,137 @@
         queueAnalisisGastos();
     };
 
+    function fetchJsonOk(url) {
+        return fetch(url, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        }).then(function (r) {
+            if (!r.ok) throw new Error(String(r.status));
+            return r.json();
+        });
+    }
+
+    function fetchAnalisisAsignaciones(ciclo) {
+        var todas = '/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones';
+        var mias = '/ProyeccionesVentas/api/mis-asignaciones';
+        return fetchJsonOk(todas).then(function (json) {
+            var list = (json && json.asignaciones) || [];
+            if (list.length) return list;
+            return fetchJsonOk(mias).then(function (mine) {
+                return (mine && mine.asignaciones) || [];
+            }).catch(function () { return []; });
+        }).catch(function () {
+            return fetchJsonOk(mias).then(function (mine) {
+                return (mine && mine.asignaciones) || [];
+            }).catch(function () { return CC.state.misAsignaciones || []; });
+        });
+    }
+
+    function paintAnalisisLoading() {
+        var box = document.getElementById('an-loading');
+        if (!box) return;
+        var waitingAsig = !CC._anAsigLoaded;
+        var waitingCap = !!CC._anCapturaCiclo && !CC._capturaReady;
+        var left = CC._anGastoLeft || 0;
+        var total = CC._anGastoTotal || 0;
+        var on = waitingAsig || waitingCap || left > 0;
+        box.hidden = !on;
+        var msg = document.getElementById('an-loading-msg');
+        if (!msg) return;
+        if (waitingAsig) {
+            msg.textContent = 'Cargando clientes del ciclo…';
+        } else if (left > 0) {
+            var done = Math.max(0, total - left);
+            msg.textContent = 'Cargando ventas reales… ' + done + ' de ' + total + ' clientes. Los totales se completan al terminar.';
+        } else if (waitingCap) {
+            msg.textContent = 'Cargando proyecciones capturadas…';
+        }
+    }
+
     function queueAnalisisGastos() {
-        if (!CC.state.gastoUrl || CC.state.page !== 'analisis') return;
+        if (!CC.state.gastoUrl || CC.state.page !== 'analisis') {
+            CC._anGastoLeft = 0;
+            CC._anGastoTotal = 0;
+            paintAnalisisLoading();
+            return;
+        }
         var year = CC.state.anioGasto || 2026;
         var pending = (CC.state.centros || []).filter(function (c) {
-            var key = gastoCacheKey(c);
-            return !(CC.state.gastoCache && CC.state.gastoCache[key]);
+            var gKey = gastoCacheKey(c);
+            var pKey = preciosCacheKey(c);
+            var gastoOk = CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, gKey);
+            var precioOk = !CC.state.listasPreciosUrl || (CC.state.preciosCache && Object.prototype.hasOwnProperty.call(CC.state.preciosCache, pKey));
+            return !gastoOk || !precioOk;
         });
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        var gen = CC._anGastoGen;
+        CC._anGastoTotal = pending.length;
+        CC._anGastoLeft = pending.length;
+        paintAnalisisLoading();
         if (!pending.length) return;
         var inflight = 0;
-        var max = 3;
+        var max = 4;
         var dirty = false;
         var paintTimer = null;
         function schedulePaint() {
             if (paintTimer) return;
             paintTimer = setTimeout(function () {
                 paintTimer = null;
+                if (gen !== CC._anGastoGen) return;
                 if (CC.state.page === 'analisis' && dirty) renderAnalisis();
             }, 400);
         }
         function kick() {
+            if (gen !== CC._anGastoGen) return;
             while (inflight < max && pending.length) {
                 var c = pending.shift();
                 var key = gastoCacheKey(c);
                 inflight += 1;
                 (function (centro, cacheKey) {
-                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
-                        '&cc=' + encodeURIComponent(centro.codigo || '') +
-                        '&year=' + encodeURIComponent(year), {
-                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                    }).then(function (res) { return res.json(); }).then(function (json) {
-                        CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
-                        CC.state.gastoLookup = CC.state.gastoLookup || {};
-                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]);
-                        dirty = true;
-                        schedulePaint();
-                    }).catch(function () {
-                        CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[cacheKey] = {};
-                    }).then(function () {
+                    var jobs = [];
+                    if (!(CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, cacheKey))) {
+                        jobs.push(fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                            '&cc=' + encodeURIComponent(centro.codigo || '') +
+                            '&year=' + encodeURIComponent(year), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            if (gen !== CC._anGastoGen) return;
+                            CC.state.gastoCache = CC.state.gastoCache || {};
+                            CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
+                            CC.state.gastoLookup = CC.state.gastoLookup || {};
+                            CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]);
+                            dirty = true;
+                            schedulePaint();
+                        }).catch(function () {
+                            if (gen !== CC._anGastoGen) return;
+                            CC.state.gastoCache = CC.state.gastoCache || {};
+                            CC.state.gastoCache[cacheKey] = {};
+                        }));
+                    }
+                    var pKey = preciosCacheKey(centro);
+                    if (CC.state.listasPreciosUrl && !(CC.state.preciosCache && Object.prototype.hasOwnProperty.call(CC.state.preciosCache, pKey))) {
+                        jobs.push(fetch(CC.state.listasPreciosUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                            '&cliente=' + encodeURIComponent(centro.codigo || '') +
+                            '&year=' + encodeURIComponent(year), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            if (gen !== CC._anGastoGen) return;
+                            CC.state.preciosCache = CC.state.preciosCache || {};
+                            CC.state.preciosCache[pKey] = mapaPreciosArticulo((json && json.por_articulo) || {});
+                            dirty = true;
+                            schedulePaint();
+                        }).catch(function () {
+                            if (gen !== CC._anGastoGen) return;
+                            CC.state.preciosCache = CC.state.preciosCache || {};
+                            CC.state.preciosCache[pKey] = {};
+                        }));
+                    }
+                    Promise.all(jobs).then(function () {
+                        if (gen !== CC._anGastoGen) return;
                         inflight -= 1;
-                        if (!pending.length && !inflight && dirty) renderAnalisis();
+                        CC._anGastoLeft = Math.max(0, (CC._anGastoLeft || 0) - 1);
+                        paintAnalisisLoading();
+                        if (!pending.length && !inflight) renderAnalisis();
                         else kick();
                     });
                 })(c, key);
@@ -6554,7 +6687,7 @@
     }
 
     function textoImporteReal(importe, unidades) {
-        var txt = moneyGasto(importe);
+        var txt = moneyDosDecimales(importe);
         if (txt !== '—') return txt;
         var u = Number(unidades) || 0;
         if (u) return qtyLabel(u) + ' uds';
@@ -6565,9 +6698,10 @@
         var out = [];
         (rows || []).forEach(function (c) {
             cuentasEnriquecidas(c).forEach(function (cta) {
-                var gasto = cta.importeVentaVista != null ? Number(cta.importeVentaVista) || 0 : importeVentaVista(cta);
-                var ppto = cta.importeProyVista != null ? Number(cta.importeProyVista) || 0 : importeProyeccionVista(cta);
-                var monthsVenta = MONTHS.map(function (_, i) { return Number(importeMesVentaVista(cta, i)) || 0; });
+                var monthsVenta = MONTHS.map(function (_, i) { return round2(importeMesVentaVista(cta, i)); });
+                var gasto = round2(monthsVenta.reduce(function (a, v) { return a + v; }, 0));
+                // Igual que la columna Proy. de «Detalle por producto y mes»: suma de importeMesProyVista, sin recortar centavos.
+                var ppto = importeProyeccionVista(cta);
                 var monthsProy = MONTHS.map(function (_, i) {
                     var m = importeMesProyVista(cta, i);
                     return m == null ? 0 : (Number(m) || 0);
@@ -6711,9 +6845,10 @@
         var pYear = CC.state.anioPresupuesto || 2027;
         var empty = document.getElementById('an-empty');
         var work = document.getElementById('an-work');
-        var all = snapshotCentros();
-        if (empty) empty.hidden = !!all.length;
-        if (work) work.hidden = !all.length;
+        var all = CC._anAsigLoaded ? snapshotCentros() : [];
+        paintAnalisisLoading();
+        if (empty) empty.hidden = !CC._anAsigLoaded || !!all.length;
+        if (work) work.hidden = !CC._anAsigLoaded || !all.length;
 
         var rows = all.filter(function (c) {
             if (emp && c.empresa !== emp) return false;
@@ -6722,6 +6857,30 @@
             return true;
         });
         var productRows = productosDeAnalisis(rows);
+        if (!productRows.length && rows.length) {
+            productRows = rows.map(function (c) {
+                return {
+                    centro: c,
+                    empresa: c.empresa || '',
+                    clienteCodigo: c.codigo || '',
+                    clienteNombre: c.nombre || c.codigo || '',
+                    departamento: c.departamento || '',
+                    usuario: c.usuario || '',
+                    usuarios: c.usuarios || [],
+                    estado: c.estado,
+                    productoCodigo: '',
+                    productoNombre: 'Sin productos asignados',
+                    gasto: Number(c.gasto) || 0,
+                    ppto: Number(c.ppto) || 0,
+                    unidadesVenta: 0,
+                    unidadesProy: 0,
+                    yoY: c.yoY || 0,
+                    over: !!c.over,
+                    capturadas: c.capturadas || 0,
+                    avance: c.avance || 0
+                };
+            });
+        }
         var tableRows = productRows.filter(function (p) {
             if (!q) return true;
             var blob = normSearch([
@@ -6767,7 +6926,7 @@
                 var on = emp === e ? ' is-on' : '';
                 return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' clientes</span></div>' +
                     '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>' +
-                    '<div class="text-muted mt-1" style="font-size:.75rem">Gasto ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Ppto ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
+                    '<div class="text-muted mt-1" style="font-size:.75rem">Venta ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Proyecciones ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
             }).join('') || '<div class="cc-empty">Sin empresas</div>';
         }
 
@@ -6786,7 +6945,7 @@
                     '<td>' + renderBadge(p.estado) + '</td>' +
                     '<td><div class="d-flex justify-content-between"><span>' + p.capturadas + '/12</span><span class="cc-semaforo-' + cls + '">' + p.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(p.avance, 100) + '%"></span></div></td>' +
                     '<td class="num">' + textoImporteReal(p.gasto, p.unidadesVenta) + '</td>' +
-                    '<td class="num">' + textoImporteReal(p.ppto, p.unidadesProy) + '</td>' +
+                    '<td class="num">' + moneyGasto(p.ppto) + '</td>' +
                     '<td class="num ' + (p.yoY > 10 ? 'text-danger' : '') + '">' + (p.gasto ? ((p.yoY > 0 ? '+' : '') + p.yoY + '%') : '—') + '</td>' +
                     '<td>' + (p.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
                     '<td><a class="cc-btn" href="' + detalleHref(p.centro) + '">Ver</a></td></tr>';

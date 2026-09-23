@@ -35,6 +35,17 @@
         </div>
     </div>
 
+    <div id="an-loading" class="cc-panel" hidden>
+        <div class="cc-loading-inline">
+            <div class="cc-api-wait-spinner is-sm" aria-hidden="true"></div>
+            <div class="cc-loading-inline-copy">
+                <strong>Cargando análisis</strong>
+                <span id="an-loading-msg">Preparando clientes, ventas y proyecciones…</span>
+            </div>
+        </div>
+        <div class="cc-api-wait-bar" aria-hidden="true"><span></span></div>
+    </div>
+
     <div id="an-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
             <i class="fa-solid fa-chart-line"></i>

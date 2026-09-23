@@ -1338,7 +1338,7 @@ class ProyeccionesVentasController extends Controller
         $empresa = request('empresa');
         $userId = (int) request('user_id', 0);
         $q = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
-            ->where('ciclo_codigo', $ciclo);
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)]);
         if ($empresa) {
             $q->where('empresa', strtolower($empresa));
         }

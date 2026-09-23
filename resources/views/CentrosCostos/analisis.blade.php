@@ -142,7 +142,7 @@
                         <th>Capturado</th>
                         <th class="num" id="an-th-gasto">Gasto {{ $bootstrap['anioGasto'] }}</th>
                         <th class="num" id="an-th-ppto">Ppto {{ $bootstrap['anioPresupuesto'] }}</th>
-                        <th class="num">Δ año</th>
+                        <th class="num">Δ %</th>
                         <th>Límite</th>
                         <th></th>
                     </tr>
