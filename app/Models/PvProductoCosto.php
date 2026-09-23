@@ -9,6 +9,7 @@ class PvProductoCosto extends Model
     public $table = 'tbl_pv_productos_costo';
 
     protected $fillable = [
+        'anio',
         'empresa',
         'card_code',
         'card_name',
@@ -21,6 +22,7 @@ class PvProductoCosto extends Model
     ];
 
     protected $casts = [
+        'anio' => 'integer',
         'costo_unitario' => 'float',
         'mes' => 'integer',
     ];

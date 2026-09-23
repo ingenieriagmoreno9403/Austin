@@ -8,11 +8,12 @@
 <div class="cc-page" id="cc-app">
     <div class="cc-header">
         <div>
-            <div class="cc-kicker">Ventas · precio local</div>
+            <div class="cc-kicker">Ventas · precio local · proyección <span id="pv-costos-anio-label">{{ $bootstrap['anioPresupuesto'] ?? '' }}</span></div>
             <h1 class="cc-title">Precios de productos</h1>
             <p class="cc-sub">
-                Maestro local por <strong>Empresa</strong>, <strong>CardCode</strong> e <strong>ItemCode</strong>
-                (1 fila). Los precios mensuales se editan en el modal; en BD siguen guardados por mes.
+                Maestro local por <strong>año de proyección</strong>, <strong>Empresa</strong>, <strong>CardCode</strong> e <strong>ItemCode</strong>
+                (1 fila). Usa el selector <strong>Proy. AAAA</strong> para ver o editar precios de otro ciclo.
+                Los precios mensuales se editan en el modal; en BD siguen guardados por mes y año.
             </p>
         </div>
     </div>
@@ -24,7 +25,10 @@
             <h3><i class="fa-solid fa-tags"></i> Maestro de precios</h3>
             <span class="text-muted" style="font-size:.8rem" id="pv-costos-hint">Cargando…</span>
         </div>
-        <div class="cc-filters" style="grid-template-columns: 150px 1fr 1fr 90px auto auto auto;">
+        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto;">
+            <select id="pv-costos-anio" class="cc-select" title="Año de proyección del maestro">
+                <option value="{{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}">Proy. {{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}</option>
+            </select>
             <select id="pv-costos-empresa" class="cc-select" title="Filtrar por empresa">
                 <option value="">Todas las empresas</option>
             </select>
@@ -105,7 +109,7 @@
                 <div class="row g-2 align-items-end mb-3">
                     <div class="col-sm-4">
                         <label class="form-label" for="pcm-base">Precio global</label>
-                        <input id="pcm-base" class="form-control" type="number" step="0.0001" min="0">
+                        <input id="pcm-base" class="form-control" type="number" step="0.01" min="0">
                         <small class="text-muted" id="pcm-base-hint"></small>
                     </div>
                     <div class="col-sm-3">

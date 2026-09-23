@@ -443,8 +443,8 @@
             </div>
             <div class="modal-body">
                 <p class="text-muted mb-3" style="font-size:.85rem">
-                    El precio global aplica a todo el año. Solo captura un valor en los meses que deban cambiar.
-                    Arriba de cada casilla se muestra el precio de <strong>Precios de productos</strong> de ese mes (referencia).
+                    Cada mes se precarga con el precio de <strong>Precios de productos</strong>.
+                    Si un mes no tiene dato, se usa el precio global. Al guardar quedan asignados los 12 meses.
                 </p>
                 <div class="row g-2 align-items-end mb-3">
                     <div class="col-sm-5">
@@ -454,7 +454,7 @@
                     </div>
                     <div class="col-sm-7 d-flex gap-2 flex-wrap">
                         <button type="button" class="cc-btn" id="pm-apply-all">Usar global en los 12</button>
-                        <button type="button" class="cc-btn" id="pm-reset">Limpiar overrides</button>
+                        <button type="button" class="cc-btn" id="pm-reset" title="Rellena cada mes con Precios de productos o el global">Usar precios productos</button>
                     </div>
                 </div>
                 <div class="cc-tc-months" id="pm-months"></div>

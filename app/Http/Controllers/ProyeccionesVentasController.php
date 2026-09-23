@@ -109,6 +109,7 @@ class ProyeccionesVentasController extends Controller
         $cliente = trim((string) $request->get('cliente', ''));
         $itemcode = trim((string) $request->get('itemcode', $request->get('item_code', '')));
         $q = trim((string) $request->get('q', ''));
+        $anio = $this->anioProyeccionCostos((int) $request->get('anio', 0));
         $page = max(1, (int) $request->get('page', 1));
         $perPage = (int) $request->get('per_page', 25);
         if ($perPage < 10) {
@@ -119,11 +120,15 @@ class ProyeccionesVentasController extends Controller
         }
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasAnio = $this->hasAnioCostos();
 
         $map = [];
 
-        // 1) Maestro local (Empresa + CardCode + ItemCode + Mes)
+        // 1) Maestro local (Año + Empresa + CardCode + ItemCode + Mes)
         $masterQ = PvProductoCosto::query();
+        if ($hasAnio) {
+            $masterQ->where('anio', $anio);
+        }
         if ($empresa !== '') {
             $masterQ->whereRaw('UPPER(empresa) = ?', [$empresa]);
         }
@@ -142,7 +147,7 @@ class ProyeccionesVentasController extends Controller
             });
         }
         $masterQ->orderBy('empresa')->orderBy('producto_codigo')->orderBy('id')->get()
-            ->each(function (PvProductoCosto $row) use (&$map, $hasCard, $hasMes) {
+            ->each(function (PvProductoCosto $row) use (&$map, $hasCard, $hasMes, $hasAnio, $anio) {
                 $emp = strtoupper(trim((string) $row->empresa));
                 $card = $hasCard ? trim((string) ($row->card_code ?? '')) : '';
                 $cod = trim((string) $row->producto_codigo);
@@ -155,6 +160,7 @@ class ProyeccionesVentasController extends Controller
                     'producto_codigo' => $cod,
                     'producto_nombre' => $row->producto_nombre,
                     'mes' => $mes > 0 ? $mes : null,
+                    'anio' => $hasAnio ? (int) ($row->anio ?? $anio) : $anio,
                     'costo_unitario' => (float) $row->costo_unitario,
                     'moneda' => strtoupper((string) ($row->moneda ?: 'MXN')),
                     'tiene_maestro' => true,
@@ -164,7 +170,7 @@ class ProyeccionesVentasController extends Controller
 
         // 2) Productos proyectados / asignados sin fila en maestro (card/mes vacíos)
         //    Solo cuando no hay filtro de cliente (los huecos no tienen CardCode).
-        $agregarHueco = function (string $emp, string $cod, ?string $nombre) use (&$map) {
+        $agregarHueco = function (string $emp, string $cod, ?string $nombre) use (&$map, $anio) {
             $key = $emp.'||'.$cod.'|0';
             if (isset($map[$key])) {
                 if ($nombre && empty($map[$key]['producto_nombre'])) {
@@ -186,6 +192,7 @@ class ProyeccionesVentasController extends Controller
                 'producto_codigo' => $cod,
                 'producto_nombre' => $nombre,
                 'mes' => null,
+                'anio' => $anio,
                 'costo_unitario' => 0.0,
                 'moneda' => 'MXN',
                 'tiene_maestro' => false,
@@ -195,17 +202,21 @@ class ProyeccionesVentasController extends Controller
 
         if ($cliente === '') {
             if (Schema::hasTable('tbl_pv_proyecciones')) {
-                $proyQ = DB::table('tbl_pv_proyecciones')
-                    ->select('empresa', 'producto_codigo', 'producto_nombre', DB::raw('MAX(costo_unitario) as costo_snap'))
-                    ->groupBy('empresa', 'producto_codigo', 'producto_nombre');
+                $proyQ = DB::table('tbl_pv_proyecciones as p')
+                    ->select('p.empresa', 'p.producto_codigo', 'p.producto_nombre', DB::raw('MAX(p.costo_unitario) as costo_snap'))
+                    ->groupBy('p.empresa', 'p.producto_codigo', 'p.producto_nombre');
+                if (Schema::hasTable('tbl_pv_ciclos')) {
+                    $proyQ->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(p.ciclo_codigo)'))
+                        ->where('c.anio_presupuesto', $anio);
+                }
                 if ($empresa !== '') {
-                    $proyQ->whereRaw('UPPER(empresa) = ?', [$empresa]);
+                    $proyQ->whereRaw('UPPER(p.empresa) = ?', [$empresa]);
                 }
                 if ($itemcode !== '') {
                     $likeItem = '%'.$itemcode.'%';
                     $proyQ->where(function ($w) use ($likeItem) {
-                        $w->where('producto_codigo', 'like', $likeItem)
-                            ->orWhere('producto_nombre', 'like', $likeItem);
+                        $w->where('p.producto_codigo', 'like', $likeItem)
+                            ->orWhere('p.producto_nombre', 'like', $likeItem);
                     });
                 }
                 foreach ($proyQ->get() as $row) {
@@ -220,6 +231,10 @@ class ProyeccionesVentasController extends Controller
                     ->join('tbl_pv_asignaciones as a', 'a.id', '=', 'ap.asignacion_id')
                     ->select('a.empresa', 'ap.producto_codigo', 'ap.producto_nombre')
                     ->groupBy('a.empresa', 'ap.producto_codigo', 'ap.producto_nombre');
+                if (Schema::hasTable('tbl_pv_ciclos')) {
+                    $asigQ->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
+                        ->where('c.anio_presupuesto', $anio);
+                }
                 if ($empresa !== '') {
                     $asigQ->whereRaw('UPPER(a.empresa) = ?', [$empresa]);
                 }
@@ -298,6 +313,8 @@ class ProyeccionesVentasController extends Controller
 
         return response()->json([
             'ok' => true,
+            'anio' => $anio,
+            'anios' => $this->aniosDisponiblesCostos($anio),
             'grouped' => $doGroup,
             'items' => array_values($pageItems),
             'total' => $total,
@@ -307,6 +324,40 @@ class ProyeccionesVentasController extends Controller
             'from' => $total === 0 ? 0 : ($offset + 1),
             'to' => $total === 0 ? 0 : min($offset + $perPage, $total),
         ]);
+    }
+
+    /**
+     * Años de proyección con maestro de precios (más ciclos conocidos).
+     *
+     * @return array<int, int>
+     */
+    protected function aniosDisponiblesCostos(?int $incluir = null): array
+    {
+        $set = [];
+        if ($incluir && $incluir >= 2000 && $incluir <= 2100) {
+            $set[$incluir] = true;
+        }
+        $set[$this->anioProyeccionCostos()] = true;
+        if (Schema::hasTable('tbl_pv_ciclos')) {
+            foreach (PvCiclo::query()->pluck('anio_presupuesto') as $a) {
+                $a = (int) $a;
+                if ($a >= 2000 && $a <= 2100) {
+                    $set[$a] = true;
+                }
+            }
+        }
+        if ($this->hasAnioCostos()) {
+            foreach (PvProductoCosto::query()->distinct()->orderBy('anio')->pluck('anio') as $a) {
+                $a = (int) $a;
+                if ($a >= 2000 && $a <= 2100) {
+                    $set[$a] = true;
+                }
+            }
+        }
+        $out = array_map('intval', array_keys($set));
+        rsort($out);
+
+        return array_values($out);
     }
 
     /**
@@ -471,6 +522,7 @@ class ProyeccionesVentasController extends Controller
             'producto_codigo' => 'required|string|max:80',
             'mes' => 'nullable|integer|min:0|max:12',
             'anio' => 'nullable|integer|min:2000|max:2100',
+            'anio_proyeccion' => 'nullable|integer|min:2000|max:2100',
             'confirmar' => 'nullable|boolean',
         ]);
 
@@ -481,13 +533,17 @@ class ProyeccionesVentasController extends Controller
         if ($mes < 0 || $mes > 12) {
             $mes = 0;
         }
-        $anio = (int) ($data['anio'] ?? date('Y'));
+        $anioApi = (int) ($data['anio'] ?? date('Y'));
+        $anioProy = $this->anioProyeccionCostos((int) ($data['anio_proyeccion'] ?? 0));
         $confirmar = (bool) ($data['confirmar'] ?? false);
 
         $lookup = [
             'empresa' => $empresa,
             'producto_codigo' => $item,
         ];
+        if ($this->hasAnioCostos()) {
+            $lookup['anio'] = $anioProy;
+        }
         if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
             $lookup['card_code'] = $card;
         }
@@ -500,7 +556,7 @@ class ProyeccionesVentasController extends Controller
         $monedaLocal = $local ? strtoupper((string) ($local->moneda ?: 'MXN')) : null;
 
         $filters = [
-            'year' => $anio,
+            'year' => $anioApi,
             'Empresa' => $empresa,
             'ItemCode' => $item,
             'per_page' => 50,
@@ -609,6 +665,9 @@ class ProyeccionesVentasController extends Controller
             $local = new PvProductoCosto();
             $local->empresa = $empresa;
             $local->producto_codigo = $item;
+            if ($this->hasAnioCostos()) {
+                $local->anio = $anioProy;
+            }
             if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
                 $local->card_code = $card;
             }
@@ -625,6 +684,9 @@ class ProyeccionesVentasController extends Controller
         // Solo precio (+ moneda de la API). No toca nombre ni otros campos salvo card_name vacío.
         $local->costo_unitario = $precioApi;
         $local->moneda = $monedaApi;
+        if ($this->hasAnioCostos() && ! $local->anio) {
+            $local->anio = $anioProy;
+        }
         if (Schema::hasColumn('tbl_pv_productos_costo', 'card_name')
             && $cardNameApi !== ''
             && trim((string) ($local->card_name ?? '')) === '') {
@@ -645,7 +707,8 @@ class ProyeccionesVentasController extends Controller
             $local->updated_by,
             $card,
             (string) ($local->card_name ?? ''),
-            $mes
+            $mes,
+            $anioProy
         );
 
         return response()->json([
@@ -681,6 +744,7 @@ class ProyeccionesVentasController extends Controller
             'producto_codigo' => 'required|string|max:80',
             'producto_nombre' => 'nullable|string|max:180',
             'mes' => 'nullable|integer|min:0|max:12',
+            'anio' => 'nullable|integer|min:2000|max:2100',
             'costo_unitario' => 'required|numeric|min:0',
             'moneda' => 'nullable|string|max:8',
         ]);
@@ -693,6 +757,7 @@ class ProyeccionesVentasController extends Controller
         if ($mes < 0 || $mes > 12) {
             $mes = 0;
         }
+        $anio = $this->anioProyeccionCostos((int) ($data['anio'] ?? 0));
         $costo = round((float) $data['costo_unitario'], 4);
         $moneda = strtoupper(trim((string) ($data['moneda'] ?? 'MXN'))) ?: 'MXN';
         if (! in_array($moneda, ['MXN', 'USD'], true)) {
@@ -703,6 +768,9 @@ class ProyeccionesVentasController extends Controller
             'empresa' => $empresa,
             'producto_codigo' => $codigo,
         ];
+        if ($this->hasAnioCostos()) {
+            $lookup['anio'] = $anio;
+        }
         if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
             $lookup['card_code'] = $cardCode;
         }
@@ -717,6 +785,9 @@ class ProyeccionesVentasController extends Controller
             $row->producto_nombre = $data['producto_nombre'];
         } elseif (! $row->exists) {
             $row->producto_nombre = $codigo;
+        }
+        if ($this->hasAnioCostos()) {
+            $row->anio = $anio;
         }
         if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
             $row->card_code = $cardCode;
@@ -743,7 +814,8 @@ class ProyeccionesVentasController extends Controller
             $row->updated_by,
             $cardCode,
             $cardName,
-            $mes
+            $mes,
+            $anio
         );
 
         $propagadas = $this->propagarCostoACiclosAbiertos($empresa, $codigo, $costo);
@@ -752,6 +824,7 @@ class ProyeccionesVentasController extends Controller
             'ok' => true,
             'item' => [
                 'empresa' => $row->empresa,
+                'anio' => $anio,
                 'card_code' => (string) ($row->card_code ?? ''),
                 'card_name' => (string) ($row->card_name ?? ''),
                 'producto_codigo' => $row->producto_codigo,
@@ -769,6 +842,153 @@ class ProyeccionesVentasController extends Controller
         ]);
     }
 
+    /**
+     * Upsert de precios mensuales desde Captura → tbl_pv_productos_costo.
+     * Por cada mes con valor: crea si no existe, actualiza solo si cambió.
+     */
+    public function guardarCostosMeses(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_pv_productos_costo')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
+        }
+
+        $data = $request->validate([
+            'empresa' => 'required|string|max:40',
+            'card_code' => 'nullable|string|max:40',
+            'card_name' => 'nullable|string|max:180',
+            'producto_codigo' => 'required|string|max:80',
+            'producto_nombre' => 'nullable|string|max:180',
+            'moneda' => 'nullable|string|max:8',
+            'anio' => 'nullable|integer|min:2000|max:2100',
+            'meses' => 'required|array|size:12',
+            'meses.*' => 'nullable|numeric|min:0',
+        ]);
+
+        $empresa = strtoupper(trim($data['empresa']));
+        $cardCode = trim((string) ($data['card_code'] ?? ''));
+        $cardName = trim((string) ($data['card_name'] ?? ''));
+        $codigo = trim($data['producto_codigo']);
+        $nombre = trim((string) ($data['producto_nombre'] ?? '')) ?: $codigo;
+        $anio = $this->anioProyeccionCostos((int) ($data['anio'] ?? 0));
+        $moneda = strtoupper(trim((string) ($data['moneda'] ?? 'MXN'))) ?: 'MXN';
+        if (! in_array($moneda, ['MXN', 'USD'], true)) {
+            $moneda = 'MXN';
+        }
+        $userId = optional($request->user())->id;
+        $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
+        $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
+        $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasAnio = $this->hasAnioCostos();
+
+        $creados = 0;
+        $actualizados = 0;
+        $sinCambio = 0;
+        $precioMesesOut = array_fill(0, 12, null);
+
+        foreach ($data['meses'] as $idx => $raw) {
+            if ($raw === null || $raw === '') {
+                continue;
+            }
+            $precio = round((float) $raw, 4);
+            if ($precio <= 0) {
+                continue;
+            }
+            $mes = ((int) $idx) + 1;
+            if ($mes < 1 || $mes > 12) {
+                continue;
+            }
+            $precioMesesOut[$mes - 1] = $precio;
+
+            $lookup = [
+                'empresa' => $empresa,
+                'producto_codigo' => $codigo,
+            ];
+            if ($hasAnio) {
+                $lookup['anio'] = $anio;
+            }
+            if ($hasCard) {
+                $lookup['card_code'] = $cardCode;
+            }
+            if ($hasMes) {
+                $lookup['mes'] = $mes;
+            }
+
+            $row = PvProductoCosto::query()->firstOrNew($lookup);
+            $esNuevo = ! $row->exists;
+            $precioAnterior = $esNuevo ? null : (float) $row->costo_unitario;
+            $monedaAnterior = $esNuevo ? null : (string) ($row->moneda ?: 'MXN');
+
+            if (! $esNuevo
+                && abs((float) $row->costo_unitario - $precio) < 0.0001
+                && strtoupper((string) ($row->moneda ?: 'MXN')) === $moneda
+            ) {
+                $sinCambio++;
+                continue;
+            }
+
+            if ($nombre !== '') {
+                $row->producto_nombre = $nombre;
+            } elseif (! $row->exists) {
+                $row->producto_nombre = $codigo;
+            }
+            if ($hasAnio) {
+                $row->anio = $anio;
+            }
+            if ($hasCard) {
+                $row->card_code = $cardCode;
+            }
+            if ($hasCardName && $cardName !== '') {
+                $row->card_name = $cardName;
+            }
+            if ($hasMes) {
+                $row->mes = $mes;
+            }
+            $row->costo_unitario = $precio;
+            $row->moneda = $moneda;
+            $row->updated_by = $userId;
+            $row->save();
+
+            $this->registrarHistorialPrecio(
+                $empresa,
+                $codigo,
+                (string) $row->producto_nombre,
+                $precioAnterior,
+                $monedaAnterior,
+                $precio,
+                $moneda,
+                'manual',
+                $userId,
+                $cardCode,
+                $cardName,
+                $mes,
+                $anio
+            );
+
+            if ($esNuevo) {
+                $creados++;
+            } else {
+                $actualizados++;
+            }
+        }
+
+        // Refresca mapa de meses en memoria del cliente vía respuesta.
+        return response()->json([
+            'ok' => true,
+            'anio' => $anio,
+            'creados' => $creados,
+            'actualizados' => $actualizados,
+            'sin_cambio' => $sinCambio,
+            'precio_meses' => $precioMesesOut,
+            'moneda' => $moneda,
+            'message' => trim(
+                ($creados ? ($creados.' creado(s)') : '').
+                ($creados && $actualizados ? ', ' : '').
+                ($actualizados ? ($actualizados.' actualizado(s)') : '').
+                ((! $creados && ! $actualizados) ? 'Sin cambios en maestro de precios.' : ' en Ventas/Costos.')
+            ),
+        ]);
+    }
+
     public function historialCostoProducto(Request $request): JsonResponse
     {
         if (! Schema::hasTable('tbl_pv_productos_costo_historial')) {
@@ -780,14 +1000,17 @@ class ProyeccionesVentasController extends Controller
             'producto_codigo' => 'required|string|max:80',
             'card_code' => 'nullable|string|max:40',
             'mes' => 'nullable|integer|min:0|max:12',
+            'anio' => 'nullable|integer|min:2000|max:2100',
         ]);
 
         $empresa = strtoupper(trim($data['empresa']));
         $codigo = trim($data['producto_codigo']);
         $cardCode = trim((string) ($data['card_code'] ?? ''));
         $mes = (int) ($data['mes'] ?? 0);
+        $anio = $this->anioProyeccionCostos((int) ($data['anio'] ?? 0));
         $hasHistCard = Schema::hasColumn('tbl_pv_productos_costo_historial', 'card_code');
         $hasHistMes = Schema::hasColumn('tbl_pv_productos_costo_historial', 'mes');
+        $hasHistAnio = Schema::hasColumn('tbl_pv_productos_costo_historial', 'anio');
 
         $origenLabel = [
             'manual' => 'Edición manual',
@@ -800,6 +1023,9 @@ class ProyeccionesVentasController extends Controller
         $histQ = PvProductoCostoHistorial::query()
             ->whereRaw('UPPER(empresa) = ?', [$empresa])
             ->where('producto_codigo', $codigo);
+        if ($hasHistAnio) {
+            $histQ->where('anio', $anio);
+        }
         // Estrictamente el cliente y mes de la fila elegida (no mezclar otros del mismo ItemCode).
         if ($hasHistCard && $cardCode !== '') {
             $histQ->where('card_code', $cardCode);
@@ -846,6 +1072,9 @@ class ProyeccionesVentasController extends Controller
         $maestroQ = PvProductoCosto::query()
             ->whereRaw('UPPER(empresa) = ?', [$empresa])
             ->where('producto_codigo', $codigo);
+        if ($this->hasAnioCostos()) {
+            $maestroQ->where('anio', $anio);
+        }
         if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code') && $cardCode !== '') {
             $maestroQ->where('card_code', $cardCode);
         }
@@ -856,6 +1085,9 @@ class ProyeccionesVentasController extends Controller
             ?: PvProductoCosto::query()
                 ->whereRaw('UPPER(empresa) = ?', [$empresa])
                 ->where('producto_codigo', $codigo)
+                ->when($this->hasAnioCostos(), function ($q) use ($anio) {
+                    $q->where('anio', $anio);
+                })
                 ->orderByDesc('updated_at')
                 ->first();
 
@@ -900,7 +1132,8 @@ class ProyeccionesVentasController extends Controller
         $userId,
         string $cardCode = '',
         string $cardName = '',
-        int $mes = 0
+        int $mes = 0,
+        ?int $anio = null
     ): void {
         if (! Schema::hasTable('tbl_pv_productos_costo_historial')) {
             return;
@@ -917,6 +1150,7 @@ class ProyeccionesVentasController extends Controller
             return;
         }
 
+        $anio = $this->anioProyeccionCostos($anio);
         $payload = [
             'empresa' => strtoupper(trim($empresa)),
             'producto_codigo' => trim($codigo),
@@ -929,6 +1163,9 @@ class ProyeccionesVentasController extends Controller
             'created_by' => $userId,
             'created_at' => now(),
         ];
+        if (Schema::hasColumn('tbl_pv_productos_costo_historial', 'anio')) {
+            $payload['anio'] = $anio;
+        }
         if (Schema::hasColumn('tbl_pv_productos_costo_historial', 'card_code')) {
             $payload['card_code'] = trim($cardCode);
         }
@@ -953,8 +1190,10 @@ class ProyeccionesVentasController extends Controller
         }
 
         $empresa = strtoupper(trim((string) $request->get('empresa', '')));
+        $anio = $this->anioProyeccionCostos((int) $request->get('anio', 0));
         $listReq = Request::create('/ProyeccionesVentas/api/costos', 'GET', [
             'empresa' => $empresa,
+            'anio' => $anio,
             'grouped' => 0,
             'per_page' => 50000,
             'page' => 1,
@@ -1026,6 +1265,8 @@ class ProyeccionesVentasController extends Controller
         }
 
         $userId = optional($request->user())->id;
+        $anio = $this->anioProyeccionCostos((int) $request->get('anio', 0));
+        $hasAnio = $this->hasAnioCostos();
         $actualizados = 0;
         $creados = 0;
         $omitidos = 0;
@@ -1034,7 +1275,7 @@ class ProyeccionesVentasController extends Controller
         $vistos = [];
 
         DB::transaction(function () use (
-            $sheet, $map, $userId, &$actualizados, &$creados, &$omitidos, &$propagadasTot, &$errores, &$vistos
+            $sheet, $map, $userId, $anio, $hasAnio, &$actualizados, &$creados, &$omitidos, &$propagadasTot, &$errores, &$vistos
         ) {
             for ($i = 1; $i < count($sheet); $i++) {
                 $row = $sheet[$i];
@@ -1087,6 +1328,9 @@ class ProyeccionesVentasController extends Controller
                     'empresa' => $hit['empresa'],
                     'producto_codigo' => $hit['codigo'],
                 ];
+                if ($hasAnio) {
+                    $lookup['anio'] = $anio;
+                }
                 if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
                     $lookup['card_code'] = $hit['card_code'];
                 }
@@ -1100,6 +1344,9 @@ class ProyeccionesVentasController extends Controller
                 if ($esNuevo) {
                     $row->producto_nombre = $hit['codigo'];
                     $row->moneda = 'MXN';
+                }
+                if ($hasAnio) {
+                    $row->anio = $anio;
                 }
                 if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
                     $row->card_code = $hit['card_code'];
@@ -1122,7 +1369,8 @@ class ProyeccionesVentasController extends Controller
                     $userId,
                     (string) ($hit['card_code'] ?? ''),
                     '',
-                    (int) ($hit['mes'] ?? 0)
+                    (int) ($hit['mes'] ?? 0),
+                    $anio
                 );
                 $propagadasTot += $this->propagarCostoACiclosAbiertos(
                     $hit['empresa'],
@@ -1225,13 +1473,15 @@ class ProyeccionesVentasController extends Controller
         $data = $request->validate([
             'empresa' => 'nullable|string|max:40',
             'anio' => 'nullable|integer|min:2000|max:2100',
+            'anio_proyeccion' => 'nullable|integer|min:2000|max:2100',
             'solo_vacios' => 'nullable|boolean',
             'todas_empresas' => 'nullable|boolean',
         ]);
 
         $todasEmpresas = ! array_key_exists('todas_empresas', $data) || (bool) $data['todas_empresas'];
         $empresaFiltro = $todasEmpresas ? '' : strtoupper(trim((string) ($data['empresa'] ?? '')));
-        $anio = (int) ($data['anio'] ?? date('Y'));
+        $anioApi = (int) ($data['anio'] ?? date('Y'));
+        $anioProy = $this->anioProyeccionCostos((int) ($data['anio_proyeccion'] ?? 0));
         $soloVacios = ! array_key_exists('solo_vacios', $data) || (bool) $data['solo_vacios'];
 
         $empresas = $empresaFiltro !== ''
@@ -1250,6 +1500,7 @@ class ProyeccionesVentasController extends Controller
         $erroresEmp = [];
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasAnio = $this->hasAnioCostos();
         $productosTocados = [];
 
         foreach ($empresas as $empresa) {
@@ -1259,7 +1510,7 @@ class ProyeccionesVentasController extends Controller
             do {
                 try {
                     $res = $api->preciosMensuales([
-                        'year' => $anio,
+                        'year' => $anioApi,
                         'Empresa' => $empresa,
                         'per_page' => 500,
                         'page' => $page,
@@ -1310,6 +1561,9 @@ class ProyeccionesVentasController extends Controller
                         'empresa' => $emp,
                         'producto_codigo' => $item,
                     ];
+                    if ($hasAnio) {
+                        $lookup['anio'] = $anioProy;
+                    }
                     if ($hasCard) {
                         $lookup['card_code'] = $card;
                     }
@@ -1323,6 +1577,9 @@ class ProyeccionesVentasController extends Controller
                     }
                     $precioAnterior = $row->exists ? (float) $row->costo_unitario : null;
                     $monedaAnterior = $row->exists ? (string) ($row->moneda ?: 'MXN') : null;
+                    if ($hasAnio) {
+                        $row->anio = $anioProy;
+                    }
                     if ($hasCard) {
                         $row->card_code = $card;
                         if ($cardName !== '') {
@@ -1363,7 +1620,8 @@ class ProyeccionesVentasController extends Controller
                         $userId,
                         $card,
                         $cardName,
-                        $mes
+                        $mes,
+                        $anioProy
                     );
                     $importados++;
                     $detalle[] = $emp.'|'.$card.'|'.$item.'|'.$mes;
@@ -1376,11 +1634,13 @@ class ProyeccionesVentasController extends Controller
 
         foreach (array_keys($productosTocados) as $pk) {
             [$emp, $item] = explode('|', $pk, 2);
-            $precioProd = (float) (PvProductoCosto::query()
+            $precioProdQ = PvProductoCosto::query()
                 ->whereRaw('UPPER(empresa) = ?', [$emp])
-                ->where('producto_codigo', $item)
-                ->orderByDesc('updated_at')
-                ->value('costo_unitario') ?? 0);
+                ->where('producto_codigo', $item);
+            if ($hasAnio) {
+                $precioProdQ->where('anio', $anioProy);
+            }
+            $precioProd = (float) ($precioProdQ->orderByDesc('updated_at')->value('costo_unitario') ?? 0);
             if ($precioProd > 0) {
                 $propagadasTot += $this->propagarCostoACiclosAbiertos($emp, $item, $precioProd);
             }
@@ -1399,18 +1659,20 @@ class ProyeccionesVentasController extends Controller
 
         return response()->json([
             'ok' => true,
-            'anio' => $anio,
+            'anio' => $anioApi,
+            'anio_proyeccion' => $anioProy,
             'importados' => $importados,
             'sin_dato_api' => $sinDato,
             'proyecciones_actualizadas' => $propagadasTot,
             'empresas' => $porEmpresaOk,
             'errores_empresa' => (object) $erroresEmp,
             'message' => $importados > 0
-                ? ('Se importaron '.$importados.' precio(s) mensuales '.$anio.
+                ? ('Se importaron '.$importados.' precio(s) mensuales API '.$anioApi.
+                    ' → proyección '.$anioProy.
                     ($empresasTxt ? (' · '.$empresasTxt) : '').
                     ($propagadasTot ? (' · '.$propagadasTot.' proyección(es) abiertas actualizadas') : '').
                     $errTxt.'.')
-                : ('No se encontró precio en precios-mensuales (año '.$anio.')'.$errTxt.'.'),
+                : ('No se encontró precio en precios-mensuales (año '.$anioApi.')'.$errTxt.'.'),
             'productos' => array_slice($detalle, 0, 200),
         ]);
     }
@@ -1551,7 +1813,8 @@ class ProyeccionesVentasController extends Controller
                 (string) ($item['nombre'] ?? ''),
                 $costo,
                 $moneda,
-                $userId
+                $userId,
+                $this->anioProyeccionCostos()
             );
         }
     }
@@ -1605,7 +1868,8 @@ class ProyeccionesVentasController extends Controller
         string $productoNombre,
         float $costo,
         string $moneda = 'MXN',
-        $userId = null
+        $userId = null,
+        ?int $anio = null
     ): bool {
         if (! Schema::hasTable('tbl_pv_productos_costo') || $costo <= 0) {
             return false;
@@ -1616,12 +1880,15 @@ class ProyeccionesVentasController extends Controller
         if ($empresa === '' || $productoCodigo === '') {
             return false;
         }
+        $anio = $this->anioProyeccionCostos($anio);
 
-        $exists = PvProductoCosto::query()
+        $existsQ = PvProductoCosto::query()
             ->whereRaw('UPPER(empresa) = ?', [$empresa])
-            ->where('producto_codigo', $productoCodigo)
-            ->exists();
-        if ($exists) {
+            ->where('producto_codigo', $productoCodigo);
+        if ($this->hasAnioCostos()) {
+            $existsQ->where('anio', $anio);
+        }
+        if ($existsQ->exists()) {
             return false;
         }
 
@@ -1638,6 +1905,9 @@ class ProyeccionesVentasController extends Controller
             'moneda' => $moneda,
             'updated_by' => $userId,
         ];
+        if ($this->hasAnioCostos()) {
+            $payload['anio'] = $anio;
+        }
         if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
             $payload['card_code'] = '';
         }
@@ -1688,17 +1958,61 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * Año de proyección (anio_presupuesto) para el maestro de precios.
+     */
+    protected function anioProyeccionCostos(?int $anio = null, ?string $cicloCodigo = null): int
+    {
+        $a = (int) ($anio ?? 0);
+        if ($a >= 2000 && $a <= 2100) {
+            return $a;
+        }
+        if ($cicloCodigo && Schema::hasTable('tbl_pv_ciclos')) {
+            $fromCiclo = (int) (PvCiclo::query()
+                ->whereRaw('UPPER(codigo) = ?', [strtoupper(trim($cicloCodigo))])
+                ->value('anio_presupuesto') ?: 0);
+            if ($fromCiclo >= 2000 && $fromCiclo <= 2100) {
+                return $fromCiclo;
+            }
+        }
+        if (Schema::hasTable('tbl_pv_ciclos')) {
+            $fromOpen = (int) (PvCiclo::query()
+                ->where('estado', 'abierto')
+                ->orderByDesc('id')
+                ->value('anio_presupuesto') ?: 0);
+            if ($fromOpen >= 2000 && $fromOpen <= 2100) {
+                return $fromOpen;
+            }
+            $fromAny = (int) (PvCiclo::query()->orderByDesc('anio_presupuesto')->orderByDesc('id')
+                ->value('anio_presupuesto') ?: 0);
+            if ($fromAny >= 2000 && $fromAny <= 2100) {
+                return $fromAny;
+            }
+        }
+
+        return 2027;
+    }
+
+    protected function hasAnioCostos(): bool
+    {
+        return Schema::hasColumn('tbl_pv_productos_costo', 'anio');
+    }
+
+    /**
      * Maestro local de precios. Prefiere el precio del mes más reciente por
      * empresa + CardCode + ItemCode. También indexa empresa|ItemCode.
      *
      * @return array<string, array{costo: float, moneda: string, mes: int|null, card_code: string, origen: string}>
      */
-    protected function costosMaestroMap(?string $empresa = null): array
+    protected function costosMaestroMap(?string $empresa = null, ?int $anio = null): array
     {
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
             return [];
         }
+        $anio = $this->anioProyeccionCostos($anio);
         $q = PvProductoCosto::query();
+        if ($this->hasAnioCostos()) {
+            $q->where('anio', $anio);
+        }
         if ($empresa) {
             $q->whereRaw('UPPER(empresa) = ?', [strtoupper(trim($empresa))]);
         }
@@ -1760,12 +2074,16 @@ class ProyeccionesVentasController extends Controller
      *
      * @return array<string, array{meses: array<int, float|null>, monedas: array<int, string|null>}>
      */
-    protected function costosMaestroMesesMap(?string $empresa = null): array
+    protected function costosMaestroMesesMap(?string $empresa = null, ?int $anio = null): array
     {
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
             return [];
         }
+        $anio = $this->anioProyeccionCostos($anio);
         $q = PvProductoCosto::query();
+        if ($this->hasAnioCostos()) {
+            $q->where('anio', $anio);
+        }
         if ($empresa) {
             $q->whereRaw('UPPER(empresa) = ?', [strtoupper(trim($empresa))]);
         }
@@ -2360,7 +2678,7 @@ class ProyeccionesVentasController extends Controller
         if (! $force && Schema::hasTable('tbl_pv_venta_real_snapshot')) {
             $snap = PvVentaRealSnapshot::query()
                 ->whereRaw('UPPER(empresa) = ?', [$empresa])
-                ->where('cliente_codigo', $cc)
+                ->whereRaw('UPPER(cliente_codigo) = ?', [strtoupper($cc)])
                 ->where('anio', $year)
                 ->first();
             if ($snap && is_array($snap->por_cuenta) && $snap->por_cuenta !== []) {
@@ -2374,7 +2692,7 @@ class ProyeccionesVentasController extends Controller
                 ];
                 $cacheKey = 'pv.venta-real.v3.'.$empresa.'.'.$cc.'.'.$year;
                 Cache::put($cacheKey, $payload, 900);
-                $this->asegurarCostosMaestroDesdePorCuenta($empresa, $snap->por_cuenta);
+                // No reescribir maestro en cada lectura de snapshot (eso volvía lenta la recarga).
 
                 return response()->json($payload);
             }
@@ -2385,9 +2703,6 @@ class ProyeccionesVentasController extends Controller
         if (! $force) {
             $cached = Cache::get($cacheKey);
             if (is_array($cached) && ! empty($cached['ok'])) {
-                if (! empty($cached['por_cuenta'])) {
-                    $this->asegurarCostosMaestroDesdePorCuenta($empresa, $cached['por_cuenta']);
-                }
                 $cached['fuente'] = $cached['fuente'] ?? 'cache';
 
                 return response()->json($cached);
@@ -2416,7 +2731,7 @@ class ProyeccionesVentasController extends Controller
             if (Schema::hasTable('tbl_pv_venta_real_snapshot')) {
                 $snap = PvVentaRealSnapshot::query()
                     ->whereRaw('UPPER(empresa) = ?', [$empresa])
-                    ->where('cliente_codigo', $cc)
+                    ->whereRaw('UPPER(cliente_codigo) = ?', [strtoupper($cc)])
                     ->where('anio', $year)
                     ->first();
                 if ($snap && is_array($snap->por_cuenta) && $snap->por_cuenta !== []) {
@@ -2566,14 +2881,17 @@ class ProyeccionesVentasController extends Controller
             });
         }
 
+        $anioCostos = $this->anioProyeccionCostos(null, $ciclo);
+
         return response()->json([
             'ok' => true,
             'ciclo' => $ciclo,
+            'anio_costos' => $anioCostos,
             'budgets' => (object) $budgets,
             'completados' => (object) $completados,
             'costos' => (object) $costos,
-            'costosMaster' => (object) $this->costosMaestroMap(),
-            'costosMeses' => (object) $this->costosMaestroMesesMap(),
+            'costosMaster' => (object) $this->costosMaestroMap(null, $anioCostos),
+            'costosMeses' => (object) $this->costosMaestroMesesMap(null, $anioCostos),
             'ajustes' => (object) $ajustes,
             'preciosMeses' => (object) $preciosMeses,
             'overlays' => (object) $overlays,
@@ -2606,6 +2924,7 @@ class ProyeccionesVentasController extends Controller
         $empresa = strtoupper(trim($data['empresa']));
         $centro = trim($data['centro']);
         $cuenta = trim($data['cuenta']);
+        $anioCostos = $this->anioProyeccionCostos(null, $ciclo);
 
         $motivo = $this->motivoBloqueoCaptura($ciclo, $empresa, $centro);
         if ($motivo) {
@@ -2632,7 +2951,7 @@ class ProyeccionesVentasController extends Controller
                 $row->costo_unitario = $incoming;
             } else {
                 $masterKey = $empresa.'|'.$cuenta;
-                $masters = $this->costosMaestroMap($empresa);
+                $masters = $this->costosMaestroMap($empresa, $anioCostos);
                 if (! empty($masters[$masterKey]['costo'])) {
                     $row->costo_unitario = (float) $masters[$masterKey]['costo'];
                 } elseif ($row->costo_unitario === null) {
@@ -2640,7 +2959,7 @@ class ProyeccionesVentasController extends Controller
                 }
             }
         } else {
-            $masters = $this->costosMaestroMap($empresa);
+            $masters = $this->costosMaestroMap($empresa, $anioCostos);
             $masterKey = $empresa.'|'.$cuenta;
             if (! $row->exists && ! empty($masters[$masterKey]['costo'])) {
                 $row->costo_unitario = (float) $masters[$masterKey]['costo'];
@@ -2672,7 +2991,8 @@ class ProyeccionesVentasController extends Controller
                 (string) ($row->producto_nombre ?? $row->cuenta_nombre ?? ''),
                 (float) $row->costo_unitario,
                 strtoupper((string) ($row->moneda ?? 'MXN')) ?: 'MXN',
-                auth()->id()
+                auth()->id(),
+                $anioCostos
             );
         }
 
@@ -4737,9 +5057,11 @@ class ProyeccionesVentasController extends Controller
             return 0;
         }
 
+        $anio = $this->anioProyeccionCostos(null, (string) ($asig->ciclo_codigo ?? ''));
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasAnio = $this->hasAnioCostos();
         $userId = auth()->id();
 
         $porArticulo = [];
@@ -4790,6 +5112,9 @@ class ProyeccionesVentasController extends Controller
             $q = PvProductoCosto::query()
                 ->whereRaw('UPPER(empresa) = ?', [$empresa])
                 ->where('producto_codigo', $item);
+            if ($hasAnio) {
+                $q->where('anio', $anio);
+            }
             if ($hasCard) {
                 $q->where('card_code', $card);
             }
@@ -4820,6 +5145,9 @@ class ProyeccionesVentasController extends Controller
                 'moneda' => $moneda,
                 'updated_by' => $userId,
             ];
+            if ($hasAnio) {
+                $payload['anio'] = $anio;
+            }
             if ($hasCard) {
                 $payload['card_code'] = $card;
             }
@@ -4843,7 +5171,8 @@ class ProyeccionesVentasController extends Controller
                 $userId,
                 $card,
                 $cardName,
-                0
+                0,
+                $anio
             );
             $creados++;
         }

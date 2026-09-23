@@ -11,6 +11,7 @@ class PvProductoCostoHistorial extends Model
     public $timestamps = false;
 
     protected $fillable = [
+        'anio',
         'empresa',
         'card_code',
         'card_name',
@@ -27,6 +28,7 @@ class PvProductoCostoHistorial extends Model
     ];
 
     protected $casts = [
+        'anio' => 'integer',
         'precio_anterior' => 'float',
         'precio_nuevo' => 'float',
         'mes' => 'integer',
