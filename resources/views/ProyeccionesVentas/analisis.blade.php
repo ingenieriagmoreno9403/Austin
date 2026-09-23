@@ -22,9 +22,16 @@
     @include('ProyeccionesVentas.partials.nav')
 
     <div class="cc-panel">
-        <div class="cc-filters">
-            <select id="an-empresa" class="cc-select"></select>
-            <select id="an-user" class="cc-select"></select>
+        <div class="cc-filters cc-filters-asig">
+            <label class="cc-filter-field" for="an-empresa">Empresa
+                <select id="an-empresa" class="cc-select"></select>
+            </label>
+            <label class="cc-filter-field" for="an-cliente">Cliente
+                <select id="an-cliente" class="cc-select"></select>
+            </label>
+            <label class="cc-filter-field" for="an-user">Usuario
+                <select id="an-user" class="cc-select"></select>
+            </label>
         </div>
     </div>
 
@@ -36,7 +43,7 @@
     </div>
 
     <div id="an-work">
-    <div class="cc-kpis">
+    <div class="cc-kpis cc-kpis-equal">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Productos ya capturados</div></div>
         <div class="cc-kpi alert"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Clientes debajo del 40%</div></div>
         <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Proy. &gt; 110% de la venta real</div></div>
@@ -62,7 +69,11 @@
         <div class="cc-panel">
             <div class="cc-panel-head">
                 <h3 id="an-chart-emp-title"><i class="fa-solid fa-chart-column"></i> Venta {{ $bootstrap['anioGasto'] }} vs proyección {{ $bootstrap['anioPresupuesto'] }}</h3>
+                <label class="cc-chart-prod" for="an-chart-producto">Producto
+                    <select id="an-chart-producto" class="cc-select"></select>
+                </label>
             </div>
+            <p class="text-muted mb-2" style="font-size:.82rem" id="an-chart-hint">Venta y proyección por empresa</p>
             <div class="cc-chart"><canvas id="chart-empresas"></canvas></div>
         </div>
         <div class="cc-panel">
@@ -86,16 +97,16 @@
 
     <div class="cc-panel">
         <div class="cc-panel-head">
-            <h3><i class="fa-solid fa-list-check"></i> Detalle de captura y aplicación</h3>
+            <h3><i class="fa-solid fa-list-check"></i> Detalle por producto</h3>
             <div class="cc-panel-head-tools">
-                <input id="an-q" class="cc-input cc-table-search" type="search" placeholder="Buscar en la tabla…">
+                <input id="an-q" class="cc-input cc-table-search" type="search" placeholder="Buscar producto, cliente o usuario…">
             </div>
         </div>
         <div class="cc-table-wrap">
             <table class="cc-table">
                 <thead>
                     <tr>
-                        <th>Empresa</th>
+                        <th>Producto</th>
                         <th>Cliente</th>
                         <th>Usuario</th>
                         <th>Estado</th>

@@ -507,6 +507,13 @@
         return !!(hit && hit.length === 12);
     }
 
+    function gastoCentroListo(c) {
+        if (!c || !CC.state.gastoUrl) return true;
+        var nombres = nombresAsignadosCentro(c);
+        if (!nombres.length) return true;
+        return nombres.every(nombreGastoCargado);
+    }
+
     function labelGastoMes(cta, i) {
         var n = Number((cta && cta.gasto && cta.gasto[i]) || 0);
         if (n) return 'Gastó ' + money(n);
@@ -566,7 +573,11 @@
     function loadGastoRealCentro(c) {
         if (!c || !CC.state.gastoUrl) return;
         var key = gastoCacheKey(c);
+        var prev = control._gastoReq;
         control._gastoReq = key;
+        if (prev && prev !== key && !(CC.state.gastoReady && CC.state.gastoReady[prev]) && CC._visorGastoQueued) {
+            delete CC._visorGastoQueued[prev];
+        }
         var cached = CC.state.gastoCache && CC.state.gastoCache[key];
         if (cached) {
             applyGastoMap(cached);
@@ -577,6 +588,7 @@
         var all = nombresAsignadosCentro(c);
         var pend = all.filter(function (n) { return !nombreGastoCargado(n); });
         if (!pend.length) {
+            markGastoReady(c);
             return;
         }
         var actual = currentCta();
@@ -587,8 +599,95 @@
             return nombreCuentaKey(n) !== nombreCuentaKey(first[0] || '');
         });
         fetchGastoNombres(c, first, function () {
-            fetchGastoNombres(c, rest);
+            if (!rest.length) markGastoReady(c);
+            else fetchGastoNombres(c, rest, function () { markGastoReady(c); });
         });
+    }
+
+    function markGastoReady(c) {
+        if (!c) return;
+        CC.state.gastoReady = CC.state.gastoReady || {};
+        var key = gastoCacheKey(c);
+        if (CC.state.gastoReady[key]) return;
+        CC.state.gastoReady[key] = true;
+        renderVisorTable();
+    }
+
+    function gastoCentroReady(c) {
+        if (!c || !CC.state.gastoUrl) return true;
+        if (!nombresAsignadosCentro(c).length) return true;
+        CC.state.gastoReady = CC.state.gastoReady || {};
+        return !!CC.state.gastoReady[gastoCacheKey(c)];
+    }
+
+    function presupuestoListo() {
+        return !!CC._capturaReady;
+    }
+
+    function queueVisorGastos() {
+        if (!CC.state.gastoUrl || CC.state.page !== 'control') return;
+        CC.state.gastoReady = CC.state.gastoReady || {};
+        CC._visorGastoQueued = CC._visorGastoQueued || {};
+        CC._visorGastoPending = CC._visorGastoPending || [];
+        var seen = {};
+        CC._visorGastoPending.forEach(function (c) { seen[gastoCacheKey(c)] = true; });
+        (CC.state.centros || []).forEach(function (c) {
+            var key = gastoCacheKey(c);
+            if (seen[key] || CC.state.gastoReady[key] || CC._visorGastoQueued[key]) return;
+            seen[key] = true;
+            if (!nombresAsignadosCentro(c).length) {
+                CC.state.gastoReady[key] = true;
+                return;
+            }
+            if (control._gastoReq === key) return;
+            CC._visorGastoQueued[key] = true;
+            CC._visorGastoPending.push(c);
+        });
+        if (!CC._visorGastoPump) {
+            CC._visorGastoPump = true;
+            pumpVisorGastos();
+        }
+    }
+
+    function pumpVisorGastos() {
+        var max = 3;
+        function kick() {
+            var pending = CC._visorGastoPending || [];
+            while ((CC._visorGastoInflight || 0) < max && pending.length) {
+                var centro = pending.shift();
+                var cacheKey = gastoCacheKey(centro);
+                var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+                CC._visorGastoInflight = (CC._visorGastoInflight || 0) + 1;
+                (function (c, key, y) {
+                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(c.empresa || '') +
+                        '&cc=' + encodeURIComponent(c.codigo || '') +
+                        '&year=' + encodeURIComponent(y), {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(function (res) { return res.json(); }).then(function (json) {
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[key] = (json && json.por_cuenta) || {};
+                        CC.state.gastoLookup = CC.state.gastoLookup || {};
+                        CC.state.gastoLookup[key] = mapFromPorCuenta(CC.state.gastoCache[key]).map;
+                    }).catch(function () {
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[key] = CC.state.gastoCache[key] || {};
+                    }).then(function () {
+                        CC.state.gastoReady = CC.state.gastoReady || {};
+                        CC.state.gastoReady[key] = true;
+                        CC._visorGastoInflight -= 1;
+                        if (control.centro && control._gastoReq === key) applyGastoMap(CC.state.gastoCache[key] || {});
+                        else renderVisorTable();
+                        kick();
+                    });
+                })(centro, cacheKey, year);
+            }
+            if (!pending.length && !(CC._visorGastoInflight || 0)) CC._visorGastoPump = false;
+        }
+        kick();
+    }
+
+    function visorMontoHtml(n, listo) {
+        return '<td class="num' + (listo ? '' : ' is-loading') + '">' + (listo ? money(n) : 'Cargando…') + '</td>';
     }
 
     function pptoDe(empresa, cc, cuenta, gasto) {
@@ -2091,7 +2190,9 @@
             CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
             if (empEl && !emp) empEl.value = '';
             fillVisorFilters();
-            loadOverlaysForCycle().then(finishPath);
+            var overlaysPend = loadOverlaysForCycle();
+            renderVisorTable();
+            overlaysPend.then(finishPath);
             return;
         }
         finishPath();
@@ -2195,7 +2296,9 @@
         renderCicloPicks();
         renderMisCentros();
         syncImportTools();
-        loadOverlaysForCycle().then(function () {
+        var overlaysPend = loadOverlaysForCycle();
+        renderVisorTable();
+        overlaysPend.then(function () {
             renderControlNav();
             loadControlCentro();
             fillVisorFilters();
@@ -2969,8 +3072,8 @@
         if (sub) sub.hidden = false;
     }
 
-    function factHtml(label, value, extra) {
-        return '<div class="cc-detalle-fact"><small>' + label + '</small><strong>' + value + '</strong>' + (extra || '') + '</div>';
+    function factHtml(label, value, extra, loading) {
+        return '<div class="cc-detalle-fact"><small>' + label + '</small><strong' + (loading ? ' class="is-loading"' : '') + '>' + value + '</strong>' + (extra || '') + '</div>';
     }
 
     function paintDetalleHeader(centro) {
@@ -2985,6 +3088,7 @@
             return;
         }
         var stt = statsDeCentro(c);
+        var gastoListo = gastoCentroListo(c);
         var dep = deptoDeCentro(c);
         var barCls = stt.pendientes ? 'warn' : 'good';
         setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
@@ -2995,8 +3099,8 @@
             facts.hidden = false;
             facts.innerHTML =
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
-                factHtml('Tot Gasto', money(stt.totG)) +
-                factHtml('Tot Pres', money(stt.totP)) +
+                factHtml('Gasto', gastoListo ? money(stt.totG) : 'Cargando…', '', !gastoListo) +
+                factHtml('Presupuestado', presupuestoListo() ? money(stt.totP) : 'Cargando…', '', !presupuestoListo()) +
                 factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
                 factHtml('Progreso', stt.avance + '%',
@@ -3114,9 +3218,19 @@
         var wrap = document.getElementById('visor-avance-wrap');
         if (bar) bar.style.width = (tot.n ? Math.min(tot.avance, 100) : 0) + '%';
         if (wrap) wrap.className = 'cc-progress ' + (tot.n && !tot.pendientes ? 'good' : 'warn');
+        var gastoListo = tot.gastoListo !== false;
+        var pptoListo = tot.pptoListo !== false;
         setText('visor-kpi-n', tot.n || '0');
-        setText('visor-kpi-gasto', money(tot.totG));
-        setText('visor-kpi-ppto', money(tot.totP));
+        var kpiGasto = document.getElementById('visor-kpi-gasto');
+        var kpiPpto = document.getElementById('visor-kpi-ppto');
+        if (kpiGasto) {
+            kpiGasto.textContent = gastoListo ? money(tot.totG) : 'Cargando…';
+            kpiGasto.classList.toggle('is-loading', !gastoListo);
+        }
+        if (kpiPpto) {
+            kpiPpto.textContent = pptoListo ? money(tot.totP) : 'Cargando…';
+            kpiPpto.classList.toggle('is-loading', !pptoListo);
+        }
         setText('visor-kpi-pend', tot.pendientes);
         var tf = document.getElementById('visor-tfoot');
         if (!tf) return;
@@ -3126,8 +3240,8 @@
         }
         tf.innerHTML = '<tr>' +
             '<td colspan="4">Totales · ' + tot.n + (tot.n === 1 ? ' centro' : ' centros') + '</td>' +
-            '<td class="num">' + money(tot.totG) + '</td>' +
-            '<td class="num">' + money(tot.totP) + '</td>' +
+            visorMontoHtml(tot.totG, gastoListo) +
+            visorMontoHtml(tot.totP, pptoListo) +
             '<td colspan="2"></td>' +
             '<td>' + tot.capturadas + '/' + tot.totalCtas + ' · ' + tot.avance + '%</td>' +
             '<td>' + tot.listos + ' listos</td>' +
@@ -3137,8 +3251,11 @@
     function renderVisorTable() {
         var tb = document.getElementById('visor-tbody');
         if (!tb) return;
+        queueVisorGastos();
         var rows = visorRowsFiltradas();
         var tot = visorTotales(rows);
+        tot.gastoListo = !rows.length || rows.every(gastoCentroReady);
+        tot.pptoListo = !rows.length || presupuestoListo();
         paintVisorResumen(tot);
         if (!rows.length) {
             tb.innerHTML = '<tr><td colspan="10"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay centros con esos filtros</div></td></tr>';
@@ -3149,13 +3266,15 @@
             var dep = deptoDeCentro(c);
             var barCls = stt.pendientes ? 'warn' : 'good';
             var fecha = c.fecha || '—';
+            var gastoListo = gastoCentroReady(c);
+            var pptoListo = presupuestoListo();
             return '<tr data-key="' + escapeHtml(centroKey(c)) + '">' +
                 '<td><a class="cc-btn cc-btn-detalle" href="' + detalleHref(c) + '"><i class="fa-solid fa-eye"></i> Detalle</a></td>' +
                 '<td>' + escapeHtml(c.empresa || '—') + '</td>' +
                 '<td>' + htmlNombreCodigo(c.nombre, c.codigo) + '</td>' +
                 '<td>' + escapeHtml(dep) + '</td>' +
-                '<td class="num">' + money(stt.totG) + '</td>' +
-                '<td class="num">' + money(stt.totP) + '</td>' +
+                visorMontoHtml(stt.totG, gastoListo) +
+                visorMontoHtml(stt.totP, pptoListo) +
                 '<td>' + userCell(c.usuario) + '</td>' +
                 '<td>' + escapeHtml(fecha) + '</td>' +
                 '<td><div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span><strong>' + stt.avance + '%</strong></div>' +
@@ -3563,6 +3682,28 @@
         fillSelectKeep(document.getElementById('an-user'), users.map(function (n) {
             return { codigo: n, nombre: n };
         }), 'codigo', 'nombre', '<option value="">Todos los usuarios</option>');
+        fillAnalisisCentros(rows);
+    }
+
+    function centroAnalisisKey(c) {
+        return String(c.empresa || '') + '|' + String(c.codigo || '');
+    }
+
+    function fillAnalisisCentros(rows) {
+        var list = rows || (CC.state.centros || []).map(mergedCentro);
+        var empSel = val('an-empresa');
+        var items = [];
+        var seen = {};
+        list.forEach(function (c) {
+            if (empSel && c.empresa !== empSel) return;
+            var key = centroAnalisisKey(c);
+            if (!c.codigo || seen[key]) return;
+            seen[key] = true;
+            var label = (c.codigo || '') + (c.nombre ? (' — ' + c.nombre) : '');
+            items.push({ codigo: key, nombre: label });
+        });
+        items.sort(function (a, b) { return String(a.nombre).localeCompare(String(b.nombre)); });
+        fillSelectKeep(document.getElementById('an-centro'), items, 'codigo', 'nombre', '<option value="">Todos los centros</option>');
     }
 
     function fillSelectKeep(el, items, valueKey, labelKey, extra) {
@@ -3591,7 +3732,7 @@
         renderAnalisisCiclos();
         paintAnalisisYears();
         if (!CC._analisisBound) {
-            ['an-q', 'an-empresa', 'an-user'].forEach(function (id) {
+            ['an-q', 'an-empresa', 'an-centro', 'an-user'].forEach(function (id) {
                 var el = document.getElementById(id);
                 if (el) el.addEventListener('input', renderAnalisis);
                 if (el && el.tagName === 'SELECT') el.addEventListener('change', renderAnalisis);
@@ -3779,8 +3920,10 @@
     }
 
     function renderAnalisis() {
+        fillAnalisisCentros();
         var q = (val('an-q') || '').toLowerCase();
         var emp = val('an-empresa');
+        var centro = val('an-centro');
         var user = val('an-user');
         var gYear = CC.state.anioGasto || 2026;
         var pYear = CC.state.anioPresupuesto || 2027;
@@ -3792,6 +3935,7 @@
 
         var rows = all.filter(function (c) {
             if (emp && c.empresa !== emp) return false;
+            if (centro && centroAnalisisKey(c) !== centro) return false;
             if (user && (c.usuarios || []).indexOf(user) === -1 && c.usuario !== user) return false;
             return true;
         });
@@ -3866,7 +4010,7 @@
             { label: 'Ppto ' + pYear, data: empKeys.map(function (e) { return byEmp[e].ppto; }), backgroundColor: '#a1a1aa' }
         ]);
         drawDoughnut('chart-estados',
-            ['Abierto', 'En proceso', 'En revisión', 'Terminado'],
+            ['Abierto', 'Capturado', 'En revisión', 'Terminado'],
             [
                 rows.filter(function (c) { return normalizeEstado(c.estado) === 'abierto'; }).length,
                 rows.filter(function (c) { return normalizeEstado(c.estado) === 'en_proceso'; }).length,
@@ -4073,6 +4217,7 @@
         CC.state.detalleUrl = boot.detalleUrl || '/ControlCentros/detalle';
         CC.state.gastoUrl = boot.gastoUrl || '/CentrosCostos/api/gasto-real';
         CC.state.gastoCache = {};
+        CC.state.gastoReady = {};
         CC.state.cicloCodigo = boot.cicloCodigo || boot.cicloInicial || '';
         CC.state.usuarioActual = boot.usuarioActual || '';
         CC.state.ciclos = loadCiclos(boot.periodoDefault, boot.ciclos);

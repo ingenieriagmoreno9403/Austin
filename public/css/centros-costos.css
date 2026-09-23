@@ -68,11 +68,32 @@
     font-size: 0.92rem;
 }
 
+.cc-header-logo {
+    display: block;
+    height: 68px;
+    width: auto;
+    max-width: min(420px, 100%);
+    object-fit: contain;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.cc-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+.cc-toolbar .cc-subnav {
+    margin-bottom: 0;
+}
 .cc-header-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
     align-items: center;
+    justify-content: flex-end;
 }
 .cc-header-tools {
     display: flex;
@@ -259,6 +280,21 @@
     gap: 0.75rem;
     margin-bottom: 1rem;
 }
+.cc-kpis-equal {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: stretch;
+}
+.cc-kpis-equal .cc-kpi {
+    height: 100%;
+    min-height: 7.4rem;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+}
+.cc-kpis-equal .cc-kpi .hint {
+    margin-top: auto;
+    min-height: 2.5em;
+}
 
 .cc-kpi {
     background: var(--cc-white);
@@ -329,6 +365,30 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 .cc-filters-asig .cc-pick-search { margin-bottom: 0; }
+.cc-filter-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+    margin: 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--cc-muted);
+}
+.cc-chart-prod {
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+    margin: 0;
+    min-width: 240px;
+    max-width: 340px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--cc-muted);
+}
 
 .cc-input, .cc-select, .cc-page .form-control, .cc-page .form-select {
     border: 1px solid var(--cc-line);
@@ -661,6 +721,9 @@
 .cc-progress.warn > span { background: #d97706; }
 .cc-progress.bad > span { background: #dc2626; }
 .cc-progress.good > span { background: #059669; }
+.cc-semaforo-bad { color: #dc2626; font-weight: 700; }
+.cc-semaforo-warn { color: #d97706; font-weight: 700; }
+.cc-semaforo-good { color: #059669; font-weight: 700; }
 
 .cc-empty {
     text-align: center;
@@ -1756,9 +1819,11 @@
 .cc-month-totals-row .text-muted { color: #a1a1aa !important; }
 
 @media (max-width: 768px) {
+    .cc-kpis-equal { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .cc-page { padding: 0.85rem 0.75rem 2rem; }
     .cc-filters,
     .cc-filters-asig { grid-template-columns: 1fr; }
+    .cc-header-logo { height: 48px; }
 }
 
 .cc-header-ciclo {
@@ -2590,7 +2655,7 @@
     margin: 0.12rem 0 0.28rem;
 }
 .cc-month-cell .prev.is-loading {
-    color: var(--cc-info);
+    color: var(--cc-muted);
     font-style: italic;
 }
 .cc-month-real {
@@ -2753,9 +2818,48 @@
 .cc-captura-chart {
     margin-top: 0;
 }
-.cc-table td.is-empty { background: #fffbeb; }
-.cc-table td.is-ok { background: #ecfdf5; }
-.cc-table td.is-over { background: #fef2f2; color: #991b1b; }
+.cc-table tbody td.is-empty,
+.cc-table tbody tr.is-done td.is-empty,
+.cc-table tbody tr.is-done:hover td.is-empty,
+.cc-table tbody tr.is-pending td.is-empty,
+.cc-table tbody tr.is-new td.is-empty,
+.cc-table tbody tr.is-new:hover td.is-empty,
+.cc-table tbody tr:hover td.is-empty { background: #fffbeb; }
+.cc-table tbody td.is-ok,
+.cc-table tbody tr.is-done td.is-ok,
+.cc-table tbody tr.is-done:hover td.is-ok,
+.cc-table tbody tr.is-pending td.is-ok,
+.cc-table tbody tr.is-new td.is-ok,
+.cc-table tbody tr.is-new:hover td.is-ok,
+.cc-table tbody tr:hover td.is-ok { background: #ecfdf5; }
+.cc-table tbody td.is-over,
+.cc-table tbody tr.is-done td.is-over,
+.cc-table tbody tr.is-done:hover td.is-over,
+.cc-table tbody tr.is-pending td.is-over,
+.cc-table tbody tr.is-new td.is-over,
+.cc-table tbody tr.is-new:hover td.is-over,
+.cc-table tbody tr:hover td.is-over { background: #fef2f2; color: #991b1b; }
+.cc-captura-results .cc-table tbody td.is-empty,
+.cc-captura-results .cc-table tbody tr.is-done td.is-empty,
+.cc-captura-results .cc-table tbody tr.is-done:hover td.is-empty,
+.cc-captura-results .cc-table tbody tr:hover td.is-empty {
+    background: #fee2e2;
+    color: #991b1b;
+}
+.cc-captura-results .cc-table tbody td.is-ok,
+.cc-captura-results .cc-table tbody tr.is-done td.is-ok,
+.cc-captura-results .cc-table tbody tr.is-done:hover td.is-ok,
+.cc-captura-results .cc-table tbody tr:hover td.is-ok {
+    background: #ecfdf5;
+    color: #047857;
+}
+.cc-captura-results .cc-table tbody td.is-over,
+.cc-captura-results .cc-table tbody tr.is-done td.is-over,
+.cc-captura-results .cc-table tbody tr.is-done:hover td.is-over,
+.cc-captura-results .cc-table tbody tr:hover td.is-over {
+    background: #fff7ed;
+    color: #9a3412;
+}
 .cc-table tbody tr.cc-result-row { cursor: pointer; }
 .cc-table tbody.is-readonly tr.cc-result-row { cursor: default; }
 .cc-table tbody.is-readonly.is-selectable tr.cc-result-row { cursor: pointer; }
@@ -2931,6 +3035,18 @@
     color: var(--cc-ink);
     font-variant-numeric: tabular-nums;
 }
+.cc-visor-avance .meta strong.cc-semaforo-bad,
+.cc-visor-progress-top strong.cc-semaforo-bad,
+.cc-nav-progress-top strong.cc-semaforo-bad,
+.cc-cta-fill-top strong.cc-semaforo-bad { color: #dc2626; }
+.cc-visor-avance .meta strong.cc-semaforo-warn,
+.cc-visor-progress-top strong.cc-semaforo-warn,
+.cc-nav-progress-top strong.cc-semaforo-warn,
+.cc-cta-fill-top strong.cc-semaforo-warn { color: #d97706; }
+.cc-visor-avance .meta strong.cc-semaforo-good,
+.cc-visor-progress-top strong.cc-semaforo-good,
+.cc-nav-progress-top strong.cc-semaforo-good,
+.cc-cta-fill-top strong.cc-semaforo-good { color: #059669; }
 .cc-visor-avance .cc-progress { height: 6px; }
 
 @media (max-width: 1100px) {
@@ -3482,9 +3598,11 @@
 .cc-month-real.is-loading,
 .cc-cta-compare-card strong.is-loading,
 .cc-nav-stat strong.is-loading,
+.cc-visor-kpi strong.is-loading,
 .cc-table td.is-loading,
+.cc-detalle-fact strong.is-loading,
 .cc-sticky-totales strong.is-loading {
-    color: var(--cc-info);
+    color: var(--cc-muted);
     font-style: italic;
     font-weight: 500;
 }

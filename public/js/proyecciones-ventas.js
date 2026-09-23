@@ -337,11 +337,53 @@
         });
     }
 
+    function productosVentaRealDeCentro(c) {
+        var key = gastoCacheKey(c);
+        var por = (CC.state.gastoCache && CC.state.gastoCache[key]) || {};
+        var out = [];
+        var seen = {};
+        Object.keys(por).forEach(function (k) {
+            var row = por[k];
+            if (!row || typeof row !== 'object' || !row.gasto || row.gasto.length !== 12) return;
+            var codigo = String(row.codigo || k || '').trim();
+            if (!codigo || seen[codigo]) return;
+            seen[codigo] = true;
+            var extra = extraFromRow(row);
+            out.push({
+                codigo: codigo,
+                nombre: row.nombre || codigo,
+                grupo: 'Venta real',
+                gasto: row.gasto.slice(),
+                importe: extra.importe,
+                importeUsd: extra.importe_usd,
+                precio: extra.precio,
+                unidad: extra.unidad || '',
+                unidadNombre: extra.unidad_nombre || '',
+                costoVenta: Number(extra.costo) || 0,
+                costoVentaMoneda: String(extra.costo_moneda || 'MXN').toUpperCase(),
+                empresa: c.empresa
+            });
+        });
+        return out;
+    }
+
+    function mergeCuentasAnalisis(c, base) {
+        var seen = {};
+        (base || []).forEach(function (cta) {
+            seen[String(cta.codigo)] = true;
+            seen[codigoCuentaKey(cta.codigo)] = true;
+        });
+        var extra = productosVentaRealDeCentro(c).filter(function (cta) {
+            return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
+        });
+        return (base || []).concat(extra);
+    }
+
     function cuentasDeCentro(c) {
         var asig = asigDe(c);
         if (asig && asig.cuentas && asig.cuentas.length) {
             var packed = packedLookupDeCentro(c);
-            return asig.cuentas.map(function (x) {
+            var mapped = asig.cuentas.map(function (x) {
                 var sap = (CC.state.cuentas || []).filter(function (cta) {
                     return String(cta.codigo) === String(x.codigo);
                 })[0];
@@ -362,8 +404,11 @@
                     empresa: c.empresa
                 };
             });
+            if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, mapped);
+            return mapped;
         }
-        if (CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis') return [];
+        if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, []);
+        if (CC.state.page === 'control' || CC.state.page === 'detalle') return [];
         var all = CC.state.cuentas.filter(function (cta) {
             return !cta.empresa || !c.empresa || String(cta.empresa).toUpperCase() === String(c.empresa).toUpperCase();
         });
@@ -558,7 +603,7 @@
             };
         }
         var key = gastoCacheKey(c);
-        if (control._gastoReq === key && control._gastoMap) {
+        if (control._gastoReq === key && control._gastoLoadedFor === key && control._gastoMap) {
             return {
                 map: control._gastoMap,
                 extras: control._gastoExtras || {},
@@ -567,6 +612,13 @@
         }
         var packed = CC.state.gastoLookup && CC.state.gastoLookup[key];
         if (packed) {
+            if (packed.map && packed.extras) return packed;
+            var porCached = CC.state.gastoCache && CC.state.gastoCache[key];
+            if (porCached && Object.keys(porCached).length) {
+                var rebuilt = mapFromPorCuenta(porCached);
+                CC.state.gastoLookup[key] = rebuilt;
+                return rebuilt;
+            }
             if (packed.map) return packed;
             return { map: packed, extras: {}, nombres: [] };
         }
@@ -3065,11 +3117,29 @@
         });
     }
 
+    function listaPrecioDeCentro(c, codigo) {
+        if (!c || !codigo) return null;
+        var own = CC.state.preciosCache && CC.state.preciosCache[preciosCacheKey(c)];
+        if (own) {
+            return own[String(codigo)]
+                || own[String(codigo).toUpperCase()]
+                || own[codigoCuentaKey(codigo)]
+                || null;
+        }
+        if (control.centro
+            && String(control.centro.codigo) === String(c.codigo)
+            && String(control.centro.empresa || '').toUpperCase() === String(c.empresa || '').toUpperCase()
+            && control._preciosReq === preciosCacheKey(c)) {
+            return lookupPrecioLista(codigo);
+        }
+        return null;
+    }
+
     function cuentasEnriquecidas(c) {
         return cuentasDeCentro(c).map(function (cta) {
             var ppto = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
             var totP = sum(ppto);
-            var lista = lookupPrecioLista(cta.codigo) || {};
+            var lista = listaPrecioDeCentro(c, cta.codigo) || {};
             var costKey = String(c.empresa || '').toUpperCase() + '|' + String(cta.codigo || '');
             var master = (CC.state.costosMaster || {})[costKey] || (CC.state.costosMaster || {})[String(cta.codigo || '')];
             var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
@@ -3814,6 +3884,28 @@
         renderVisorTable();
     }
 
+    /** Rojo < 40%, amarillo 40–79%, verde desde 80%. */
+    function semaforoAvance(pct) {
+        var n = Number(pct) || 0;
+        if (n >= 80) return 'good';
+        if (n >= 40) return 'warn';
+        return 'bad';
+    }
+
+    function paintBarraProgreso(wrapId, barId, pct, labelId) {
+        var n = Math.max(0, Math.min(Number(pct) || 0, 100));
+        var cls = semaforoAvance(n);
+        var bar = document.getElementById(barId);
+        var wrap = document.getElementById(wrapId);
+        if (bar) bar.style.width = n + '%';
+        if (wrap) wrap.className = 'cc-progress ' + cls;
+        if (labelId) {
+            var label = document.getElementById(labelId);
+            if (label) label.className = 'cc-semaforo-' + cls;
+        }
+        return cls;
+    }
+
     function updateControlProgress() {
         var c = control.centro;
         var box = document.getElementById('ctl-nav-pend');
@@ -3826,10 +3918,12 @@
             setText('ctl-nav-pend-n', '—');
             setText('ctl-nav-pend-sub', 'Elige un cliente para ver cuántos productos faltan por proyectar');
             if (box) box.className = 'cc-nav-pend';
-            var bar0 = document.getElementById('ctl-avance-bar');
-            var wrap0 = document.getElementById('ctl-avance-wrap');
-            if (bar0) bar0.style.width = '0%';
-            if (wrap0) wrap0.className = 'cc-progress warn';
+            var barEmpty = document.getElementById('ctl-avance-bar');
+            var wrapEmpty = document.getElementById('ctl-avance-wrap');
+            var labelEmpty = document.getElementById('kpi-ctl-avance');
+            if (barEmpty) barEmpty.style.width = '0%';
+            if (wrapEmpty) wrapEmpty.className = 'cc-progress';
+            if (labelEmpty) labelEmpty.className = '';
             paintVisibleTableTotals(null);
             paintScopeHints();
             return;
@@ -3843,10 +3937,7 @@
         setText('kpi-ctl-gasto', moneyGasto(st.totGVista != null ? st.totGVista : st.totG));
         setText('kpi-ctl-ppto', money(st.totP));
         setText('kpi-ctl-pend', st.pendientes);
-        var bar = document.getElementById('ctl-avance-bar');
-        var wrap = document.getElementById('ctl-avance-wrap');
-        if (bar) bar.style.width = Math.min(st.avance, 100) + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (st.pendientes ? 'warn' : 'good');
+        paintBarraProgreso('ctl-avance-wrap', 'ctl-avance-bar', st.avance, 'kpi-ctl-avance');
         setText('ctl-nav-pend-n', st.pendientes);
         setText('ctl-nav-pend-sub', st.total
             ? (st.pendientes
@@ -3992,10 +4083,7 @@
             : (st.totP ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada');
         setText('ctl-form-avance', st.avance + '%');
         setText('ctl-form-avance-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
-        var bar = document.getElementById('ctl-form-avance-bar');
-        var wrap = document.getElementById('ctl-form-avance-wrap');
-        if (bar) bar.style.width = Math.min(st.avance, 100) + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (st.pendientes ? 'warn' : 'good');
+        paintBarraProgreso('ctl-form-avance-wrap', 'ctl-form-avance-bar', st.avance, 'ctl-form-avance');
     }
 
     function paintMatrixLegend() {
@@ -4084,10 +4172,7 @@
         var av = Math.round((filled / 12) * 100);
         setText('ctl-form-avance', av + '%');
         setText('ctl-form-avance-meta', filled + ' de 12 meses capturados');
-        var bar = document.getElementById('ctl-form-avance-bar');
-        var wrap = document.getElementById('ctl-form-avance-wrap');
-        if (bar) bar.style.width = av + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (filled === 12 ? 'good' : 'warn');
+        paintBarraProgreso('ctl-form-avance-wrap', 'ctl-form-avance-bar', av, 'ctl-form-avance');
     }
 
     function updateFormTotals(cta) {
@@ -5289,7 +5374,7 @@
         }
         var stt = statsDeCentro(c);
         var dep = deptoDeCentro(c);
-        var barCls = stt.pendientes ? 'warn' : 'good';
+        var barCls = semaforoAvance(stt.avance);
         setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
         var title = document.getElementById('cc-page-title');
         if (title) title.innerHTML = escapeHtml(c.nombre || c.codigo || 'Cliente');
@@ -5298,11 +5383,11 @@
             facts.hidden = false;
             facts.innerHTML =
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
-                factHtml('Tot Venta', money(stt.totG)) +
-                factHtml('Tot Proy.', money(stt.totP)) +
+                factHtml('TOTAL VENTA', textoImporteVisor(totalVentaAnioCliente(c))) +
+                factHtml('TOTAL PROYECTADO', textoImporteVisor(totalProyectadoCliente(c))) +
                 factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
-                factHtml('Progreso', stt.avance + '%',
+                factHtml('Progreso', '<span class="cc-semaforo-' + barCls + '">' + stt.avance + '%</span>',
                     '<div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span></div>' +
                     '<div class="cc-progress ' + barCls + '"><span style="width:' + Math.min(stt.avance, 100) + '%"></span></div></div>') +
                 '<div class="cc-detalle-fact"><small>Estado</small><div style="margin-top:.2rem">' + renderBadge(c.estado) + '</div></div>';
@@ -5385,12 +5470,122 @@
         });
     }
 
+    function gastoRealListo(c) {
+        if (!c) return false;
+        var key = gastoCacheKey(c);
+        return !!(CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key));
+    }
+
+    /** Importe de lo vendido el año de referencia (SAP), todos los productos del cliente. */
+    function totalVentaAnioCliente(c) {
+        if (!gastoRealListo(c)) return null;
+        var por = (CC.state.gastoCache && CC.state.gastoCache[gastoCacheKey(c)]) || {};
+        var seen = {};
+        var total = 0;
+        Object.keys(por).forEach(function (k) {
+            var row = por[k];
+            if (!row || typeof row !== 'object') return;
+            var codigo = String(row.codigo || k || '').trim();
+            if (!codigo || seen[codigo]) return;
+            seen[codigo] = true;
+            total += importeVentaVista({
+                importe: row.importe,
+                importeUsd: row.importe_usd,
+                importe_usd: row.importe_usd,
+                gasto: row.gasto,
+                precioLista: 0,
+                precioMoneda: 'MXN'
+            });
+        });
+        return total;
+    }
+
+    /** Importe de la proyección que ya se capturó en el ciclo. */
+    function totalProyectadoCliente(c) {
+        var s = statsDeCentro(c);
+        return s.totPVista != null ? s.totPVista : (s.totP || 0);
+    }
+
+    function textoImporteVisor(n) {
+        if (n == null) return '…';
+        return moneyGasto(n);
+    }
+
+    function paintVisorLabels() {
+        var g = CC.state.anioGasto || '';
+        var p = CC.state.anioPresupuesto || '';
+        setText('visor-kpi-gasto-lbl', 'Total venta' + (g ? ' ' + g : ''));
+        setText('visor-kpi-ppto-lbl', 'Total proyectado' + (p ? ' ' + p : ''));
+        setText('visor-th-venta', 'Total venta' + (g ? ' ' + g : ''));
+        setText('visor-th-proy', 'Total proyectado' + (p ? ' ' + p : ''));
+    }
+
+    var visorGastoInflight = {};
+
+    function queueVisorGastos() {
+        if (!CC.state.gastoUrl || CC.state.page !== 'control') return;
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        var pending = (CC.state.centros || []).filter(function (c) {
+            var key = gastoCacheKey(c);
+            if (gastoRealListo(c) || visorGastoInflight[key]) return false;
+            return true;
+        });
+        if (!pending.length) return;
+        var inflight = 0;
+        var max = 3;
+        var dirty = false;
+        var paintTimer = null;
+        function schedulePaint() {
+            if (paintTimer) return;
+            paintTimer = setTimeout(function () {
+                paintTimer = null;
+                if (CC.state.page === 'control' && dirty) renderVisorTable();
+            }, 350);
+        }
+        function kick() {
+            while (inflight < max && pending.length) {
+                var c = pending.shift();
+                var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+                if (visorGastoInflight[key]) continue;
+                if (CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key)) continue;
+                visorGastoInflight[key] = true;
+                inflight += 1;
+                (function (centro, cacheKey, yearFrozen) {
+                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                        '&cc=' + encodeURIComponent(centro.codigo || '') +
+                        '&year=' + encodeURIComponent(yearFrozen), {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(function (res) { return res.json(); }).then(function (json) {
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
+                        CC.state.gastoLookup = CC.state.gastoLookup || {};
+                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]);
+                        dirty = true;
+                        schedulePaint();
+                    }).catch(function () {
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[cacheKey] = {};
+                        dirty = true;
+                    }).then(function () {
+                        delete visorGastoInflight[cacheKey];
+                        inflight -= 1;
+                        if (!pending.length && !inflight && dirty) renderVisorTable();
+                        else kick();
+                    });
+                })(c, key, year);
+            }
+        }
+        kick();
+    }
+
     function visorTotales(rows) {
-        var totG = 0, totP = 0, capturadas = 0, totalCtas = 0, listos = 0;
+        var totG = 0, totP = 0, capturadas = 0, totalCtas = 0, listos = 0, ventaPend = 0;
         (rows || []).forEach(function (c) {
             var s = statsDeCentro(c);
-            totG += s.totG;
-            totP += s.totP;
+            var venta = totalVentaAnioCliente(c);
+            if (venta == null) ventaPend += 1;
+            else totG += venta;
+            totP += totalProyectadoCliente(c);
             capturadas += s.capturadas;
             totalCtas += s.total;
             if (!s.pendientes) listos++;
@@ -5400,6 +5595,7 @@
             n: n,
             totG: totG,
             totP: totP,
+            ventaPend: ventaPend,
             capturadas: capturadas,
             totalCtas: totalCtas,
             listos: listos,
@@ -5408,18 +5604,31 @@
         };
     }
 
+    function textoTotalVentaVisor(tot) {
+        if (!tot || !tot.n) return '—';
+        if (tot.ventaPend && tot.ventaPend === tot.n) return '…';
+        var txt = moneyGasto(tot.totG);
+        return tot.ventaPend ? (txt === '—' ? '…' : txt + '…') : txt;
+    }
+
     function paintVisorResumen(tot) {
+        paintVisorLabels();
         setText('visor-avance', tot.n ? (tot.avance + '%') : '—');
         setText('visor-avance-meta', tot.n
             ? (tot.listos + ' de ' + tot.n + ' clientes listos · ' + tot.capturadas + ' de ' + tot.totalCtas + ' productos capturados')
             : 'No hay clientes para sumar');
-        var bar = document.getElementById('visor-avance-bar');
-        var wrap = document.getElementById('visor-avance-wrap');
-        if (bar) bar.style.width = (tot.n ? Math.min(tot.avance, 100) : 0) + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (tot.n && !tot.pendientes ? 'good' : 'warn');
+        if (tot.n) paintBarraProgreso('visor-avance-wrap', 'visor-avance-bar', tot.avance, 'visor-avance');
+        else {
+            var bar0 = document.getElementById('visor-avance-bar');
+            var wrap0 = document.getElementById('visor-avance-wrap');
+            if (bar0) bar0.style.width = '0%';
+            if (wrap0) wrap0.className = 'cc-progress';
+            var label0 = document.getElementById('visor-avance');
+            if (label0) label0.className = '';
+        }
         setText('visor-kpi-n', tot.n || '0');
-        setText('visor-kpi-gasto', money(tot.totG));
-        setText('visor-kpi-ppto', money(tot.totP));
+        setText('visor-kpi-gasto', textoTotalVentaVisor(tot));
+        setText('visor-kpi-ppto', tot.n ? moneyGasto(tot.totP) : '—');
         setText('visor-kpi-pend', tot.pendientes);
         var tf = document.getElementById('visor-tfoot');
         if (!tf) return;
@@ -5428,9 +5637,9 @@
             return;
         }
         tf.innerHTML = '<tr>' +
-            '<td colspan="4">Totales · ' + tot.n + (tot.n === 1 ? ' cliente' : ' clientes') + '</td>' +
-            '<td class="num">' + money(tot.totG) + '</td>' +
-            '<td class="num">' + money(tot.totP) + '</td>' +
+            '<td colspan="3">Totales · ' + tot.n + (tot.n === 1 ? ' cliente' : ' clientes') + '</td>' +
+            '<td class="num">' + textoTotalVentaVisor(tot) + '</td>' +
+            '<td class="num">' + moneyGasto(tot.totP) + '</td>' +
             '<td colspan="2"></td>' +
             '<td>' + tot.capturadas + '/' + tot.totalCtas + ' · ' + tot.avance + '%</td>' +
             '<td>' + tot.listos + ' listos</td>' +
@@ -5443,25 +5652,27 @@
         var rows = visorRowsFiltradas();
         var tot = visorTotales(rows);
         paintVisorResumen(tot);
+        queueVisorGastos();
         if (!rows.length) {
-            tb.innerHTML = '<tr><td colspan="10"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay clientes con esos filtros</div></td></tr>';
+            tb.innerHTML = '<tr><td colspan="9"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay clientes con esos filtros</div></td></tr>';
             return;
         }
+        var anioVenta = CC.state.anioGasto || '';
         tb.innerHTML = rows.map(function (c) {
             var stt = statsDeCentro(c);
-            var dep = deptoDeCentro(c);
-            var barCls = stt.pendientes ? 'warn' : 'good';
+            var barCls = semaforoAvance(stt.avance);
             var fecha = c.fecha || '—';
+            var venta = totalVentaAnioCliente(c);
+            var proy = totalProyectadoCliente(c);
             return '<tr data-key="' + escapeHtml(centroKey(c)) + '">' +
                 '<td><a class="cc-btn cc-btn-detalle" href="' + detalleHref(c) + '"><i class="fa-solid fa-eye"></i> Detalle</a></td>' +
                 '<td>' + escapeHtml(c.empresa || '—') + '</td>' +
                 '<td>' + htmlNombreCodigo(c.nombre, c.codigo) + '</td>' +
-                '<td>' + escapeHtml(dep) + '</td>' +
-                '<td class="num">' + money(stt.totG) + '</td>' +
-                '<td class="num">' + money(stt.totP) + '</td>' +
+                '<td class="num" title="' + escapeHtml('Vendido en ' + anioVenta) + '">' + textoImporteVisor(venta) + '</td>' +
+                '<td class="num" title="Proyección capturada">' + textoImporteVisor(proy) + '</td>' +
                 '<td>' + userCell(c.usuario) + '</td>' +
                 '<td>' + escapeHtml(fecha) + '</td>' +
-                '<td><div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span><strong>' + stt.avance + '%</strong></div>' +
+                '<td><div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span><strong class="cc-semaforo-' + barCls + '">' + stt.avance + '%</strong></div>' +
                     '<div class="cc-progress ' + barCls + '"><span style="width:' + Math.min(stt.avance, 100) + '%"></span></div></div></td>' +
                 '<td>' + renderBadge(c.estado) + '</td></tr>';
         }).join('');
@@ -6039,23 +6250,87 @@
         }
     }
 
+    function clienteFilterKey(c) {
+        return String(c.empresa || '') + '|' + String(c.codigo || '');
+    }
+
+    function fillSelectKeepEscaped(el, items, extra) {
+        if (!el) return;
+        var prev = el.value;
+        var html = extra || '';
+        (items || []).forEach(function (it) {
+            if (typeof it === 'string') {
+                html += '<option value="' + escapeHtml(it) + '">' + escapeHtml(it) + '</option>';
+                return;
+            }
+            html += '<option value="' + escapeHtml(it.codigo) + '">' + escapeHtml(it.nombre) + '</option>';
+        });
+        el.innerHTML = html;
+        if (prev) el.value = prev;
+    }
+
     function fillAnalisisFilters() {
         var rows = (CC.state.centros || []).map(mergedCentro);
+        var empEl = document.getElementById('an-empresa');
+        var cliEl = document.getElementById('an-cliente');
+        var userEl = document.getElementById('an-user');
+        var emp = empEl ? empEl.value : '';
+        var cli = cliEl ? cliEl.value : '';
+        var user = userEl ? userEl.value : '';
+
         var emps = [];
-        var users = [];
         rows.forEach(function (c) {
             if (c.empresa && emps.indexOf(c.empresa) === -1) emps.push(c.empresa);
+        });
+        emps.sort();
+        if (emp && emps.indexOf(emp) === -1) emp = '';
+
+        var scoped = rows.filter(function (c) {
+            return !emp || c.empresa === emp;
+        });
+        if (cli && !scoped.some(function (c) { return clienteFilterKey(c) === cli; })) cli = '';
+
+        var forUsers = scoped.filter(function (c) {
+            return !cli || clienteFilterKey(c) === cli;
+        });
+        var users = [];
+        forUsers.forEach(function (c) {
             var names = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             names.forEach(function (n) {
                 if (n && users.indexOf(n) === -1) users.push(n);
             });
         });
-        emps.sort();
         users.sort();
-        fillSelectKeep(document.getElementById('an-empresa'), emps, null, null, '<option value="">Todas las empresas</option>');
-        fillSelectKeep(document.getElementById('an-user'), users.map(function (n) {
+        if (user && users.indexOf(user) === -1) user = '';
+
+        var forClients = scoped.filter(function (c) {
+            if (!user) return true;
+            return (c.usuarios || []).indexOf(user) !== -1 || c.usuario === user;
+        });
+        var seenCli = {};
+        var clients = [];
+        forClients.forEach(function (c) {
+            var key = clienteFilterKey(c);
+            if (!key || seenCli[key]) return;
+            seenCli[key] = true;
+            var label = (c.nombre && c.nombre !== c.codigo)
+                ? (c.nombre + ' — ' + c.codigo)
+                : (c.codigo || c.nombre || '—');
+            if (!emp && c.empresa) label = c.empresa + ' · ' + label;
+            clients.push({ codigo: key, nombre: label });
+        });
+        clients.sort(function (a, b) {
+            return String(a.nombre).localeCompare(String(b.nombre), 'es');
+        });
+
+        fillSelectKeepEscaped(empEl, emps, '<option value="">Todas las empresas</option>');
+        fillSelectKeepEscaped(cliEl, clients, '<option value="">Todos los clientes</option>');
+        fillSelectKeepEscaped(userEl, users.map(function (n) {
             return { codigo: n, nombre: n };
-        }), 'codigo', 'nombre', '<option value="">Todos los usuarios</option>');
+        }), '<option value="">Todos los usuarios</option>');
+        if (empEl) empEl.value = emp;
+        if (cliEl) cliEl.value = cli;
+        if (userEl) userEl.value = user;
     }
 
     function fillSelectKeep(el, items, valueKey, labelKey, extra) {
@@ -6078,7 +6353,7 @@
         renderAnalisisCiclos();
         paintAnalisisYears();
         if (!CC._analisisBound) {
-            ['an-q', 'an-empresa', 'an-user'].forEach(function (id) {
+            ['an-q', 'an-empresa', 'an-cliente', 'an-user', 'an-chart-producto'].forEach(function (id) {
                 var el = document.getElementById(id);
                 if (el) el.addEventListener('input', renderAnalisis);
                 if (el && el.tagName === 'SELECT') el.addEventListener('change', renderAnalisis);
@@ -6167,6 +6442,14 @@
         var inflight = 0;
         var max = 3;
         var dirty = false;
+        var paintTimer = null;
+        function schedulePaint() {
+            if (paintTimer) return;
+            paintTimer = setTimeout(function () {
+                paintTimer = null;
+                if (CC.state.page === 'analisis' && dirty) renderAnalisis();
+            }, 400);
+        }
         function kick() {
             while (inflight < max && pending.length) {
                 var c = pending.shift();
@@ -6181,8 +6464,9 @@
                         CC.state.gastoCache = CC.state.gastoCache || {};
                         CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
                         CC.state.gastoLookup = CC.state.gastoLookup || {};
-                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]).map;
+                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]);
                         dirty = true;
+                        schedulePaint();
                     }).catch(function () {
                         CC.state.gastoCache = CC.state.gastoCache || {};
                         CC.state.gastoCache[cacheKey] = {};
@@ -6269,9 +6553,159 @@
         }).join('');
     }
 
+    function textoImporteReal(importe, unidades) {
+        var txt = moneyGasto(importe);
+        if (txt !== '—') return txt;
+        var u = Number(unidades) || 0;
+        if (u) return qtyLabel(u) + ' uds';
+        return '—';
+    }
+
+    function productosDeAnalisis(rows) {
+        var out = [];
+        (rows || []).forEach(function (c) {
+            cuentasEnriquecidas(c).forEach(function (cta) {
+                var gasto = cta.importeVentaVista != null ? Number(cta.importeVentaVista) || 0 : importeVentaVista(cta);
+                var ppto = cta.importeProyVista != null ? Number(cta.importeProyVista) || 0 : importeProyeccionVista(cta);
+                var monthsVenta = MONTHS.map(function (_, i) { return Number(importeMesVentaVista(cta, i)) || 0; });
+                var monthsProy = MONTHS.map(function (_, i) {
+                    var m = importeMesProyVista(cta, i);
+                    return m == null ? 0 : (Number(m) || 0);
+                });
+                var filled = (cta.ppto || []).filter(mesLleno).length;
+                var listo = !!cta.listo;
+                var capturadas = listo ? 12 : filled;
+                out.push({
+                    centro: c,
+                    empresa: c.empresa || '',
+                    clienteCodigo: c.codigo || '',
+                    clienteNombre: c.nombre || c.codigo || '',
+                    departamento: c.departamento || '',
+                    usuario: c.usuario || '',
+                    usuarios: c.usuarios || [],
+                    estado: c.estado,
+                    productoCodigo: cta.codigo || '',
+                    productoNombre: cta.nombre || cta.codigo || '',
+                    gasto: gasto,
+                    ppto: ppto,
+                    unidadesVenta: Number(cta.totG) || 0,
+                    unidadesProy: cta.unidadesAnio != null ? Number(cta.unidadesAnio) || 0 : unidadesAnuales(cta.ppto),
+                    monthsVenta: monthsVenta,
+                    monthsProy: monthsProy,
+                    yoY: deltaPct(ppto, gasto),
+                    over: gasto > 0 && ppto > gasto * 1.1,
+                    capturadas: capturadas,
+                    avance: listo ? 100 : pct(filled, 12)
+                });
+            });
+        });
+        out.sort(function (a, b) {
+            var byEmp = String(a.empresa).localeCompare(String(b.empresa), 'es');
+            if (byEmp) return byEmp;
+            var byCli = String(a.clienteNombre).localeCompare(String(b.clienteNombre), 'es');
+            if (byCli) return byCli;
+            return String(a.productoNombre).localeCompare(String(b.productoNombre), 'es');
+        });
+        return out;
+    }
+
+    function fillAnalisisChartProducto(productRows) {
+        var sel = document.getElementById('an-chart-producto');
+        if (!sel) return '';
+        var prev = sel.value;
+        var seen = {};
+        var items = [];
+        (productRows || []).forEach(function (p) {
+            var code = String(p.productoCodigo || '');
+            if (!code || seen[code]) return;
+            seen[code] = true;
+            var name = p.productoNombre && p.productoNombre !== code
+                ? (p.productoNombre + ' — ' + code)
+                : (code || '—');
+            items.push({ codigo: code, nombre: name });
+        });
+        items.sort(function (a, b) {
+            return String(a.nombre).localeCompare(String(b.nombre), 'es');
+        });
+        fillSelectKeepEscaped(sel, items, '<option value="">Todos los productos</option>');
+        if (prev && seen[prev]) sel.value = prev;
+        else sel.value = '';
+        return sel.value;
+    }
+
+    function paintAnalisisChart(rows, productRows, gYear, pYear) {
+        var prod = fillAnalisisChartProducto(productRows);
+        var hint = document.getElementById('an-chart-hint');
+        var title = document.getElementById('an-chart-emp-title');
+        if (title) {
+            title.innerHTML = '<i class="fa-solid fa-chart-column"></i> Venta ' + gYear + ' vs proyección ' + pYear;
+        }
+        var labels = [];
+        var venta = [];
+        var proy = [];
+        if (prod) {
+            var chosen = (productRows || []).filter(function (p) {
+                return String(p.productoCodigo) === String(prod);
+            });
+            var name = (chosen[0] && (chosen[0].productoNombre || chosen[0].productoCodigo)) || prod;
+            var byCli = {};
+            chosen.forEach(function (p) {
+                var key = p.clienteNombre || p.clienteCodigo || '—';
+                byCli[key] = byCli[key] || { venta: 0, proy: 0 };
+                byCli[key].venta += Number(p.gasto) || 0;
+                byCli[key].proy += Number(p.ppto) || 0;
+            });
+            labels = Object.keys(byCli).sort(function (a, b) {
+                return String(a).localeCompare(String(b), 'es');
+            });
+            venta = labels.map(function (k) { return byCli[k].venta; });
+            proy = labels.map(function (k) { return byCli[k].proy; });
+            if (!labels.length) {
+                labels = [name];
+                venta = [0];
+                proy = [0];
+            }
+            if (hint) hint.textContent = 'Venta y proyección · ' + name;
+        } else {
+            var byChart = {};
+            var source = (productRows && productRows.length) ? productRows : null;
+            if (source) {
+                source.forEach(function (p) {
+                    var key = p.empresa || '—';
+                    byChart[key] = byChart[key] || { venta: 0, proy: 0 };
+                    byChart[key].venta += Number(p.gasto) || 0;
+                    byChart[key].proy += Number(p.ppto) || 0;
+                });
+            } else {
+                (rows || []).forEach(function (c) {
+                    var key = c.empresa || '—';
+                    byChart[key] = byChart[key] || { venta: 0, proy: 0 };
+                    byChart[key].venta += Number(c.gasto) || 0;
+                    byChart[key].proy += Number(c.ppto) || 0;
+                });
+            }
+            labels = Object.keys(byChart).sort(function (a, b) {
+                return String(a).localeCompare(String(b), 'es');
+            });
+            venta = labels.map(function (e) { return byChart[e].venta; });
+            proy = labels.map(function (e) { return byChart[e].proy; });
+            if (hint) {
+                hint.textContent = labels.length
+                    ? 'Venta y proyección por empresa'
+                    : 'Sin venta ni proyección con esos filtros';
+            }
+        }
+        drawBar('chart-empresas', labels, [
+            { label: 'Venta ' + gYear, data: venta, backgroundColor: '#0a0a0a' },
+            { label: 'Proyección ' + pYear, data: proy, backgroundColor: '#a1a1aa' }
+        ]);
+    }
+
     function renderAnalisis() {
-        var q = (val('an-q') || '').toLowerCase();
+        fillAnalisisFilters();
+        var q = normSearch(val('an-q') || '');
         var emp = val('an-empresa');
+        var cli = val('an-cliente');
         var user = val('an-user');
         var gYear = CC.state.anioGasto || 2026;
         var pYear = CC.state.anioPresupuesto || 2027;
@@ -6283,12 +6717,18 @@
 
         var rows = all.filter(function (c) {
             if (emp && c.empresa !== emp) return false;
+            if (cli && clienteFilterKey(c) !== cli) return false;
             if (user && (c.usuarios || []).indexOf(user) === -1 && c.usuario !== user) return false;
             return true;
         });
-        var tableRows = rows.filter(function (c) {
-            var blob = (c.codigo + ' ' + c.nombre + ' ' + (c.usuarios || []).join(' ') + ' ' + c.usuario + ' ' + c.empresa + ' ' + (c.departamento || '')).toLowerCase();
-            return !q || blob.indexOf(q) !== -1;
+        var productRows = productosDeAnalisis(rows);
+        var tableRows = productRows.filter(function (p) {
+            if (!q) return true;
+            var blob = normSearch([
+                p.productoCodigo, p.productoNombre, p.clienteCodigo, p.clienteNombre,
+                p.empresa, p.departamento, p.usuario, (p.usuarios || []).join(' ')
+            ].join(' '));
+            return blob.indexOf(q) !== -1;
         });
 
         if (!rows.length) {
@@ -6325,7 +6765,7 @@
                 var av = Math.round(byEmp[e].av / byEmp[e].n);
                 var cls = av < 40 ? 'warn' : (av > 85 ? 'good' : '');
                 var on = emp === e ? ' is-on' : '';
-                return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' centros</span></div>' +
+                return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' clientes</span></div>' +
                     '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>' +
                     '<div class="text-muted mt-1" style="font-size:.75rem">Gasto ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Ppto ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
             }).join('') || '<div class="cc-empty">Sin empresas</div>';
@@ -6333,31 +6773,29 @@
 
         var tb = document.getElementById('an-tbody');
         if (tb) {
-            tb.innerHTML = tableRows.map(function (c) {
-                var cls = c.avance < 40 ? 'warn' : (c.over ? 'bad' : 'good');
-                var userLabel = (c.usuarios && c.usuarios.length > 1)
-                    ? c.usuario + ' +' + (c.usuarios.length - 1)
-                    : c.usuario;
-                return '<tr><td>' + escapeHtml(c.empresa || '—') + '</td>' +
-                    '<td><div class="fw-semibold">' + escapeHtml(c.codigo) + ' — ' + escapeHtml(c.nombre) + '</div><div class="text-muted" style="font-size:.75rem">' + escapeHtml(c.departamento || '') + '</div></td>' +
+            tb.innerHTML = tableRows.map(function (p) {
+                var cls = p.avance < 40 ? 'bad' : (p.avance < 80 ? 'warn' : 'good');
+                var userLabel = (p.usuarios && p.usuarios.length > 1)
+                    ? p.usuario + ' +' + (p.usuarios.length - 1)
+                    : p.usuario;
+                var cliSub = [p.empresa, p.departamento].filter(Boolean).join(' · ');
+                return '<tr><td>' + htmlNombreCodigo(p.productoNombre, p.productoCodigo) + '</td>' +
+                    '<td>' + htmlNombreCodigo(p.clienteNombre, p.clienteCodigo) +
+                        (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
                     '<td>' + userCell(userLabel) + '</td>' +
-                    '<td>' + renderBadge(c.estado) + '</td>' +
-                    '<td><div class="d-flex justify-content-between"><span>' + c.capturadas + '/' + c.cuentas + '</span><span>' + c.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(c.avance, 100) + '%"></span></div></td>' +
-                    '<td class="num">' + money(c.gasto) + '</td>' +
-                    '<td class="num">' + money(c.ppto) + '</td>' +
-                    '<td class="num ' + (c.yoY > 10 ? 'text-danger' : '') + '">' + (c.gasto ? ((c.yoY > 0 ? '+' : '') + c.yoY + '%') : '—') + '</td>' +
-                    '<td>' + (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
-                    '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
-            }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin coincidencias</div></td></tr>';
+                    '<td>' + renderBadge(p.estado) + '</td>' +
+                    '<td><div class="d-flex justify-content-between"><span>' + p.capturadas + '/12</span><span class="cc-semaforo-' + cls + '">' + p.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(p.avance, 100) + '%"></span></div></td>' +
+                    '<td class="num">' + textoImporteReal(p.gasto, p.unidadesVenta) + '</td>' +
+                    '<td class="num">' + textoImporteReal(p.ppto, p.unidadesProy) + '</td>' +
+                    '<td class="num ' + (p.yoY > 10 ? 'text-danger' : '') + '">' + (p.gasto ? ((p.yoY > 0 ? '+' : '') + p.yoY + '%') : '—') + '</td>' +
+                    '<td>' + (p.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
+                    '<td><a class="cc-btn" href="' + detalleHref(p.centro) + '">Ver</a></td></tr>';
+            }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin productos con esos filtros</div></td></tr>';
         }
 
-        var empKeys = Object.keys(byEmp);
-        drawBar('chart-empresas', empKeys, [
-            { label: 'Gasto ' + gYear, data: empKeys.map(function (e) { return byEmp[e].gasto; }), backgroundColor: '#0a0a0a' },
-            { label: 'Ppto ' + pYear, data: empKeys.map(function (e) { return byEmp[e].ppto; }), backgroundColor: '#a1a1aa' }
-        ]);
+        paintAnalisisChart(rows, productRows, gYear, pYear);
         drawDoughnut('chart-estados',
-            ['Abierto', 'En proceso', 'En revisión', 'Terminado'],
+            ['Abierto', 'Capturado', 'En revisión', 'Terminado'],
             [
                 rows.filter(function (c) { return normalizeEstado(c.estado) === 'abierto'; }).length,
                 rows.filter(function (c) { return normalizeEstado(c.estado) === 'en_proceso'; }).length,
@@ -6445,7 +6883,11 @@
                 plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
                 scales: {
                     x: { grid: { display: false } },
-                    y: { ticks: { callback: function (v) { return money(v); } }, grid: { color: '#f1f1f3' } }
+                    y: {
+                        beginAtZero: true,
+                        ticks: { callback: function (v) { return money(v); } },
+                        grid: { color: '#f1f1f3' }
+                    }
                 }
             }
         });

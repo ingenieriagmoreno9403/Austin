@@ -1,7 +1,7 @@
 @extends('layouts.app')
 
 @section('css')
-<link href="{{ asset('css/centros-costos.css') }}" rel="stylesheet">
+<link href="{{ asset('css/centros-costos.css') }}?v={{ (int) @filemtime(public_path('css/centros-costos.css')) }}" rel="stylesheet">
 @endsection
 
 @section('content')
@@ -45,9 +45,9 @@
                     <input type="checkbox" id="ctl-chart-todas"> Ver todas
                 </label>
                 <div class="cc-legend">
-                    <span><i style="background:#fffbeb"></i> Sin capturar</span>
-                    <span><i style="background:#ecfdf5"></i> Capturado</span>
-                    <span class="js-legend-over"><i style="background:#fef2f2"></i> Sobre inflación vs {{ $bootstrap['anioGasto'] }}</span>
+                    <span><i class="cc-swatch is-empty"></i> Sin capturar</span>
+                    <span><i class="cc-swatch is-ok"></i> Capturado</span>
+                    <span class="js-legend-over"><i class="cc-swatch is-over"></i> Sobre inflación vs {{ $bootstrap['anioGasto'] }}</span>
                 </div>
             </div>
         </div>
@@ -79,7 +79,7 @@
 
 @section('js')
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="{{ asset('js/centros-costos.js') }}"></script>
+<script src="{{ asset('js/centros-costos.js') }}?v={{ (int) @filemtime(public_path('js/centros-costos.js')) }}"></script>
 <script>
     CC.boot(Object.assign(@json($bootstrap), { page: 'detalle' }));
 </script>

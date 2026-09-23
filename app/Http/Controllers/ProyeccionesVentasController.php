@@ -1575,7 +1575,7 @@ class ProyeccionesVentasController extends Controller
             $year = $refYear - 3;
         }
 
-        $cacheKey = 'pv.venta-real.v3.' . $empresa . '.' . $cc . '.' . $year;
+        $cacheKey = 'pv.venta-real.v4.' . $empresa . '.' . $cc . '.' . $year;
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok'])) {
             if (! empty($cached['por_cuenta'])) {

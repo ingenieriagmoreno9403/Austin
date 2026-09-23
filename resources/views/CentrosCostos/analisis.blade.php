@@ -22,9 +22,16 @@
     @include('CentrosCostos.partials.nav')
 
     <div class="cc-panel">
-        <div class="cc-filters">
-            <select id="an-empresa" class="cc-select"></select>
-            <select id="an-user" class="cc-select"></select>
+        <div class="cc-filters cc-filters-asig">
+            <label class="cc-filter-field" for="an-empresa">Empresa
+                <select id="an-empresa" class="cc-select"></select>
+            </label>
+            <label class="cc-filter-field" for="an-centro">Centro de costos
+                <select id="an-centro" class="cc-select"></select>
+            </label>
+            <label class="cc-filter-field" for="an-user">Usuario
+                <select id="an-user" class="cc-select"></select>
+            </label>
         </div>
     </div>
 
@@ -36,7 +43,7 @@
     </div>
 
     <div id="an-work">
-    <div class="cc-kpis">
+    <div class="cc-kpis cc-kpis-equal">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Cuentas ya capturadas</div></div>
         <div class="cc-kpi alert"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Centros debajo del 40%</div></div>
         <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Ppto &gt; 110% del gasto real</div></div>

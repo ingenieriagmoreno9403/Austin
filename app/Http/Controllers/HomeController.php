@@ -18,9 +18,11 @@ use Illuminate\Support\Carbon;
 use App\Models\CcAsignacion;
 use App\Models\CcAsignacionCuenta;
 use App\Models\CcCiclo;
+use App\Models\CcPresupuesto;
 use App\Models\PvAsignacion;
 use App\Models\PvAsignacionProducto;
 use App\Models\PvCiclo;
+use App\Models\PvPresupuesto;
 use App\Models\GestionAlumnosVisitaProspeccion;
 use App\Models\Mantenimiento;
 use App\Models\ProgramacionMantenimiento;
@@ -640,6 +642,353 @@ class HomeController extends Controller
      *
      * @return array<string, mixed>
      */
+    private function capturaBudgetKey(string $empresa, string $centro, string $cuenta): string
+    {
+        return strtoupper(trim($empresa)).'|'.trim($centro).'|'.trim($cuenta);
+    }
+
+    private function codigoCuentaVisible(string $codigo): string
+    {
+        $s = trim($codigo);
+        if ($s === '' || ! preg_match('/SYS/i', $s)) {
+            return $s;
+        }
+        $s = preg_replace('/_?SYS/i', '', $s) ?? $s;
+        $s = preg_replace('/^0+/', '', $s) ?? $s;
+        $s = trim($s, " \t-_");
+
+        return $s !== '' ? $s : $this->codigoCuentaKey($codigo);
+    }
+
+    private function codigoCuentaKey(string $codigo): string
+    {
+        $digits = preg_replace('/\D+/', '', $codigo) ?? '';
+
+        return $digits !== '' ? $digits : $codigo;
+    }
+
+    private function codigoCuentaPlantilla(string $codigo): string
+    {
+        $digits = $this->codigoCuentaKey($codigo);
+        if ($digits !== '' && preg_match('/^\d+$/', $digits)) {
+            $trimmed = ltrim($digits, '0');
+
+            return $trimmed !== '' ? $trimmed : $digits;
+        }
+
+        return $this->codigoCuentaVisible($codigo);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function clavesCaptura(string $empresa, string $centro, string $cuenta): array
+    {
+        $cuenta = trim($cuenta);
+        $keys = [
+            $this->capturaBudgetKey($empresa, $centro, $cuenta),
+            $this->capturaBudgetKey($empresa, $centro, ltrim($cuenta, '0')),
+            $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaVisible($cuenta)),
+            $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaKey($cuenta)),
+            $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaPlantilla($cuenta)),
+        ];
+
+        return array_values(array_unique(array_filter($keys)));
+    }
+
+    private function capturaEstaLista(object $row, bool $hasDone): bool
+    {
+        if ($hasDone && ! empty($row->completado)) {
+            return true;
+        }
+        for ($i = 1; $i <= 12; $i++) {
+            $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            $val = $row->{$col} ?? null;
+            if ($val === null || $val === '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  iterable<int, object>  $rows
+     * @return array<string, true>
+     */
+    private function indiceCapturasListas($rows, string $centroField, string $detalleField, bool $hasDone): array
+    {
+        $done = [];
+        foreach ($rows as $row) {
+            if (! $this->capturaEstaLista($row, $hasDone)) {
+                continue;
+            }
+            foreach ($this->clavesCaptura((string) $row->empresa, (string) $row->{$centroField}, (string) $row->{$detalleField}) as $key) {
+                $done[$key] = true;
+                $done[strtoupper($key)] = true;
+            }
+        }
+
+        return $done;
+    }
+
+    /**
+     * @param  array<int, string>  $codigos
+     * @param  array<string, true>  $done
+     * @return array{total: int, capturadas: int, progreso: float}
+     */
+    private function avanceDeAsignacion(array $codigos, string $empresa, string $centro, array $done): array
+    {
+        $total = 0;
+        $capturadas = 0;
+        $vistos = [];
+        foreach ($codigos as $code) {
+            $code = trim((string) $code);
+            if ($code === '' || isset($vistos[$code])) {
+                continue;
+            }
+            $vistos[$code] = true;
+            $total++;
+            foreach ($this->clavesCaptura($empresa, $centro, $code) as $key) {
+                if (isset($done[$key]) || isset($done[strtoupper($key)])) {
+                    $capturadas++;
+                    break;
+                }
+            }
+        }
+
+        return [
+            'total' => $total,
+            'capturadas' => $capturadas,
+            'progreso' => $total > 0 ? round(($capturadas / $total) * 1000) / 10 : 0.0,
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function columnasMesesCaptura(bool $conCompletado): array
+    {
+        $cols = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $cols[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+        }
+        if ($conCompletado) {
+            $cols[] = 'completado';
+        }
+
+        return $cols;
+    }
+
+    /**
+     * @param  array<string, array{empresa: string, centro: string, codigos: array<int, string>}>  $grupos
+     * @param  array<string, true>  $capturasListas
+     * @return array<string, mixed>
+     */
+    private function filaCicloCaptura(string $tipo, string $tipoLabel, $ciclo, array $grupos, array $capturasListas, string $unidadUna, string $unidadVarias, string $url): array
+    {
+        $labels = [
+            'abierto' => 'Abierto',
+            'en_proceso' => 'Abierto',
+            'en_revision' => 'En revisión',
+            'terminado' => 'Cerrado',
+            'cerrado' => 'Cerrado',
+        ];
+        $total = 0;
+        $capturadas = 0;
+        foreach ($grupos as $grupo) {
+            $avance = $this->avanceDeAsignacion($grupo['codigos'], $grupo['empresa'], $grupo['centro'], $capturasListas);
+            $total += $avance['total'];
+            $capturadas += $avance['capturadas'];
+        }
+        $cierre = $ciclo->captura_hasta ?: $ciclo->fecha_fin;
+        $estado = $labels[(string) $ciclo->estado] ?? ucfirst((string) $ciclo->estado);
+
+        return [
+            'tipo' => $tipo,
+            'tipoLabel' => $tipoLabel,
+            'nombre' => $ciclo->nombre ?: (($tipo === 'gasto' ? 'Presupuesto ' : 'Proyección ').((int) $ciclo->anio_presupuesto)),
+            'detalle' => $estado.' · '.(int) $ciclo->anio_referencia.' → '.(int) $ciclo->anio_presupuesto,
+            'cuentas' => $total,
+            'capturadas' => $capturadas,
+            'progreso' => $total > 0 ? round(($capturadas / $total) * 1000) / 10 : 0.0,
+            'unidad' => $total === 1 ? $unidadUna : $unidadVarias,
+            'capturaDesde' => $ciclo->fecha_inicio ? $ciclo->fecha_inicio->format('d/m/Y') : null,
+            'capturaHasta' => $cierre ? $cierre->format('d/m/Y') : null,
+            'diasRestantes' => $cierre ? (int) Carbon::today()->diffInDays($cierre, false) : null,
+            'orden' => sprintf('%04d-%010d', (int) $ciclo->anio_presupuesto, (int) $ciclo->id),
+            'url' => $url,
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function filasCiclosGasto(): array
+    {
+        if (! Schema::hasTable('tbl_cc_asignaciones') || ! Schema::hasTable('tbl_cc_ciclos')) {
+            return [];
+        }
+
+        $mios = CcAsignacion::query()->where('user_id', auth()->id())->get();
+        if ($mios->isEmpty()) {
+            return [];
+        }
+
+        $ciclos = CcCiclo::query()->get()->keyBy(fn ($c) => strtoupper(trim((string) $c->codigo)));
+        $cuentasPorAsig = collect();
+        if (Schema::hasTable('tbl_cc_asignacion_cuentas')) {
+            $cuentasPorAsig = CcAsignacionCuenta::query()
+                ->whereIn('asignacion_id', $mios->pluck('id'))
+                ->get(['asignacion_id', 'cuenta_codigo'])
+                ->groupBy('asignacion_id');
+        }
+
+        $hasPpto = Schema::hasTable('tbl_cc_presupuestos');
+        $hasDone = $hasPpto && Schema::hasColumn('tbl_cc_presupuestos', 'completado');
+        $capturasPorCiclo = [];
+        if ($hasPpto) {
+            $codigos = $mios->pluck('ciclo_codigo')->map(fn ($c) => strtoupper(trim((string) $c)))->unique()->filter()->values();
+            $cols = array_merge(['ciclo_codigo', 'empresa', 'centro_codigo', 'cuenta_codigo'], $this->columnasMesesCaptura($hasDone));
+            $pptos = CcPresupuesto::query()
+                ->where(function ($q) use ($codigos) {
+                    foreach ($codigos as $codigo) {
+                        $q->orWhereRaw('UPPER(ciclo_codigo) = ?', [$codigo]);
+                    }
+                })
+                ->get($cols);
+            foreach ($pptos->groupBy(fn ($row) => strtoupper(trim((string) $row->ciclo_codigo))) as $codigo => $rows) {
+                $capturasPorCiclo[$codigo] = $this->indiceCapturasListas($rows, 'centro_codigo', 'cuenta_codigo', $hasDone);
+            }
+        }
+
+        $filas = [];
+        foreach ($mios->groupBy(fn ($a) => strtoupper(trim((string) $a->ciclo_codigo))) as $codigo => $rows) {
+            $ciclo = $ciclos->get($codigo);
+            if (! $ciclo) {
+                continue;
+            }
+            $grupos = [];
+            foreach ($rows as $row) {
+                $empresa = (string) $row->empresa;
+                $centro = trim((string) $row->centro_codigo);
+                $key = strtolower($empresa).'|'.$centro;
+                if (! isset($grupos[$key])) {
+                    $grupos[$key] = ['empresa' => $empresa, 'centro' => $centro, 'codigos' => []];
+                }
+                foreach ($cuentasPorAsig->get($row->id, collect()) as $cta) {
+                    $code = trim((string) $cta->cuenta_codigo);
+                    if ($code !== '') {
+                        $grupos[$key]['codigos'][$code] = $code;
+                    }
+                }
+            }
+            foreach ($grupos as &$grupo) {
+                $grupo['codigos'] = array_values($grupo['codigos']);
+            }
+            unset($grupo);
+
+            $filas[] = $this->filaCicloCaptura(
+                'gasto',
+                'Gasto',
+                $ciclo,
+                $grupos,
+                $capturasPorCiclo[$codigo] ?? [],
+                'cuenta',
+                'cuentas',
+                route('centros.control', ['ciclo' => $ciclo->codigo])
+            );
+        }
+
+        usort($filas, fn ($a, $b) => strcmp((string) $b['orden'], (string) $a['orden']));
+
+        return $filas;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function filasCiclosVenta(): array
+    {
+        if (! Schema::hasTable('tbl_pv_asignaciones') || ! Schema::hasTable('tbl_pv_ciclos')) {
+            return [];
+        }
+
+        $mios = PvAsignacion::query()->where('user_id', auth()->id())->get();
+        if ($mios->isEmpty()) {
+            return [];
+        }
+
+        $ciclos = PvCiclo::query()->get()->keyBy(fn ($c) => strtoupper(trim((string) $c->codigo)));
+        $productosPorAsig = collect();
+        if (Schema::hasTable('tbl_pv_asignacion_productos')) {
+            $productosPorAsig = PvAsignacionProducto::query()
+                ->whereIn('asignacion_id', $mios->pluck('id'))
+                ->get(['asignacion_id', 'producto_codigo'])
+                ->groupBy('asignacion_id');
+        }
+
+        $hasPpto = Schema::hasTable('tbl_pv_proyecciones');
+        $hasDone = $hasPpto && Schema::hasColumn('tbl_pv_proyecciones', 'completado');
+        $capturasPorCiclo = [];
+        if ($hasPpto) {
+            $codigos = $mios->pluck('ciclo_codigo')->map(fn ($c) => strtoupper(trim((string) $c)))->unique()->filter()->values();
+            $cols = array_merge(['ciclo_codigo', 'empresa', 'cliente_codigo', 'producto_codigo'], $this->columnasMesesCaptura($hasDone));
+            $pptos = PvPresupuesto::query()
+                ->where(function ($q) use ($codigos) {
+                    foreach ($codigos as $codigo) {
+                        $q->orWhereRaw('UPPER(ciclo_codigo) = ?', [$codigo]);
+                    }
+                })
+                ->get($cols);
+            foreach ($pptos->groupBy(fn ($row) => strtoupper(trim((string) $row->ciclo_codigo))) as $codigo => $rows) {
+                $capturasPorCiclo[$codigo] = $this->indiceCapturasListas($rows, 'cliente_codigo', 'producto_codigo', $hasDone);
+            }
+        }
+
+        $filas = [];
+        foreach ($mios->groupBy(fn ($a) => strtoupper(trim((string) $a->ciclo_codigo))) as $codigo => $rows) {
+            $ciclo = $ciclos->get($codigo);
+            if (! $ciclo) {
+                continue;
+            }
+            $grupos = [];
+            foreach ($rows as $row) {
+                $empresa = (string) $row->empresa;
+                $centro = trim((string) $row->cliente_codigo);
+                $key = strtolower($empresa).'|'.$centro;
+                if (! isset($grupos[$key])) {
+                    $grupos[$key] = ['empresa' => $empresa, 'centro' => $centro, 'codigos' => []];
+                }
+                foreach ($productosPorAsig->get($row->id, collect()) as $prod) {
+                    $code = trim((string) $prod->producto_codigo);
+                    if ($code !== '') {
+                        $grupos[$key]['codigos'][$code] = $code;
+                    }
+                }
+            }
+            foreach ($grupos as &$grupo) {
+                $grupo['codigos'] = array_values($grupo['codigos']);
+            }
+            unset($grupo);
+
+            $filas[] = $this->filaCicloCaptura(
+                'venta',
+                'Venta',
+                $ciclo,
+                $grupos,
+                $capturasPorCiclo[$codigo] ?? [],
+                'producto',
+                'productos',
+                route('pv.control', ['ciclo' => $ciclo->codigo])
+            );
+        }
+
+        usort($filas, fn ($a, $b) => strcmp((string) $b['orden'], (string) $a['orden']));
+
+        return $filas;
+    }
+
     private function obtenerResumenCentrosHome(): array
     {
         $labels = [
@@ -665,6 +1014,7 @@ class HomeController extends Controller
             'usuarios' => 0,
             'empresas' => 0,
             'misCentros' => 0,
+            'asignados' => [],
         ];
 
         try {
@@ -703,19 +1053,27 @@ class HomeController extends Controller
             $empresas = 0;
             $misCentros = 0;
 
+            $asignados = [];
             if (Schema::hasTable('tbl_cc_asignaciones')) {
                 $asigs = CcAsignacion::query()
                     ->where('ciclo_codigo', $ciclo->codigo)
-                    ->get(['id', 'user_id', 'empresa', 'centro_codigo']);
+                    ->withCount('cuentas')
+                    ->get();
 
                 $centros = $asigs->unique(function ($a) {
                     return strtolower((string) $a->empresa).'|'.$a->centro_codigo;
                 })->count();
                 $usuarios = $asigs->pluck('user_id')->unique()->filter()->count();
                 $empresas = $asigs->pluck('empresa')->map(fn ($e) => strtolower(trim((string) $e)))->filter()->unique()->count();
-                $misCentros = $asigs->where('user_id', auth()->id())->unique(function ($a) {
-                    return strtolower((string) $a->empresa).'|'.$a->centro_codigo;
-                })->count();
+                $mios = $asigs->where('user_id', auth()->id())
+                    ->sortByDesc(fn ($a) => (int) ($a->es_principal ?? 0))
+                    ->unique(function ($a) {
+                        return strtolower((string) $a->empresa).'|'.$a->centro_codigo;
+                    })
+                    ->sortBy(fn ($a) => mb_strtolower(trim((string) ($a->centro_nombre ?: $a->centro_codigo))))
+                    ->values();
+                $misCentros = $mios->count();
+                $asignados = $this->filasCiclosGasto();
 
                 if (Schema::hasTable('tbl_cc_asignacion_cuentas') && $asigs->isNotEmpty()) {
                     $cuentas = (int) CcAsignacionCuenta::query()
@@ -739,6 +1097,7 @@ class HomeController extends Controller
                 'usuarios' => $usuarios,
                 'empresas' => $empresas,
                 'misCentros' => $misCentros,
+                'asignados' => $asignados,
             ];
         } catch (\Throwable $e) {
             Log::warning('Resumen centros home: '.$e->getMessage());
@@ -777,6 +1136,7 @@ class HomeController extends Controller
             'usuarios' => 0,
             'empresas' => 0,
             'misClientes' => 0,
+            'asignados' => [],
         ];
 
         try {
@@ -815,19 +1175,27 @@ class HomeController extends Controller
             $empresas = 0;
             $misClientes = 0;
 
+            $asignados = [];
             if (Schema::hasTable('tbl_pv_asignaciones')) {
                 $asigs = PvAsignacion::query()
                     ->where('ciclo_codigo', $ciclo->codigo)
-                    ->get(['id', 'user_id', 'empresa', 'cliente_codigo']);
+                    ->withCount('cuentas')
+                    ->get();
 
                 $clientes = $asigs->unique(function ($a) {
                     return strtolower((string) $a->empresa).'|'.$a->cliente_codigo;
                 })->count();
                 $usuarios = $asigs->pluck('user_id')->unique()->filter()->count();
                 $empresas = $asigs->pluck('empresa')->map(fn ($e) => strtolower(trim((string) $e)))->filter()->unique()->count();
-                $misClientes = $asigs->where('user_id', auth()->id())->unique(function ($a) {
-                    return strtolower((string) $a->empresa).'|'.$a->cliente_codigo;
-                })->count();
+                $mios = $asigs->where('user_id', auth()->id())
+                    ->sortByDesc(fn ($a) => (int) ($a->es_principal ?? 0))
+                    ->unique(function ($a) {
+                        return strtolower((string) $a->empresa).'|'.$a->cliente_codigo;
+                    })
+                    ->sortBy(fn ($a) => mb_strtolower(trim((string) ($a->cliente_nombre ?: $a->cliente_codigo))))
+                    ->values();
+                $misClientes = $mios->count();
+                $asignados = $this->filasCiclosVenta();
 
                 if (Schema::hasTable('tbl_pv_asignacion_productos') && $asigs->isNotEmpty()) {
                     $productos = (int) PvAsignacionProducto::query()
@@ -851,6 +1219,7 @@ class HomeController extends Controller
                 'usuarios' => $usuarios,
                 'empresas' => $empresas,
                 'misClientes' => $misClientes,
+                'asignados' => $asignados,
             ];
         } catch (\Throwable $e) {
             Log::warning('Resumen proyecciones home: '.$e->getMessage());

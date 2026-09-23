@@ -12,6 +12,18 @@
             <h1 class="cc-title" id="cc-page-title">Captura de proyecciones</h1>
             <p class="cc-sub" id="cc-page-sub">Elige ciclo, empresa y cliente. Captura las cantidades de todos los productos en la misma tabla.</p>
         </div>
+        <img class="cc-header-logo" src="{{ asset('Images/logo_horizontal.png') }}" alt="Austin Powder">
+    </div>
+
+    <div class="cc-toolbar">
+        <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
+            <button type="button" class="is-active" data-vista="captura">
+                <i class="fa-solid fa-pen-to-square me-1"></i> Captura de proyecciones
+            </button>
+            <button type="button" data-vista="visor">
+                <i class="fa-solid fa-table me-1"></i> Visor de clientes
+            </button>
+        </nav>
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
             <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Ciclo"></select>
@@ -29,15 +41,6 @@
             </button>
         </div>
     </div>
-
-    <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
-        <button type="button" class="is-active" data-vista="captura">
-            <i class="fa-solid fa-pen-to-square me-1"></i> Captura de proyecciones
-        </button>
-        <button type="button" data-vista="visor">
-            <i class="fa-solid fa-table me-1"></i> Visor de clientes
-        </button>
-    </nav>
 
     <div id="ctl-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
@@ -274,11 +277,11 @@
                     <strong id="visor-kpi-n">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
-                    <small>Tot Venta</small>
+                    <small id="visor-kpi-gasto-lbl">Total venta {{ $bootstrap['anioGasto'] }}</small>
                     <strong id="visor-kpi-gasto">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
-                    <small>Tot Proyección</small>
+                    <small id="visor-kpi-ppto-lbl">Total proyectado {{ $bootstrap['anioPresupuesto'] }}</small>
                     <strong id="visor-kpi-ppto">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
@@ -306,9 +309,8 @@
                                 <th></th>
                                 <th>Empresa</th>
                                 <th>Cliente</th>
-                                <th>Departamento</th>
-                                <th class="num">Tot Venta</th>
-                                <th class="num">Tot Proy.</th>
+                                <th class="num" id="visor-th-venta">Total venta {{ $bootstrap['anioGasto'] }}</th>
+                                <th class="num" id="visor-th-proy">Total proyectado {{ $bootstrap['anioPresupuesto'] }}</th>
                                 <th>Usuario</th>
                                 <th>Fecha Modif</th>
                                 <th>Progreso</th>
