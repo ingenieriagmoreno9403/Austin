@@ -605,16 +605,18 @@
         return extraFromRow(hit);
     }
 
-    function applyGastoMap(porCuenta) {
+    function applyGastoMap(porCuenta, meta) {
         var built = mapFromPorCuenta(porCuenta);
         control._gastoMap = built.map;
         control._gastoExtras = built.extras;
         control._gastoNombres = built.nombres;
         control._gastoLoadedFor = control._gastoReq || '';
+        control._gastoMeta = meta || {};
         if (control._gastoReq) {
             CC.state.gastoLookup = CC.state.gastoLookup || {};
             CC.state.gastoLookup[control._gastoReq] = built;
         }
+        paintVentaSnapshotHint(meta);
         if (!control.centro) return;
         control._allCtas = cuentasEnriquecidas(control.centro);
         if (CC._capturaReady) seedPresupuestoDesdeVentaReal(control.centro);
@@ -628,6 +630,69 @@
         renderDetalleChart();
         renderVisorTable();
         paintDetalleHeader();
+    }
+
+    function paintVentaSnapshotHint(meta) {
+        meta = meta || control._gastoMeta || {};
+        var year = meta.year || CC.state.anioGasto || '';
+        var when = meta.synced_at || '';
+        var fuente = String(meta.fuente || '');
+        var label = 'Sin snapshot';
+        var shortLabel = 'Venta local: —';
+        var navLabel = 'Snapshot: —';
+        var state = 'is-empty';
+        var title = 'Aún no hay venta local para este cliente. Se consultará SAP al cargar.';
+
+        if (fuente === 'snapshot' || fuente === 'snapshot_fallback') {
+            label = when ? ('Snapshot ' + when) : ('Snapshot venta ' + year);
+            shortLabel = when ? ('Local · ' + when) : ('Local · venta ' + year);
+            navLabel = when ? ('Snapshot: ' + when) : 'Snapshot local';
+            state = fuente === 'snapshot_fallback' ? 'is-warn' : 'is-local';
+            title = 'Venta ' + year + ' desde BD local' + (when ? (' (sync ' + when + ')') : '') +
+                (fuente === 'snapshot_fallback' ? '. SAP no respondió; se usó el último snapshot.' : '.');
+        } else if (fuente === 'api') {
+            label = when ? ('SAP ahora · ' + when) : ('SAP · venta ' + year);
+            shortLabel = when ? ('SAP · ' + when) : 'SAP · recién sync';
+            navLabel = when ? ('SAP: ' + when) : 'SAP recién sync';
+            state = 'is-api';
+            title = 'Venta ' + year + ' consultada en SAP y guardada en snapshot' +
+                (when ? (' (' + when + ')') : '') + '.';
+        } else if (fuente === 'cache') {
+            label = 'Caché de sesión';
+            shortLabel = 'Caché sesión';
+            navLabel = 'Snapshot: caché';
+            state = 'is-cache';
+            title = 'Venta ' + year + ' en caché de esta sesión.';
+        } else if (fuente === 'error') {
+            label = 'Error al cargar';
+            shortLabel = 'Error venta';
+            navLabel = 'Snapshot: error';
+            state = 'is-error';
+            title = (meta.mensaje || 'No se pudo cargar la venta real.');
+        }
+
+        var badge = document.getElementById('ctl-venta-snap-badge');
+        var badgeTxt = document.getElementById('ctl-venta-snap-text');
+        if (badge) {
+            badge.className = 'cc-snap-badge ' + state;
+            badge.title = title;
+        }
+        if (badgeTxt) badgeTxt.textContent = label;
+
+        var pill = document.getElementById('ctl-venta-snap-pill');
+        var pillTxt = document.getElementById('ctl-venta-snap-pill-text');
+        if (pill) {
+            pill.className = 'cc-snap-badge ' + state;
+            pill.title = title + ' Clic en «Actualizar venta SAP» para refrescar.';
+        }
+        if (pillTxt) pillTxt.textContent = shortLabel;
+
+        var nav = document.getElementById('ctl-venta-snap-nav');
+        if (nav) {
+            nav.textContent = navLabel;
+            nav.title = title;
+            nav.className = 'cc-snap-nav ' + state;
+        }
     }
 
     var apiWaitDepth = 0;
@@ -679,30 +744,67 @@
             '</div>';
     }
 
-    function loadGastoRealCentro(c) {
+    function loadGastoRealCentro(c, opts) {
+        opts = opts || {};
         if (!c || !CC.state.gastoUrl) return;
         var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
         var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+        var force = !!opts.force;
         control._gastoReq = key;
-        if (CC.state.gastoCache && CC.state.gastoCache[key]) {
-            applyGastoMap(CC.state.gastoCache[key]);
+        if (!force && CC.state.gastoCache && CC.state.gastoCache[key]) {
+            applyGastoMap(CC.state.gastoCache[key], CC.state.gastoMeta && CC.state.gastoMeta[key]);
             return;
         }
+        if (force) {
+            if (CC.state.gastoCache) delete CC.state.gastoCache[key];
+            if (CC.state.gastoMeta) delete CC.state.gastoMeta[key];
+        }
         control._gastoMap = {};
-        showApiWait('Consultando ventas reales en SAP…');
-        fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(c.empresa || '') +
+        var badgeTxt = document.getElementById('ctl-venta-snap-text');
+        var pillTxt = document.getElementById('ctl-venta-snap-pill-text');
+        var nav = document.getElementById('ctl-venta-snap-nav');
+        if (badgeTxt) badgeTxt.textContent = force ? 'Actualizando SAP…' : 'Cargando…';
+        if (pillTxt) pillTxt.textContent = force ? 'Actualizando…' : 'Cargando…';
+        if (nav) nav.textContent = 'Snapshot: cargando…';
+        ['ctl-venta-snap-badge', 'ctl-venta-snap-pill'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.className = 'cc-snap-badge is-cache';
+        });
+        showApiWait(force
+            ? ('Actualizando venta ' + year + ' desde SAP…')
+            : ('Cargando venta ' + year + ' (snapshot local o SAP)…'));
+        var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
             '&cc=' + encodeURIComponent(c.codigo || '') +
-            '&year=' + encodeURIComponent(year), {
+            '&year=' + encodeURIComponent(year) +
+            '&ref=' + encodeURIComponent(year);
+        if (force) qs += '&force=1';
+        fetch(CC.state.gastoUrl + qs, {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
             if (control._gastoReq !== key) return;
             var por = (json && json.por_cuenta) || {};
+            var meta = {
+                fuente: (json && json.fuente) || '',
+                synced_at: (json && json.synced_at) || null,
+                year: (json && json.year) || year,
+                mensaje: (json && json.mensaje) || null
+            };
             CC.state.gastoCache = CC.state.gastoCache || {};
+            CC.state.gastoMeta = CC.state.gastoMeta || {};
             CC.state.gastoCache[key] = por;
-            applyGastoMap(por);
+            CC.state.gastoMeta[key] = meta;
+            applyGastoMap(por, meta);
+            if (force) {
+                toast('success', 'Venta actualizada',
+                    'Snapshot ' + year + (meta.synced_at ? (' · ' + meta.synced_at) : '') +
+                    (meta.fuente ? (' · ' + meta.fuente) : ''));
+            } else if (meta.fuente === 'api') {
+                // Primera carga: ya quedó guardado en BD.
+            }
         }).catch(function () {
             if (control._gastoReq !== key) return;
-            applyGastoMap({});
+            applyGastoMap({}, { fuente: 'error' });
+            if (force) toast('error', 'No se actualizó', 'No se pudo consultar SAP.');
         }).then(function () {
             hideApiWait();
         });
@@ -2990,7 +3092,7 @@
     }
 
     function setCapturaEnabled(on) {
-        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q'].forEach(function (id) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-refresh-venta', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.disabled = !on;
         });
@@ -3710,6 +3812,8 @@
             control._ctas = [];
             control._preciosMap = {};
             control._preciosReq = null;
+            control._gastoMeta = {};
+            paintVentaSnapshotHint({});
             setCapturaEnabled(false);
             updateControlProgress();
             renderNavCuentas();
@@ -5123,6 +5227,30 @@
                 return;
             }
             run();
+        });
+        var refreshVenta = document.getElementById('ctl-refresh-venta');
+        if (refreshVenta) refreshVenta.addEventListener('click', function () {
+            var c = control.centro;
+            if (!c) {
+                toast('warning', 'Cliente', 'Elige un cliente primero.');
+                return;
+            }
+            var go = function () {
+                loadGastoRealCentro(c, { force: true });
+            };
+            if (window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: '¿Actualizar venta ' + (CC.state.anioGasto || '') + '?',
+                    text: 'Se consultará SAP y se reemplazará el snapshot local de este cliente.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Actualizar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) go(); });
+                return;
+            }
+            if (window.confirm('¿Actualizar venta ' + (CC.state.anioGasto || '') + ' desde SAP?')) go();
         });
         var clear = document.getElementById('ctl-clear-year');
         if (clear) clear.addEventListener('click', function () {

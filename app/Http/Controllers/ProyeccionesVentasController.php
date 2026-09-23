@@ -12,6 +12,7 @@ use App\Models\PvCiclo;
 use App\Models\PvPresupuesto;
 use App\Models\PvProductoCosto;
 use App\Models\PvProductoCostoHistorial;
+use App\Models\PvVentaRealSnapshot;
 use App\Models\PvTipoPermiso;
 use App\Models\PvUsuarioPermiso;
 use App\Models\Empresas;
@@ -2329,6 +2330,7 @@ class ProyeccionesVentasController extends Controller
         $empresa = strtoupper(trim((string) $request->get('empresa', '')));
         $cc = trim((string) $request->get('cc', $request->get('CC', '')));
         $year = (int) $request->get('year', $request->get('anio', 0));
+        $force = filter_var($request->get('force', $request->get('refresh', false)), FILTER_VALIDATE_BOOLEAN);
 
         $alias = [
             'ABSA' => 'AUSTIN',
@@ -2354,27 +2356,87 @@ class ProyeccionesVentasController extends Controller
             $year = $refYear - 3;
         }
 
-        $cacheKey = 'pv.venta-real.v3.' . $empresa . '.' . $cc . '.' . $year;
-        $cached = Cache::get($cacheKey);
-        if (is_array($cached) && ! empty($cached['ok'])) {
-            if (! empty($cached['por_cuenta'])) {
-                $this->asegurarCostosMaestroDesdePorCuenta($empresa, $cached['por_cuenta']);
-            }
+        // 1) Snapshot local (evita ir a SAP en cada apertura de Captura).
+        if (! $force && Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+            $snap = PvVentaRealSnapshot::query()
+                ->whereRaw('UPPER(empresa) = ?', [$empresa])
+                ->where('cliente_codigo', $cc)
+                ->where('anio', $year)
+                ->first();
+            if ($snap && is_array($snap->por_cuenta) && $snap->por_cuenta !== []) {
+                $payload = [
+                    'ok' => true,
+                    'year' => $year,
+                    'por_cuenta' => $snap->por_cuenta,
+                    'mensaje' => null,
+                    'fuente' => 'snapshot',
+                    'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
+                ];
+                $cacheKey = 'pv.venta-real.v3.'.$empresa.'.'.$cc.'.'.$year;
+                Cache::put($cacheKey, $payload, 900);
+                $this->asegurarCostosMaestroDesdePorCuenta($empresa, $snap->por_cuenta);
 
-            return response()->json($cached);
+                return response()->json($payload);
+            }
         }
 
+        // 2) Cache RAM corta (útil mientras se escribe el snapshot).
+        $cacheKey = 'pv.venta-real.v3.'.$empresa.'.'.$cc.'.'.$year;
+        if (! $force) {
+            $cached = Cache::get($cacheKey);
+            if (is_array($cached) && ! empty($cached['ok'])) {
+                if (! empty($cached['por_cuenta'])) {
+                    $this->asegurarCostosMaestroDesdePorCuenta($empresa, $cached['por_cuenta']);
+                }
+                $cached['fuente'] = $cached['fuente'] ?? 'cache';
+
+                return response()->json($cached);
+            }
+        } else {
+            Cache::forget($cacheKey);
+        }
+
+        // 3) API SAP → guardar snapshot.
         try {
             $payload = $this->cargarGastoRealCentro($empresa, $cc, $year);
             if (! empty($payload['ok'])) {
+                $payload['fuente'] = 'api';
+                $payload['synced_at'] = now()->format('Y-m-d H:i');
                 Cache::put($cacheKey, $payload, 900);
+                $this->guardarVentaRealSnapshot(
+                    $empresa,
+                    $cc,
+                    $year,
+                    is_array($payload['por_cuenta'] ?? null) ? $payload['por_cuenta'] : [],
+                    optional($request->user())->id
+                );
             }
         } catch (Throwable $e) {
+            // Si falla la API pero hay snapshot viejo, úsalo.
+            if (Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+                $snap = PvVentaRealSnapshot::query()
+                    ->whereRaw('UPPER(empresa) = ?', [$empresa])
+                    ->where('cliente_codigo', $cc)
+                    ->where('anio', $year)
+                    ->first();
+                if ($snap && is_array($snap->por_cuenta) && $snap->por_cuenta !== []) {
+                    return response()->json([
+                        'ok' => true,
+                        'year' => $year,
+                        'por_cuenta' => $snap->por_cuenta,
+                        'mensaje' => 'API no disponible; se usó snapshot local ('.$e->getMessage().').',
+                        'fuente' => 'snapshot_fallback',
+                        'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
+                    ]);
+                }
+            }
+
             return response()->json([
                 'ok' => false,
                 'year' => $year,
                 'por_cuenta' => (object) [],
                 'mensaje' => $e->getMessage(),
+                'fuente' => 'error',
             ], 200);
         }
 
@@ -2383,6 +2445,32 @@ class ProyeccionesVentasController extends Controller
         }
 
         return response()->json($payload);
+    }
+
+    /**
+     * @param  array<string, mixed>  $porCuenta
+     */
+    protected function guardarVentaRealSnapshot(
+        string $empresa,
+        string $cc,
+        int $year,
+        array $porCuenta,
+        $userId = null
+    ): void {
+        if (! Schema::hasTable('tbl_pv_venta_real_snapshot') || $porCuenta === []) {
+            return;
+        }
+
+        $row = PvVentaRealSnapshot::query()->firstOrNew([
+            'empresa' => strtoupper(trim($empresa)),
+            'cliente_codigo' => trim($cc),
+            'anio' => $year,
+        ]);
+        $row->por_cuenta = $porCuenta;
+        $row->origen = 'api';
+        $row->synced_at = now();
+        $row->synced_by = $userId;
+        $row->save();
     }
 
     /**

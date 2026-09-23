@@ -3459,9 +3459,75 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 0.25rem;
-    max-width: 26rem;
+    gap: 0.35rem;
+    max-width: 28rem;
 }
+.cc-snap-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid #d4d4d8;
+    background: #f4f4f5;
+    color: #52525b;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: .01em;
+    line-height: 1.2;
+    max-width: 100%;
+}
+.cc-snap-badge i {
+    font-size: 0.7rem;
+    opacity: 0.9;
+}
+.cc-matrix-fx .cc-snap-badge {
+    margin-top: 0;
+}
+.cc-snap-badge.is-local {
+    border-color: #86efac;
+    background: #f0fdf4;
+    color: #166534;
+}
+.cc-snap-badge.is-api {
+    border-color: #7dd3fc;
+    background: #f0f9ff;
+    color: #075985;
+}
+.cc-snap-badge.is-cache {
+    border-color: #fcd34d;
+    background: #fffbeb;
+    color: #92400e;
+}
+.cc-snap-badge.is-warn {
+    border-color: #fdba74;
+    background: #fff7ed;
+    color: #9a3412;
+}
+.cc-snap-badge.is-error {
+    border-color: #fca5a5;
+    background: #fef2f2;
+    color: #991b1b;
+}
+.cc-snap-badge.is-empty {
+    border-color: #e4e4e7;
+    background: #fafafa;
+    color: #71717a;
+}
+.cc-snap-nav {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.68rem;
+    font-style: normal;
+    font-weight: 650;
+    color: #71717a;
+}
+.cc-snap-nav.is-local { color: #166534; }
+.cc-snap-nav.is-api { color: #075985; }
+.cc-snap-nav.is-cache { color: #92400e; }
+.cc-snap-nav.is-warn { color: #9a3412; }
+.cc-snap-nav.is-error { color: #991b1b; }
 .cc-matrix-fx .cc-matrix-hint {
     text-align: right;
 }

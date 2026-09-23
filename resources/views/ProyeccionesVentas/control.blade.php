@@ -116,6 +116,7 @@
                     <div class="cc-nav-stat">
                         <small>Venta {{ $bootstrap['anioGasto'] }}</small>
                         <strong id="kpi-ctl-gasto">—</strong>
+                        <em class="cc-snap-nav" id="ctl-venta-snap-nav">Snapshot: —</em>
                     </div>
                     <div class="cc-nav-stat">
                         <small>Proy. {{ $bootstrap['anioPresupuesto'] }}</small>
@@ -155,6 +156,10 @@
                                 <small>Se vendió {{ $bootstrap['anioGasto'] }}</small>
                                 <strong id="ctl-form-gasto">—</strong>
                                 <span>Importe de venta real</span>
+                                <div class="cc-snap-badge is-empty" id="ctl-venta-snap-badge" title="Origen de la venta del año de referencia">
+                                    <i class="fa-solid fa-database" aria-hidden="true"></i>
+                                    <span id="ctl-venta-snap-text">Sin snapshot</span>
+                                </div>
                             </div>
                             <div class="cc-cta-compare-card is-now">
                                 <small id="ctl-form-ppto-label">Proyección</small>
@@ -186,6 +191,9 @@
                                 <button type="button" class="cc-btn" id="ctl-copy-year">
                                     <i class="fa-solid fa-clone"></i> Copiar {{ $bootstrap['anioGasto'] }}
                                 </button>
+                                <button type="button" class="cc-btn" id="ctl-refresh-venta" title="Vuelve a consultar SAP y actualiza el snapshot local de venta {{ $bootstrap['anioGasto'] }}">
+                                    <i class="fa-solid fa-cloud-arrow-down"></i> Actualizar venta SAP
+                                </button>
                                 <button type="button" class="cc-btn" id="ctl-btn-dispersar" onclick="CC.showModal('modalDispersar')">
                                     <i class="fa-solid fa-share-nodes"></i> Dispersar
                                 </button>
@@ -197,6 +205,10 @@
                                 </button>
                             </div>
                             <div class="cc-matrix-fx">
+                                <span class="cc-snap-badge is-empty" id="ctl-venta-snap-pill" title="Snapshot de venta real">
+                                    <i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>
+                                    <span id="ctl-venta-snap-pill-text">Venta local: —</span>
+                                </span>
                                 <span class="cc-fx-badge" id="ctl-fx-badge">Vista MXN · TC —</span>
                                 <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
                             </div>
