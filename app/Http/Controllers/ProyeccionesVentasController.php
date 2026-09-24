@@ -818,7 +818,13 @@ class ProyeccionesVentasController extends Controller
             $anio
         );
 
-        $propagadas = $this->propagarCostoACiclosAbiertos($empresa, $codigo, $costo);
+        // Solo propagar el global (mes=0 o moda del producto), nunca el precio de un mes suelto
+        // (antes el último PUT del modal dejaba Dic como costo_unitario de la proyección).
+        $propagadas = 0;
+        $globalProp = $this->precioGlobalMaestroProducto($empresa, $codigo, $cardCode, $anio);
+        if ($globalProp !== null && $globalProp > 0) {
+            $propagadas = $this->propagarCostoACiclosAbiertos($empresa, $codigo, $globalProp);
+        }
 
         return response()->json([
             'ok' => true,
@@ -836,8 +842,9 @@ class ProyeccionesVentasController extends Controller
                 'updated_at' => $row->updated_at ? $row->updated_at->format('Y-m-d H:i') : null,
             ],
             'proyecciones_actualizadas' => $propagadas,
+            'precio_global' => $globalProp,
             'message' => $propagadas > 0
-                ? ('Precio guardado. Se actualizó en '.$propagadas.' proyección(es) de ciclos abiertos.')
+                ? ('Precio guardado. Se actualizó el global en '.$propagadas.' proyección(es) de ciclos abiertos.')
                 : 'Precio guardado en maestro local. No había proyecciones en ciclos abiertos para actualizar.',
         ]);
     }
@@ -971,6 +978,84 @@ class ProyeccionesVentasController extends Controller
             }
         }
 
+        // Global explícito (mes=0) = moda de los meses enviados; propaga a proyecciones abiertas.
+        $freq = [];
+        foreach ($precioMesesOut as $p) {
+            if ($p === null || ! ((float) $p > 0)) {
+                continue;
+            }
+            $keyP = number_format((float) $p, 4, '.', '');
+            $freq[$keyP] = ($freq[$keyP] ?? 0) + 1;
+        }
+        $global = null;
+        if ($freq) {
+            arsort($freq);
+            $global = round((float) array_key_first($freq), 4);
+        }
+        $propagadas = 0;
+        if ($global !== null && $global > 0 && $hasMes) {
+            $lookupG = [
+                'empresa' => $empresa,
+                'producto_codigo' => $codigo,
+            ];
+            if ($hasAnio) {
+                $lookupG['anio'] = $anio;
+            }
+            if ($hasCard) {
+                $lookupG['card_code'] = $cardCode;
+            }
+            $lookupG['mes'] = 0;
+            $rowG = PvProductoCosto::query()->firstOrNew($lookupG);
+            $esNuevoG = ! $rowG->exists;
+            $precioAntG = $esNuevoG ? null : (float) $rowG->costo_unitario;
+            $monedaAntG = $esNuevoG ? null : (string) ($rowG->moneda ?: 'MXN');
+            if ($nombre !== '') {
+                $rowG->producto_nombre = $nombre;
+            } elseif (! $rowG->exists) {
+                $rowG->producto_nombre = $codigo;
+            }
+            if ($hasAnio) {
+                $rowG->anio = $anio;
+            }
+            if ($hasCard) {
+                $rowG->card_code = $cardCode;
+            }
+            if ($hasCardName && $cardName !== '') {
+                $rowG->card_name = $cardName;
+            }
+            $rowG->mes = 0;
+            $rowG->costo_unitario = $global;
+            $rowG->moneda = $moneda;
+            $rowG->updated_by = $userId;
+            if ($esNuevoG || abs((float) ($precioAntG ?? 0) - $global) >= 0.0001
+                || strtoupper((string) ($monedaAntG ?: 'MXN')) !== $moneda) {
+                $rowG->save();
+                $this->registrarHistorialPrecio(
+                    $empresa,
+                    $codigo,
+                    (string) $rowG->producto_nombre,
+                    $precioAntG,
+                    $monedaAntG,
+                    $global,
+                    $moneda,
+                    'manual',
+                    $userId,
+                    $cardCode,
+                    $cardName,
+                    0,
+                    $anio
+                );
+                if ($esNuevoG) {
+                    $creados++;
+                } else {
+                    $actualizados++;
+                }
+            } else {
+                $sinCambio++;
+            }
+            $propagadas = $this->propagarCostoACiclosAbiertos($empresa, $codigo, $global);
+        }
+
         // Refresca mapa de meses en memoria del cliente vía respuesta.
         return response()->json([
             'ok' => true,
@@ -979,6 +1064,8 @@ class ProyeccionesVentasController extends Controller
             'actualizados' => $actualizados,
             'sin_cambio' => $sinCambio,
             'precio_meses' => $precioMesesOut,
+            'precio_global' => $global,
+            'proyecciones_actualizadas' => $propagadas,
             'moneda' => $moneda,
             'message' => trim(
                 ($creados ? ($creados.' creado(s)') : '').
@@ -1922,9 +2009,69 @@ class ProyeccionesVentasController extends Controller
     /**
      * Propaga costo maestro solo a proyecciones de ciclos abiertos (histórico intacto).
      */
+    /**
+     * Precio global del maestro para un producto: mes=0 si existe; si no, moda de meses 1–12.
+     */
+    protected function precioGlobalMaestroProducto(
+        string $empresa,
+        string $productoCodigo,
+        string $cardCode = '',
+        ?int $anio = null
+    ): ?float {
+        if (! Schema::hasTable('tbl_pv_productos_costo')) {
+            return null;
+        }
+        $anio = $this->anioProyeccionCostos($anio);
+        $q = PvProductoCosto::query()
+            ->whereRaw('UPPER(empresa) = ?', [strtoupper(trim($empresa))])
+            ->where('producto_codigo', trim($productoCodigo));
+        if ($this->hasAnioCostos()) {
+            $q->where('anio', $anio);
+        }
+        if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code') && trim($cardCode) !== '') {
+            $q->where('card_code', trim($cardCode));
+        }
+        $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $rows = $q->orderByDesc('updated_at')->orderByDesc('id')->get();
+        $global = null;
+        $freq = [];
+        foreach ($rows as $row) {
+            $precio = (float) $row->costo_unitario;
+            if ($precio <= 0) {
+                continue;
+            }
+            $mes = $hasMes ? (int) ($row->mes ?? 0) : 0;
+            if ($mes === 0) {
+                if ($global === null) {
+                    $global = $precio;
+                }
+
+                continue;
+            }
+            if ($mes >= 1 && $mes <= 12) {
+                $keyP = number_format($precio, 4, '.', '');
+                $freq[$keyP] = ($freq[$keyP] ?? 0) + 1;
+            }
+        }
+        if ($global !== null && $global > 0) {
+            return round($global, 4);
+        }
+        if ($freq) {
+            arsort($freq);
+            $modeKey = (string) array_key_first($freq);
+
+            return round((float) $modeKey, 4);
+        }
+
+        return null;
+    }
+
     protected function propagarCostoACiclosAbiertos(string $empresa, string $productoCodigo, float $costo): int
     {
         if (! Schema::hasTable('tbl_pv_proyecciones') || ! Schema::hasTable('tbl_pv_ciclos')) {
+            return 0;
+        }
+        if ($costo <= 0) {
             return 0;
         }
 
@@ -1998,8 +2145,9 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Maestro local de precios. Prefiere el precio del mes más reciente por
-     * empresa + CardCode + ItemCode. También indexa empresa|ItemCode.
+     * Maestro local de precios (1 valor “global” por Empresa+CardCode+ItemCode).
+     * Preferencia: fila mes=0 (global explícito) → moda de meses 1–12 → último mes.
+     * También indexa empresa|ItemCode e ItemCode.
      *
      * @return array<string, array{costo: float, moneda: string, mes: int|null, card_code: string, origen: string}>
      */
@@ -2019,50 +2167,120 @@ class ProyeccionesVentasController extends Controller
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
 
-        // Orden: mes desc, updated_at desc → el primero por clave es el “último mes”.
-        if ($hasMes) {
-            $q->orderByDesc('mes');
-        }
-        $q->orderByDesc('updated_at')->orderByDesc('id');
+        $groups = [];
+        $q->orderByDesc('updated_at')->orderByDesc('id')->get()
+            ->each(function (PvProductoCosto $row) use (&$groups, $hasCard, $hasMes) {
+                $emp = strtoupper(trim((string) $row->empresa));
+                $cod = trim((string) $row->producto_codigo);
+                if ($emp === '' || $cod === '') {
+                    return;
+                }
+                $precio = (float) $row->costo_unitario;
+                if ($precio <= 0) {
+                    return;
+                }
+                $card = $hasCard ? trim((string) ($row->card_code ?? '')) : '';
+                $mes = $hasMes ? (int) ($row->mes ?? 0) : 0;
+                $moneda = strtoupper((string) ($row->moneda ?: 'MXN')) ?: 'MXN';
+                $key = $emp.'|'.$card.'|'.$cod;
+                if (! isset($groups[$key])) {
+                    $groups[$key] = [
+                        'emp' => $emp,
+                        'card' => $card,
+                        'cod' => $cod,
+                        'global' => null,
+                        'global_moneda' => $moneda,
+                        'meses' => [],
+                    ];
+                }
+                if ($mes === 0) {
+                    // Primera fila global (updated_at desc).
+                    if ($groups[$key]['global'] === null) {
+                        $groups[$key]['global'] = $precio;
+                        $groups[$key]['global_moneda'] = $moneda;
+                    }
+
+                    return;
+                }
+                if ($mes >= 1 && $mes <= 12) {
+                    $groups[$key]['meses'][] = [
+                        'mes' => $mes,
+                        'precio' => $precio,
+                        'moneda' => $moneda,
+                    ];
+                }
+            });
 
         $out = [];
-        $q->get()->each(function (PvProductoCosto $row) use (&$out, $hasCard, $hasMes) {
-            $emp = strtoupper(trim((string) $row->empresa));
-            $cod = trim((string) $row->producto_codigo);
-            if ($emp === '' || $cod === '') {
+        $put = static function (string $k, array $entry) use (&$out) {
+            if ($k === '' || isset($out[$k]) || (float) ($entry['costo'] ?? 0) <= 0) {
                 return;
             }
-            $card = $hasCard ? trim((string) ($row->card_code ?? '')) : '';
-            $mes = $hasMes ? (int) ($row->mes ?? 0) : 0;
-            $entry = [
-                'costo' => (float) $row->costo_unitario,
-                'moneda' => strtoupper((string) ($row->moneda ?: 'MXN')),
-                'mes' => $mes > 0 ? $mes : null,
-                'card_code' => $card,
-                'origen' => 'maestro_local',
-            ];
-            if ((float) $entry['costo'] <= 0) {
-                return;
-            }
+            $out[$k] = $entry;
+        };
 
-            // Clave con cliente: empresa|card|item (último mes gana por el orderBy).
-            if ($card !== '') {
-                $keyCard = $emp.'|'.$card.'|'.$cod;
-                if (! isset($out[$keyCard])) {
-                    $out[$keyCard] = $entry;
+        foreach ($groups as $g) {
+            $costo = null;
+            $moneda = 'MXN';
+            $mesRef = null;
+            if ($g['global'] !== null && (float) $g['global'] > 0) {
+                $costo = (float) $g['global'];
+                $moneda = (string) $g['global_moneda'];
+                $mesRef = null;
+            } elseif ($g['meses']) {
+                $freq = [];
+                $freqMon = [];
+                $lastMes = 0;
+                $lastPrecio = 0.0;
+                $lastMon = 'MXN';
+                foreach ($g['meses'] as $m) {
+                    $keyP = number_format((float) $m['precio'], 4, '.', '');
+                    $freq[$keyP] = ($freq[$keyP] ?? 0) + 1;
+                    $freqMon[$m['moneda']] = ($freqMon[$m['moneda']] ?? 0) + 1;
+                    if ((int) $m['mes'] >= $lastMes) {
+                        $lastMes = (int) $m['mes'];
+                        $lastPrecio = (float) $m['precio'];
+                        $lastMon = (string) $m['moneda'];
+                    }
+                }
+                arsort($freq);
+                $modeKey = (string) array_key_first($freq);
+                $costo = (float) $modeKey;
+                arsort($freqMon);
+                $moneda = (string) array_key_first($freqMon);
+                // Mes de referencia = el más reciente que tenga la moda.
+                $mesRef = 0;
+                foreach ($g['meses'] as $m) {
+                    if (abs((float) $m['precio'] - $costo) < 0.0001 && (int) $m['mes'] >= $mesRef) {
+                        $mesRef = (int) $m['mes'];
+                    }
+                }
+                // Si todos los precios son distintos (empate 1-1), usar último mes.
+                if (count($freq) === count($g['meses']) && count($g['meses']) > 1) {
+                    $costo = $lastPrecio;
+                    $moneda = $lastMon;
+                    $mesRef = $lastMes;
+                }
+                if ($mesRef <= 0) {
+                    $mesRef = $lastMes;
                 }
             }
-
-            // Clave sin cliente: empresa|item (primer hit = mes más alto entre todos los clientes).
-            $keyProd = $emp.'|'.$cod;
-            if (! isset($out[$keyProd])) {
-                $out[$keyProd] = $entry;
+            if ($costo === null || $costo <= 0) {
+                continue;
             }
-            // También por solo ItemCode (compat).
-            if (! isset($out[$cod])) {
-                $out[$cod] = $entry;
+            $entry = [
+                'costo' => $costo,
+                'moneda' => $moneda,
+                'mes' => $mesRef,
+                'card_code' => $g['card'],
+                'origen' => 'maestro_local',
+            ];
+            if ($g['card'] !== '') {
+                $put($g['emp'].'|'.$g['card'].'|'.$g['cod'], $entry);
             }
-        });
+            $put($g['emp'].'|'.$g['cod'], $entry);
+            $put($g['cod'], $entry);
+        }
 
         return $out;
     }

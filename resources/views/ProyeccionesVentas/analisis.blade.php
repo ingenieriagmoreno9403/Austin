@@ -101,7 +101,7 @@
             </div>
             <div class="cc-heat-months is-labeled" id="an-heat-months"></div>
             <div class="cc-legend">
-                <span>Ene → Dic · intensidad = venta real · elige una empresa para ver productos</span>
+                <span>Ene → Dic · intensidad = importe de venta real · elige una empresa para ver productos</span>
             </div>
         </div>
     </div>

@@ -1297,12 +1297,14 @@
         CC.state.preciosMeses[budgetKey(empresa, cc, codigo)] = (meses || []).slice(0, 12);
     }
 
-    /** Precio unitario efectivo del mes: override o precio de lista global. */
+    /** Precio unitario efectivo del mes: override proyección → maestro Costos del mes → global. */
     function precioUnitarioMes(cta, monthIdx) {
-        var base = Number(cta && cta.precioLista) || 0;
         var arr = (cta && cta.precioMeses) || [];
         var v = Number(arr[monthIdx]);
         if (isFinite(v) && v > 0) return v;
+        var maestroMes = Number(cta && cta.precioMaestroMeses && cta.precioMaestroMeses[monthIdx]);
+        if (isFinite(maestroMes) && maestroMes > 0) return maestroMes;
+        var base = Number(cta && cta.precioLista) || 0;
         if (base > 0) return base;
         return 0;
     }
@@ -1312,11 +1314,47 @@
         return isFinite(v) && v > 0;
     }
 
-    function precioMesesVarian(cta) {
-        for (var i = 0; i < 12; i++) {
-            if (precioMesTieneOverride(cta, i)) return true;
+    /** True si el mes difiere del global (override o precio del maestro distinto). */
+    function precioMesEsDistinto(cta, monthIdx) {
+        var base = Number(cta && cta.precioLista) || 0;
+        var p = precioUnitarioMes(cta, monthIdx);
+        if (!(p > 0)) return false;
+        if (precioMesTieneOverride(cta, monthIdx)) {
+            return !(base > 0) || Math.abs(p - base) > 0.0001;
+        }
+        var maestroMes = Number(cta && cta.precioMaestroMeses && cta.precioMaestroMeses[monthIdx]);
+        if (isFinite(maestroMes) && maestroMes > 0 && base > 0) {
+            return Math.abs(maestroMes - base) > 0.0001;
         }
         return false;
+    }
+
+    function precioMesesVarian(cta) {
+        for (var i = 0; i < 12; i++) {
+            if (precioMesEsDistinto(cta, i)) return true;
+        }
+        return false;
+    }
+
+    /** Moda de precios mensuales > 0 (para sincronizar “global” del maestro). */
+    function precioModaDeMeses(meses) {
+        var freq = {};
+        var arr = meses || [];
+        for (var i = 0; i < arr.length; i++) {
+            var p = Number(arr[i]);
+            if (!(p > 0)) continue;
+            var k = (Math.round(p * 10000) / 10000).toFixed(4);
+            freq[k] = (freq[k] || 0) + 1;
+        }
+        var best = null;
+        var bestN = 0;
+        Object.keys(freq).forEach(function (k) {
+            if (freq[k] > bestN) {
+                bestN = freq[k];
+                best = Number(k);
+            }
+        });
+        return best && best > 0 ? best : 0;
     }
 
     function mesesVacios12() {
@@ -1529,21 +1567,23 @@
                 }
                 CC.state.costosMeses[keyCard] = entry;
                 CC.state.costosMeses[keyProd] = entry;
-                // Refresca “último mes” del maestro para precioLista.
-                var last = 0;
-                var lastP = 0;
-                for (var m = 11; m >= 0; m--) {
-                    if (Number(entry.meses[m]) > 0) {
-                        last = m + 1;
-                        lastP = Number(entry.meses[m]);
-                        break;
-                    }
+                // Global del maestro = moda (no el último mes).
+                var moda = precioModaDeMeses(entry.meses);
+                if (json.precio_global != null && Number(json.precio_global) > 0) {
+                    moda = Number(json.precio_global);
                 }
-                if (lastP > 0) {
+                if (moda > 0) {
                     CC.state.costosMaster = CC.state.costosMaster || {};
-                    var masterEntry = { costo: lastP, moneda: moneda, mes: last, card_code: cc || '', origen: 'maestro_local' };
+                    var masterEntry = {
+                        costo: moda,
+                        moneda: moneda,
+                        mes: null,
+                        card_code: cc || '',
+                        origen: 'maestro_local'
+                    };
                     CC.state.costosMaster[keyCard] = masterEntry;
                     CC.state.costosMaster[keyProd] = masterEntry;
+                    CC.state.costosMaster[String(cuenta || '').trim()] = masterEntry;
                 }
                 return json;
             });
@@ -3500,10 +3540,11 @@
             var totP = sum(ppto);
             var lista = listaPrecioDeCentro(c, cta.codigo) || lookupPrecioLista(cta.codigo) || {};
             var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
+            var maestroMesesHit = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
             var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
             var masterPrecio = (master && Number(master.costo)) || 0;
             var masterMes = (master && Number(master.mes)) || 0;
-            // Preferir precio local (último mes) sobre lista SAP.
+            // Preferir precio local global (moda / mes=0) sobre lista SAP.
             var precioLista = masterPrecio > 0 ? masterPrecio : (Number(lista.precio) || 0);
             var precioMoneda = '';
             if (masterPrecio > 0 && master && master.moneda) {
@@ -3511,6 +3552,9 @@
             } else {
                 precioMoneda = String(lista.moneda || '').toUpperCase() || '';
             }
+            var precioMaestroMeses = (maestroMesesHit && maestroMesesHit.meses)
+                ? maestroMesesHit.meses.slice(0, 12)
+                : mesesVacios12();
             var enriched = Object.assign({}, cta, {
                 ppto: ppto,
                 totG: sum(cta.gasto),
@@ -3520,11 +3564,12 @@
                 precioLista: precioLista,
                 precioMoneda: precioMoneda,
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
+                precioMaestroMeses: precioMaestroMeses,
                 precioLocalMes: masterMes > 0 ? masterMes : null,
                 unidad: String(lista.unidad || cta.unidad || '').trim(),
                 unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
                 listaPrecioNombre: masterPrecio > 0
-                    ? ('Maestro local' + (masterMes > 0 ? (' · mes ' + masterMes) : ''))
+                    ? 'Maestro local · global'
                     : (lista.lista || '')
             });
             enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
@@ -4759,38 +4804,44 @@
         });
     }
 
-    /** Precio local del último mes (tbl_pv_productos_costo). Si no hay, promedio de venta SAP. */
+    /** Precio local del último mes con dato en Precios de productos. Si no hay, promedio de venta SAP. */
     function precioVentaAnioRef(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
-        var local = Number(cta && cta.precioLista) || 0;
-        var mon = String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
-        var mes = Number(cta && cta.precioLocalMes) || 0;
         var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-        if (local > 0 && (cta.listaPrecioNombre || '').indexOf('Maestro local') === 0) {
-            return {
-                precio: local,
-                moneda: mon,
-                unidad: unidad,
-                unidadNombre: unidadNombre,
-                decimals: 2,
-                title: 'Precio local (último mes' + (mes >= 1 && mes <= 12 ? ': ' + MESES[mes] : '') + ') · tbl_pv_productos_costo'
-            };
-        }
-        // Si precioLista vino de lista SAP pero hay maestro, preferir maestro via lookup otra vez.
-        var c = control.centro;
-        if (c) {
-            var master = lookupMaestroLocal(c.empresa, c.codigo, cta && cta.codigo);
-            if (master && Number(master.costo) > 0) {
-                var mMes = Number(master.mes) || 0;
+        var mon = String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        // Último mes con precio en el maestro (no el global/moda).
+        var arr = (cta && cta.precioMaestroMeses) || [];
+        for (var i = 11; i >= 0; i--) {
+            var p = Number(arr[i]);
+            if (isFinite(p) && p > 0) {
                 return {
-                    precio: Number(master.costo),
-                    moneda: String(master.moneda || 'MXN').toUpperCase(),
+                    precio: p,
+                    moneda: mon,
                     unidad: unidad,
                     unidadNombre: unidadNombre,
                     decimals: 2,
-                    title: 'Precio local (último mes' + (mMes >= 1 && mMes <= 12 ? ': ' + MESES[mMes] : '') + ') · tbl_pv_productos_costo'
+                    title: 'Precio local · último mes con dato (' + MESES[i + 1] + ') · Precios de productos'
                 };
+            }
+        }
+        var c = control.centro;
+        if (c && cta && cta.codigo) {
+            var maestro = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
+            var meses = (maestro && maestro.meses) || [];
+            var mons = (maestro && maestro.monedas) || [];
+            for (var j = 11; j >= 0; j--) {
+                var p2 = Number(meses[j]);
+                if (isFinite(p2) && p2 > 0) {
+                    return {
+                        precio: p2,
+                        moneda: String(mons[j] || mon || 'MXN').toUpperCase(),
+                        unidad: unidad,
+                        unidadNombre: unidadNombre,
+                        decimals: 2,
+                        title: 'Precio local · último mes con dato (' + MESES[j + 1] + ') · Precios de productos'
+                    };
+                }
             }
         }
         var info = precioVentaPasadaInfo(cta);
@@ -4852,10 +4903,8 @@
         return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
     }
 
-    /** Precio de lista / proyección: prioriza maestro local (último mes). */
+    /** Precio de lista / proyección: prioriza maestro local (global = moda / mes=0). */
     function precioProyeccionInfo(cta) {
-        var mes = Number(cta && cta.precioLocalMes) || 0;
-        var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
         var fromLocal = (cta && cta.listaPrecioNombre && String(cta.listaPrecioNombre).indexOf('Maestro local') === 0);
         return {
             precio: Number(cta && cta.precioLista) || 0,
@@ -4864,7 +4913,7 @@
             unidadNombre: String((cta && cta.unidadNombre) || '').trim(),
             porMes: precioMesesVarian(cta),
             title: fromLocal
-                ? ('Precio local (último mes' + (mes >= 1 && mes <= 12 ? ': ' + MESES[mes] : '') + ')')
+                ? 'Precio local global (Precios de productos · moda / mes=0)'
                 : 'Precio de lista / proyección'
         };
     }
@@ -4972,7 +5021,7 @@
             var lockedMes = mesBloqueadoBudget(i);
             var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
             var pMes = precioUnitarioMes(cta, i);
-            var pCustom = precioMesTieneOverride(cta, i);
+            var pCustom = precioMesEsDistinto(cta, i);
             var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
             cells += '<td class="' + pCls + '">' +
                 '<div class="cc-matrix-month">' +
@@ -4987,9 +5036,11 @@
                     escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
                         ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
                         (uomLabel ? ' ' + uomLabel : '')) + '">' +
-                    (pCustom
-                        ? ('<div class="cc-month-price-tag is-custom" title="' +
-                            escapeHtml('Precio del mes: ' + moneyLista(pMes, mon, i) + ' · TC ' + fxRate(i).toFixed(2)) + '">' +
+                    (pMes > 0
+                        ? ('<div class="cc-month-price-tag' + (pCustom ? ' is-custom' : '') + '" title="' +
+                            escapeHtml('Precio del mes: ' + moneyLista(pMes, mon, i) +
+                                (pCustom ? ' · distinto del global' : ' · global / maestro') +
+                                ' · TC ' + fxRate(i).toFixed(2)) + '">' +
                             escapeHtml(moneyLista(pMes, mon, i)) + '</div>')
                         : '') +
                 '</div>' +
@@ -5098,7 +5149,7 @@
         var anioPast = CC.state.anioGasto || '';
         var cur = isUsdView() ? 'USD' : 'MXN';
         var head = '<tr><th class="sticky-col">Producto</th>' +
-            '<th class="num">Precio<span class="cc-th-past">local · último mes</span></th>' +
+            '<th class="num">Precio<span class="cc-th-past">proyección anterior ' + escapeHtml(String(anioPast || '')) + '</span></th>' +
             '<th class="num">Uds. venta<span class="cc-th-past">' + escapeHtml(String(anioPast || '')) + '</span></th>' +
             '<th class="num">Total uds<span class="cc-th-past">proy. 12 meses</span></th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. local</span></th>' +
@@ -5234,16 +5285,18 @@
                 if (wrap) {
                     var tag = wrap.querySelector('.cc-month-price-tag');
                     var pMes = precioUnitarioMes(cta, i);
-                    var pCustom = precioMesTieneOverride(cta, i);
+                    var pCustom = precioMesEsDistinto(cta, i);
                     var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
-                    if (pCustom && pMes) {
+                    if (pMes > 0) {
                         if (!tag) {
                             tag = document.createElement('div');
                             wrap.appendChild(tag);
                         }
-                        tag.className = 'cc-month-price-tag is-custom';
+                        tag.className = 'cc-month-price-tag' + (pCustom ? ' is-custom' : '');
                         tag.textContent = moneyLista(pMes, mon, i);
-                        tag.title = 'Precio del mes: ' + moneyLista(pMes, mon, i) + ' · TC ' + fxRate(i).toFixed(2);
+                        tag.title = 'Precio del mes: ' + moneyLista(pMes, mon, i) +
+                            (pCustom ? ' · distinto del global' : ' · global / maestro') +
+                            ' · TC ' + fxRate(i).toFixed(2);
                     } else if (tag) {
                         tag.remove();
                     }
@@ -7023,13 +7076,13 @@
                 departamento: deptoDeCentro(c),
                 usuarios: users,
                 monthGasto: MONTHS.map(function (_, i) {
-                    return ctas.reduce(function (a, x) { return a + ((x.gasto || [])[i] || 0); }, 0);
+                    return ctas.reduce(function (a, x) { return a + importeMesVentaVista(x, i); }, 0);
                 }),
                 productos: ctas.map(function (cta) {
                     return {
                         codigo: cta.codigo,
                         nombre: cta.nombre || cta.codigo,
-                        months: MONTHS.map(function (_, i) { return (cta.gasto || [])[i] || 0; })
+                        months: MONTHS.map(function (_, i) { return importeMesVentaVista(cta, i); })
                     };
                 })
             });
@@ -7065,7 +7118,8 @@
         return (monthG || MONTHS.map(function () { return 0; })).map(function (v, i) {
             var t = (v || 0) / max;
             var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
-            return '<span title="' + MONTHS[i] + ': ' + money(v || 0) + '" style="background:' + bg + '"></span>';
+            // v es importe de venta real (ya en moneda de vista), no unidades.
+            return '<span title="' + MONTHS[i] + ': ' + moneyGasto(v || 0) + '" style="background:' + bg + '"></span>';
         }).join('');
     }
 
@@ -7355,23 +7409,41 @@
         var heat = document.getElementById('an-heat');
         if (heat) {
             var heatItems = [];
+            var heatSource = (productRows && productRows.length) ? productRows : null;
             if (emp) {
                 var byProd = {};
-                rows.forEach(function (c) {
-                    (c.productos || []).forEach(function (p) {
-                        var key = String(p.codigo || p.nombre || '');
+                if (heatSource) {
+                    heatSource.forEach(function (p) {
+                        if (String(p.empresa || '').toUpperCase() !== String(emp).toUpperCase()) return;
+                        var key = String(p.productoCodigo || p.productoNombre || '');
                         if (!key) return;
                         if (!byProd[key]) {
                             byProd[key] = {
-                                label: (p.codigo || '') + (p.nombre && p.nombre !== p.codigo ? (' ' + p.nombre) : ''),
+                                label: (p.productoCodigo || '') + (p.productoNombre && p.productoNombre !== p.productoCodigo ? (' ' + p.productoNombre) : ''),
                                 months: MONTHS.map(function () { return 0; })
                             };
                         }
-                        (p.months || []).forEach(function (v, i) {
-                            byProd[key].months[i] += v || 0;
+                        (p.monthsVenta || []).forEach(function (v, i) {
+                            byProd[key].months[i] += Number(v) || 0;
                         });
                     });
-                });
+                } else {
+                    rows.forEach(function (c) {
+                        (c.productos || []).forEach(function (p) {
+                            var key = String(p.codigo || p.nombre || '');
+                            if (!key) return;
+                            if (!byProd[key]) {
+                                byProd[key] = {
+                                    label: (p.codigo || '') + (p.nombre && p.nombre !== p.codigo ? (' ' + p.nombre) : ''),
+                                    months: MONTHS.map(function () { return 0; })
+                                };
+                            }
+                            (p.months || []).forEach(function (v, i) {
+                                byProd[key].months[i] += v || 0;
+                            });
+                        });
+                    });
+                }
                 heatItems = Object.keys(byProd).map(function (k) {
                     var item = byProd[k];
                     var tot = item.months.reduce(function (a, v) { return a + (v || 0); }, 0);
@@ -7382,13 +7454,23 @@
                 if (heatInput) heatInput.placeholder = 'Buscar producto…';
             } else {
                 var byEmpHeat = {};
-                rows.forEach(function (c) {
-                    var key = c.empresa || '—';
-                    byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
-                    (c.monthGasto || []).forEach(function (v, i) {
-                        byEmpHeat[key][i] += v || 0;
+                if (heatSource) {
+                    heatSource.forEach(function (p) {
+                        var key = p.empresa || '—';
+                        byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
+                        (p.monthsVenta || []).forEach(function (v, i) {
+                            byEmpHeat[key][i] += Number(v) || 0;
+                        });
                     });
-                });
+                } else {
+                    rows.forEach(function (c) {
+                        var key = c.empresa || '—';
+                        byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
+                        (c.monthGasto || []).forEach(function (v, i) {
+                            byEmpHeat[key][i] += v || 0;
+                        });
+                    });
+                }
                 heatItems = Object.keys(byEmpHeat).map(function (e) {
                     var months = byEmpHeat[e];
                     var tot = months.reduce(function (a, v) { return a + (v || 0); }, 0);
@@ -7878,6 +7960,21 @@
                         moneda: mon
                     });
                 }
+            }
+            // Fila global (mes=0): precio del campo Global o moda de los meses.
+            var globalSave = base2 > 0 ? base2 : precioModaDeMeses(meses);
+            if (globalSave > 0) {
+                jobs.push({
+                    empresa: emp,
+                    producto_codigo: cod,
+                    producto_nombre: nom || cod,
+                    card_code: card,
+                    card_name: cardName,
+                    mes: 0,
+                    anio: costosAnio(),
+                    costo_unitario: Math.round(globalSave * 100) / 100,
+                    moneda: mon
+                });
             }
             if (!jobs.length) {
                 toast('warning', 'Sin precios', 'Captura al menos un mes o un precio global.');
