@@ -34,8 +34,13 @@ trait DatosimpleTraits
     {
         $var = DB::select("select users.id,
         users.idempleado,
+        users.tipo,
+        users.id_tipo,
+        users.id_empresa as id_empresa_user,
         tblsucursales.nombre as sucursal,
         tblsucursales.id as idsucursal,
+        COALESCE(users.id_empresa, tblsucursales.idempresa) as id_empresa,
+        COALESCE(emp_user.nombre_empresa, emp_suc.nombre_empresa) as empresa,
         users.name,
         users.estado_user,
         tblpuestos.nombre as puesto,
@@ -43,7 +48,9 @@ trait DatosimpleTraits
         FROM users
         left join tblempleados on users.idempleado = tblempleados.id
         left join tblpuestos on tblempleados.idpuesto = tblpuestos.id
-        left join tblsucursales on tblempleados.idsucursal = tblsucursales.id;");
+        left join tblsucursales on tblempleados.idsucursal = tblsucursales.id
+        left join tblempresas emp_suc on emp_suc.id = tblsucursales.idempresa
+        left join tblempresas emp_user on emp_user.id = users.id_empresa;");
         return collect($var);
     }
 
@@ -225,8 +232,8 @@ trait DatosimpleTraits
                 tblusuario_acciones.created_by, 
                 tblusuario_acciones.updated_by
             FROM users
-            INNER JOIN tblempleados on users.idempleado = tblempleados.id 
-            INNER JOIN tblpuestos on tblpuestos.id = tblempleados.idpuesto 
+            LEFT JOIN tblempleados on users.idempleado = tblempleados.id 
+            LEFT JOIN tblpuestos on tblpuestos.id = tblempleados.idpuesto 
             INNER JOIN tblusuario_acciones on users.id = tblusuario_acciones.idusuario 
             INNER JOIN tblacciones on tblusuario_acciones.idacciones = tblacciones.id 
             INNER JOIN tblvistas on tblacciones.idvista = tblvistas.id 

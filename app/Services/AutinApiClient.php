@@ -120,6 +120,216 @@ class AutinApiClient
     }
 
     /**
+     * Recorre páginas de /gasto-real (tope 500 por página).
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>}
+     */
+    public function gastoRealTodasPaginas(array $filters, int $maxPages = 40, int $concurrency = 6): array
+    {
+        $filters['per_page'] = 500;
+        $first = $this->gastoReal(array_merge($filters, ['page' => 1]));
+        if (empty($first['ok'])) {
+            return [
+                'ok' => false,
+                'message' => $first['message'] ?? 'Sin conexión a gasto real SAP',
+                'rows' => [],
+            ];
+        }
+
+        $body = is_array($first['body'] ?? null) ? $first['body'] : [];
+        $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+        $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
+        $last = (int) ($meta['last_page'] ?? $body['last_page'] ?? 1);
+        if ($last < 1) {
+            $last = 1;
+        }
+        $last = min($last, max(1, $maxPages));
+        if ($last <= 1) {
+            return ['ok' => true, 'message' => null, 'rows' => $rows];
+        }
+
+        $url = $this->baseUrl.'/gasto-real';
+        $requests = function () use ($url, $filters, $last) {
+            for ($page = 2; $page <= $last; $page++) {
+                $query = array_filter(array_merge($filters, ['page' => $page]), static function ($value) {
+                    return $value !== null && $value !== '';
+                });
+                yield $page => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        };
+
+        $extra = [];
+        $pool = new Pool($this->client, $requests(), [
+            'concurrency' => max(1, $concurrency),
+            'fulfilled' => function ($response) use (&$extra) {
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                foreach ($data as $row) {
+                    if (is_array($row)) {
+                        $extra[] = $row;
+                    }
+                }
+            },
+        ]);
+        $pool->promise()->wait();
+
+        return ['ok' => true, 'message' => null, 'rows' => array_merge($rows, $extra)];
+    }
+
+    /**
+     * Varias DescCuenta en paralelo (página 1 de todas, luego el resto).
+     *
+     * @param  array<int, string>  $nombres
+     * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>}
+     */
+    public function gastoRealPorNombres(string $empresa, int $year, array $nombres, int $maxPages = 12, int $concurrency = 8, string $cc = ''): array
+    {
+        $nombres = array_values(array_unique(array_filter(array_map('trim', $nombres))));
+        if (! $nombres) {
+            return ['ok' => true, 'message' => null, 'rows' => []];
+        }
+
+        $base = [
+            'Empresa' => $empresa,
+            'year' => $year,
+            'fecha_desde' => $year . '-01-01',
+            'fecha_hasta' => $year . '-12-31',
+            'per_page' => 500,
+        ];
+        $cc = trim($cc);
+        if ($cc !== '') {
+            $base['CC'] = $cc;
+        }
+        $url = $this->baseUrl.'/gasto-real';
+        $rows = [];
+        $lastByName = [];
+        $ok = false;
+        $message = null;
+
+        $firstReqs = function () use ($url, $base, $nombres) {
+            foreach ($nombres as $i => $nombre) {
+                $query = array_filter(array_merge($base, ['DescCuenta' => $nombre, 'page' => 1]));
+                yield $i => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        };
+        $pool = new Pool($this->client, $firstReqs(), [
+            'concurrency' => max(1, $concurrency),
+            'fulfilled' => function ($response, $i) use (&$rows, &$lastByName, &$ok, $maxPages) {
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                foreach ($data as $row) {
+                    if (is_array($row)) {
+                        $rows[] = $row;
+                    }
+                }
+                $meta = is_array($json['meta'] ?? null) ? $json['meta'] : [];
+                $last = (int) ($meta['last_page'] ?? 1);
+                $lastByName[$i] = min(max(1, $last), max(1, $maxPages));
+                $ok = true;
+            },
+            'rejected' => function ($reason) use (&$message) {
+                $message = $message ?: ('No se pudo conectar con AutinApi: ' . $reason);
+            },
+        ]);
+        $pool->promise()->wait();
+
+        $more = function () use ($url, $base, $nombres, $lastByName) {
+            foreach ($nombres as $i => $nombre) {
+                $last = (int) ($lastByName[$i] ?? 1);
+                for ($page = 2; $page <= $last; $page++) {
+                    $query = array_filter(array_merge($base, ['DescCuenta' => $nombre, 'page' => $page]));
+                    yield $i . '-' . $page => new Request('GET', $url.'?'.http_build_query($query));
+                }
+            }
+        };
+        $pool2 = new Pool($this->client, $more(), [
+            'concurrency' => max(1, $concurrency),
+            'fulfilled' => function ($response) use (&$rows) {
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                foreach ($data as $row) {
+                    if (is_array($row)) {
+                        $rows[] = $row;
+                    }
+                }
+            },
+        ]);
+        $pool2->promise()->wait();
+
+        return [
+            'ok' => $ok,
+            'message' => $ok ? null : ($message ?: 'Sin conexión a gasto real SAP'),
+            'rows' => $rows,
+        ];
+    }
+
+    /**
+     * Una fila de gasto-real por centro para leer DEPTO.
+     *
+     * @param  array<int, string>  $ccs
+     * @return array{ok: bool, message: string|null, por_cc: array<string, string>}
+     */
+    public function gastoRealDeptoPorCentros(string $empresa, int $year, array $ccs, int $concurrency = 8): array
+    {
+        $ccs = array_values(array_unique(array_filter(array_map('trim', $ccs))));
+        if (! $ccs) {
+            return ['ok' => true, 'message' => null, 'por_cc' => []];
+        }
+
+        $url = $this->baseUrl.'/gasto-real';
+        $base = [
+            'Empresa' => $empresa,
+            'year' => $year,
+            'fecha_desde' => $year . '-01-01',
+            'fecha_hasta' => $year . '-12-31',
+            'per_page' => 1,
+            'page' => 1,
+        ];
+        $porCc = [];
+        $ok = false;
+        $message = null;
+
+        $reqs = function () use ($url, $base, $ccs) {
+            foreach ($ccs as $i => $cc) {
+                $query = array_filter(array_merge($base, ['CC' => $cc]));
+                yield $i => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        };
+        $pool = new Pool($this->client, $reqs(), [
+            'concurrency' => max(1, $concurrency),
+            'fulfilled' => function ($response, $i) use (&$porCc, &$ok, $ccs) {
+                $ok = true;
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                $row = is_array($data[0] ?? null) ? $data[0] : [];
+                $depto = trim((string) ($row['DEPTO'] ?? $row['Depto'] ?? $row['depto'] ?? $row['departamento'] ?? ''));
+                if ($depto === '' || preg_match('/^\d+$/', $depto)) {
+                    return;
+                }
+                $cc = (string) ($ccs[$i] ?? '');
+                if ($cc !== '') {
+                    $porCc[$cc] = $depto;
+                }
+                $rowCc = trim((string) ($row['CC'] ?? $row['PrcCode'] ?? ''));
+                if ($rowCc !== '') {
+                    $porCc[$rowCc] = $depto;
+                }
+            },
+            'rejected' => function ($reason) use (&$message) {
+                $message = $message ?: ('No se pudo conectar con AutinApi: ' . $reason);
+            },
+        ]);
+        $pool->promise()->wait();
+
+        return [
+            'ok' => $ok,
+            'message' => $ok ? null : ($message ?: 'Sin conexión a gasto real SAP'),
+            'por_cc' => $porCc,
+        ];
+    }
+
+    /**
      * Ventas y notas de crédito (OINV + ORIN).
      * CardName = cliente, ItemName = producto.
      *

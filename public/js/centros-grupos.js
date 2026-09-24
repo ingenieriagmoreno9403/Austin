@@ -736,7 +736,11 @@
                 }
                 return e;
             });
-            toast('success', state.editingId ? 'Agrupación actualizada' : 'Agrupación guardada', saved.nombre || saved.clave);
+            var extra = Number(json.asignaciones_actualizadas || 0);
+            var det = extra > 0
+                ? (saved.nombre || saved.clave || '') + ' · ' + extra + (extra === 1 ? ' usuario actualizado' : ' usuarios actualizados')
+                : (saved.nombre || saved.clave || '');
+            toast('success', state.editingId ? 'Agrupación actualizada' : 'Agrupación guardada', det);
             rememberGrupos(state.empresa, state.grupos);
             if (salir) {
                 resetEditor();

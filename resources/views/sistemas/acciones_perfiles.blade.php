@@ -12,7 +12,7 @@
                     </div>
                     <div>
                         <h2 class="mb-0 text-marino fw-bold">Acciones a perfiles</h2>
-                        <p class="text-muted mb-0">Asignar acciones disponibles a cada perfil del sistema.</p>
+                        <p class="text-muted mb-0">Asignar a cada perfil las acciones de los módulos disponibles.</p>
                     </div>
                 </div>
                 <div class="header-actions">

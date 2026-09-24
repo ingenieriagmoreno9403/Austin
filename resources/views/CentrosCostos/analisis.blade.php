@@ -1,7 +1,41 @@
 @extends('layouts.app')
 
 @section('css')
-<link href="{{ asset('css/centros-costos.css') }}" rel="stylesheet">
+<!-- cc-analisis-assets 2026-09-23 -->
+<link href="{{ asset('css/centros-costos.css') }}?v={{ (int) @filemtime(public_path('css/centros-costos.css')) }}" rel="stylesheet">
+<style>
+    #an-kpis {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        align-items: stretch;
+        gap: 0.75rem;
+    }
+    #an-kpis > .cc-kpi {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        min-height: 8.75rem;
+        align-self: stretch;
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+    }
+    #an-kpis > .cc-kpi .label,
+    #an-kpis > .cc-kpi .value {
+        flex: 0 0 auto;
+    }
+    #an-kpis > .cc-kpi .hint {
+        margin-top: auto;
+        min-height: 2.7em;
+    }
+    #an-kpis > .cc-kpi.is-warn {
+        border-color: #fecaca;
+        background: linear-gradient(#fff, #fff5f5);
+    }
+    @media (max-width: 768px) {
+        #an-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+</style>
 @endsection
 
 @section('content')
@@ -22,9 +56,16 @@
     @include('CentrosCostos.partials.nav')
 
     <div class="cc-panel">
-        <div class="cc-filters">
-            <select id="an-empresa" class="cc-select"></select>
-            <select id="an-user" class="cc-select"></select>
+        <div class="cc-filters cc-filters-asig">
+            <label class="cc-filter-field" for="an-empresa">Empresa
+                <select id="an-empresa" class="cc-select"></select>
+            </label>
+            <label class="cc-filter-field" for="an-centro">Centro de costos
+                <select id="an-centro" class="cc-select"></select>
+            </label>
+            <label class="cc-filter-field" for="an-user">Usuario
+                <select id="an-user" class="cc-select"></select>
+            </label>
         </div>
     </div>
 
@@ -36,9 +77,9 @@
     </div>
 
     <div id="an-work">
-    <div class="cc-kpis">
+    <div class="cc-kpis cc-kpis-equal" id="an-kpis">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Cuentas ya capturadas</div></div>
-        <div class="cc-kpi alert"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Centros debajo del 40%</div></div>
+        <div class="cc-kpi is-warn"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Centros debajo del 40%</div></div>
         <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Ppto &gt; 110% del gasto real</div></div>
         <div class="cc-kpi"><div class="label">Variación vs gasto</div><div class="value" id="an-kpi-yoy">—</div><div class="hint" id="an-kpi-yoy-hint">Promedio de aumento</div></div>
     </div>
@@ -68,12 +109,18 @@
         <div class="cc-panel">
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-grip"></i> Estacionalidad</h3>
+                <div class="cc-panel-head-tools">
+                    <input id="an-heat-q" class="cc-input cc-heat-search" type="search" placeholder="Buscar empresa o centro…" aria-label="Buscar en estacionalidad">
+                </div>
             </div>
-            <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Gasto {{ $bootstrap['anioGasto'] }}</p>
-            <div class="cc-heat mb-2" id="an-heat"></div>
-            <div class="cc-heat-months" id="an-heat-months"></div>
+            <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Gasto {{ $bootstrap['anioGasto'] }} · por empresa</p>
+            <div class="cc-heat-scroll">
+                <div class="cc-heat-stack" id="an-heat"></div>
+                <div class="cc-heat-empty" id="an-heat-empty" hidden>Sin coincidencias</div>
+            </div>
+            <div class="cc-heat-months is-labeled" id="an-heat-months"></div>
             <div class="cc-legend">
-                <span>Ene → Dic · intensidad = gasto real del año de referencia</span>
+                <span>Ene → Dic · intensidad = gasto real · elige una empresa para ver centros</span>
             </div>
         </div>
     </div>
@@ -96,7 +143,7 @@
                         <th>Capturado</th>
                         <th class="num" id="an-th-gasto">Gasto {{ $bootstrap['anioGasto'] }}</th>
                         <th class="num" id="an-th-ppto">Ppto {{ $bootstrap['anioPresupuesto'] }}</th>
-                        <th class="num">Δ año</th>
+                        <th class="num">Δ %</th>
                         <th>Límite</th>
                         <th></th>
                     </tr>
@@ -111,7 +158,7 @@
 
 @section('js')
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="{{ asset('js/centros-costos.js') }}"></script>
+<script src="{{ asset('js/centros-costos.js') }}?v={{ (int) @filemtime(public_path('js/centros-costos.js')) }}"></script>
 <script>
     CC.boot(Object.assign(@json($bootstrap), { page: 'analisis' }));
 </script>

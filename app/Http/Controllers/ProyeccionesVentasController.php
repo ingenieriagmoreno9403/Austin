@@ -2164,7 +2164,7 @@ class ProyeccionesVentasController extends Controller
             'tipoCambio' => 'nullable|numeric',
             'tipoCambioMeses' => 'nullable|array|size:12',
             'tipoCambioMeses.*' => 'nullable|numeric|min:0',
-            'tipoBudget' => 'nullable|in:3+9,6+6,9+3,SIOP',
+            'tipoBudget' => 'nullable|in:BUDGET,3+9,6+6,9+3,SIOP',
             'observaciones' => 'nullable|string',
         ]);
 
@@ -2194,7 +2194,7 @@ class ProyeccionesVentasController extends Controller
         if (Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget')) {
             $incoming = $this->normalizeTipoBudget($data['tipoBudget'] ?? null);
             if ($nuevo) {
-                $fill['tipo_budget'] = $incoming ?: '3+9';
+                $fill['tipo_budget'] = $incoming ?: 'BUDGET';
             } elseif (($ciclo->tipo_budget === null || trim((string) $ciclo->tipo_budget) === '') && $incoming) {
                 $fill['tipo_budget'] = $incoming;
             }
@@ -2392,12 +2392,13 @@ class ProyeccionesVentasController extends Controller
         $empresa = strtolower((string) $request->get('empresa', 'austin'));
         $cliente = trim((string) $request->get('cliente', $request->get('cc', '')));
         $year = (int) $request->get('year', date('Y'));
+        $todas = $request->boolean('todas');
         if (function_exists('set_time_limit')) {
-            @set_time_limit(120);
+            @set_time_limit($todas ? 180 : 120);
         }
 
         try {
-            $cargadas = $this->cargarProductosCliente($empresa, $cliente, $year);
+            $cargadas = $this->cargarProductosCliente($empresa, $cliente, $year, $todas);
 
             return response()->json([
                 'ok' => $cargadas['ok'],
@@ -2419,7 +2420,7 @@ class ProyeccionesVentasController extends Controller
         $empresa = request('empresa');
         $userId = (int) request('user_id', 0);
         $q = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
-            ->where('ciclo_codigo', $ciclo);
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)]);
         if ($empresa) {
             $q->where('empresa', strtolower($empresa));
         }
@@ -4151,7 +4152,7 @@ class ProyeccionesVentasController extends Controller
      * @param  array<string, mixed>  $extra
      * @return array{ok: bool, rows: array<int, array<string, mixed>>, mensaje: string|null}
      */
-    protected function filasVentasEmpresa(string $empresa, int $year, array $extra = []): array
+    protected function filasVentasEmpresa(string $empresa, int $year, array $extra = [], int $maxPages = 30): array
     {
         $api = app(AutinApiClient::class);
         $rows = [];
@@ -4161,7 +4162,7 @@ class ProyeccionesVentasController extends Controller
             $pack = $api->ventasTodasPaginas(array_merge([
                 'year' => $year,
                 'Empresa' => $empFiltro,
-            ], $extra), 30, 6);
+            ], $extra), $maxPages, 6);
             if (empty($pack['ok'])) {
                 if (! $ok) {
                     $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
@@ -4185,14 +4186,14 @@ class ProyeccionesVentasController extends Controller
      *
      * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
      */
-    protected function cargarProductosCliente(string $empresa, string $cliente, int $year): array
+    protected function cargarProductosCliente(string $empresa, string $cliente, int $year, bool $todas = false): array
     {
         $empresa = strtolower(trim($empresa));
         $cliente = trim($cliente);
         if ($year < 2000) {
             $year = (int) date('Y');
         }
-        if ($cliente === '') {
+        if (! $todas && $cliente === '') {
             return [
                 'ok' => true,
                 'productos' => [],
@@ -4203,7 +4204,7 @@ class ProyeccionesVentasController extends Controller
         $requested = $year;
         $last = null;
         for ($y = $year; $y >= $year - 3 && $y >= 2000; $y--) {
-            $pack = $this->cargarProductosClienteAnio($empresa, $cliente, $y);
+            $pack = $this->cargarProductosClienteAnio($empresa, $cliente, $y, $todas);
             $last = $pack;
             if (! empty($pack['productos'])) {
                 if ($y !== $requested) {
@@ -4224,15 +4225,17 @@ class ProyeccionesVentasController extends Controller
     /**
      * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
      */
-    protected function cargarProductosClienteAnio(string $empresa, string $cliente, int $year): array
+    protected function cargarProductosClienteAnio(string $empresa, string $cliente, int $year, bool $todas = false): array
     {
-        $cacheKey = 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
+        $cacheKey = $todas
+            ? 'pv.productos.'.$empresa.'.'.$year.'.ALL'
+            : 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['productos'])) {
             return $cached;
         }
 
-        $pack = $this->filasVentasEmpresa($empresa, $year, ['CardCode' => $cliente]);
+        $pack = $this->filasVentasEmpresa($empresa, $year, $todas ? [] : ['CardCode' => $cliente], $todas ? 80 : 30);
         $map = [];
         foreach ($pack['rows'] as $row) {
             $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
@@ -4272,7 +4275,9 @@ class ProyeccionesVentasController extends Controller
             'ok' => ! empty($pack['ok']),
             'productos' => $productos,
             'mensaje' => ! empty($pack['ok'])
-                ? ($productos ? null : 'Este cliente no tiene productos en ventas '.$year)
+                ? ($productos ? null : ($todas
+                    ? 'Esta empresa no tiene productos en ventas '.$year
+                    : 'Este cliente no tiene productos en ventas '.$year))
                 : ($pack['mensaje'] ?? 'Sin productos SAP'),
         ];
         if (! empty($payload['ok']) && $productos) {
@@ -4290,7 +4295,7 @@ class ProyeccionesVentasController extends Controller
         if ($year < 2000) {
             $year = (int) date('Y');
         }
-        $pack = $this->cargarProductosCliente($empresa, $cliente, $year);
+        $pack = $this->cargarProductosCliente($empresa, $cliente, $year, $todas);
 
         return [
             'ok' => $pack['ok'],
@@ -5508,6 +5513,7 @@ class ProyeccionesVentasController extends Controller
         $t = strtoupper(trim((string) $tipo));
         // Acepta códigos canónicos y alias con prefijo Forecast.
         $map = [
+            'BUDGET' => 'BUDGET',
             '3+9' => '3+9',
             '6+6' => '6+6',
             '9+3' => '9+3',
@@ -5524,7 +5530,7 @@ class ProyeccionesVentasController extends Controller
         if (isset($map[strtoupper($raw)])) {
             return $map[strtoupper($raw)];
         }
-        if (in_array($raw, ['3+9', '6+6', '9+3', 'SIOP'], true)) {
+        if (in_array($raw, ['BUDGET', '3+9', '6+6', '9+3', 'SIOP'], true)) {
             return $raw;
         }
 

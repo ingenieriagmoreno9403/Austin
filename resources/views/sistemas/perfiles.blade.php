@@ -13,7 +13,7 @@
     @endphp
 @endif
 
-<link href="{{ asset('css/vistas.css') }}" rel="stylesheet">
+<link href="{{ asset('css/vistas.css') }}?v={{ @filemtime(public_path('css/vistas.css')) ?: time() }}" rel="stylesheet">
 
 <div class="container-fluid">
     <div class="row mb-4">
@@ -25,7 +25,7 @@
                     </div>
                     <div>
                         <h2 class="mb-0 text-marino fw-bold">Gestión de perfiles</h2>
-                        <p class="text-muted mb-0">Asignar perfiles a usuarios y sucursales.</p>
+                        <p class="text-muted mb-0">Asignar perfiles a usuarios.</p>
                     </div>
                 </div>
                 <div class="header-actions">
@@ -47,7 +47,7 @@
                 <h5 class="text-secondary mb-1">
                     <i class="fa-solid fa-user-check me-2"></i>Asignar perfil a usuario
                 </h5>
-                <p class="text-muted fs-8 mb-0">Selecciona el usuario; se marcarán sus perfiles y sucursales ya asignados. Al desmarcar un perfil o una sucursal y guardar, se quita ese acceso.</p>
+                <p class="text-muted fs-8 mb-0">Selecciona el usuario; se marcarán sus perfiles ya asignados. Al desmarcar un perfil y guardar, se quita ese acceso.</p>
             </div>
 
             <form action="/Sistemas/guardar_perfil" method="POST" class="needs-validation form modern-form" novalidate id="formAsignarPerfil">
@@ -60,7 +60,9 @@
                         <select class="form-select select2" name="idusuario" id="idusuario" required>
                             <option value="">Seleccionar usuario...</option>
                             @foreach ($varlistausers as $usuario)
-                                <option value="{{ $usuario->id }}">
+                                <option value="{{ $usuario->id }}"
+                                    data-empresa="{{ $usuario->id_empresa ?? '' }}"
+                                    data-empresa-nombre="{{ $usuario->empresa ?? '' }}">
                                     {{ $usuario->name }} — {{ $usuario->Nombre }}
                                     ({{ $usuario->puesto }}) · {{ $usuario->sucursal }}
                                 </option>
@@ -71,17 +73,18 @@
                     </div>
 
                     <div class="row g-3 align-items-stretch perfil-asignar-layout">
-                        <div class="col-md-8">
+                        <div class="col-12">
                             <label class="perfil-section-label d-block">
                                 <i class="fa-solid fa-id-badge"></i> Perfiles
                             </label>
+                            <p class="perfil-catalogo-hint" id="perfilCatalogoHint"></p>
                             <div class="perfil-picker" id="perfilPicker">
                                 @foreach ($varperfiles as $perfiles)
                                     @php
                                         $accionesDelPerfil = $accionesPorPerfil->get($perfiles->id, collect());
                                         $totalAcciones = $accionesDelPerfil->count();
                                     @endphp
-                                    <div class="perfil-picker__item">
+                                    <div class="perfil-picker__item" data-perfil-id="{{ $perfiles->id }}">
                                         <label class="perfil-picker__card" for="perfil{{ $perfiles->id }}">
                                             <input class="perfil-picker__input" type="checkbox" name="perfil[]"
                                                 id="perfil{{ $perfiles->id }}" value="{{ $perfiles->id }}">
@@ -127,35 +130,6 @@
                                 @endforeach
                             </div>
                         </div>
-
-                        <div class="col-md-4">
-                            <div class="perfil-sucursales-panel h-100">
-                            <div class="perfil-sucursales-panel__header">
-                                <p class="perfil-sucursales-panel__header-title mb-0">
-                                    <i class="fa-solid fa-building"></i> Sucursales
-                                </p>
-                                <div class="form-check mb-0">
-                                    <input class="form-check-input" type="checkbox" id="toggleTodasSucursales" onClick="toggle(this)">
-                                    <label class="form-check-label fs-8 fw-semibold" for="toggleTodasSucursales">
-                                        Todas
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="perfil-sucursales-panel__list">
-                                @foreach ($varsucursales as $suc)
-                                    <div class="perfil-sucursales-panel__item">
-                                        <div class="form-check">
-                                            <input class="form-check-input dinamic" type="checkbox"
-                                                name="{{ $suc->id }}" value="1" id="sucursal{{ $suc->id }}">
-                                            <label class="form-check-label fs-8" for="sucursal{{ $suc->id }}">
-                                                {{ $suc->nombre }}
-                                            </label>
-                                        </div>
-                                    </div>
-                                @endforeach
-                            </div>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -173,13 +147,6 @@
 
 <script src="{{ asset('js/validation.js') }}"></script>
 <script>
-    function toggle(source) {
-        const checkboxes = document.getElementsByClassName('dinamic');
-        for (let i = 0, n = checkboxes.length; i < n; i++) {
-            checkboxes[i].checked = source.checked;
-        }
-    }
-
     function syncPerfilCards() {
         document.querySelectorAll('.perfil-picker__card').forEach(function(card) {
             const input = card.querySelector('.perfil-picker__input');
@@ -187,41 +154,60 @@
         });
     }
 
-    function syncToggleTodasSucursales() {
-        const sucursales = Array.from(document.getElementsByClassName('dinamic'));
-        const toggleTodas = document.getElementById('toggleTodasSucursales');
-        if (!toggleTodas || !sucursales.length) {
-            return;
+    function aplicarFiltroCatalogo(data) {
+        const hint = document.getElementById('perfilCatalogoHint');
+        const catalogoActivo = !!(data && data.catalogo_activo);
+        const permitidos = (data && Array.isArray(data.perfiles_permitidos))
+            ? data.perfiles_permitidos.map(String)
+            : null;
+        const asignados = (data && data.perfiles) ? data.perfiles.map(String) : [];
+        const empresaNombre = (data && data.empresa) ? data.empresa : '';
+
+        document.querySelectorAll('.perfil-picker__item').forEach(function(item) {
+            const id = String(item.getAttribute('data-perfil-id') || '');
+            const visible = !catalogoActivo || permitidos === null
+                || permitidos.includes(id)
+                || asignados.includes(id);
+            item.classList.toggle('is-hidden-catalogo', !visible);
+        });
+
+        if (hint) {
+            if (catalogoActivo) {
+                hint.classList.add('is-visible');
+                hint.innerHTML = empresaNombre
+                    ? '<i class="fa-solid fa-filter me-1"></i>Solo se listan los perfiles vendidos a <strong>' + empresaNombre + '</strong>.'
+                    : '<i class="fa-solid fa-filter me-1"></i>Solo se listan los perfiles habilitados para la empresa de este usuario.';
+            } else {
+                hint.classList.remove('is-visible');
+                hint.textContent = '';
+            }
         }
-        toggleTodas.checked = sucursales.every(function(cb) { return cb.checked; });
     }
 
     function limpiarAsignaciones() {
         document.querySelectorAll('.perfil-picker__input').forEach(function(input) {
             input.checked = false;
         });
-        document.querySelectorAll('.dinamic').forEach(function(input) {
-            input.checked = false;
+        document.querySelectorAll('.perfil-picker__item').forEach(function(item) {
+            item.classList.remove('is-hidden-catalogo');
         });
+        const hint = document.getElementById('perfilCatalogoHint');
+        if (hint) {
+            hint.classList.remove('is-visible');
+            hint.textContent = '';
+        }
         syncPerfilCards();
-        syncToggleTodasSucursales();
     }
 
     function aplicarAsignaciones(data) {
         const perfiles = (data && data.perfiles) ? data.perfiles.map(String) : [];
-        const sucursales = (data && data.sucursales) ? data.sucursales.map(String) : [];
 
         document.querySelectorAll('.perfil-picker__input').forEach(function(input) {
             input.checked = perfiles.includes(String(input.value));
         });
 
-        document.querySelectorAll('.dinamic').forEach(function(input) {
-            const idSucursal = String(input.name || input.id.replace('sucursal', ''));
-            input.checked = sucursales.includes(idSucursal);
-        });
-
+        aplicarFiltroCatalogo(data);
         syncPerfilCards();
-        syncToggleTodasSucursales();
     }
 
     async function cargarAsignacionesUsuario(idUsuario) {
@@ -254,12 +240,7 @@
         input.addEventListener('change', syncPerfilCards);
     });
 
-    document.querySelectorAll('.dinamic').forEach(function(input) {
-        input.addEventListener('change', syncToggleTodasSucursales);
-    });
-
     syncPerfilCards();
-    syncToggleTodasSucursales();
 
     $('#idusuario').on('change', function() {
         cargarAsignacionesUsuario(this.value);

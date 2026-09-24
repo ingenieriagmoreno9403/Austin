@@ -17,6 +17,11 @@
                 <i class="fa-solid fa-id-badge me-2"></i>Seleccionar perfil
             </h5>
             <p class="text-muted fs-8 mb-0">Primero elige el perfil para ver y editar sus acciones asignadas.</p>
+            @if ($esMasterEmpresa)
+                <p class="text-muted fs-8 mb-0 mt-1">
+                    <i class="fa-solid fa-filter me-1"></i>Solo aparecen los perfiles y las acciones de los módulos comprados por tu empresa.
+                </p>
+            @endif
         </div>
         <div class="card-body">
             <div class="row g-3 align-items-end">

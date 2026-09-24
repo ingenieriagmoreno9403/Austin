@@ -26,9 +26,14 @@
                 <p class="text-muted mb-3" style="font-size:.85rem" id="asig-edit-sub">Elige los productos SAP con acceso en este cliente. Si es el usuario a cargo, se replican a quienes tengan acceso.</p>
                 <div class="cc-panel-head" style="margin-bottom:.55rem">
                     <h3 style="font-size:.92rem"><i class="fa-solid fa-list"></i> Productos con acceso</h3>
-                    <label class="cc-todas-toggle">
-                        <input type="checkbox" id="asig-edit-todas"> Todas
-                    </label>
+                    <div class="cc-panel-head-tools">
+                        <label class="cc-todas-toggle" title="Muestra todos los productos de la empresa, no solo los vendidos a este cliente">
+                            <input type="checkbox" id="asig-edit-catalogo"> Ver todos los productos
+                        </label>
+                        <label class="cc-todas-toggle">
+                            <input type="checkbox" id="asig-edit-todas"> Todas
+                        </label>
+                    </div>
                 </div>
                 <div class="cc-grupos-cta-tools">
                     <div class="cc-pick-search">

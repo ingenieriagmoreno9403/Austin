@@ -337,11 +337,53 @@
         });
     }
 
+    function productosVentaRealDeCentro(c) {
+        var key = gastoCacheKey(c);
+        var por = (CC.state.gastoCache && CC.state.gastoCache[key]) || {};
+        var out = [];
+        var seen = {};
+        Object.keys(por).forEach(function (k) {
+            var row = por[k];
+            if (!row || typeof row !== 'object' || !row.gasto || row.gasto.length !== 12) return;
+            var codigo = String(row.codigo || k || '').trim();
+            if (!codigo || seen[codigo]) return;
+            seen[codigo] = true;
+            var extra = extraFromRow(row);
+            out.push({
+                codigo: codigo,
+                nombre: row.nombre || codigo,
+                grupo: 'Venta real',
+                gasto: row.gasto.slice(),
+                importe: extra.importe,
+                importeUsd: extra.importe_usd,
+                precio: extra.precio,
+                unidad: extra.unidad || '',
+                unidadNombre: extra.unidad_nombre || '',
+                costoVenta: Number(extra.costo) || 0,
+                costoVentaMoneda: String(extra.costo_moneda || 'MXN').toUpperCase(),
+                empresa: c.empresa
+            });
+        });
+        return out;
+    }
+
+    function mergeCuentasAnalisis(c, base) {
+        var seen = {};
+        (base || []).forEach(function (cta) {
+            seen[String(cta.codigo)] = true;
+            seen[codigoCuentaKey(cta.codigo)] = true;
+        });
+        var extra = productosVentaRealDeCentro(c).filter(function (cta) {
+            return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
+        });
+        return (base || []).concat(extra);
+    }
+
     function cuentasDeCentro(c) {
         var asig = asigDe(c);
         if (asig && asig.cuentas && asig.cuentas.length) {
             var packed = packedLookupDeCentro(c);
-            return asig.cuentas.map(function (x) {
+            var mapped = asig.cuentas.map(function (x) {
                 var sap = (CC.state.cuentas || []).filter(function (cta) {
                     return String(cta.codigo) === String(x.codigo);
                 })[0];
@@ -362,8 +404,11 @@
                     empresa: c.empresa
                 };
             });
+            if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, mapped);
+            return mapped;
         }
-        if (CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis') return [];
+        if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, []);
+        if (CC.state.page === 'control' || CC.state.page === 'detalle') return [];
         var all = CC.state.cuentas.filter(function (cta) {
             return !cta.empresa || !c.empresa || String(cta.empresa).toUpperCase() === String(c.empresa).toUpperCase();
         });
@@ -374,14 +419,23 @@
         return all;
     }
 
+    function codigoClienteAsig(a) {
+        return String((a && (a.centro_codigo || a.cliente_codigo)) || '').trim();
+    }
+
+    function nombreClienteAsig(a) {
+        return String((a && (a.centro_nombre || a.cliente_nombre)) || '').trim();
+    }
+
     function asigsDe(c) {
         var ciclo = (document.getElementById('ctl-ciclo') && val('ctl-ciclo'))
             || (document.getElementById('an-ciclo') && val('an-ciclo'))
             || CC.state.cicloCodigo || '';
+        var cicloNeedle = String(ciclo || '').toUpperCase();
         return (CC.state.misAsignaciones || []).filter(function (a) {
-            var sameCc = String(a.centro_codigo) === String(c.codigo);
+            var sameCc = codigoClienteAsig(a) === String(c.codigo || '').trim();
             var sameEmp = String(a.empresa || '').toLowerCase() === String(c.empresa || a.empresa || '').toLowerCase();
-            var sameCiclo = !ciclo || String(a.ciclo || '') === String(ciclo);
+            var sameCiclo = !cicloNeedle || String(a.ciclo || '').toUpperCase() === cicloNeedle;
             return sameCc && sameEmp && sameCiclo;
         });
     }
@@ -449,6 +503,34 @@
         // n ya viene en la moneda de vista (LineTotal / LineTotalUSD de SAP).
         return (isUsdView() ? 'US$' : '$') + n.toLocaleString('es-MX', {
             minimumFractionDigits: 0,
+            maximumFractionDigits: 2
+        });
+    }
+
+    /** Misma regla que el control de centros de costos: más de 3 decimales se recortan, no se suben. */
+    function decimalPlaces(n) {
+        var v = Math.abs(Number(n) || 0);
+        if (!isFinite(v)) return 0;
+        var s = v.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+        var dot = s.indexOf('.');
+        return dot < 0 ? 0 : (s.length - dot - 1);
+    }
+
+    function round2(n) {
+        var v = Number(n);
+        if (!isFinite(v)) return 0;
+        if (decimalPlaces(v) > 3) {
+            var sign = v < 0 ? -1 : 1;
+            return sign * Math.floor(Math.abs(v) * 100 + 1e-8) / 100;
+        }
+        return Math.round(v * 100) / 100;
+    }
+
+    function moneyDosDecimales(n) {
+        var v = round2(n);
+        if (!v) return '—';
+        return (isUsdView() ? 'US$' : '$') + v.toLocaleString('es-MX', {
+            minimumFractionDigits: 2,
             maximumFractionDigits: 2
         });
     }
@@ -600,7 +682,7 @@
             };
         }
         var key = gastoCacheKey(c);
-        if (control._gastoReq === key && control._gastoMap) {
+        if (control._gastoReq === key && control._gastoLoadedFor === key && control._gastoMap) {
             return {
                 map: control._gastoMap,
                 extras: control._gastoExtras || {},
@@ -609,6 +691,13 @@
         }
         var packed = CC.state.gastoLookup && CC.state.gastoLookup[key];
         if (packed) {
+            if (packed.map && packed.extras) return packed;
+            var porCached = CC.state.gastoCache && CC.state.gastoCache[key];
+            if (porCached && Object.keys(porCached).length) {
+                var rebuilt = mapFromPorCuenta(porCached);
+                CC.state.gastoLookup[key] = rebuilt;
+                return rebuilt;
+            }
             if (packed.map) return packed;
             return { map: packed, extras: {}, nombres: [] };
         }
@@ -660,6 +749,7 @@
         }
         paintVentaSnapshotHint(meta);
         if (!control.centro) return;
+        stripSiopSeedLocalOnce(control.centro);
         control._allCtas = cuentasEnriquecidas(control.centro);
         if (CC._capturaReady) seedPresupuestoDesdeVentaReal(control.centro);
         updateControlProgress();
@@ -867,7 +957,7 @@
             || null;
     }
 
-    function applyPreciosMap(porArticulo) {
+    function mapaPreciosArticulo(porArticulo) {
         var map = {};
         Object.keys(porArticulo || {}).forEach(function (key) {
             var row = porArticulo[key];
@@ -888,6 +978,11 @@
             map[codigo.toUpperCase()] = entry;
             map[codigoCuentaKey(codigo)] = entry;
         });
+        return map;
+    }
+
+    function applyPreciosMap(porArticulo) {
+        var map = mapaPreciosArticulo(porArticulo);
         control._preciosMap = map;
         if (control._preciosReq) {
             CC.state.preciosCache = CC.state.preciosCache || {};
@@ -1222,6 +1317,25 @@
             if (precioMesTieneOverride(cta, i)) return true;
         }
         return false;
+    }
+
+    function mesesVacios12() {
+        return [null, null, null, null, null, null, null, null, null, null, null, null];
+    }
+
+    function qtyMesIgual(a, b) {
+        var av = mesLleno(a) ? (Number(a) || 0) : 0;
+        var bv = mesLleno(b) ? (Number(b) || 0) : 0;
+        return av === bv;
+    }
+
+    function monthsIgualReferencia(months, ref) {
+        if (!Array.isArray(months)) return false;
+        ref = Array.isArray(ref) ? ref : [];
+        for (var i = 0; i < 12; i++) {
+            if (!qtyMesIgual(months[i], ref[i])) return false;
+        }
+        return true;
     }
 
     function pptoDe(empresa, cc, cuenta, gasto) {
@@ -1569,6 +1683,8 @@
             CC._capturaLoadGen = (CC._capturaLoadGen || 0) + 1;
             var gen = CC._capturaLoadGen;
             CC._seedDoneFor = {};
+            CC._siopStrippedFor = '';
+            CC._budgetsBaseLoaded = false;
             CC._capturaReady = false;
             CC.state.overlays = {};
             CC.state.budgets = {};
@@ -1579,6 +1695,7 @@
             CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
             if (!ciclo) {
                 CC._capturaReady = true;
+                CC._budgetsBaseLoaded = true;
                 return;
             }
             return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
@@ -1629,6 +1746,7 @@
     function refreshCapturaAfterBudgetsLoaded() {
         if (!(val('ctl-empresa') && val('ctl-centro'))) return;
         if (!control.centro) return;
+        stripSiopSeedLocalOnce(control.centro);
         control._allCtas = cuentasEnriquecidas(control.centro);
         seedPresupuestoDesdeVentaReal(control.centro);
         updateControlProgress();
@@ -1640,12 +1758,41 @@
         renderVisorTable();
     }
 
+    function cicloSortKey(c) {
+        c = c || {};
+        var id = Number(c.id) || 0;
+        if (id) return id;
+        return Date.parse(String(c.inicio || c.fin || c.capturaHasta || '')) || 0;
+    }
+
+    /** Ciclo previo del mismo año de presupuesto (el más reciente entre los más antiguos). */
+    function cicloProyectoAnterior() {
+        var current = cicloActualCodigo();
+        var cur = findCiclo(current) || CC.state.period || {};
+        var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
+        var curKey = cicloSortKey(cur);
+        var sameYear = (CC.state.ciclos || []).filter(function (c) {
+            return String(c.codigo || '').toUpperCase() !== String(current || '').toUpperCase()
+                && (!anio || Number(c.anio) === anio);
+        });
+        var earlier = sameYear.filter(function (c) {
+            return curKey > 0 && cicloSortKey(c) < curKey;
+        }).sort(function (a, b) {
+            return cicloSortKey(b) - cicloSortKey(a);
+        });
+        if (earlier[0] && earlier[0].codigo) return earlier[0].codigo;
+        // Si el SIOP se dio de alta primero, usar el único otro ciclo del mismo año.
+        if (sameYear.length === 1 && sameYear[0].codigo) return sameYear[0].codigo;
+        return '';
+    }
+
     /** Ciclo base para heredar cantidades (Forecast/SIOP). */
     function cicloBaseProyeccion() {
         var current = cicloActualCodigo();
         var cur = findCiclo(current) || CC.state.period || {};
         var tipo = cur.tipoBudget || budgetTipo();
-        if (!esForecastTipo(tipo) && !esSiopTipo(tipo)) return '';
+        if (esSiopTipo(tipo)) return cicloProyectoAnterior();
+        if (!esForecastTipo(tipo)) return '';
         var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
         var curId = Number(cur.id) || 0;
         var ciclos = CC.state.ciclos || [];
@@ -1687,11 +1834,36 @@
         return (other[0] && other[0].codigo) || '';
     }
 
+    /** En SIOP, la fila de arriba compara contra el proyecto anterior; si no hay, la venta real. */
+    function pastQtyMes(cta, monthIdx) {
+        if (esSiopTipo()) {
+            var c = control.centro;
+            if (c && cta) {
+                var row = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+                if (row && mesLleno(row[monthIdx])) return Number(row[monthIdx]) || 0;
+            }
+            return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
+        }
+        return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
+    }
+
+    function pastQtyCaption() {
+        if (esSiopTipo()) {
+            var code = CC.state.cicloBaseCodigo || '';
+            return code ? ('proy. ' + code) : 'proy. anterior';
+        }
+        return 'venta ' + (CC.state.anioGasto || '');
+    }
+
     function loadBudgetsBaseForSeed(gen, cicloEsperado) {
         var base = cicloBaseProyeccion();
         CC.state.budgetsBase = {};
         CC.state.cicloBaseCodigo = base || '';
-        if (!base) return Promise.resolve();
+        CC._budgetsBaseLoaded = false;
+        if (!base) {
+            CC._budgetsBaseLoaded = true;
+            return Promise.resolve();
+        }
         return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(base), {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (r) {
@@ -1703,9 +1875,11 @@
             Object.keys(raw).forEach(function (k) {
                 CC.state.budgetsBase[k] = normalizeLoadedMonths(raw[k], false);
             });
+            CC._budgetsBaseLoaded = true;
         }).catch(function () {
             if (gen != null && gen !== CC._capturaLoadGen) return;
             CC.state.budgetsBase = {};
+            CC._budgetsBaseLoaded = true;
         });
     }
 
@@ -1728,6 +1902,7 @@
     /** Normaliza tipo de budget del ciclo ('' = sin bloqueo Forecast). */
     function normalizeTipoBudgetClient(t) {
         t = String(t || '').trim();
+        if (/^budget$/i.test(t)) return 'BUDGET';
         if (t === '3+9' || t === '6+6' || t === '9+3' || t === 'SIOP') return t;
         return '';
     }
@@ -1782,7 +1957,7 @@
             estado: val('p-estado'),
             inflacion: Number(val('p-inflacion')) || 4,
             tipoCambio: Number(val('p-tc')) || 20,
-            tipoBudget: val('p-tipo-budget') || '3+9',
+            tipoBudget: val('p-tipo-budget') || 'BUDGET',
             observaciones: val('p-obs')
         };
     }
@@ -1798,6 +1973,11 @@
 
     function esSiopTipo(t) {
         return String(t || budgetTipo() || '') === 'SIOP';
+    }
+
+    /** Budget: captura normal, meses en blanco y editables. */
+    function esBudgetTipo(t) {
+        return String(t || budgetTipo() || '') === 'BUDGET';
     }
 
     /** Meses a precargar desde venta real del año en curso (índices 0..n-1). SIOP = 0. */
@@ -1826,6 +2006,7 @@
 
     function labelTipoBudget(t) {
         t = String(t || budgetTipo() || '');
+        if (t === 'BUDGET') return 'Budget';
         if (t === '3+9') return 'Forecast 3+9';
         if (t === '6+6') return 'Forecast 6+6';
         if (t === '9+3') return 'Forecast 9+3';
@@ -1835,6 +2016,9 @@
 
     function descTipoBudget(t) {
         t = String(t || budgetTipo() || '');
+        if (t === 'BUDGET') {
+            return '<strong>Budget:</strong> los 12 meses quedan en blanco y editables. Ahí se captura la proyección; no se precarga venta real ni se bloquea ningún mes.';
+        }
         if (t === '3+9') {
             return '<strong>Forecast 3+9:</strong> los 3 primeros meses (ene–mar) se cargan con la venta real del año en curso y quedan fijos. Los 9 restantes se cargan del Budget y se pueden modificar.';
         }
@@ -1845,28 +2029,32 @@
             return '<strong>Forecast 9+3:</strong> los 9 primeros meses (ene–sep) se cargan con la venta real del año en curso y quedan fijos. Los 3 restantes se cargan del Budget y se pueden modificar.';
         }
         if (t === 'SIOP') {
-            return '<strong>SIOP:</strong> se precargan las cantidades del ciclo anterior (si no hay, la venta real). Mes sin cantidad → 0. Todos los meses son editables.';
+            return '<strong>SIOP:</strong> las cantidades del ciclo anterior (o la venta real) se muestran arriba de cada mes. El input queda vacío para capturar. Todos los meses son editables.';
         }
         return 'Selecciona el tipo de forecast o SIOP.';
     }
 
     function syncTipoBudgetModalUi() {
-        var tipo = val('p-tipo-budget') || '3+9';
+        var tipo = val('p-tipo-budget') || 'BUDGET';
         var desc = document.getElementById('p-tipo-budget-desc');
         if (desc) desc.innerHTML = descTipoBudget(tipo);
         var hint = document.getElementById('p-tipo-budget-hint');
         if (hint && !document.getElementById('p-tipo-budget').disabled) {
-            hint.textContent = esSiopTipo(tipo)
-                ? 'SIOP: precarga ciclo anterior (o venta real) · meses vacíos en 0 · todos editables.'
-                : 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
+            if (esBudgetTipo(tipo)) {
+                hint.textContent = 'Budget: los 12 meses quedan en blanco para capturar la proyección.';
+            } else if (esSiopTipo(tipo)) {
+                hint.textContent = 'SIOP: ciclo anterior (o venta real) arriba de cada mes · el input es la nueva captura · todos editables.';
+            } else {
+                hint.textContent = 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
+            }
         }
     }
 
     /**
      * Al abrir Captura de un cliente: solo precarga si el producto NO tiene fila
      * guardada en este ciclo. Nunca pisa capturas ya persistidas al cambiar de ciclo.
-     * SIOP: 12 meses desde ciclo anterior; si el mes no tiene cantidad → 0.
-     * Si el producto no existe en el ciclo anterior → venta real del año de referencia (o 0).
+     * Forecast: primeros N meses = venta real (fijos); el resto = Budget.
+     * SIOP: no precarga el input; el ciclo anterior / venta se ve arriba de cada mes.
      */
     function budgetTieneFilaEnServidor(empresa, cc, cuenta) {
         var map = CC.state.budgetKeysFromServer || {};
@@ -1890,9 +2078,26 @@
         return Array.isArray(row) ? row.slice() : null;
     }
 
-    function gastoListoParaSeed() {
-        return !!(control._gastoReq && control._gastoLoadedFor &&
-            String(control._gastoLoadedFor) === String(control._gastoReq));
+    /** SIOP: si el input es copia del ciclo anterior, vaciarlo (el dato queda arriba). Una vez por cliente/ciclo. */
+    function stripSiopSeedLocalOnce(c) {
+        if (!c || !esSiopTipo()) return;
+        if (!CC._budgetsBaseLoaded) return;
+        var stamp = String(cicloActualCodigo() || '').toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
+        if (CC._siopStrippedFor === stamp) return;
+        CC._siopStrippedFor = stamp;
+        var list = cuentasDeCentro(c);
+        list.forEach(function (cta) {
+            var found = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var base = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            if (!found || !base || !base.some(mesLleno)) return;
+            if (!monthsIgualReferencia(found, base)) return;
+            var key = resolveStateKey(CC.state.budgets, c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets[key] = mesesVacios12();
+            if (CC.state.completados) {
+                delete CC.state.completados[key];
+                delete CC.state.completados[budgetKey(c.empresa, c.codigo, cta.codigo)];
+            }
+        });
     }
 
     function seedPresupuestoDesdeVentaReal(c) {
@@ -1907,7 +2112,8 @@
             }
             return;
         }
-        var n = budgetSeedCount(); // 0 en SIOP (solo Budget); 3/6/9 en Forecast
+        if (esSiopTipo(tipo) || esBudgetTipo(tipo)) return;
+        var n = budgetSeedCount(); // 3/6/9 en Forecast
         var seedKey = String(cicloSeed).toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
         CC._seedDoneFor = CC._seedDoneFor || {};
         if (CC._seedDoneFor[seedKey]) return;
@@ -1917,34 +2123,17 @@
         var seeded = 0;
         var fromBase = 0;
         var fromVenta = 0;
-        var waitingGasto = false;
         var loadGen = CC._capturaLoadGen || 0;
         ctas.forEach(function (cta) {
             var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
             if (!budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
             var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
-            var hasBaseQty = !!(baseRow && baseRow.some(mesLleno));
             var gasto = cta.gasto || [];
-            // SIOP sin fila en ciclo anterior: esperar venta real para no grabar ceros prematuros.
-            if (esSiopTipo(tipo) && !hasBaseQty && !gastoListoParaSeed()) {
-                waitingGasto = true;
-                return;
-            }
             var months = [];
             var usedBase = false;
             var usedVenta = false;
             for (var i = 0; i < 12; i++) {
-                if (esSiopTipo(tipo)) {
-                    if (hasBaseQty) {
-                        // Ciclo anterior: cantidad si existe, si no 0.
-                        months.push(mesLleno(baseRow[i]) ? toStoreQty(Number(baseRow[i]) || 0) : 0);
-                        usedBase = true;
-                    } else {
-                        // Sin proyección previa del producto → venta real (o 0).
-                        months.push(toStoreQty(Number(gasto[i]) || 0));
-                        usedVenta = true;
-                    }
-                } else if (i < n) {
+                if (i < n) {
                     // Forecast: primeros N meses = venta real del año en curso (fijos).
                     months.push(toStoreQty(Number(gasto[i]) || 0));
                     usedVenta = true;
@@ -1956,8 +2145,7 @@
                     months.push(null);
                 }
             }
-            // SIOP siempre persiste los 12 meses (cantidad o 0). Forecast: solo si hay algo.
-            if (!esSiopTipo(tipo) && !months.some(mesLleno)) return;
+            if (!months.some(mesLleno)) return;
             var key = budgetKey(c.empresa, c.codigo, cta.codigo);
             CC.state.budgets = CC.state.budgets || {};
             CC.state.budgets[key] = months.slice();
@@ -1968,32 +2156,18 @@
             if (usedBase) fromBase += 1;
             if (usedVenta) fromVenta += 1;
         });
-        // Si aún falta la venta SAP para completar SIOP, reintentar cuando llegue applyGastoMap.
-        if (!waitingGasto) CC._seedDoneFor[seedKey] = true;
+        CC._seedDoneFor[seedKey] = true;
         if (seeded && loadGen === (CC._capturaLoadGen || 0)
             && String(cicloActualCodigo() || '').toUpperCase() === String(cicloSeed).toUpperCase()) {
             control._allCtas = cuentasEnriquecidas(c);
             var parts = [];
-            if (esSiopTipo(tipo)) {
-                if (fromBase) {
-                    parts.push('ciclo anterior' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : '') +
-                        ' en ' + fromBase + (fromBase === 1 ? ' producto' : ' productos'));
-                }
-                if (fromVenta) {
-                    parts.push('venta ' + (CC.state.anioGasto || '') + ' en ' + fromVenta +
-                        (fromVenta === 1 ? ' producto' : ' productos'));
-                }
-                parts.push('meses sin cantidad → 0');
-                parts.push('todos los meses editables');
-            } else {
-                if (fromVenta) {
-                    parts.push(n + ' mes' + (n === 1 ? '' : 'es') + ' de venta ' + (CC.state.anioGasto || '') + ' (fijos)');
-                }
-                if (fromBase) {
-                    parts.push('resto desde Budget' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : ''));
-                }
-                if (budgetLockCount()) parts.push('meses iniciales bloqueados');
+            if (fromVenta) {
+                parts.push(n + ' mes' + (n === 1 ? '' : 'es') + ' de venta ' + (CC.state.anioGasto || '') + ' (fijos)');
             }
+            if (fromBase) {
+                parts.push('resto desde Budget' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : ''));
+            }
+            if (budgetLockCount()) parts.push('meses iniciales bloqueados');
             toast('success', labelTipoBudget(tipo), 'Se precargaron ' + seeded +
                 (seeded === 1 ? ' producto' : ' productos') +
                 (parts.length ? (' · ' + parts.join(' · ')) : ''));
@@ -2378,7 +2552,7 @@
         if (!a && !ctas) return 'Sin asignaciones todavía';
         var bits = [];
         if (a) bits.push(a + (a === 1 ? ' asignación' : ' asignaciones'));
-        if (cc) bits.push(cc + (cc === 1 ? ' centro' : ' centros'));
+        if (cc) bits.push(cc + (cc === 1 ? ' cliente' : ' clientes'));
         if (ctas) bits.push(ctas + (ctas === 1 ? ' cuenta' : ' cuentas'));
         if (us) bits.push(us + (us === 1 ? ' usuario' : ' usuarios'));
         return bits.join(' · ');
@@ -2395,7 +2569,7 @@
         }
         return head + '<p style="margin:.75rem 0 .35rem">También se borra lo que ya tiene cargado:</p><ul style="text-align:left;margin:.2rem 0 0;padding-left:1.2rem">' +
             (a ? '<li>' + a + (a === 1 ? ' asignación' : ' asignaciones') + '</li>' : '') +
-            (cc ? '<li>' + cc + (cc === 1 ? ' centro de costos' : ' centros de costo') + '</li>' : '') +
+            (cc ? '<li>' + cc + (cc === 1 ? ' cliente' : ' clientes') + '</li>' : '') +
             (ctas ? '<li>' + ctas + (ctas === 1 ? ' cuenta' : ' cuentas') + '</li>' : '') +
             (us ? '<li>' + us + (us === 1 ? ' usuario asignado' : ' usuarios asignados') + '</li>' : '') +
             '</ul>';
@@ -2542,7 +2716,7 @@
         paintFxBadge();
         var kicker = document.querySelector('.cc-kicker');
         if (kicker && CC.state.page === 'admin-ciclo') {
-            kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · centros y permisos';
+            kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · clientes y permisos';
         }
     }
 
@@ -3142,8 +3316,9 @@
     var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, grupoCerradoMatrix: {}, vista: 'captura', scopeTabla: 'centro', chartVerTodas: false, prodQuery: '' };
 
     function asignacionesDelCiclo(ciclo) {
+        var needle = String(ciclo || '').toUpperCase();
         return (CC.state.misAsignaciones || []).filter(function (a) {
-            return !ciclo || String(a.ciclo || '') === String(ciclo);
+            return !needle || String(a.ciclo || '').toUpperCase() === needle;
         });
     }
 
@@ -3155,13 +3330,13 @@
         var map = {};
         (list || []).forEach(function (a) {
             var emp = String(a.empresa || '').toUpperCase().trim();
-            var code = String(a.centro_codigo || '').trim();
+            var code = codigoClienteAsig(a);
             var k = emp + '|' + code;
             if (!emp || !code) return;
             if (!map[k]) {
                 map[k] = {
                     codigo: code,
-                    nombre: a.centro_nombre || code,
+                    nombre: nombreClienteAsig(a) || code,
                     empresa: emp,
                     usuario: a.usuario || '',
                     usuarios: [],
@@ -3180,7 +3355,7 @@
             var row = map[k];
             if (a.es_principal || !row.usuario) row.usuario = a.usuario || row.usuario;
             if (a.usuario && row.usuarios.indexOf(a.usuario) === -1) row.usuarios.push(a.usuario);
-            if (a.centro_nombre) row.nombre = a.centro_nombre;
+            if (nombreClienteAsig(a)) row.nombre = nombreClienteAsig(a);
             row.capturar = row.capturar || !!a.capturar;
             row.editar = row.editar || !!a.editar;
             row.revisar = row.revisar || !!a.revisar;
@@ -3261,7 +3436,7 @@
     }
 
     function setCapturaEnabled(on) {
-        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-refresh-venta', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q'].forEach(function (id) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-refresh-venta', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q', 'ctl-add-btn'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.disabled = !on;
         });
@@ -3301,11 +3476,29 @@
         return hit;
     }
 
+    function listaPrecioDeCentro(c, codigo) {
+        if (!c || !codigo) return null;
+        var own = CC.state.preciosCache && CC.state.preciosCache[preciosCacheKey(c)];
+        if (own) {
+            return own[String(codigo)]
+                || own[String(codigo).toUpperCase()]
+                || own[codigoCuentaKey(codigo)]
+                || null;
+        }
+        if (control.centro
+            && String(control.centro.codigo) === String(c.codigo)
+            && String(control.centro.empresa || '').toUpperCase() === String(c.empresa || '').toUpperCase()
+            && control._preciosReq === preciosCacheKey(c)) {
+            return lookupPrecioLista(codigo);
+        }
+        return null;
+    }
+
     function cuentasEnriquecidas(c) {
         return cuentasDeCentro(c).map(function (cta) {
             var ppto = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
             var totP = sum(ppto);
-            var lista = lookupPrecioLista(cta.codigo) || {};
+            var lista = listaPrecioDeCentro(c, cta.codigo) || lookupPrecioLista(cta.codigo) || {};
             var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
             var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
             var masterPrecio = (master && Number(master.costo)) || 0;
@@ -3863,6 +4056,7 @@
                 renderControlTable();
             });
             bindControlTools();
+            bindAgregarProducto();
             bindImportMasivo();
             bindCapturaQuick();
             bindVentasPasadas();
@@ -3997,6 +4191,11 @@
     function loadControlCentro() {
         var emp = String(val('ctl-empresa') || '').trim();
         var codigo = String(val('ctl-centro') || '').trim();
+        if (control._addClienteKey !== (emp + '|' + codigo)) {
+            control._addClienteKey = emp + '|' + codigo;
+            var addQ = document.getElementById('ctl-add-q');
+            if (addQ) addQ.value = '';
+        }
         if (!emp || !codigo) {
             control.centro = null;
             control.cuenta = null;
@@ -4054,6 +4253,7 @@
         }
         loadGastoRealCentro(c);
         loadListasPreciosCentro(c);
+        stripSiopSeedLocalOnce(c);
         control._allCtas = cuentasEnriquecidas(c);
         if (control.cuenta && !control._allCtas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
             control.cuenta = null;
@@ -4070,6 +4270,28 @@
         renderVisorTable();
     }
 
+    /** Rojo < 40%, amarillo 40–79%, verde desde 80%. */
+    function semaforoAvance(pct) {
+        var n = Number(pct) || 0;
+        if (n >= 80) return 'good';
+        if (n >= 40) return 'warn';
+        return 'bad';
+    }
+
+    function paintBarraProgreso(wrapId, barId, pct, labelId) {
+        var n = Math.max(0, Math.min(Number(pct) || 0, 100));
+        var cls = semaforoAvance(n);
+        var bar = document.getElementById(barId);
+        var wrap = document.getElementById(wrapId);
+        if (bar) bar.style.width = n + '%';
+        if (wrap) wrap.className = 'cc-progress ' + cls;
+        if (labelId) {
+            var label = document.getElementById(labelId);
+            if (label) label.className = 'cc-semaforo-' + cls;
+        }
+        return cls;
+    }
+
     function updateControlProgress() {
         var c = control.centro;
         var box = document.getElementById('ctl-nav-pend');
@@ -4082,10 +4304,12 @@
             setText('ctl-nav-pend-n', '—');
             setText('ctl-nav-pend-sub', 'Elige un cliente para ver cuántos productos faltan por proyectar');
             if (box) box.className = 'cc-nav-pend';
-            var bar0 = document.getElementById('ctl-avance-bar');
-            var wrap0 = document.getElementById('ctl-avance-wrap');
-            if (bar0) bar0.style.width = '0%';
-            if (wrap0) wrap0.className = 'cc-progress warn';
+            var barEmpty = document.getElementById('ctl-avance-bar');
+            var wrapEmpty = document.getElementById('ctl-avance-wrap');
+            var labelEmpty = document.getElementById('kpi-ctl-avance');
+            if (barEmpty) barEmpty.style.width = '0%';
+            if (wrapEmpty) wrapEmpty.className = 'cc-progress';
+            if (labelEmpty) labelEmpty.className = '';
             paintVisibleTableTotals(null);
             paintScopeHints();
             return;
@@ -4099,10 +4323,7 @@
         setText('kpi-ctl-gasto', moneyGasto(st.totGVista != null ? st.totGVista : st.totG));
         setText('kpi-ctl-ppto', money(st.totP));
         setText('kpi-ctl-pend', st.pendientes);
-        var bar = document.getElementById('ctl-avance-bar');
-        var wrap = document.getElementById('ctl-avance-wrap');
-        if (bar) bar.style.width = Math.min(st.avance, 100) + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (st.pendientes ? 'warn' : 'good');
+        paintBarraProgreso('ctl-avance-wrap', 'ctl-avance-bar', st.avance, 'kpi-ctl-avance');
         setText('ctl-nav-pend-n', st.pendientes);
         setText('ctl-nav-pend-sub', st.total
             ? (st.pendientes
@@ -4209,27 +4430,15 @@
         var cc = control.centro;
         var ctas = matrixCtas();
         var st = statsDeCentro(cc);
-        if (!st.total) {
-            if (empty) {
-                empty.hidden = false;
-                empty.innerHTML = '<i class="fa-solid fa-boxes-stacked"></i>' +
-                    '<div><strong>Este cliente no tiene productos asignados</strong></div>' +
-                    '<div class="text-muted" style="font-size:.85rem;margin-top:.35rem">Ve a <b>Ventas → Asignaciones</b> del ciclo <b>' +
-                    escapeHtml(val('ctl-ciclo') || CC.state.cicloCodigo || '') +
-                    '</b>, elige el cliente y asígnale productos. Luego regresa a Captura: el budget <b>' +
-                    escapeHtml(labelTipoBudget() || '3+9') +
-                    '</b> precargará los meses del año de referencia.</div>';
-            }
-            if (body) body.hidden = true;
-            return;
-        }
         if (empty) empty.hidden = true;
         if (body) body.hidden = false;
         paintNombreCodigo('ctl-form-cc', cc.nombre || '', cc.codigo || '');
         setText('ctl-form-cta', st.total + (st.total === 1 ? ' producto' : ' productos'));
-        setText('ctl-form-grupo', ctas.length === st.total
-            ? 'Edita Ene–Dic por fila'
-            : ('Mostrando ' + ctas.length + ' de ' + st.total));
+        setText('ctl-form-grupo', !st.total
+            ? 'Agrega un producto para capturarlo aquí'
+            : (ctas.length === st.total
+                ? 'Edita Ene–Dic por fila'
+                : ('Mostrando ' + ctas.length + ' de ' + st.total)));
         paintFormPresupuestoLabel();
         paintFormEstadoCliente(st);
         paintCompletarBtn(currentCta() || ctas[0] || null);
@@ -4260,23 +4469,46 @@
             : (st.totP ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada');
         setText('ctl-form-avance', st.avance + '%');
         setText('ctl-form-avance-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
-        var bar = document.getElementById('ctl-form-avance-bar');
-        var wrap = document.getElementById('ctl-form-avance-wrap');
-        if (bar) bar.style.width = Math.min(st.avance, 100) + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (st.pendientes ? 'warn' : 'good');
+        paintBarraProgreso('ctl-form-avance-wrap', 'ctl-form-avance-bar', st.avance, 'ctl-form-avance');
+    }
+
+    function paintMatrixLegend() {
+        var legend = document.getElementById('ctl-matrix-legend');
+        var ok = document.getElementById('ctl-legend-ok');
+        var over = document.getElementById('ctl-legend-over');
+        if (esBudgetTipo()) {
+            if (legend) legend.hidden = true;
+            return;
+        }
+        if (legend) legend.hidden = false;
+        if (esSiopTipo()) {
+            var src = CC.state.cicloBaseCodigo || 'proyecto anterior';
+            if (ok) ok.textContent = 'Mayor o igual a ' + src;
+            if (over) over.textContent = 'Menor a ' + src;
+            return;
+        }
+        if (ok) ok.textContent = 'Mayor o igual a venta pasada';
+        if (over) over.textContent = 'Menor a venta pasada';
     }
 
     function paintMatrixHint() {
         var hint = document.getElementById('ctl-matrix-hint');
+        paintMatrixLegend();
         if (!hint) return;
         var cta = currentCta();
-        var anio = CC.state.anioGasto || '';
-        if (cta) {
-            hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
-                '. Arriba = venta ' + anio + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
+        var arriba = pastQtyCaption();
+        if (esBudgetTipo()) {
+            hint.textContent = cta
+                ? ('Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Los meses quedan en blanco: captura la proyección en cada celda.')
+                : 'Budget: los 12 meses quedan en blanco para capturar la proyección.';
             return;
         }
-        hint.textContent = 'Arriba de cada mes: venta ' + anio + '. Abajo: proyección. Clic en un producto para herramientas puntuales.';
+        if (cta) {
+            hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
+                '. Arriba = ' + arriba + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
+            return;
+        }
+        hint.textContent = 'Arriba de cada mes: ' + arriba + '. Abajo: proyección. Clic en un producto para herramientas puntuales.';
     }
 
     function nombrePresupuestoActual() {
@@ -4326,10 +4558,7 @@
         var av = Math.round((filled / 12) * 100);
         setText('ctl-form-avance', av + '%');
         setText('ctl-form-avance-meta', filled + ' de 12 meses capturados');
-        var bar = document.getElementById('ctl-form-avance-bar');
-        var wrap = document.getElementById('ctl-form-avance-wrap');
-        if (bar) bar.style.width = av + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (filled === 12 ? 'good' : 'warn');
+        paintBarraProgreso('ctl-form-avance-wrap', 'ctl-form-avance-bar', av, 'ctl-form-avance');
     }
 
     function updateFormTotals(cta) {
@@ -4892,7 +5121,7 @@
             tbody.innerHTML = '<tr><td colspan="18"><div class="cc-empty">' +
                 (control.soloPendientes || control.prodQuery
                     ? 'Sin productos con ese filtro'
-                    : 'Este cliente no tiene productos asignados') +
+                    : 'Usa Agregar producto, a la izquierda, para asignarlo y capturarlo aquí') +
                 '</div></td></tr>';
             return;
         }
@@ -5032,6 +5261,7 @@
 
     function monthCellClass(cta, i) {
         var cls = 'cc-month-cell';
+        if (esBudgetTipo()) return cls + ' is-plain';
         var raw = cta.ppto && cta.ppto[i];
         // Amarillo: mes pendiente de capturar.
         if (!mesLleno(raw)) {
@@ -5039,9 +5269,9 @@
             return cls;
         }
         var val = Number(raw) || 0;
-        var past = Number((cta.gasto && cta.gasto[i]) || 0);
-        // Verde: unidades proyectadas mayores (o iguales) a la venta pasada.
-        // Rojo: unidades proyectadas menores a la venta pasada.
+        var past = pastQtyMes(cta, i);
+        // Verde: unidades proyectadas mayores (o iguales) a la referencia (venta o SIOP anterior).
+        // Rojo: unidades proyectadas menores a esa referencia.
         if (past > 0 && val < past) cls += ' is-over';
         else cls += ' is-ok';
         return cls;
@@ -5573,7 +5803,7 @@
         }
         var stt = statsDeCentro(c);
         var dep = deptoDeCentro(c);
-        var barCls = stt.pendientes ? 'warn' : 'good';
+        var barCls = semaforoAvance(stt.avance);
         setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
         var title = document.getElementById('cc-page-title');
         if (title) title.innerHTML = escapeHtml(c.nombre || c.codigo || 'Cliente');
@@ -5582,11 +5812,11 @@
             facts.hidden = false;
             facts.innerHTML =
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
-                factHtml('Tot Venta', money(stt.totG)) +
-                factHtml('Tot Proy.', money(stt.totP)) +
+                factHtml('TOTAL VENTA', textoImporteVisor(totalVentaAnioCliente(c))) +
+                factHtml('TOTAL PROYECTADO', textoImporteVisor(totalProyectadoCliente(c))) +
                 factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
-                factHtml('Progreso', stt.avance + '%',
+                factHtml('Progreso', '<span class="cc-semaforo-' + barCls + '">' + stt.avance + '%</span>',
                     '<div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span></div>' +
                     '<div class="cc-progress ' + barCls + '"><span style="width:' + Math.min(stt.avance, 100) + '%"></span></div></div>') +
                 '<div class="cc-detalle-fact"><small>Estado</small><div style="margin-top:.2rem">' + renderBadge(c.estado) + '</div></div>';
@@ -5669,12 +5899,122 @@
         });
     }
 
+    function gastoRealListo(c) {
+        if (!c) return false;
+        var key = gastoCacheKey(c);
+        return !!(CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key));
+    }
+
+    /** Importe de lo vendido el año de referencia (SAP), todos los productos del cliente. */
+    function totalVentaAnioCliente(c) {
+        if (!gastoRealListo(c)) return null;
+        var por = (CC.state.gastoCache && CC.state.gastoCache[gastoCacheKey(c)]) || {};
+        var seen = {};
+        var total = 0;
+        Object.keys(por).forEach(function (k) {
+            var row = por[k];
+            if (!row || typeof row !== 'object') return;
+            var codigo = String(row.codigo || k || '').trim();
+            if (!codigo || seen[codigo]) return;
+            seen[codigo] = true;
+            total += importeVentaVista({
+                importe: row.importe,
+                importeUsd: row.importe_usd,
+                importe_usd: row.importe_usd,
+                gasto: row.gasto,
+                precioLista: 0,
+                precioMoneda: 'MXN'
+            });
+        });
+        return total;
+    }
+
+    /** Importe de la proyección que ya se capturó en el ciclo. */
+    function totalProyectadoCliente(c) {
+        var s = statsDeCentro(c);
+        return s.totPVista != null ? s.totPVista : (s.totP || 0);
+    }
+
+    function textoImporteVisor(n) {
+        if (n == null) return '…';
+        return moneyGasto(n);
+    }
+
+    function paintVisorLabels() {
+        var g = CC.state.anioGasto || '';
+        var p = CC.state.anioPresupuesto || '';
+        setText('visor-kpi-gasto-lbl', 'Total venta' + (g ? ' ' + g : ''));
+        setText('visor-kpi-ppto-lbl', 'Total proyectado' + (p ? ' ' + p : ''));
+        setText('visor-th-venta', 'Total venta' + (g ? ' ' + g : ''));
+        setText('visor-th-proy', 'Total proyectado' + (p ? ' ' + p : ''));
+    }
+
+    var visorGastoInflight = {};
+
+    function queueVisorGastos() {
+        if (!CC.state.gastoUrl || CC.state.page !== 'control') return;
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        var pending = (CC.state.centros || []).filter(function (c) {
+            var key = gastoCacheKey(c);
+            if (gastoRealListo(c) || visorGastoInflight[key]) return false;
+            return true;
+        });
+        if (!pending.length) return;
+        var inflight = 0;
+        var max = 3;
+        var dirty = false;
+        var paintTimer = null;
+        function schedulePaint() {
+            if (paintTimer) return;
+            paintTimer = setTimeout(function () {
+                paintTimer = null;
+                if (CC.state.page === 'control' && dirty) renderVisorTable();
+            }, 350);
+        }
+        function kick() {
+            while (inflight < max && pending.length) {
+                var c = pending.shift();
+                var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+                if (visorGastoInflight[key]) continue;
+                if (CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key)) continue;
+                visorGastoInflight[key] = true;
+                inflight += 1;
+                (function (centro, cacheKey, yearFrozen) {
+                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                        '&cc=' + encodeURIComponent(centro.codigo || '') +
+                        '&year=' + encodeURIComponent(yearFrozen), {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(function (res) { return res.json(); }).then(function (json) {
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
+                        CC.state.gastoLookup = CC.state.gastoLookup || {};
+                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]);
+                        dirty = true;
+                        schedulePaint();
+                    }).catch(function () {
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[cacheKey] = {};
+                        dirty = true;
+                    }).then(function () {
+                        delete visorGastoInflight[cacheKey];
+                        inflight -= 1;
+                        if (!pending.length && !inflight && dirty) renderVisorTable();
+                        else kick();
+                    });
+                })(c, key, year);
+            }
+        }
+        kick();
+    }
+
     function visorTotales(rows) {
-        var totG = 0, totP = 0, capturadas = 0, totalCtas = 0, listos = 0;
+        var totG = 0, totP = 0, capturadas = 0, totalCtas = 0, listos = 0, ventaPend = 0;
         (rows || []).forEach(function (c) {
             var s = statsDeCentro(c);
-            totG += s.totG;
-            totP += s.totP;
+            var venta = totalVentaAnioCliente(c);
+            if (venta == null) ventaPend += 1;
+            else totG += venta;
+            totP += totalProyectadoCliente(c);
             capturadas += s.capturadas;
             totalCtas += s.total;
             if (!s.pendientes) listos++;
@@ -5684,6 +6024,7 @@
             n: n,
             totG: totG,
             totP: totP,
+            ventaPend: ventaPend,
             capturadas: capturadas,
             totalCtas: totalCtas,
             listos: listos,
@@ -5692,18 +6033,31 @@
         };
     }
 
+    function textoTotalVentaVisor(tot) {
+        if (!tot || !tot.n) return '—';
+        if (tot.ventaPend && tot.ventaPend === tot.n) return '…';
+        var txt = moneyGasto(tot.totG);
+        return tot.ventaPend ? (txt === '—' ? '…' : txt + '…') : txt;
+    }
+
     function paintVisorResumen(tot) {
+        paintVisorLabels();
         setText('visor-avance', tot.n ? (tot.avance + '%') : '—');
         setText('visor-avance-meta', tot.n
             ? (tot.listos + ' de ' + tot.n + ' clientes listos · ' + tot.capturadas + ' de ' + tot.totalCtas + ' productos capturados')
             : 'No hay clientes para sumar');
-        var bar = document.getElementById('visor-avance-bar');
-        var wrap = document.getElementById('visor-avance-wrap');
-        if (bar) bar.style.width = (tot.n ? Math.min(tot.avance, 100) : 0) + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (tot.n && !tot.pendientes ? 'good' : 'warn');
+        if (tot.n) paintBarraProgreso('visor-avance-wrap', 'visor-avance-bar', tot.avance, 'visor-avance');
+        else {
+            var bar0 = document.getElementById('visor-avance-bar');
+            var wrap0 = document.getElementById('visor-avance-wrap');
+            if (bar0) bar0.style.width = '0%';
+            if (wrap0) wrap0.className = 'cc-progress';
+            var label0 = document.getElementById('visor-avance');
+            if (label0) label0.className = '';
+        }
         setText('visor-kpi-n', tot.n || '0');
-        setText('visor-kpi-gasto', money(tot.totG));
-        setText('visor-kpi-ppto', money(tot.totP));
+        setText('visor-kpi-gasto', textoTotalVentaVisor(tot));
+        setText('visor-kpi-ppto', tot.n ? moneyGasto(tot.totP) : '—');
         setText('visor-kpi-pend', tot.pendientes);
         var tf = document.getElementById('visor-tfoot');
         if (!tf) return;
@@ -5712,9 +6066,9 @@
             return;
         }
         tf.innerHTML = '<tr>' +
-            '<td colspan="4">Totales · ' + tot.n + (tot.n === 1 ? ' cliente' : ' clientes') + '</td>' +
-            '<td class="num">' + money(tot.totG) + '</td>' +
-            '<td class="num">' + money(tot.totP) + '</td>' +
+            '<td colspan="3">Totales · ' + tot.n + (tot.n === 1 ? ' cliente' : ' clientes') + '</td>' +
+            '<td class="num">' + textoTotalVentaVisor(tot) + '</td>' +
+            '<td class="num">' + moneyGasto(tot.totP) + '</td>' +
             '<td colspan="2"></td>' +
             '<td>' + tot.capturadas + '/' + tot.totalCtas + ' · ' + tot.avance + '%</td>' +
             '<td>' + tot.listos + ' listos</td>' +
@@ -5727,25 +6081,27 @@
         var rows = visorRowsFiltradas();
         var tot = visorTotales(rows);
         paintVisorResumen(tot);
+        queueVisorGastos();
         if (!rows.length) {
-            tb.innerHTML = '<tr><td colspan="10"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay clientes con esos filtros</div></td></tr>';
+            tb.innerHTML = '<tr><td colspan="9"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay clientes con esos filtros</div></td></tr>';
             return;
         }
+        var anioVenta = CC.state.anioGasto || '';
         tb.innerHTML = rows.map(function (c) {
             var stt = statsDeCentro(c);
-            var dep = deptoDeCentro(c);
-            var barCls = stt.pendientes ? 'warn' : 'good';
+            var barCls = semaforoAvance(stt.avance);
             var fecha = c.fecha || '—';
+            var venta = totalVentaAnioCliente(c);
+            var proy = totalProyectadoCliente(c);
             return '<tr data-key="' + escapeHtml(centroKey(c)) + '">' +
                 '<td><a class="cc-btn cc-btn-detalle" href="' + detalleHref(c) + '"><i class="fa-solid fa-eye"></i> Detalle</a></td>' +
                 '<td>' + escapeHtml(c.empresa || '—') + '</td>' +
                 '<td>' + htmlNombreCodigo(c.nombre, c.codigo) + '</td>' +
-                '<td>' + escapeHtml(dep) + '</td>' +
-                '<td class="num">' + money(stt.totG) + '</td>' +
-                '<td class="num">' + money(stt.totP) + '</td>' +
+                '<td class="num" title="' + escapeHtml('Vendido en ' + anioVenta) + '">' + textoImporteVisor(venta) + '</td>' +
+                '<td class="num" title="Proyección capturada">' + textoImporteVisor(proy) + '</td>' +
                 '<td>' + userCell(c.usuario) + '</td>' +
                 '<td>' + escapeHtml(fecha) + '</td>' +
-                '<td><div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span><strong>' + stt.avance + '%</strong></div>' +
+                '<td><div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span><strong class="cc-semaforo-' + barCls + '">' + stt.avance + '%</strong></div>' +
                     '<div class="cc-progress ' + barCls + '"><span style="width:' + Math.min(stt.avance, 100) + '%"></span></div></div></td>' +
                 '<td>' + renderBadge(c.estado) + '</td></tr>';
         }).join('');
@@ -5768,6 +6124,224 @@
             hint.textContent = mismo
                 ? 'Cantidad fija: se copia el mismo número de unidades a cada mes del rango Desde–Hasta.'
                 : 'El total de unidades se reparte entre los meses del rango (el tipo de cambio no aplica).';
+        }
+    }
+
+    var catalogoEmpresaCache = {};
+
+    function miAsignacionCliente() {
+        var c = control.centro;
+        if (!c) return null;
+        var list = asigsDe(c).filter(function (a) { return a && a.id; });
+        if (!list.length) return null;
+        return list.filter(function (a) { return a.es_principal; })[0] || list[0];
+    }
+
+    function productoYaAsignado(codigo) {
+        var c = control.centro;
+        var asig = c ? asigDe(c) : null;
+        var key = String(codigo || '').toUpperCase();
+        if (!key || !asig) return false;
+        return (asig.cuentas || []).some(function (x) {
+            return String(x.codigo || '').toUpperCase() === key;
+        });
+    }
+
+    function cargarCatalogoEmpresa(done) {
+        var c = control.centro;
+        if (!c) {
+            done([]);
+            return;
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        var key = String(c.empresa || '').toLowerCase() + '|' + year;
+        if (catalogoEmpresaCache[key]) {
+            done(catalogoEmpresaCache[key]);
+            return;
+        }
+        var url = '/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(c.empresa) +
+            '&year=' + encodeURIComponent(year) + '&todas=1';
+        fetch(url, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (json) {
+                var rows = (json && json.cuentas) || [];
+                if (json && json.ok && rows.length) catalogoEmpresaCache[key] = rows;
+                done(rows, json && json.mensaje);
+            })
+            .catch(function () { done([], 'No se pudo cargar el catálogo'); });
+    }
+
+    function pintarResultadosAgregar(q, rows, mensaje) {
+        var box = document.getElementById('ctl-add-list');
+        if (!box) return;
+        q = normSearch(q || '');
+        var pending = (rows || []).filter(function (p) { return !productoYaAsignado(p.codigo); });
+        var hits = q
+            ? pending.filter(function (p) {
+                return normSearch((p.codigo || '') + ' ' + (p.nombre || '') + ' ' + (p.grupo || '')).indexOf(q) !== -1;
+            })
+            : pending;
+        var limit = q ? 40 : 30;
+        var shown = hits.slice(0, limit);
+        if (!shown.length) {
+            box.innerHTML = '<div class="cc-add-prod-empty">' + escapeHtml(mensaje || (q
+                ? 'Sin productos con ese texto, o ya están en el cliente.'
+                : 'Este catálogo no tiene productos para agregar.')) + '</div>';
+            return;
+        }
+        var more = '';
+        if (hits.length > shown.length) {
+            more = '<div class="cc-add-prod-empty">' + (q
+                ? ('Mostrando ' + shown.length + ' de ' + hits.length + '. Sigue escribiendo para acotar.')
+                : ('Mostrando ' + shown.length + ' de ' + hits.length + '. Usa el buscador para encontrar el producto.')) + '</div>';
+        }
+        box.innerHTML = shown.map(function (p) {
+            return '<button type="button" class="cc-add-prod-item" data-add-codigo="' + escapeHtml(p.codigo) + '">' +
+                '<span class="cc-cta-name">' + escapeHtml(p.nombre || p.codigo) + '</span>' +
+                '<span class="cc-cta-code">' + escapeHtml(p.codigo) + '</span>' +
+                '<span class="cc-add-prod-go">Agregar</span></button>';
+        }).join('') + more;
+    }
+
+    function buscarCatalogoParaAgregar(q) {
+        var box = document.getElementById('ctl-add-list');
+        if (box && !catalogoEmpresaCache[catalogoKeyActual()]) {
+            box.innerHTML = '<div class="cc-add-prod-empty">Cargando productos…</div>';
+        }
+        cargarCatalogoEmpresa(function (rows, mensaje) {
+            var input = document.getElementById('ctl-add-q');
+            if (!input || normSearch(input.value) !== normSearch(q)) return;
+            pintarResultadosAgregar(q, rows, mensaje);
+        });
+    }
+
+    function catalogoKeyActual() {
+        var c = control.centro;
+        if (!c) return '';
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        return String(c.empresa || '').toLowerCase() + '|' + year;
+    }
+
+    function abrirModalAgregarProducto() {
+        if (!control.centro || control.locked) {
+            toast('warning', 'Elige un cliente', 'Selecciona empresa y cliente para agregar productos.');
+            return;
+        }
+        var sub = document.getElementById('ctl-add-sub');
+        if (sub) {
+            sub.textContent = 'Catálogo de ' + String(control.centro.empresa || 'la empresa') +
+                ', aunque no se le haya vendido a este cliente.';
+        }
+        var input = document.getElementById('ctl-add-q');
+        if (input) input.value = '';
+        var box = document.getElementById('ctl-add-list');
+        if (box) box.innerHTML = '<div class="cc-add-prod-empty">Cargando productos…</div>';
+        showModal('modalAgregarProducto');
+        cargarCatalogoEmpresa(function (rows, mensaje) {
+            pintarResultadosAgregar('', rows, mensaje);
+            if (input) input.focus();
+        });
+    }
+
+    function enfocarProductoAgregado(codigo) {
+        control.prodQuery = '';
+        var filtro = document.getElementById('ctl-prod-q');
+        if (filtro) filtro.value = '';
+        var addQ = document.getElementById('ctl-add-q');
+        if (addQ) addQ.value = '';
+        hideModal('modalAgregarProducto');
+        control.cuenta = codigo;
+        loadControlCentro();
+        selectCuenta(codigo);
+        var row = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
+        if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        var first = row && row.querySelector('input[data-m]:not([disabled])');
+        if (first && !first.disabled) first.focus();
+    }
+
+    function agregarProductoAlCliente(codigo) {
+        var c = control.centro;
+        var asig = miAsignacionCliente();
+        if (!c || !asig || control.locked) {
+            toast('warning', 'No se puede agregar', 'Este cliente no está abierto para captura.');
+            return;
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        var cacheKey = String(c.empresa || '').toLowerCase() + '|' + year;
+        var prod = (catalogoEmpresaCache[cacheKey] || []).filter(function (p) {
+            return String(p.codigo) === String(codigo);
+        })[0];
+        if (!prod) {
+            toast('warning', 'Producto', 'No se encontró el producto en el catálogo.');
+            return;
+        }
+        if (productoYaAsignado(prod.codigo)) {
+            enfocarProductoAgregado(prod.codigo);
+            toast('warning', 'Ya está en el cliente', prod.nombre || prod.codigo);
+            return;
+        }
+        var cuentas = (asig.cuentas || []).map(function (x) {
+            return {
+                codigo: x.codigo,
+                nombre: x.nombre || '',
+                agrupacion: x.agrupacion || x.grupo || ''
+            };
+        });
+        cuentas.push({
+            codigo: prod.codigo,
+            nombre: prod.nombre || prod.codigo,
+            agrupacion: prod.grupo || ''
+        });
+        var ciclo = cicloActualCodigo();
+        var box = document.getElementById('ctl-add-list');
+        if (box) box.innerHTML = '<div class="cc-add-prod-empty">Agregando ' + escapeHtml(prod.nombre || prod.codigo) + '…</div>';
+        fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones/' + encodeURIComponent(asig.id), {
+            method: 'PUT',
+            headers: apiJsonHeaders(),
+            body: JSON.stringify({ cuentas: cuentas })
+        }).then(function (r) {
+            return r.json().then(function (json) { return { ok: r.ok, json: json }; });
+        }).then(function (res) {
+            if (!res.ok || !res.json || !res.json.asignacion) {
+                throw new Error((res.json && res.json.message) || 'No se pudo asignar el producto');
+            }
+            var saved = res.json.asignacion;
+            CC.state.misAsignaciones = (CC.state.misAsignaciones || []).map(function (a) {
+                return String(a.id) === String(saved.id) ? saved : a;
+            });
+            enfocarProductoAgregado(prod.codigo);
+            toast('success', 'Producto agregado', (prod.nombre || prod.codigo) + ' ya se puede capturar');
+        }).catch(function (err) {
+            var input = document.getElementById('ctl-add-q');
+            buscarCatalogoParaAgregar(input ? input.value : '');
+            toast('error', 'No se agregó', err && err.message ? err.message : 'Error de red');
+        });
+    }
+
+    function bindAgregarProducto() {
+        var openBtn = document.getElementById('ctl-add-btn');
+        var input = document.getElementById('ctl-add-q');
+        var list = document.getElementById('ctl-add-list');
+        if (!openBtn || openBtn._addBound) return;
+        openBtn._addBound = true;
+        openBtn.addEventListener('click', function () {
+            if (openBtn.disabled) return;
+            abrirModalAgregarProducto();
+        });
+        if (input) {
+            var timer = null;
+            input.addEventListener('input', function () {
+                clearTimeout(timer);
+                var q = input.value;
+                timer = setTimeout(function () { buscarCatalogoParaAgregar(q); }, 220);
+            });
+        }
+        if (list) {
+            list.addEventListener('click', function (ev) {
+                var btn = ev.target.closest ? ev.target.closest('[data-add-codigo]') : null;
+                if (!btn) return;
+                agregarProductoAlCliente(btn.getAttribute('data-add-codigo'));
+            });
         }
     }
 
@@ -6038,7 +6612,7 @@
             data: {
                 labels: MONTHS,
                 datasets: [
-                    { type: 'bar', label: 'Gasto ' + CC.state.anioGasto, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
+                    { type: 'bar', label: 'Ventas ' + CC.state.anioGasto, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
                     { type: 'bar', label: 'Ppto ' + CC.state.anioPresupuesto, data: p, backgroundColor: '#a1a1aa', borderRadius: 4, yAxisID: 'y' },
                     { type: 'line', label: 'Contraste %', data: d, borderColor: '#b45309', backgroundColor: 'transparent', tension: 0.3, yAxisID: 'y1', pointRadius: 3, borderWidth: 2 }
                 ]
@@ -6097,26 +6671,95 @@
         setText('an-th-gasto', 'Venta ' + g);
         setText('an-th-ppto', 'Proy. ' + p);
         var months = document.getElementById('an-heat-months');
-        if (months) months.innerHTML = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
+        if (months) {
+            var cells = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
+            months.innerHTML = months.classList.contains('is-labeled')
+                ? '<span></span><span class="cc-heat-months-cells">' + cells + '</span>'
+                : cells;
+        }
+    }
+
+    function clienteFilterKey(c) {
+        return String(c.empresa || '') + '|' + String(c.codigo || '');
+    }
+
+    function fillSelectKeepEscaped(el, items, extra) {
+        if (!el) return;
+        var prev = el.value;
+        var html = extra || '';
+        (items || []).forEach(function (it) {
+            if (typeof it === 'string') {
+                html += '<option value="' + escapeHtml(it) + '">' + escapeHtml(it) + '</option>';
+                return;
+            }
+            html += '<option value="' + escapeHtml(it.codigo) + '">' + escapeHtml(it.nombre) + '</option>';
+        });
+        el.innerHTML = html;
+        if (prev) el.value = prev;
     }
 
     function fillAnalisisFilters() {
         var rows = (CC.state.centros || []).map(mergedCentro);
+        var empEl = document.getElementById('an-empresa');
+        var cliEl = document.getElementById('an-cliente');
+        var userEl = document.getElementById('an-user');
+        var emp = empEl ? empEl.value : '';
+        var cli = cliEl ? cliEl.value : '';
+        var user = userEl ? userEl.value : '';
+
         var emps = [];
-        var users = [];
         rows.forEach(function (c) {
             if (c.empresa && emps.indexOf(c.empresa) === -1) emps.push(c.empresa);
+        });
+        emps.sort();
+        if (emp && emps.indexOf(emp) === -1) emp = '';
+
+        var scoped = rows.filter(function (c) {
+            return !emp || c.empresa === emp;
+        });
+        if (cli && !scoped.some(function (c) { return clienteFilterKey(c) === cli; })) cli = '';
+
+        var forUsers = scoped.filter(function (c) {
+            return !cli || clienteFilterKey(c) === cli;
+        });
+        var users = [];
+        forUsers.forEach(function (c) {
             var names = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             names.forEach(function (n) {
                 if (n && users.indexOf(n) === -1) users.push(n);
             });
         });
-        emps.sort();
         users.sort();
-        fillSelectKeep(document.getElementById('an-empresa'), emps, null, null, '<option value="">Todas las empresas</option>');
-        fillSelectKeep(document.getElementById('an-user'), users.map(function (n) {
+        if (user && users.indexOf(user) === -1) user = '';
+
+        var forClients = scoped.filter(function (c) {
+            if (!user) return true;
+            return (c.usuarios || []).indexOf(user) !== -1 || c.usuario === user;
+        });
+        var seenCli = {};
+        var clients = [];
+        forClients.forEach(function (c) {
+            var key = clienteFilterKey(c);
+            if (!key || seenCli[key]) return;
+            seenCli[key] = true;
+            var label = (c.nombre && c.nombre !== c.codigo)
+                ? (c.nombre + ' — ' + c.codigo)
+                : (c.codigo || c.nombre || '—');
+            if (!emp && c.empresa) label = c.empresa + ' · ' + label;
+            clients.push({ codigo: key, nombre: label });
+        });
+        clients.sort(function (a, b) {
+            return String(a.nombre).localeCompare(String(b.nombre), 'es');
+        });
+
+        fillSelectKeepEscaped(empEl, emps, '<option value="">Todas las empresas</option>');
+        fillSelectKeepEscaped(cliEl, clients, '<option value="">Todos los clientes</option>');
+        fillSelectKeepEscaped(userEl, users.map(function (n) {
             return { codigo: n, nombre: n };
-        }), 'codigo', 'nombre', '<option value="">Todos los usuarios</option>');
+        }), '<option value="">Todos los usuarios</option>');
+        if (empEl) empEl.value = emp;
+        if (cliEl) cliEl.value = cli;
+        if (userEl) userEl.value = user;
     }
 
     function fillSelectKeep(el, items, valueKey, labelKey, extra) {
@@ -6139,11 +6782,13 @@
         renderAnalisisCiclos();
         paintAnalisisYears();
         if (!CC._analisisBound) {
-            ['an-q', 'an-empresa', 'an-user'].forEach(function (id) {
+            ['an-q', 'an-empresa', 'an-cliente', 'an-user', 'an-chart-producto'].forEach(function (id) {
                 var el = document.getElementById(id);
                 if (el) el.addEventListener('input', renderAnalisis);
                 if (el && el.tagName === 'SELECT') el.addEventListener('change', renderAnalisis);
             });
+            var heatQ = document.getElementById('an-heat-q');
+            if (heatQ) heatQ.addEventListener('input', applyHeatFilter);
             var cicloEl = document.getElementById('an-ciclo');
             if (cicloEl) cicloEl.addEventListener('change', function () {
                 applyAnalisisCiclo(this.value);
@@ -6153,11 +6798,15 @@
                 empBox.addEventListener('click', function (e) {
                     var hit = e.target.closest('[data-emp]');
                     if (!hit) return;
-                    var sel = document.getElementById('an-empresa');
-                    if (!sel) return;
-                    var next = hit.getAttribute('data-emp') || '';
-                    sel.value = sel.value === next ? '' : next;
-                    renderAnalisis();
+                    toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
+                });
+            }
+            var heatBox = document.getElementById('an-heat');
+            if (heatBox) {
+                heatBox.addEventListener('click', function (e) {
+                    var hit = e.target.closest('[data-emp]');
+                    if (!hit) return;
+                    toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
                 });
             }
             CC._analisisBound = true;
@@ -6167,12 +6816,18 @@
         var cicloEl = document.getElementById('an-ciclo');
         if (cicloEl && ciclo) cicloEl.value = ciclo;
         CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
-        if (CC._anCapturaCiclo !== String(CC.state.cicloCodigo || '')) {
-            CC._anCapturaCiclo = String(CC.state.cicloCodigo || '');
-            loadOverlaysForCycle().then(function () { CC.initAnalisis(); });
-            return;
+        var cicloKey = String(CC.state.cicloCodigo || '');
+        if (CC._anCapturaCiclo !== cicloKey) {
+            CC._anCapturaCiclo = cicloKey;
+            paintAnalisisLoading();
+            loadOverlaysForCycle().then(function () {
+                if (CC.state.page !== 'analisis') return;
+                if (String(CC.state.cicloCodigo || '') !== cicloKey) return;
+                renderAnalisis();
+            });
         }
 
+        paintAnalisisLoading();
         if (!CC._anAsigLoaded) {
             if (CC._anAsigLoading) return;
             if (!ciclo) {
@@ -6183,24 +6838,19 @@
                 renderAnalisis();
                 return;
             }
+            CC._anAsigGen = (CC._anAsigGen || 0) + 1;
+            var asigGen = CC._anAsigGen;
             CC._anAsigLoading = true;
-            fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones', {
-                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).then(function (r) { return r.json(); }).then(function (json) {
-                CC.state.misAsignaciones = json.asignaciones || [];
+            fetchAnalisisAsignaciones(ciclo).then(function (list) {
+                if (asigGen !== CC._anAsigGen) return;
+                CC._anAsigLoading = false;
+                if (String(val('an-ciclo') || CC.state.cicloCodigo || '').toUpperCase() !== String(ciclo).toUpperCase()) return;
+                CC.state.misAsignaciones = list || [];
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
                 fillAnalisisFilters();
                 renderAnalisis();
                 queueAnalisisGastos();
-            }).catch(function () {
-                CC.state.misAsignaciones = CC.state.misAsignaciones || [];
-                CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
-                fillAnalisisFilters();
-                renderAnalisis();
             });
             return;
         }
@@ -6211,43 +6861,140 @@
         queueAnalisisGastos();
     };
 
+    function fetchJsonOk(url) {
+        return fetch(url, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        }).then(function (r) {
+            if (!r.ok) throw new Error(String(r.status));
+            return r.json();
+        });
+    }
+
+    function fetchAnalisisAsignaciones(ciclo) {
+        var todas = '/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones';
+        var mias = '/ProyeccionesVentas/api/mis-asignaciones';
+        return fetchJsonOk(todas).then(function (json) {
+            var list = (json && json.asignaciones) || [];
+            if (list.length) return list;
+            return fetchJsonOk(mias).then(function (mine) {
+                return (mine && mine.asignaciones) || [];
+            }).catch(function () { return []; });
+        }).catch(function () {
+            return fetchJsonOk(mias).then(function (mine) {
+                return (mine && mine.asignaciones) || [];
+            }).catch(function () { return CC.state.misAsignaciones || []; });
+        });
+    }
+
+    function paintAnalisisLoading() {
+        var box = document.getElementById('an-loading');
+        if (!box) return;
+        var waitingAsig = !CC._anAsigLoaded;
+        var waitingCap = !!CC._anCapturaCiclo && !CC._capturaReady;
+        var left = CC._anGastoLeft || 0;
+        var total = CC._anGastoTotal || 0;
+        var on = waitingAsig || waitingCap || left > 0;
+        box.hidden = !on;
+        var msg = document.getElementById('an-loading-msg');
+        if (!msg) return;
+        if (waitingAsig) {
+            msg.textContent = 'Cargando clientes del ciclo…';
+        } else if (left > 0) {
+            var done = Math.max(0, total - left);
+            msg.textContent = 'Cargando ventas reales… ' + done + ' de ' + total + ' clientes. Los totales se completan al terminar.';
+        } else if (waitingCap) {
+            msg.textContent = 'Cargando proyecciones capturadas…';
+        }
+    }
+
     function queueAnalisisGastos() {
-        if (!CC.state.gastoUrl || CC.state.page !== 'analisis') return;
+        if (!CC.state.gastoUrl || CC.state.page !== 'analisis') {
+            CC._anGastoLeft = 0;
+            CC._anGastoTotal = 0;
+            paintAnalisisLoading();
+            return;
+        }
         var year = CC.state.anioGasto || 2026;
         var pending = (CC.state.centros || []).filter(function (c) {
-            var key = gastoCacheKey(c);
-            return !gastoCacheEntry(key);
+            var gKey = gastoCacheKey(c);
+            var pKey = preciosCacheKey(c);
+            var gastoOk = !!gastoCacheEntry(gKey);
+            var precioOk = !CC.state.listasPreciosUrl || (CC.state.preciosCache && Object.prototype.hasOwnProperty.call(CC.state.preciosCache, pKey));
+            return !gastoOk || !precioOk;
         });
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        var gen = CC._anGastoGen;
+        CC._anGastoTotal = pending.length;
+        CC._anGastoLeft = pending.length;
+        paintAnalisisLoading();
         if (!pending.length) return;
         var inflight = 0;
-        var max = 3;
+        var max = 4;
         var dirty = false;
+        var paintTimer = null;
+        function schedulePaint() {
+            if (paintTimer) return;
+            paintTimer = setTimeout(function () {
+                paintTimer = null;
+                if (gen !== CC._anGastoGen) return;
+                if (CC.state.page === 'analisis' && dirty) renderAnalisis();
+            }, 400);
+        }
         function kick() {
+            if (gen !== CC._anGastoGen) return;
             while (inflight < max && pending.length) {
                 var c = pending.shift();
                 var key = gastoCacheKey(c);
                 inflight += 1;
                 (function (centro, cacheKey) {
-                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
-                        '&cc=' + encodeURIComponent(centro.codigo || '') +
-                        '&year=' + encodeURIComponent(year), {
-                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                    }).then(function (res) { return res.json(); }).then(function (json) {
-                        var por = (json && json.por_cuenta) || {};
-                        rememberGastoCache(cacheKey, por, {
-                            fuente: (json && json.fuente) || (json && json.ok ? 'api' : 'error'),
-                            synced_at: (json && json.synced_at) || null,
-                            year: (json && json.year) || year,
-                            mensaje: (json && json.mensaje) || null
-                        });
-                        CC.state.gastoLookup = CC.state.gastoLookup || {};
-                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
-                        dirty = true;
-                    }).catch(function () {
-                        // No envenenar caché con vacío: Captura debe poder leer el snapshot.
-                    }).then(function () {
+                    var jobs = [];
+                    if (!gastoCacheEntry(cacheKey)) {
+                        jobs.push(fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                            '&cc=' + encodeURIComponent(centro.codigo || '') +
+                            '&year=' + encodeURIComponent(year), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            if (gen !== CC._anGastoGen) return;
+                            var por = (json && json.por_cuenta) || {};
+                            rememberGastoCache(cacheKey, por, {
+                                fuente: (json && json.fuente) || (json && json.ok ? 'api' : 'error'),
+                                synced_at: (json && json.synced_at) || null,
+                                year: (json && json.year) || year,
+                                mensaje: (json && json.mensaje) || null
+                            });
+                            CC.state.gastoLookup = CC.state.gastoLookup || {};
+                            CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
+                            dirty = true;
+                            schedulePaint();
+                        }).catch(function () {
+                            // No envenenar caché con vacío: Captura debe poder leer el snapshot.
+                        }));
+                    }
+                    var pKey = preciosCacheKey(centro);
+                    if (CC.state.listasPreciosUrl && !(CC.state.preciosCache && Object.prototype.hasOwnProperty.call(CC.state.preciosCache, pKey))) {
+                        jobs.push(fetch(CC.state.listasPreciosUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                            '&cliente=' + encodeURIComponent(centro.codigo || '') +
+                            '&year=' + encodeURIComponent(year), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            if (gen !== CC._anGastoGen) return;
+                            CC.state.preciosCache = CC.state.preciosCache || {};
+                            CC.state.preciosCache[pKey] = mapaPreciosArticulo((json && json.por_articulo) || {});
+                            dirty = true;
+                            schedulePaint();
+                        }).catch(function () {
+                            if (gen !== CC._anGastoGen) return;
+                            CC.state.preciosCache = CC.state.preciosCache || {};
+                            CC.state.preciosCache[pKey] = {};
+                        }));
+                    }
+                    Promise.all(jobs).then(function () {
+                        if (gen !== CC._anGastoGen) return;
                         inflight -= 1;
-                        if (!pending.length && !inflight && dirty) renderAnalisis();
+                        CC._anGastoLeft = Math.max(0, (CC._anGastoLeft || 0) - 1);
+                        paintAnalisisLoading();
+                        if (!pending.length && !inflight) renderAnalisis();
                         else kick();
                     });
                 })(c, key);
@@ -6277,31 +7024,259 @@
                 usuarios: users,
                 monthGasto: MONTHS.map(function (_, i) {
                     return ctas.reduce(function (a, x) { return a + ((x.gasto || [])[i] || 0); }, 0);
+                }),
+                productos: ctas.map(function (cta) {
+                    return {
+                        codigo: cta.codigo,
+                        nombre: cta.nombre || cta.codigo,
+                        months: MONTHS.map(function (_, i) { return (cta.gasto || [])[i] || 0; })
+                    };
                 })
             });
         });
     }
 
+    function toggleAnalisisEmpresa(next) {
+        var sel = document.getElementById('an-empresa');
+        if (!sel) return;
+        sel.value = sel.value === next ? '' : next;
+        renderAnalisis();
+    }
+
+    function applyHeatFilter() {
+        var q = (val('an-heat-q') || '').toLowerCase().trim();
+        var heat = document.getElementById('an-heat');
+        var empty = document.getElementById('an-heat-empty');
+        if (!heat) return;
+        var rows = heat.querySelectorAll('.cc-heat-row');
+        var shown = 0;
+        rows.forEach(function (row) {
+            var nameEl = row.querySelector('.cc-heat-name');
+            var name = ((nameEl && nameEl.textContent) || '').toLowerCase();
+            var ok = !q || name.indexOf(q) !== -1;
+            row.hidden = !ok;
+            if (ok) shown += 1;
+        });
+        if (empty) empty.hidden = !q || shown > 0;
+    }
+
+    function heatMonthCells(monthG, max) {
+        max = max || 1;
+        return (monthG || MONTHS.map(function () { return 0; })).map(function (v, i) {
+            var t = (v || 0) / max;
+            var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
+            return '<span title="' + MONTHS[i] + ': ' + money(v || 0) + '" style="background:' + bg + '"></span>';
+        }).join('');
+    }
+
+    function emptyMonthCells() {
+        return MONTHS.map(function () {
+            return '<span style="background:rgba(10,10,10,.08)"></span>';
+        }).join('');
+    }
+
+    function textoImporteReal(importe, unidades) {
+        var txt = moneyDosDecimales(importe);
+        if (txt !== '—') return txt;
+        var u = Number(unidades) || 0;
+        if (u) return qtyLabel(u) + ' uds';
+        return '—';
+    }
+
+    function productosDeAnalisis(rows) {
+        var out = [];
+        (rows || []).forEach(function (c) {
+            cuentasEnriquecidas(c).forEach(function (cta) {
+                var monthsVenta = MONTHS.map(function (_, i) { return round2(importeMesVentaVista(cta, i)); });
+                var gasto = round2(monthsVenta.reduce(function (a, v) { return a + v; }, 0));
+                // Igual que la columna Proy. de «Detalle por producto y mes»: suma de importeMesProyVista, sin recortar centavos.
+                var ppto = importeProyeccionVista(cta);
+                var monthsProy = MONTHS.map(function (_, i) {
+                    var m = importeMesProyVista(cta, i);
+                    return m == null ? 0 : (Number(m) || 0);
+                });
+                var filled = (cta.ppto || []).filter(mesLleno).length;
+                var listo = !!cta.listo;
+                var capturadas = listo ? 12 : filled;
+                out.push({
+                    centro: c,
+                    empresa: c.empresa || '',
+                    clienteCodigo: c.codigo || '',
+                    clienteNombre: c.nombre || c.codigo || '',
+                    departamento: c.departamento || '',
+                    usuario: c.usuario || '',
+                    usuarios: c.usuarios || [],
+                    estado: c.estado,
+                    productoCodigo: cta.codigo || '',
+                    productoNombre: cta.nombre || cta.codigo || '',
+                    gasto: gasto,
+                    ppto: ppto,
+                    unidadesVenta: Number(cta.totG) || 0,
+                    unidadesProy: cta.unidadesAnio != null ? Number(cta.unidadesAnio) || 0 : unidadesAnuales(cta.ppto),
+                    monthsVenta: monthsVenta,
+                    monthsProy: monthsProy,
+                    yoY: deltaPct(ppto, gasto),
+                    over: gasto > 0 && ppto > gasto * 1.1,
+                    capturadas: capturadas,
+                    avance: listo ? 100 : pct(filled, 12)
+                });
+            });
+        });
+        out.sort(function (a, b) {
+            var byEmp = String(a.empresa).localeCompare(String(b.empresa), 'es');
+            if (byEmp) return byEmp;
+            var byCli = String(a.clienteNombre).localeCompare(String(b.clienteNombre), 'es');
+            if (byCli) return byCli;
+            return String(a.productoNombre).localeCompare(String(b.productoNombre), 'es');
+        });
+        return out;
+    }
+
+    function fillAnalisisChartProducto(productRows) {
+        var sel = document.getElementById('an-chart-producto');
+        if (!sel) return '';
+        var prev = sel.value;
+        var seen = {};
+        var items = [];
+        (productRows || []).forEach(function (p) {
+            var code = String(p.productoCodigo || '');
+            if (!code || seen[code]) return;
+            seen[code] = true;
+            var name = p.productoNombre && p.productoNombre !== code
+                ? (p.productoNombre + ' — ' + code)
+                : (code || '—');
+            items.push({ codigo: code, nombre: name });
+        });
+        items.sort(function (a, b) {
+            return String(a.nombre).localeCompare(String(b.nombre), 'es');
+        });
+        fillSelectKeepEscaped(sel, items, '<option value="">Todos los productos</option>');
+        if (prev && seen[prev]) sel.value = prev;
+        else sel.value = '';
+        return sel.value;
+    }
+
+    function paintAnalisisChart(rows, productRows, gYear, pYear) {
+        var prod = fillAnalisisChartProducto(productRows);
+        var hint = document.getElementById('an-chart-hint');
+        var title = document.getElementById('an-chart-emp-title');
+        if (title) {
+            title.innerHTML = '<i class="fa-solid fa-chart-column"></i> Venta ' + gYear + ' vs proyección ' + pYear;
+        }
+        var labels = [];
+        var venta = [];
+        var proy = [];
+        if (prod) {
+            var chosen = (productRows || []).filter(function (p) {
+                return String(p.productoCodigo) === String(prod);
+            });
+            var name = (chosen[0] && (chosen[0].productoNombre || chosen[0].productoCodigo)) || prod;
+            var byCli = {};
+            chosen.forEach(function (p) {
+                var key = p.clienteNombre || p.clienteCodigo || '—';
+                byCli[key] = byCli[key] || { venta: 0, proy: 0 };
+                byCli[key].venta += Number(p.gasto) || 0;
+                byCli[key].proy += Number(p.ppto) || 0;
+            });
+            labels = Object.keys(byCli).sort(function (a, b) {
+                return String(a).localeCompare(String(b), 'es');
+            });
+            venta = labels.map(function (k) { return byCli[k].venta; });
+            proy = labels.map(function (k) { return byCli[k].proy; });
+            if (!labels.length) {
+                labels = [name];
+                venta = [0];
+                proy = [0];
+            }
+            if (hint) hint.textContent = 'Venta y proyección · ' + name;
+        } else {
+            var byChart = {};
+            var source = (productRows && productRows.length) ? productRows : null;
+            if (source) {
+                source.forEach(function (p) {
+                    var key = p.empresa || '—';
+                    byChart[key] = byChart[key] || { venta: 0, proy: 0 };
+                    byChart[key].venta += Number(p.gasto) || 0;
+                    byChart[key].proy += Number(p.ppto) || 0;
+                });
+            } else {
+                (rows || []).forEach(function (c) {
+                    var key = c.empresa || '—';
+                    byChart[key] = byChart[key] || { venta: 0, proy: 0 };
+                    byChart[key].venta += Number(c.gasto) || 0;
+                    byChart[key].proy += Number(c.ppto) || 0;
+                });
+            }
+            labels = Object.keys(byChart).sort(function (a, b) {
+                return String(a).localeCompare(String(b), 'es');
+            });
+            venta = labels.map(function (e) { return byChart[e].venta; });
+            proy = labels.map(function (e) { return byChart[e].proy; });
+            if (hint) {
+                hint.textContent = labels.length
+                    ? 'Venta y proyección por empresa'
+                    : 'Sin venta ni proyección con esos filtros';
+            }
+        }
+        drawBar('chart-empresas', labels, [
+            { label: 'Venta ' + gYear, data: venta, backgroundColor: '#0a0a0a' },
+            { label: 'Proyección ' + pYear, data: proy, backgroundColor: '#a1a1aa' }
+        ]);
+    }
+
     function renderAnalisis() {
-        var q = (val('an-q') || '').toLowerCase();
+        fillAnalisisFilters();
+        var q = normSearch(val('an-q') || '');
         var emp = val('an-empresa');
+        var cli = val('an-cliente');
         var user = val('an-user');
         var gYear = CC.state.anioGasto || 2026;
         var pYear = CC.state.anioPresupuesto || 2027;
         var empty = document.getElementById('an-empty');
         var work = document.getElementById('an-work');
-        var all = snapshotCentros();
-        if (empty) empty.hidden = !!all.length;
-        if (work) work.hidden = !all.length;
+        var all = CC._anAsigLoaded ? snapshotCentros() : [];
+        paintAnalisisLoading();
+        if (empty) empty.hidden = !CC._anAsigLoaded || !!all.length;
+        if (work) work.hidden = !CC._anAsigLoaded || !all.length;
 
         var rows = all.filter(function (c) {
             if (emp && c.empresa !== emp) return false;
+            if (cli && clienteFilterKey(c) !== cli) return false;
             if (user && (c.usuarios || []).indexOf(user) === -1 && c.usuario !== user) return false;
             return true;
         });
-        var tableRows = rows.filter(function (c) {
-            var blob = (c.codigo + ' ' + c.nombre + ' ' + (c.usuarios || []).join(' ') + ' ' + c.usuario + ' ' + c.empresa + ' ' + (c.departamento || '')).toLowerCase();
-            return !q || blob.indexOf(q) !== -1;
+        var productRows = productosDeAnalisis(rows);
+        if (!productRows.length && rows.length) {
+            productRows = rows.map(function (c) {
+                return {
+                    centro: c,
+                    empresa: c.empresa || '',
+                    clienteCodigo: c.codigo || '',
+                    clienteNombre: c.nombre || c.codigo || '',
+                    departamento: c.departamento || '',
+                    usuario: c.usuario || '',
+                    usuarios: c.usuarios || [],
+                    estado: c.estado,
+                    productoCodigo: '',
+                    productoNombre: 'Sin productos asignados',
+                    gasto: Number(c.gasto) || 0,
+                    ppto: Number(c.ppto) || 0,
+                    unidadesVenta: 0,
+                    unidadesProy: 0,
+                    yoY: c.yoY || 0,
+                    over: !!c.over,
+                    capturadas: c.capturadas || 0,
+                    avance: c.avance || 0
+                };
+            });
+        }
+        var tableRows = productRows.filter(function (p) {
+            if (!q) return true;
+            var blob = normSearch([
+                p.productoCodigo, p.productoNombre, p.clienteCodigo, p.clienteNombre,
+                p.empresa, p.departamento, p.usuario, (p.usuarios || []).join(' ')
+            ].join(' '));
+            return blob.indexOf(q) !== -1;
         });
 
         if (!rows.length) {
@@ -6338,39 +7313,37 @@
                 var av = Math.round(byEmp[e].av / byEmp[e].n);
                 var cls = av < 40 ? 'warn' : (av > 85 ? 'good' : '');
                 var on = emp === e ? ' is-on' : '';
-                return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' centros</span></div>' +
+                return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' clientes</span></div>' +
                     '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>' +
-                    '<div class="text-muted mt-1" style="font-size:.75rem">Gasto ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Ppto ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
+                    '<div class="text-muted mt-1" style="font-size:.75rem">Venta ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Proyecciones ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
             }).join('') || '<div class="cc-empty">Sin empresas</div>';
         }
 
         var tb = document.getElementById('an-tbody');
         if (tb) {
-            tb.innerHTML = tableRows.map(function (c) {
-                var cls = c.avance < 40 ? 'warn' : (c.over ? 'bad' : 'good');
-                var userLabel = (c.usuarios && c.usuarios.length > 1)
-                    ? c.usuario + ' +' + (c.usuarios.length - 1)
-                    : c.usuario;
-                return '<tr><td>' + escapeHtml(c.empresa || '—') + '</td>' +
-                    '<td><div class="fw-semibold">' + escapeHtml(c.codigo) + ' — ' + escapeHtml(c.nombre) + '</div><div class="text-muted" style="font-size:.75rem">' + escapeHtml(c.departamento || '') + '</div></td>' +
+            tb.innerHTML = tableRows.map(function (p) {
+                var cls = p.avance < 40 ? 'bad' : (p.avance < 80 ? 'warn' : 'good');
+                var userLabel = (p.usuarios && p.usuarios.length > 1)
+                    ? p.usuario + ' +' + (p.usuarios.length - 1)
+                    : p.usuario;
+                var cliSub = [p.empresa, p.departamento].filter(Boolean).join(' · ');
+                return '<tr><td>' + htmlNombreCodigo(p.productoNombre, p.productoCodigo) + '</td>' +
+                    '<td>' + htmlNombreCodigo(p.clienteNombre, p.clienteCodigo) +
+                        (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
                     '<td>' + userCell(userLabel) + '</td>' +
-                    '<td>' + renderBadge(c.estado) + '</td>' +
-                    '<td><div class="d-flex justify-content-between"><span>' + c.capturadas + '/' + c.cuentas + '</span><span>' + c.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(c.avance, 100) + '%"></span></div></td>' +
-                    '<td class="num">' + money(c.gasto) + '</td>' +
-                    '<td class="num">' + money(c.ppto) + '</td>' +
-                    '<td class="num ' + (c.yoY > 10 ? 'text-danger' : '') + '">' + (c.gasto ? ((c.yoY > 0 ? '+' : '') + c.yoY + '%') : '—') + '</td>' +
-                    '<td>' + (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
-                    '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
-            }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin coincidencias</div></td></tr>';
+                    '<td>' + renderBadge(p.estado) + '</td>' +
+                    '<td><div class="d-flex justify-content-between"><span>' + p.capturadas + '/12</span><span class="cc-semaforo-' + cls + '">' + p.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(p.avance, 100) + '%"></span></div></td>' +
+                    '<td class="num">' + textoImporteReal(p.gasto, p.unidadesVenta) + '</td>' +
+                    '<td class="num">' + moneyGasto(p.ppto) + '</td>' +
+                    '<td class="num ' + (p.yoY > 10 ? 'text-danger' : '') + '">' + (p.gasto ? ((p.yoY > 0 ? '+' : '') + p.yoY + '%') : '—') + '</td>' +
+                    '<td>' + (p.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
+                    '<td><a class="cc-btn" href="' + detalleHref(p.centro) + '">Ver</a></td></tr>';
+            }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin productos con esos filtros</div></td></tr>';
         }
 
-        var empKeys = Object.keys(byEmp);
-        drawBar('chart-empresas', empKeys, [
-            { label: 'Gasto ' + gYear, data: empKeys.map(function (e) { return byEmp[e].gasto; }), backgroundColor: '#0a0a0a' },
-            { label: 'Ppto ' + pYear, data: empKeys.map(function (e) { return byEmp[e].ppto; }), backgroundColor: '#a1a1aa' }
-        ]);
+        paintAnalisisChart(rows, productRows, gYear, pYear);
         drawDoughnut('chart-estados',
-            ['Abierto', 'En proceso', 'En revisión', 'Terminado'],
+            ['Abierto', 'Capturado', 'En revisión', 'Terminado'],
             [
                 rows.filter(function (c) { return normalizeEstado(c.estado) === 'abierto'; }).length,
                 rows.filter(function (c) { return normalizeEstado(c.estado) === 'en_proceso'; }).length,
@@ -6381,22 +7354,68 @@
 
         var heat = document.getElementById('an-heat');
         if (heat) {
-            var focus = rows.slice().sort(function (a, b) { return b.gasto - a.gasto; })[0];
-            if (focus) {
-                var monthG = focus.monthGasto || MONTHS.map(function () { return 0; });
-                var max = Math.max.apply(null, monthG.concat([1]));
-                heat.innerHTML = monthG.map(function (v, i) {
-                    var t = v / max;
-                    var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
-                    return '<span title="' + MONTHS[i] + ': ' + money(v) + '" style="background:' + bg + '"></span>';
-                }).join('');
-                setText('an-heat-label', 'Gasto ' + gYear + ' · ' + focus.codigo + ' ' + focus.nombre);
+            var heatItems = [];
+            if (emp) {
+                var byProd = {};
+                rows.forEach(function (c) {
+                    (c.productos || []).forEach(function (p) {
+                        var key = String(p.codigo || p.nombre || '');
+                        if (!key) return;
+                        if (!byProd[key]) {
+                            byProd[key] = {
+                                label: (p.codigo || '') + (p.nombre && p.nombre !== p.codigo ? (' ' + p.nombre) : ''),
+                                months: MONTHS.map(function () { return 0; })
+                            };
+                        }
+                        (p.months || []).forEach(function (v, i) {
+                            byProd[key].months[i] += v || 0;
+                        });
+                    });
+                });
+                heatItems = Object.keys(byProd).map(function (k) {
+                    var item = byProd[k];
+                    var tot = item.months.reduce(function (a, v) { return a + (v || 0); }, 0);
+                    return { label: item.label, months: item.months, tot: tot, attr: '' };
+                }).sort(function (a, b) { return b.tot - a.tot; });
+                setText('an-heat-label', 'Venta ' + gYear + ' · por producto · ' + emp);
+                var heatInput = document.getElementById('an-heat-q');
+                if (heatInput) heatInput.placeholder = 'Buscar producto…';
             } else {
-                heat.innerHTML = MONTHS.map(function () {
-                    return '<span style="background:rgba(10,10,10,.08)"></span>';
-                }).join('');
-                setText('an-heat-label', 'Gasto ' + gYear);
+                var byEmpHeat = {};
+                rows.forEach(function (c) {
+                    var key = c.empresa || '—';
+                    byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
+                    (c.monthGasto || []).forEach(function (v, i) {
+                        byEmpHeat[key][i] += v || 0;
+                    });
+                });
+                heatItems = Object.keys(byEmpHeat).map(function (e) {
+                    var months = byEmpHeat[e];
+                    var tot = months.reduce(function (a, v) { return a + (v || 0); }, 0);
+                    return { label: e, months: months, tot: tot, attr: ' data-emp="' + escapeHtml(e) + '"' };
+                }).sort(function (a, b) { return b.tot - a.tot; });
+                setText('an-heat-label', 'Venta ' + gYear + ' · por empresa');
+                var heatInputAll = document.getElementById('an-heat-q');
+                if (heatInputAll) heatInputAll.placeholder = 'Buscar empresa o producto…';
             }
+
+            if (!heatItems.length) {
+                heat.innerHTML = '<div class="cc-heat-row"><div class="cc-heat-name">—</div><div class="cc-heat">' + emptyMonthCells() + '</div></div>';
+            } else {
+                var maxHeat = 1;
+                heatItems.forEach(function (item) {
+                    var local = Math.max.apply(null, (item.months || []).concat([0]));
+                    if (local > maxHeat) maxHeat = local;
+                });
+                heat.innerHTML = heatItems.map(function (item) {
+                    var click = item.attr ? ' is-click' : '';
+                    return '<div class="cc-heat-row' + click + '"' + item.attr + '>' +
+                        '<div class="cc-heat-name" title="' + escapeHtml(item.label) + '">' + escapeHtml(item.label) + '</div>' +
+                        '<div class="cc-heat">' + heatMonthCells(item.months, maxHeat) + '</div>' +
+                        '</div>';
+                }).join('');
+            }
+            applyHeatFilter();
         }
     }
 
@@ -6412,7 +7431,11 @@
                 plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
                 scales: {
                     x: { grid: { display: false } },
-                    y: { ticks: { callback: function (v) { return money(v); } }, grid: { color: '#f1f1f3' } }
+                    y: {
+                        beginAtZero: true,
+                        ticks: { callback: function (v) { return money(v); } },
+                        grid: { color: '#f1f1f3' }
+                    }
                 }
             }
         });
@@ -6510,7 +7533,7 @@
                     estado: 'abierto',
                     inflacion: 4,
                     tipoCambio: 20,
-                    tipoBudget: '3+9',
+                    tipoBudget: 'BUDGET',
                     observaciones: ''
                 };
             setVal('p-codigo', p.codigo);
@@ -6520,7 +7543,7 @@
             setVal('p-inicio', p.inicio); setVal('p-fin', p.fin);
             setVal('p-captura', p.capturaHasta); setVal('p-revision', p.revisionDesde);
             setVal('p-estado', normalizeCicloEstado(p.estado)); setVal('p-inflacion', p.inflacion); setVal('p-tc', p.tipoCambio);
-            setVal('p-tipo-budget', p.tipoBudget || '3+9');
+            setVal('p-tipo-budget', p.tipoBudget || 'BUDGET');
             setVal('p-obs', p.observaciones || '');
             var tipoBudgetEl = document.getElementById('p-tipo-budget');
             var tipoFijo = editing && !!normalizeTipoBudgetClient(p.tipoBudget);
@@ -6529,8 +7552,8 @@
                 tipoBudgetEl.title = tipoFijo
                     ? 'El tipo queda fijo al crear el ciclo'
                     : (editing
-                        ? 'Este ciclo aún no tenía tipo: elige Forecast o SIOP y guarda'
-                        : 'Forecast: venta real + Budget · SIOP: Budget editable');
+                        ? 'Este ciclo aún no tenía tipo: elige Budget, Forecast o SIOP y guarda'
+                        : 'Budget: meses en blanco · Forecast: venta real + Budget · SIOP: dato anterior arriba, captura en el input');
             }
             syncTipoBudgetModalUi();
             if (editing) {
@@ -6538,7 +7561,7 @@
                 if (tipoHint) {
                     tipoHint.textContent = tipoFijo
                         ? ('Fijo: ' + labelTipoBudget(p.tipoBudget) + ' (no se puede cambiar)')
-                        : 'Aún sin tipo: elige 3+9 / 6+6 / 9+3 / SIOP y guarda para fijarlo.';
+                        : 'Aún sin tipo: elige Budget / 3+9 / 6+6 / 9+3 / SIOP y guarda para fijarlo.';
                 }
             }
         }

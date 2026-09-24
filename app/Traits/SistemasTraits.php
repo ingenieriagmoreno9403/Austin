@@ -59,15 +59,38 @@ trait SistemasTraits{
                 and tblacciones.nombre_accion = ?
                 and users.estado_user = "A" 
             order by tblacciones.id asc;',[$idusuario,$permisobuscado]);
-        return collect($varpermisos)->first();
+        $porPerfil = collect($varpermisos)->first();
+        if ($porPerfil) {
+            return $porPerfil;
+        }
 
-        // select b.nombre_accion,b.id,c.name 
-        // from tblusuario_acciones a inner join tblacciones b on a.idacciones = b.id 
-        // inner join users c on a.idusuario = c.id where a.idusuario = ? and c.estado_user = "A" order by id asc;
+        $directos = DB::select('select 
+            tblacciones.nombre_accion,
+            tblacciones.id,
+            users.name
+            FROM tblusuario_acciones
+            inner join tblacciones on tblacciones.id = tblusuario_acciones.idacciones
+            INNER JOIN users ON users.id = tblusuario_acciones.idusuario
+            where tblusuario_acciones.idusuario = ?
+            and tblacciones.nombre_accion = ?
+            and users.estado_user = "A"
+            order by tblacciones.id asc;', [$idusuario, $permisobuscado]);
+
+        return collect($directos)->first();
     }
 
     public function forpermisos($permisobuscado){
-        $idusuario=auth()->user()->id;
+        $usuario = auth()->user();
+        if ($usuario) {
+            $tipo = strtolower((string) ($usuario->tipo ?? ''));
+            $esMasterEmpresa = in_array($tipo, ['empresa', 'master'], true)
+                && (int) ($usuario->id_empresa ?? 0) > 0;
+            if ($esMasterEmpresa && in_array($permisobuscado, ['registrar_perfiles', 'editar_permisos', 'registrar_usuarios'], true)) {
+                return $permisobuscado;
+            }
+        }
+
+        $idusuario = $usuario->id ?? 0;
         $permisos = $this->obtener_permisosxusuario($idusuario,$permisobuscado)->nombre_accion ?? "null";  
         return $permisos;
     }

@@ -18,12 +18,17 @@ use App\Models\UserSucursal;
 use Illuminate\Support\Arr;
 use DB;
 use App\Models\usuario_perfiles;
+use App\Models\CcCiclo;
+use App\Models\PvCiclo;
+use App\Traits\EmpresaCatalogoTrait;
+use Illuminate\Support\Facades\Schema;
 
 class SistemasController extends Controller
 {
     use MenuTrait;
     use DatosimpleTraits;
     use SistemasTraits;
+    use EmpresaCatalogoTrait;
 
     public function __construct()
     {
@@ -41,7 +46,8 @@ class SistemasController extends Controller
             $permisos3 = $this->forpermisos('registrar_perfiles');
             $permisos4 = $this->forpermisos('registrar_usuarios');
             $permisos5 = $this->forpermisos('editar_permisos');
-            return view('sistemas.index', compact('varpantallas', 'varsubmenus', 'varlistausers', 'permisos1', 'permisos2', 'permisos3', 'permisos4', 'permisos5'));
+            $esMasterEmpresa = $this->esSesionMasterEmpresa();
+            return view('sistemas.index', compact('varpantallas', 'varsubmenus', 'varlistausers', 'permisos1', 'permisos2', 'permisos3', 'permisos4', 'permisos5', 'esMasterEmpresa'));
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
         }
@@ -54,7 +60,7 @@ class SistemasController extends Controller
             $varsubmenus = $this->Traermenudet();
             $varlistavistas = $this->obtenervistas();
             $varlistapuestos = $this->obtenerpuestos();
-            $varlistausers = $this->obtenerusuarios();
+            $varlistausers = $this->obtenerusuariosAlcance();
             $varlistadepas = $this->obtenerdepartamentos();
             $varpermiso = $this->obtenerpermisos();
             return view('sistemas.pantallas', compact('varpantallas', 'varsubmenus', 'varlistavistas', 'varlistausers', 'varlistadepas', 'varpermiso'));
@@ -101,9 +107,18 @@ class SistemasController extends Controller
             $varsubmenus = $this->Traermenudet();
             $varperfiles = $this->obtenerPerfiles();
             $varaccionesdePerfiles = $this->obtenerAccionesdePerfiles();
-            $varlistausers = $this->obtenerusuarios();
-            $varsucursales = $this->obtenersucursales();
-            return view('sistemas.perfiles', compact('varpantallas', 'varsubmenus', 'varlistausers', 'varperfiles', 'varaccionesdePerfiles', 'varsucursales'));
+            $varlistausers = $this->obtenerusuariosAlcance();
+
+            $idEmpresaSesion = $this->empresaIdSesion();
+            $perfilesPermitidos = $this->esSesionMasterEmpresa()
+                ? $this->perfilesPermitidosEmpresa($idEmpresaSesion)
+                : null;
+            if (is_array($perfilesPermitidos)) {
+                $varperfiles = collect($varperfiles)->filter(fn ($perfil) => in_array((int) $perfil->id, $perfilesPermitidos, true))->values();
+                $varaccionesdePerfiles = collect($varaccionesdePerfiles)->filter(fn ($accion) => in_array((int) $accion->id, $perfilesPermitidos, true))->values();
+            }
+
+            return view('sistemas.perfiles', compact('varpantallas', 'varsubmenus', 'varlistausers', 'varperfiles', 'varaccionesdePerfiles'));
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
         }
@@ -202,18 +217,31 @@ class SistemasController extends Controller
             $date = Carbon::now();
             $fecha = $date->format('Y-m-d');
             $id = $request->get('idusuario');
+            $idEmpresa = $this->empresaIdDeUsuario((int) $id);
+            $vistasPermitidas = $this->vistasPermitidasEmpresa($idEmpresa);
 
             if ($request->has('vistas')) {
-                foreach ($request->get('vistas') as $idvista) {
+                $vistas = collect($request->get('vistas'))
+                    ->map(fn ($idvista) => (int) $idvista)
+                    ->filter()
+                    ->unique()
+                    ->values();
+
+                if (is_array($vistasPermitidas)) {
+                    $vistas = $vistas->filter(fn ($idvista) => in_array($idvista, $vistasPermitidas, true))->values();
+                }
+
+                foreach ($vistas as $idvista) {
                     $vardepa = $this->obtenerdepartamentoXvista($idvista);
-                    foreach ($vardepa as $depa)
+                    foreach ($vardepa as $depa) {
                         $usuario_pantalas = new usuario_pantallas();
-                    $usuario_pantalas->idusuario = $id;
-                    $usuario_pantalas->idvista = $idvista;
-                    $usuario_pantalas->iddepartamento = $depa->iddepartamento;
-                    $usuario_pantalas->estado = 'A';
-                    $usuario_pantalas->created_at = $fecha;
-                    $usuario_pantalas->save();
+                        $usuario_pantalas->idusuario = $id;
+                        $usuario_pantalas->idvista = $idvista;
+                        $usuario_pantalas->iddepartamento = $depa->iddepartamento;
+                        $usuario_pantalas->estado = 'A';
+                        $usuario_pantalas->created_at = $fecha;
+                        $usuario_pantalas->save();
+                    }
                 }
             }
 
@@ -269,9 +297,24 @@ class SistemasController extends Controller
                 ->map(fn ($idSucursal) => (int) $idSucursal)
                 ->values();
 
+            $idEmpresa = $this->empresaIdDeUsuario($id);
+            $catalogoActivo = $this->catalogoAccesosActivo($idEmpresa);
+            $perfilesPermitidos = $this->perfilesPermitidosEmpresa($idEmpresa);
+            $vistasPermitidas = $this->vistasPermitidasEmpresa($idEmpresa);
+
+            $empresaNombre = null;
+            if ($idEmpresa) {
+                $empresaNombre = DB::table('tblempresas')->where('id', $idEmpresa)->value('nombre_empresa');
+            }
+
             return response()->json([
                 'perfiles' => $perfiles,
                 'sucursales' => $sucursales,
+                'id_empresa' => $idEmpresa,
+                'empresa' => $empresaNombre,
+                'catalogo_activo' => $catalogoActivo,
+                'perfiles_permitidos' => $perfilesPermitidos,
+                'vistas_permitidas' => $vistasPermitidas,
             ]);
         } catch (\Illuminate\Database\QueryException $ex) {
             return response()->json([
@@ -293,8 +336,24 @@ class SistemasController extends Controller
                 ->unique()
                 ->values();
             $usuario = $request->get('idusuario');
+            if ($this->esSesionMasterEmpresa()) {
+                $permitido = $this->obtenerusuariosAlcance()->firstWhere('id', (int) $usuario);
+                if (!$permitido) {
+                    return back()->with('warning', 'No puedes asignar perfiles a usuarios de otra empresa.');
+                }
+            }
             $guardado = false;
-            $varsucursales = $this->obtenersucursales();
+
+            $idEmpresa = $this->empresaIdDeUsuario((int) $usuario);
+            $perfilesPermitidos = $this->perfilesPermitidosEmpresa($idEmpresa);
+            if (is_array($perfilesPermitidos)) {
+                $perfilesActualesIds = usuario_perfiles::where('id_usuario', $usuario)
+                    ->pluck('id_perfil')
+                    ->map(fn ($id) => (int) $id)
+                    ->all();
+                $permitidos = array_values(array_unique(array_merge($perfilesPermitidos, $perfilesActualesIds)));
+                $perfiles = $perfiles->filter(fn ($id) => in_array((int) $id, $permitidos, true))->values();
+            }
 
             DB::beginTransaction();
             $transactionStarted = true;
@@ -324,37 +383,6 @@ class SistemasController extends Controller
                 }
             }
 
-            // Sucursales marcadas en el formulario
-            $sucursalesSeleccionadas = collect($varsucursales)
-                ->filter(fn ($dato) => (int) $request->input((string) $dato->id) === 1)
-                ->map(fn ($dato) => (int) $dato->id)
-                ->values();
-
-            // Quitar sucursales desmarcadas
-            $sucursalesActuales = UserSucursal::where('idusuario', $usuario)->get();
-            foreach ($sucursalesActuales as $sucursalActual) {
-                if (!$sucursalesSeleccionadas->contains((int) $sucursalActual->idsucursal)) {
-                    $sucursalActual->delete();
-                    $guardado = true;
-                }
-            }
-
-            // Agregar sucursales nuevas
-            foreach ($sucursalesSeleccionadas as $idSucursal) {
-                $yaAsignada = UserSucursal::where('idusuario', $usuario)
-                    ->where('idsucursal', $idSucursal)
-                    ->exists();
-
-                if (!$yaAsignada) {
-                    $UserSucursal = new UserSucursal();
-                    $UserSucursal->idusuario = $usuario;
-                    $UserSucursal->idsucursal = $idSucursal;
-                    $UserSucursal->created_by = auth()->user()->name;
-                    $UserSucursal->save();
-                    $guardado = true;
-                }
-            }
-
             DB::commit();
 
             if ($guardado) {
@@ -374,7 +402,27 @@ class SistemasController extends Controller
     public function eliminar_accion_perfil(int $id)
     {
         try {
-            $Borrartbl1 = DB::select('delete from tblperfil_acciones where id = ? ', [$id]);
+            if ($this->esSesionMasterEmpresa()) {
+                $row = DB::selectOne(
+                    'SELECT tblperfil_acciones.idperfil, tblacciones.idvista
+                    FROM tblperfil_acciones
+                    INNER JOIN tblacciones ON tblacciones.id = tblperfil_acciones.idaccion
+                    WHERE tblperfil_acciones.id = ?
+                    LIMIT 1',
+                    [$id]
+                );
+                $perfilesPermitidos = $this->perfilesPermitidosEmpresa($this->empresaIdSesion()) ?? [];
+                $vistasPermitidas = $this->vistasPermitidasEmpresa($this->empresaIdSesion()) ?? [];
+                if (
+                    !$row
+                    || !in_array((int) $row->idperfil, $perfilesPermitidos, true)
+                    || !in_array((int) $row->idvista, $vistasPermitidas, true)
+                ) {
+                    return back()->with('warning', 'No puedes quitar acciones de módulos que no compró tu empresa.');
+                }
+            }
+
+            DB::select('delete from tblperfil_acciones where id = ? ', [$id]);
             return back()->with("success_msg_large", "guardado correctamente");
 
         } catch (\Illuminate\Database\QueryException $ex) {
@@ -385,8 +433,21 @@ class SistemasController extends Controller
     public function guardar_perfil_accion(Request $request)
     {
         try {
-            $idaccion = $request->get('accion');
-            $idperfil = $request->get('perfil');
+            $idaccion = (int) $request->get('accion');
+            $idperfil = (int) $request->get('perfil');
+
+            if ($this->esSesionMasterEmpresa()) {
+                $perfilesPermitidos = $this->perfilesPermitidosEmpresa($this->empresaIdSesion()) ?? [];
+                $vistasPermitidas = $this->vistasPermitidasEmpresa($this->empresaIdSesion()) ?? [];
+                if (!in_array($idperfil, $perfilesPermitidos, true)) {
+                    return back()->with('warning', 'Ese perfil no está habilitado para tu empresa.');
+                }
+                $idVista = (int) (DB::table('tblacciones')->where('id', $idaccion)->value('idvista') ?? 0);
+                if (!$idVista || !in_array($idVista, $vistasPermitidas, true)) {
+                    return back()->with('warning', 'Esa acción no pertenece a los módulos comprados.');
+                }
+            }
+
             $userP = 0;
             $checarSiPerfilAcc = $this->obteneraccionesxPerfiles($idaccion, $idperfil);
 
@@ -418,14 +479,30 @@ class SistemasController extends Controller
         try {
             $varpantallas = $this->Traermenuenc();
             $varsubmenus = $this->Traermenudet();
-            $varlistausers = $this->obtenerusuarios();
+            $varlistausers = $this->obtenerusuariosAlcance();
             $varacciones = $this->obteneracciones();
             $varlistadepas = $this->obtenerdepartamentos();
+            $varusuario = $varlistausers->firstWhere('id', $id);
+            if ($this->esSesionMasterEmpresa() && !$varusuario) {
+                return back()->with('warning', 'No puedes editar usuarios de otra empresa.');
+            }
             $varlistuseracc = $this->obtenerAccionesUser($id);
             $varperfilesUser = $this->obtenerPerfilesUsuario($id);
-            $varusuario = $varlistausers->firstWhere('id', $id);
+            $accionesAgrupadas = $this->accionesDisponiblesParaUsuario($id, $varlistuseracc);
+            $permisosModulo = $this->permisosModuloParaUsuario($id);
 
-            return view('sistemas.permisos_user', compact('varpantallas', 'varsubmenus', 'varlistausers', 'varlistadepas', 'varacciones', 'varlistuseracc', 'varperfilesUser', 'varusuario'));
+            return view('sistemas.permisos_user', compact(
+                'varpantallas',
+                'varsubmenus',
+                'varlistausers',
+                'varlistadepas',
+                'varacciones',
+                'accionesAgrupadas',
+                'permisosModulo',
+                'varlistuseracc',
+                'varperfilesUser',
+                'varusuario'
+            ));
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
         }
@@ -435,16 +512,110 @@ class SistemasController extends Controller
     {
         $varpantallas = $this->Traermenuenc();
         $varsubmenus = $this->Traermenudet();
-        $varlistausers = $this->obtenerusuarios();
+        $varlistausers = $this->obtenerusuariosAlcance();
         $perfilesPorUsuario = $this->obtenerPerfilesUsuarios()->groupBy('id_usuario');
 
         return view('sistemas.usuarios_permisos', compact('varpantallas', 'varsubmenus', 'varlistausers', 'perfilesPorUsuario'));
     }
 
+    public function guardarAccionesUser(Request $request, int $id)
+    {
+        $varlistausers = $this->obtenerusuariosAlcance();
+        $varusuario = $varlistausers->firstWhere('id', $id);
+        if (!$varusuario) {
+            return back()->with('warning', 'No puedes editar este usuario.');
+        }
+
+        $acciones = collect($request->get('acciones', []))
+            ->map(fn ($idAccion) => (int) $idAccion)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($acciones->isEmpty()) {
+            return back()->with('warning', 'Selecciona al menos una acción puntual.');
+        }
+
+        if ($this->esSesionMasterEmpresa()) {
+            $vistasPermitidas = $this->vistasPermitidasEmpresa($this->empresaIdSesion()) ?? [];
+            $idsPermitidos = DB::table('tblacciones')
+                ->whereIn('idvista', $vistasPermitidas ?: [0])
+                ->pluck('id')
+                ->map(fn ($idAccion) => (int) $idAccion)
+                ->all();
+            $acciones = $acciones->filter(fn ($idAccion) => in_array($idAccion, $idsPermitidos, true))->values();
+            if ($acciones->isEmpty()) {
+                return back()->with('warning', 'Esas acciones no pertenecen a los módulos comprados.');
+            }
+        }
+
+        $agregadas = 0;
+        foreach ($acciones as $idAccion) {
+            $existe = usuario_acciones::where('idusuario', $id)
+                ->where('idacciones', $idAccion)
+                ->exists();
+            if ($existe) {
+                continue;
+            }
+
+            $row = new usuario_acciones();
+            $row->idusuario = $id;
+            $row->idacciones = $idAccion;
+            $row->created_by = auth()->user()->name;
+            $row->save();
+            $agregadas++;
+        }
+
+        if ($agregadas === 0) {
+            return back()->with('info_msg_large', 'Esas acciones ya estaban asignadas al usuario.');
+        }
+
+        return back()->with('success_msg_large', 'Se agregaron ' . $agregadas . ' acciones puntuales, sin cambiar el perfil.');
+    }
+
+    public function guardarPermisosModuloUser(Request $request, int $id)
+    {
+        $varusuario = $this->obtenerusuariosAlcance()->firstWhere('id', $id);
+        if (!$varusuario) {
+            return back()->with('warning', 'No puedes editar este usuario.');
+        }
+
+        $modulos = $this->permisosModuloParaUsuario($id);
+        if ($modulos->isEmpty()) {
+            return back()->with('warning', 'Este usuario no tiene módulos con importe masivo.');
+        }
+
+        foreach ($modulos as $modulo) {
+            $wanted = collect($request->get($modulo['campo'], []))
+                ->map(fn ($codigo) => strtoupper(trim((string) $codigo)))
+                ->filter()
+                ->unique()
+                ->all();
+            $this->sincronizarImportarMasivoUsuario($id, $modulo['clave'], $wanted);
+        }
+
+        return back()->with('success_msg_large', 'Se actualizó el importe masivo de Excel, sin cambiar el perfil.');
+    }
+
     public function eliminar_acciones_user(int $id)
     {
         try {
-            $Borrartbl1 = DB::select('delete from tblusuario_acciones where id = ? ', [$id]);
+            $row = DB::selectOne(
+                'SELECT id, idusuario FROM tblusuario_acciones WHERE id = ? LIMIT 1',
+                [$id]
+            );
+            if (!$row) {
+                return back()->with('warning', 'No se encontró la acción.');
+            }
+
+            if ($this->esSesionMasterEmpresa()) {
+                $permitido = $this->obtenerusuariosAlcance()->firstWhere('id', (int) $row->idusuario);
+                if (!$permitido) {
+                    return back()->with('warning', 'No puedes quitar acciones de usuarios de otra empresa.');
+                }
+            }
+
+            DB::select('delete from tblusuario_acciones where id = ? ', [$id]);
             return back()->with("success_msg_large", "guardado correctamente");
 
         } catch (\Illuminate\Database\QueryException $ex) {
@@ -460,6 +631,194 @@ class SistemasController extends Controller
             return back()->with("success_msg_large", "guardado correctamente");
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
+        }
+    }
+
+    private function accionesDisponiblesParaUsuario(int $idUsuario, $accionesAsignadas)
+    {
+        $idsAsignadas = collect($accionesAsignadas)
+            ->pluck('id_accion')
+            ->map(fn ($idAccion) => (int) $idAccion)
+            ->filter()
+            ->all();
+
+        $query = Acciones::join('tblvistas', 'tblacciones.idvista', '=', 'tblvistas.id')
+            ->join('tbldepartamentos', 'tblvistas.iddepartamento', '=', 'tbldepartamentos.id')
+            ->select(
+                'tblacciones.id',
+                'tblacciones.nombre_accion',
+                'tblacciones.descripcion_accion',
+                'tblvistas.nombre as vista',
+                'tbldepartamentos.nombre as departamento'
+            )
+            ->when($idsAsignadas, fn ($q) => $q->whereNotIn('tblacciones.id', $idsAsignadas));
+
+        if ($this->esSesionMasterEmpresa()) {
+            $vistasPermitidas = $this->vistasPermitidasEmpresa($this->empresaIdSesion()) ?? [];
+            $query->whereIn('tblvistas.id', $vistasPermitidas ?: [0]);
+        }
+
+        return $query
+            ->orderBy('tbldepartamentos.nombre')
+            ->orderBy('tblvistas.nombre')
+            ->orderBy('tblacciones.descripcion_accion')
+            ->get()
+            ->groupBy(['departamento', 'vista']);
+    }
+
+    private function permisosModuloParaUsuario(int $idUsuario)
+    {
+        $modulos = collect();
+        if ($this->empresaSesionTieneModulo('cc') && Schema::hasTable('tbl_cc_ciclos') && Schema::hasTable('tbl_cc_usuario_permisos')) {
+            $tipoId = (int) (DB::table('tbl_cc_tipos_permiso')->where('clave', 'importar')->value('id') ?? 0);
+            $activos = $tipoId
+                ? DB::table('tbl_cc_usuario_permisos')
+                    ->where('user_id', $idUsuario)
+                    ->where('permiso_id', $tipoId)
+                    ->pluck('ciclo_codigo')
+                    ->map(fn ($c) => strtoupper((string) $c))
+                    ->all()
+                : [];
+            $ciclos = CcCiclo::query()->orderByDesc('anio_presupuesto')->orderByDesc('id')->get()
+                ->map(function ($ciclo) use ($activos) {
+                    return [
+                        'codigo' => $ciclo->codigo,
+                        'nombre' => $ciclo->nombre ?: $ciclo->codigo,
+                        'estado' => $ciclo->estado,
+                        'activo' => in_array(strtoupper((string) $ciclo->codigo), $activos, true),
+                    ];
+                })->values();
+            if ($ciclos->isNotEmpty()) {
+                $modulos->push([
+                    'clave' => 'cc',
+                    'campo' => 'cc_importar',
+                    'titulo' => 'Gestor Presupuestos',
+                    'ciclos' => $ciclos,
+                ]);
+            }
+        }
+
+        if ($this->empresaSesionTieneModulo('pv') && Schema::hasTable('tbl_pv_ciclos') && Schema::hasTable('tbl_pv_usuario_permisos')) {
+            $tipoId = (int) (DB::table('tbl_pv_tipos_permiso')->where('clave', 'importar')->value('id') ?? 0);
+            $activos = $tipoId
+                ? DB::table('tbl_pv_usuario_permisos')
+                    ->where('user_id', $idUsuario)
+                    ->where('permiso_id', $tipoId)
+                    ->pluck('ciclo_codigo')
+                    ->map(fn ($c) => strtoupper((string) $c))
+                    ->all()
+                : [];
+            $ciclos = PvCiclo::query()->orderByDesc('anio_presupuesto')->orderByDesc('id')->get()
+                ->map(function ($ciclo) use ($activos) {
+                    return [
+                        'codigo' => $ciclo->codigo,
+                        'nombre' => $ciclo->nombre ?: $ciclo->codigo,
+                        'estado' => $ciclo->estado,
+                        'activo' => in_array(strtoupper((string) $ciclo->codigo), $activos, true),
+                    ];
+                })->values();
+            if ($ciclos->isNotEmpty()) {
+                $modulos->push([
+                    'clave' => 'pv',
+                    'campo' => 'pv_importar',
+                    'titulo' => 'Proyecciones de Ventas',
+                    'ciclos' => $ciclos,
+                ]);
+            }
+        }
+
+        return $modulos;
+    }
+
+    private function empresaSesionTieneModulo(string $grupo): bool
+    {
+        $rutas = [
+            'cc' => ['admincentros', 'controlcentros', 'analisisprogreso'],
+            'pv' => ['ventas/asignaciones', 'ventas/captura', 'ventas/analisis'],
+        ];
+        $buscar = $rutas[$grupo] ?? [];
+        if (!$buscar) {
+            return false;
+        }
+
+        if (!$this->esSesionMasterEmpresa()) {
+            return true;
+        }
+
+        $ids = $this->vistasPermitidasEmpresa($this->empresaIdSesion());
+        if (!is_array($ids)) {
+            return true;
+        }
+
+        $filas = DB::table('tblvistas')
+            ->join('tbldepartamentos', 'tbldepartamentos.id', '=', 'tblvistas.iddepartamento')
+            ->whereIn('tblvistas.id', $ids ?: [0])
+            ->get(['tblvistas.descripcion', 'tblvistas.nombre', 'tbldepartamentos.nombre as departamento']);
+
+        foreach ($filas as $fila) {
+            $ruta = strtolower(trim((string) $fila->descripcion));
+            $nombre = strtolower(trim((string) $fila->nombre));
+            $depto = strtolower(trim((string) $fila->departamento));
+            if (in_array($ruta, $buscar, true)) {
+                return true;
+            }
+            if ($grupo === 'cc' && (str_contains($depto, 'centro') || str_contains($nombre, 'presupuesto') || str_contains($nombre, 'gestor'))) {
+                return true;
+            }
+            if ($grupo === 'pv' && (str_contains($depto, 'venta') || str_contains($nombre, 'proyeccion') || str_contains($nombre, 'proyección'))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function sincronizarImportarMasivoUsuario(int $idUsuario, string $modulo, array $ciclosWanted): void
+    {
+        $esCc = $modulo === 'cc';
+        $tablaTipos = $esCc ? 'tbl_cc_tipos_permiso' : 'tbl_pv_tipos_permiso';
+        $tablaPermisos = $esCc ? 'tbl_cc_usuario_permisos' : 'tbl_pv_usuario_permisos';
+        $tablaCiclos = $esCc ? 'tbl_cc_ciclos' : 'tbl_pv_ciclos';
+        if (!Schema::hasTable($tablaTipos) || !Schema::hasTable($tablaPermisos) || !Schema::hasTable($tablaCiclos)) {
+            return;
+        }
+
+        $tipoId = (int) (DB::table($tablaTipos)->where('clave', 'importar')->value('id') ?? 0);
+        if ($tipoId <= 0) {
+            return;
+        }
+
+        $codigos = DB::table($tablaCiclos)->pluck('codigo')->map(fn ($c) => strtoupper((string) $c))->all();
+        $wanted = array_values(array_intersect($ciclosWanted, $codigos));
+        $actuales = DB::table($tablaPermisos)
+            ->where('user_id', $idUsuario)
+            ->where('permiso_id', $tipoId)
+            ->pluck('ciclo_codigo')
+            ->map(fn ($c) => strtoupper((string) $c))
+            ->all();
+
+        foreach ($wanted as $ciclo) {
+            if (in_array($ciclo, $actuales, true)) {
+                continue;
+            }
+            DB::table($tablaPermisos)->insert([
+                'ciclo_codigo' => $ciclo,
+                'user_id' => $idUsuario,
+                'permiso_id' => $tipoId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        foreach ($actuales as $ciclo) {
+            if (in_array($ciclo, $wanted, true)) {
+                continue;
+            }
+            DB::table($tablaPermisos)
+                ->where('user_id', $idUsuario)
+                ->where('permiso_id', $tipoId)
+                ->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])
+                ->delete();
         }
     }
 
@@ -489,6 +848,32 @@ class SistemasController extends Controller
             ORDER BY tblperfiles.nombre asc;', [$idusuario]);
 
         return collect($perfiles);
+    }
+
+    private function obtenerusuariosAlcance()
+    {
+        $usuarios = $this->obtenerusuarios();
+        if (!$this->esSesionMasterEmpresa()) {
+            return $usuarios;
+        }
+
+        return $this->filtrarUsuariosDeEmpresa($usuarios, $this->empresaIdSesion());
+    }
+
+    private function obtenersucursalesAlcance()
+    {
+        $sucursales = $this->obtenersucursales();
+        if (!$this->esSesionMasterEmpresa()) {
+            return $sucursales;
+        }
+
+        $idEmpresa = $this->empresaIdSesion();
+        $ids = collect(DB::table('tblsucursales')->where('idempresa', $idEmpresa)->pluck('id'))
+            ->map(fn ($id) => (int) $id);
+
+        return collect($sucursales)->filter(function ($sucursal) use ($ids) {
+            return $ids->contains((int) $sucursal->id);
+        })->values();
     }
 
     private function obtenerPerfilesUsuarios()

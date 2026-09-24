@@ -9,9 +9,21 @@
     <div class="cc-header">
         <div>
             <div class="cc-kicker" id="cc-page-kicker">Captura mensual · Gasto {{ $bootstrap['anioGasto'] }} vs ppto {{ $bootstrap['anioPresupuesto'] }}</div>
-            <h1 class="cc-title" id="cc-page-title">Captura e Indicadores</h1>
+            <h1 class="cc-title" id="cc-page-title">Captura de Gastos</h1>
             <p class="cc-sub" id="cc-page-sub">Elige presupuesto, empresa y centro. Captura cuenta por cuenta y ve cómo se arma el detalle y el contraste mensual.</p>
         </div>
+        <img class="cc-header-logo" src="{{ asset('Images/logo_horizontal.png') }}" alt="Austin Powder">
+    </div>
+
+    <div class="cc-toolbar">
+        <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
+            <button type="button" class="is-active" data-vista="captura">
+                <i class="fa-solid fa-pen-to-square me-1"></i> Captura de Gastos
+            </button>
+            <button type="button" data-vista="visor">
+                <i class="fa-solid fa-table me-1"></i> Visor de centros
+            </button>
+        </nav>
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
             <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
@@ -29,15 +41,6 @@
             </button>
         </div>
     </div>
-
-    <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
-        <button type="button" class="is-active" data-vista="captura">
-            <i class="fa-solid fa-pen-to-square me-1"></i> Captura de presupuestos
-        </button>
-        <button type="button" data-vista="visor">
-            <i class="fa-solid fa-table me-1"></i> Visor de centros
-        </button>
-    </nav>
 
     <div id="ctl-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
@@ -85,6 +88,7 @@
                         <option value="MXN">MXN</option>
                         <option value="USD">USD</option>
                     </select>
+                    <div class="cc-nav-fx" id="ctl-fx-hint">Captura en MXN · se guarda en pesos</div>
                     <label class="cc-nav-pend-toggle">
                         <input type="checkbox" id="ctl-pendientes"> Solo pendientes
                     </label>
@@ -160,6 +164,11 @@
                             <div class="cc-progress warn" id="ctl-form-avance-wrap"><span id="ctl-form-avance-bar" style="width:0%"></span></div>
                             <div class="cc-cta-fill-meta" id="ctl-form-avance-meta">0 de 12 meses capturados</div>
                         </div>
+                        <div class="cc-legend cc-month-legend" aria-label="Guía de color de los meses">
+                            <span><i class="cc-swatch is-empty"></i> Sin capturar</span>
+                            <span><i class="cc-swatch is-ok"></i> Capturado</span>
+                            <span class="js-legend-over"><i class="cc-swatch is-over"></i> Sobre inflación vs gasto {{ $bootstrap['anioGasto'] }}</span>
+                        </div>
                         <div class="cc-month-row">
                             <div class="cc-month-grid" id="ctl-month-grid"></div>
                             <div class="cc-captura-quick">
@@ -205,9 +214,9 @@
                         <input type="checkbox" id="ctl-chart-todas"> Ver todas
                     </label>
                     <div class="cc-legend">
-                        <span><i style="background:#fffbeb"></i> Sin capturar</span>
-                        <span><i style="background:#ecfdf5"></i> Capturado</span>
-                        <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                        <span><i class="cc-swatch is-empty"></i> Sin capturar</span>
+                        <span><i class="cc-swatch is-ok"></i> Capturado</span>
+                        <span class="js-legend-over"><i class="cc-swatch is-over"></i> Sobre inflación vs {{ $bootstrap['anioGasto'] }}</span>
                     </div>
                 </div>
             </div>
@@ -241,11 +250,11 @@
                     <strong id="visor-kpi-n">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
-                    <small>Tot Gasto</small>
+                    <small>Gasto</small>
                     <strong id="visor-kpi-gasto">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
-                    <small>Tot Presupuesto</small>
+                    <small>Presupuestado</small>
                     <strong id="visor-kpi-ppto">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
@@ -274,8 +283,8 @@
                                 <th>Empresa</th>
                                 <th>Centro de Costos</th>
                                 <th>Departamento</th>
-                                <th class="num">Tot Gasto</th>
-                                <th class="num">Tot Pres</th>
+                                <th class="num">Gasto</th>
+                                <th class="num">Presupuestado</th>
                                 <th>Usuario</th>
                                 <th>Fecha Modif</th>
                                 <th>Progreso</th>

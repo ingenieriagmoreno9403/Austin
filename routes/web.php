@@ -274,6 +274,12 @@ use App\Http\Controllers\ProyeccionesVentasController;
         Route::post('/guardar_acciones', 'App\Http\Controllers\SistemasController@guardar_acciones')->name('guardar_acciones');
         Route::get('/eliminar_acciones/{id}', 'App\Http\Controllers\SistemasController@eliminar_acciones')->name('eliminar_acciones');
         Route::get('/Perfiles', 'App\Http\Controllers\SistemasController@indexPerfiles')->name('perfiles');
+        Route::get('/Empresas', [\App\Http\Controllers\EmpresaModulosController::class, 'index'])->name('sistemas.empresas');
+        Route::post('/Empresas', [\App\Http\Controllers\EmpresaModulosController::class, 'store'])->name('sistemas.empresas.store');
+        Route::get('/Empresas/{id}/catalogo', [\App\Http\Controllers\EmpresaModulosController::class, 'catalogo'])->name('sistemas.empresas.catalogo');
+        Route::post('/Empresas/{id}/catalogo', [\App\Http\Controllers\EmpresaModulosController::class, 'guardarCatalogo'])->name('sistemas.empresas.catalogo.guardar');
+        Route::post('/Empresas/{id}/superusuario', [\App\Http\Controllers\EmpresaModulosController::class, 'asignarSuperusuario'])->name('sistemas.empresas.superusuario');
+        Route::post('/Empresas/{id}/superusuario/{idUsuario}/quitar', [\App\Http\Controllers\EmpresaModulosController::class, 'quitarSuperusuario'])->name('sistemas.empresas.superusuario.quitar');
         Route::get('/AccionesPerfiles', 'App\Http\Controllers\SistemasController@indexAccionesPerfiles')->name('acciones_perfiles');
         Route::get('/usuario_asignaciones/{id}', 'App\Http\Controllers\SistemasController@getUsuarioAsignaciones')->name('usuario_asignaciones');
         Route::post('/nuevo_perfil', 'App\Http\Controllers\SistemasController@nuevo_perfil')->name('nuevo_perfil');
@@ -281,6 +287,8 @@ use App\Http\Controllers\ProyeccionesVentasController;
         Route::get('/eliminar_accion_perfil/{id}', 'App\Http\Controllers\SistemasController@eliminar_accion_perfil')->name('eliminar_accion_perfil');
         Route::post('/guardar_perfil_accion', 'App\Http\Controllers\SistemasController@guardar_perfil_accion')->name('guardar_perfil_accion');
         Route::get('/UsuarioPermisos/{id}', 'App\Http\Controllers\SistemasController@indexUserPermisos')->name('indexUserPermisos');
+        Route::post('/UsuarioPermisos/{id}/acciones', 'App\Http\Controllers\SistemasController@guardarAccionesUser')->name('guardar_acciones_user');
+        Route::post('/UsuarioPermisos/{id}/modulos', 'App\Http\Controllers\SistemasController@guardarPermisosModuloUser')->name('guardar_permisos_modulo_user');
         Route::get('/Usuarios', 'App\Http\Controllers\SistemasController@getUsuariosPermisos')->name('usuario_permisos');
         Route::get('/eliminar_acciones_user/{id}', 'App\Http\Controllers\SistemasController@eliminar_acciones_user')->name('eliminar_acciones_user');
         Route::get('/eliminar_perfil_user/{id}', 'App\Http\Controllers\SistemasController@eliminar_perfil_user')->name('eliminar_perfil_user');
@@ -326,6 +334,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
     Route::post('/Registro/Updatepass', 'App\Http\Controllers\Auth\RegisterController@updatepass')->name('updatepass');
     Route::post('/Registro/Inactivar', 'App\Http\Controllers\Auth\RegisterController@inactivar')->name('inactivarUser');
     Route::post('/Registro/Activar', 'App\Http\Controllers\Auth\RegisterController@activar')->name('activarUser');
+    Route::post('/Registro/Empresa', 'App\Http\Controllers\Auth\RegisterController@asignarEmpresa')->name('asignarEmpresaUser');
 
     //prestamos de nominas
     Route::get('/prestamosnominas', 'App\Http\Controllers\PrestamoNomController@creditosEmpleadosCatalogo')->name('creditosEmpleadosCatalogo');
@@ -1208,6 +1217,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::delete('/CentrosCostos/api/ciclos/{ciclo}', [CentrosCostosController::class, 'destroyCiclo'])->name('centros.api.ciclos.destroy');
     Route::get('/CentrosCostos/api/empresas', [CentrosCostosController::class, 'empresasSap'])->name('centros.api.empresas');
     Route::get('/CentrosCostos/api/centros', [CentrosCostosController::class, 'centrosSap'])->name('centros.api.centros');
+    Route::get('/CentrosCostos/api/departamentos', [CentrosCostosController::class, 'departamentosCentros'])->name('centros.api.departamentos');
     Route::get('/CentrosCostos/api/cuentas', [CentrosCostosController::class, 'cuentasSap'])->name('centros.api.cuentas');
     Route::get('/CentrosCostos/api/mis-asignaciones', [CentrosCostosController::class, 'misAsignaciones'])->name('centros.api.mis');
     Route::get('/ControlCentros', [CentrosCostosController::class, 'control'])->name('centros.control');

@@ -18,9 +18,19 @@
             'valor' => 'registrar_perfiles',
             'url' => '/Sistemas/Perfiles',
             'titulo' => 'Asignación de perfiles',
-            'desc' => 'Asignación de perfiles a usuarios y sucursales.',
+            'desc' => 'Asignación de perfiles a usuarios.',
             'icono' => 'fa-id-badge',
             'color' => 'cereza',
+        ],
+        [
+            'permiso' => $permisos3,
+            'valor' => 'registrar_perfiles',
+            'url' => '/Sistemas/Empresas',
+            'titulo' => 'Empresas y módulos',
+            'desc' => 'Módulos vendidos por empresa y superusuario de cada cliente.',
+            'icono' => 'fa-building',
+            'color' => 'orange',
+            'admin' => true,
         ],
 
         [
@@ -28,7 +38,7 @@
             'valor' => 'editar_permisos',
             'url' => '/Sistemas/Usuarios',
             'titulo' => 'Editar permisos',
-            'desc' => 'Permisos de usuarios y acciones.',
+            'desc' => 'Acciones puntuales por usuario, sin cambiar el perfil.',
             'icono' => 'fa-sitemap',
             'color' => 'secondary',
         ],
@@ -41,6 +51,7 @@
             'desc' => 'Alta de departamnetos, vistas, acciones y perfiles en el sistema.',
             'icono' => 'fa-bolt',
             'color' => 'primary',
+            'admin' => true,
         ],
         
         [
@@ -61,6 +72,7 @@
             'desc' => 'Configuración del pack de facturación.',
             'icono' => 'fa-file-invoice',
             'color' => 'primary',
+            'admin' => true,
         ],
 
         [
@@ -71,6 +83,7 @@
             'desc' => 'Endpoints y catálogos SAP (centros de costo, cuentas, presupuesto).',
             'icono' => 'fa-plug',
             'color' => 'cereza',
+            'admin' => true,
         ],
     ];
 @endphp
@@ -110,6 +123,9 @@
 
     <div class="row g-4">
         @foreach ($modulos as $modulo)
+            @if (!empty($esMasterEmpresa) && !empty($modulo['admin']))
+                @continue
+            @endif
             @php($habilitado = $modulo['permiso'] == $modulo['valor'])
             <div class="col-xl-4 col-lg-4 col-md-6">
                 @if ($habilitado)

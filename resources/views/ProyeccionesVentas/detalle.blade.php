@@ -1,7 +1,7 @@
 @extends('layouts.app')
 
 @section('css')
-<link href="{{ asset('css/centros-costos.css') }}" rel="stylesheet">
+<link href="{{ asset('css/centros-costos.css') }}?v={{ (int) @filemtime(public_path('css/centros-costos.css')) }}" rel="stylesheet">
 @endsection
 
 @section('content')
@@ -80,7 +80,7 @@
 
 @section('js')
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="{{ asset('js/proyecciones-ventas.js') }}"></script>
+<script src="{{ asset('js/proyecciones-ventas.js') }}?v={{ (int) @filemtime(public_path('js/proyecciones-ventas.js')) }}"></script>
 <script>
     CC.boot(Object.assign(@json($bootstrap), { page: 'detalle' }));
 </script>
