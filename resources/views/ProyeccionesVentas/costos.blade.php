@@ -258,11 +258,11 @@
             </div>
             <div class="modal-body">
                 <p class="mb-3" style="font-size:.9rem">
-                    Formato: <code>Empresa · CardCode · ItemCode · Mes · Precio</code>.
+                    Formato: <code>Empresa · CardCode · Cliente · ItemCode · Producto · Moneda · PrecioGlobal · Ene…Dic</code>.
                 </p>
                 <ol class="mb-3" style="font-size:.85rem; padding-left:1.2rem">
                     <li>Descarga la plantilla con los datos de tu BD.</li>
-                    <li>Edita Precio / CardCode / Mes.</li>
+                    <li>Edita <b>Ene–Dic</b> para precio por mes (vacío = no se toca). Solo <b>PrecioGlobal</b> aplica a los 12 meses.</li>
                     <li>Sube el archivo para actualizar el maestro local.</li>
                 </ol>
                 <div class="d-grid gap-2 mb-3">
@@ -273,7 +273,7 @@
                 <label class="form-label">Subir Excel editado</label>
                 <input type="file" class="form-control" id="pv-precios-archivo" accept=".xlsx,.xls,.csv">
                 <div class="text-muted mt-2" style="font-size:.78rem" id="pv-precios-excel-hint">
-                    Se actualiza por Empresa + CardCode + ItemCode + Mes.
+                    Se actualiza por Empresa + CardCode + ItemCode; meses en columnas Ene–Dic.
                 </div>
             </div>
             <div class="modal-footer">
