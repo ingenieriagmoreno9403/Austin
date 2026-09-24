@@ -1831,19 +1831,26 @@
         var current = cicloActualCodigo();
         var cur = findCiclo(current) || CC.state.period || {};
         var tipo = cur.tipoBudget || budgetTipo();
-        if (esSiopTipo(tipo)) return cicloProyectoAnterior();
-        if (!esForecastTipo(tipo)) return '';
         var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
         var curId = Number(cur.id) || 0;
         var ciclos = CC.state.ciclos || [];
         var sameYear = ciclos.filter(function (c) {
-            return String(c.codigo) !== String(current) && (!anio || Number(c.anio) === anio);
+            return String(c.codigo || '').toUpperCase() !== String(current || '').toUpperCase()
+                && (!anio || Number(c.anio) === anio);
         });
 
-        // SIOP: tomar el ciclo anterior del mismo año (el de mayor id < actual),
-        // incluyendo Forecast 3+9 / 6+6 / 9+3. Si no hay, el más reciente del año previo.
+        // SIOP: preferir Budget del mismo año (proyección base 2027), luego Forecast, luego el ciclo anterior.
         if (esSiopTipo(tipo)) {
-            var ranked = sameYear.slice().sort(function (a, b) {
+            var budget = sameYear.filter(function (c) {
+                return String(c.tipoBudget || '') === 'BUDGET';
+            }).sort(function (a, b) {
+                return (Number(b.id) || 0) - (Number(a.id) || 0);
+            });
+            if (budget[0] && budget[0].codigo) return budget[0].codigo;
+
+            var forecast = sameYear.filter(function (c) {
+                return esForecastTipo(c.tipoBudget);
+            }).sort(function (a, b) {
                 var idA = Number(a.id) || 0;
                 var idB = Number(b.id) || 0;
                 if (curId) {
@@ -1853,7 +1860,11 @@
                 }
                 return idB - idA;
             });
-            if (ranked.length) return ranked[0].codigo;
+            if (forecast[0] && forecast[0].codigo) return forecast[0].codigo;
+
+            var prev = cicloProyectoAnterior();
+            if (prev) return prev;
+
             var prevYear = ciclos.filter(function (c) {
                 return String(c.codigo) !== String(current) && Number(c.anio) === (anio - 1);
             }).sort(function (a, b) {
@@ -1861,6 +1872,8 @@
             });
             return (prevYear[0] && prevYear[0].codigo) || '';
         }
+
+        if (!esForecastTipo(tipo)) return '';
 
         // Forecast: preferir SIOP / Budget del mismo año (no otro Forecast).
         var siop = sameYear.filter(function (c) { return String(c.tipoBudget || '') === 'SIOP'; });
@@ -2069,7 +2082,7 @@
             return '<strong>Forecast 9+3:</strong> los 9 primeros meses (ene–sep) se cargan con la venta real del año en curso y quedan fijos. Los 3 restantes se cargan del Budget y se pueden modificar.';
         }
         if (t === 'SIOP') {
-            return '<strong>SIOP:</strong> las cantidades del ciclo anterior (o la venta real) se muestran arriba de cada mes. El input queda vacío para capturar. Todos los meses son editables.';
+            return '<strong>SIOP:</strong> se precarga el Budget del mismo año (proyección ' + (CC.state.anioPresupuesto || '') + '): meses con dato se copian, sin dato quedan en 0. Todos editables. Arriba ves la referencia para comparar.';
         }
         return 'Selecciona el tipo de forecast o SIOP.';
     }
@@ -2083,7 +2096,7 @@
             if (esBudgetTipo(tipo)) {
                 hint.textContent = 'Budget: los 12 meses quedan en blanco para capturar la proyección.';
             } else if (esSiopTipo(tipo)) {
-                hint.textContent = 'SIOP: ciclo anterior (o venta real) arriba de cada mes · el input es la nueva captura · todos editables.';
+                hint.textContent = 'SIOP: se precarga la proyección ' + (CC.state.anioPresupuesto || '') + ' (dato o 0) · todos editables · arriba ves la referencia.';
             } else {
                 hint.textContent = 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
             }
@@ -2094,7 +2107,7 @@
      * Al abrir Captura de un cliente: solo precarga si el producto NO tiene fila
      * guardada en este ciclo. Nunca pisa capturas ya persistidas al cambiar de ciclo.
      * Forecast: primeros N meses = venta real (fijos); el resto = Budget.
-     * SIOP: no precarga el input; el ciclo anterior / venta se ve arriba de cada mes.
+     * SIOP: precarga proyección del mismo año (dato o 0); todos editables.
      */
     function budgetTieneFilaEnServidor(empresa, cc, cuenta) {
         var map = CC.state.budgetKeysFromServer || {};
@@ -2118,26 +2131,107 @@
         return Array.isArray(row) ? row.slice() : null;
     }
 
-    /** SIOP: si el input es copia del ciclo anterior, vaciarlo (el dato queda arriba). Una vez por cliente/ciclo. */
-    function stripSiopSeedLocalOnce(c) {
+    /** Antes vaciaba el input SIOP si coincidía con el ciclo anterior; eso impedía ver la precarga. */
+    function stripSiopSeedLocalOnce() {
+        // no-op: SIOP precarga la proyección del año (base) en el input y la deja editable.
+    }
+
+    function monthsPositiveCount(months) {
+        var n = 0;
+        var arr = months || [];
+        for (var i = 0; i < 12; i++) {
+            if (Number(arr[i]) > 0) n += 1;
+        }
+        return n;
+    }
+
+    /** SIOP: re-precargar si está en ceros pero la proyección base sí tiene datos. */
+    function siopDebeReseedDesdeBase(existing, baseRow) {
+        var baseN = monthsPositiveCount(baseRow);
+        if (baseN <= 0) return false;
+        if (!existing) return true;
+        return monthsPositiveCount(existing) <= 0;
+    }
+
+    /**
+     * SIOP: precarga la proyección del mismo año (Budget / Forecast base).
+     * Meses con dato → ese valor; sin dato → 0. Todos editables.
+     * Si SIOP ya está en ceros y la base tiene datos, vuelve a precargar.
+     */
+    function seedSiopDesdeProyeccionBase(c, cicloSeed, loadGen) {
+        var ctas = control._allCtas || [];
+        if (!ctas.length) return 0;
+        var seeded = 0;
+        ctas.forEach(function (cta) {
+            var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var needs = siopDebeReseedDesdeBase(existing, baseRow)
+                || budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing);
+            if (!needs) return;
+            if (!baseRow && !budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
+
+            var months = [];
+            for (var i = 0; i < 12; i++) {
+                if (baseRow && Number(baseRow[i]) > 0) {
+                    months.push(toStoreQty(Number(baseRow[i]) || 0));
+                } else if (baseRow && mesLleno(baseRow[i])) {
+                    months.push(toStoreQty(Number(baseRow[i]) || 0));
+                } else {
+                    months.push(0);
+                }
+            }
+            // Si la base no aportó nada positivo y ya había fila, no pisar.
+            if (monthsPositiveCount(months) <= 0 && existing && monthsPositiveCount(existing) > 0) {
+                return;
+            }
+            var key = budgetKey(c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets = CC.state.budgets || {};
+            CC.state.budgets[key] = months.slice();
+            CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+            CC.state.budgetKeysFromServer[key.toUpperCase()] = true;
+            persistBudget(c.empresa, c.codigo, cta.codigo, months, { allowLocked: true });
+            seeded += 1;
+        });
+        if (seeded && loadGen === (CC._capturaLoadGen || 0)
+            && String(cicloActualCodigo() || '').toUpperCase() === String(cicloSeed).toUpperCase()) {
+            control._allCtas = cuentasEnriquecidas(c);
+            toast('success', 'SIOP', 'Se precargaron ' + seeded +
+                ' producto' + (seeded === 1 ? '' : 's') +
+                ' desde ' + (CC.state.cicloBaseCodigo || 'proyección ' + (CC.state.anioPresupuesto || '')) +
+                ' (sin dato = 0). Todos los meses editables.');
+            drawMatrixTable();
+            updateControlProgress();
+        }
+        return seeded;
+    }
+
+    /**
+     * SIOP: si ya hay fila guardada con meses vacíos (null), completa con 0 en memoria.
+     */
+    function fillSiopNullMonthsWithZero(c) {
         if (!c || !esSiopTipo()) return;
-        if (!CC._budgetsBaseLoaded) return;
-        var stamp = String(cicloActualCodigo() || '').toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
-        if (CC._siopStrippedFor === stamp) return;
-        CC._siopStrippedFor = stamp;
-        var list = cuentasDeCentro(c);
+        var list = control._allCtas || cuentasDeCentro(c);
+        var changed = false;
         list.forEach(function (cta) {
             var found = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
-            var base = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
-            if (!found || !base || !base.some(mesLleno)) return;
-            if (!monthsIgualReferencia(found, base)) return;
-            var key = resolveStateKey(CC.state.budgets, c.empresa, c.codigo, cta.codigo);
-            CC.state.budgets[key] = mesesVacios12();
-            if (CC.state.completados) {
-                delete CC.state.completados[key];
-                delete CC.state.completados[budgetKey(c.empresa, c.codigo, cta.codigo)];
+            if (!found) return;
+            var months = found.slice();
+            var dirty = false;
+            for (var i = 0; i < 12; i++) {
+                if (!mesLleno(months[i])) {
+                    months[i] = 0;
+                    dirty = true;
+                }
             }
+            if (!dirty) return;
+            var key = resolveStateKey(CC.state.budgets, c.empresa, c.codigo, cta.codigo)
+                || budgetKey(c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets[key] = months;
+            changed = true;
         });
+        if (changed) {
+            control._allCtas = cuentasEnriquecidas(c);
+        }
     }
 
     function seedPresupuestoDesdeVentaReal(c) {
@@ -2152,10 +2246,30 @@
             }
             return;
         }
-        if (esSiopTipo(tipo) || esBudgetTipo(tipo)) return;
-        var n = budgetSeedCount(); // 3/6/9 en Forecast
+        if (esBudgetTipo(tipo)) return;
+
         var seedKey = String(cicloSeed).toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
         CC._seedDoneFor = CC._seedDoneFor || {};
+        var loadGen = CC._capturaLoadGen || 0;
+
+        if (esSiopTipo(tipo)) {
+            if (!CC._budgetsBaseLoaded) return;
+            // Permitir re-seed si la base tiene datos y SIOP está en ceros (aunque ya se haya intentado).
+            var baseStamp = String(CC.state.cicloBaseCodigo || '') + '|' + Object.keys(CC.state.budgetsBase || {}).length;
+            var siopStamp = seedKey + '|' + baseStamp;
+            fillSiopNullMonthsWithZero(c);
+            if (CC._siopSeedStamp === siopStamp && CC._seedDoneFor[seedKey]) {
+                // Ya precargamos con esta misma base; igual intenta rellenar ceros si la base mejoró.
+                seedSiopDesdeProyeccionBase(c, cicloSeed, loadGen);
+                return;
+            }
+            seedSiopDesdeProyeccionBase(c, cicloSeed, loadGen);
+            CC._seedDoneFor[seedKey] = true;
+            CC._siopSeedStamp = siopStamp;
+            return;
+        }
+
+        var n = budgetSeedCount(); // 3/6/9 en Forecast
         if (CC._seedDoneFor[seedKey]) return;
 
         var ctas = control._allCtas || [];
@@ -2163,7 +2277,6 @@
         var seeded = 0;
         var fromBase = 0;
         var fromVenta = 0;
-        var loadGen = CC._capturaLoadGen || 0;
         ctas.forEach(function (cta) {
             var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
             if (!budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
@@ -2935,7 +3048,7 @@
         var base = Number(cta.precioLista) || 0;
         var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
         var baseEl = document.getElementById('pm-base');
-        if (baseEl) baseEl.value = base > 0 ? base.toFixed(4) : '';
+        if (baseEl) baseEl.value = base > 0 ? base.toFixed(2) : '';
         var baseHint = document.getElementById('pm-base-hint');
         if (baseHint) {
             baseHint.textContent = base > 0
@@ -2961,8 +3074,8 @@
                 return '<div class="cc-tc-month' + (custom ? ' is-custom' : '') + '">' +
                     '<label for="pm-m-' + i + '">' + m + '</label>' +
                     refHtml +
-                    '<input id="pm-m-' + i + '" type="number" step="0.0001" min="0" placeholder="' +
-                    (base > 0 ? base.toFixed(2) : '0') + '" value="' + (seed > 0 ? seed.toFixed(4) : '') + '">' +
+                    '<input id="pm-m-' + i + '" type="number" step="0.01" min="0" placeholder="' +
+                    (base > 0 ? base.toFixed(2) : '0') + '" value="' + (seed > 0 ? seed.toFixed(2) : '') + '">' +
                     '</div>';
             }).join('');
         }
@@ -2989,7 +3102,7 @@
             var el = document.getElementById('pm-m-' + i);
             var raw = el ? String(el.value || '').trim() : '';
             var v = Number(raw);
-            out.push(raw !== '' && isFinite(v) && v > 0 ? Math.round(v * 10000) / 10000 : null);
+            out.push(raw !== '' && isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : null);
         }
         return out;
     }
@@ -3006,7 +3119,7 @@
             if (!el) continue;
             var ref = Number(refMeses[i]);
             var seed = (isFinite(ref) && ref > 0) ? ref : base;
-            el.value = seed > 0 ? seed.toFixed(4) : '';
+            el.value = seed > 0 ? seed.toFixed(2) : '';
         }
         highlightPrecioMesesEditor();
     }
@@ -3023,7 +3136,7 @@
             }
             for (var i = 0; i < 12; i++) {
                 var el = document.getElementById('pm-m-' + i);
-                if (el) el.value = base.toFixed(4);
+                if (el) el.value = base.toFixed(2);
             }
             highlightPrecioMesesEditor();
         });
@@ -3047,7 +3160,7 @@
             var base = Number(val('pm-base')) || 0;
             var filled = 0;
             for (var i = 0; i < 12; i++) {
-                if (meses[i] == null && base > 0) meses[i] = Math.round(base * 10000) / 10000;
+                if (meses[i] == null && base > 0) meses[i] = Math.round(base * 100) / 100;
                 if (meses[i] != null && meses[i] > 0) filled++;
             }
             if (!filled) {
@@ -4521,10 +4634,6 @@
         var legend = document.getElementById('ctl-matrix-legend');
         var ok = document.getElementById('ctl-legend-ok');
         var over = document.getElementById('ctl-legend-over');
-        if (esBudgetTipo()) {
-            if (legend) legend.hidden = true;
-            return;
-        }
         if (legend) legend.hidden = false;
         if (esSiopTipo()) {
             var src = CC.state.cicloBaseCodigo || 'proyecto anterior';
@@ -4532,8 +4641,9 @@
             if (over) over.textContent = 'Menor a ' + src;
             return;
         }
-        if (ok) ok.textContent = 'Mayor o igual a venta pasada';
-        if (over) over.textContent = 'Menor a venta pasada';
+        var anio = CC.state.anioGasto || '';
+        if (ok) ok.textContent = 'Mayor o igual a venta' + (anio ? (' ' + anio) : ' pasada');
+        if (over) over.textContent = 'Menor a venta' + (anio ? (' ' + anio) : ' pasada');
     }
 
     function paintMatrixHint() {
@@ -4804,49 +4914,58 @@
         });
     }
 
-    /** Precio local del último mes con dato en Precios de productos. Si no hay, promedio de venta SAP. */
+    /** Precio de referencia: global de Precios de productos (moda / mes=0), no el último mes. */
     function precioVentaAnioRef(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
-        var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
         var mon = String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
-        // Último mes con precio en el maestro (no el global/moda).
-        var arr = (cta && cta.precioMaestroMeses) || [];
-        for (var i = 11; i >= 0; i--) {
-            var p = Number(arr[i]);
-            if (isFinite(p) && p > 0) {
+        var anio = CC.state.anioGasto || '';
+
+        // 1) Global ya enriquecido en la cuenta (costosMaster → moda / mes=0).
+        var local = Number(cta && cta.precioLista) || 0;
+        if (local > 0 && (cta.listaPrecioNombre || '').indexOf('Maestro local') === 0) {
+            return {
+                precio: local,
+                moneda: mon,
+                unidad: unidad,
+                unidadNombre: unidadNombre,
+                decimals: 2,
+                title: 'Precio global · Precios de productos' + (anio ? (' · proy. ' + anio) : '')
+            };
+        }
+
+        // 2) Lookup directo al maestro (por si precioLista vino de lista SAP).
+        var c = control.centro;
+        if (c && cta && cta.codigo) {
+            var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
+            if (master && Number(master.costo) > 0) {
                 return {
-                    precio: p,
+                    precio: Number(master.costo),
+                    moneda: String(master.moneda || mon || 'MXN').toUpperCase(),
+                    unidad: unidad,
+                    unidadNombre: unidadNombre,
+                    decimals: 2,
+                    title: 'Precio global · Precios de productos' + (anio ? (' · proy. ' + anio) : '')
+                };
+            }
+            // 3) Moda de meses del maestro si aún no hay fila global.
+            var maestro = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
+            var moda = precioModaDeMeses((maestro && maestro.meses) || []);
+            if (moda > 0) {
+                return {
+                    precio: moda,
                     moneda: mon,
                     unidad: unidad,
                     unidadNombre: unidadNombre,
                     decimals: 2,
-                    title: 'Precio local · último mes con dato (' + MESES[i + 1] + ') · Precios de productos'
+                    title: 'Precio global (moda) · Precios de productos' + (anio ? (' · proy. ' + anio) : '')
                 };
             }
         }
-        var c = control.centro;
-        if (c && cta && cta.codigo) {
-            var maestro = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
-            var meses = (maestro && maestro.meses) || [];
-            var mons = (maestro && maestro.monedas) || [];
-            for (var j = 11; j >= 0; j--) {
-                var p2 = Number(meses[j]);
-                if (isFinite(p2) && p2 > 0) {
-                    return {
-                        precio: p2,
-                        moneda: String(mons[j] || mon || 'MXN').toUpperCase(),
-                        unidad: unidad,
-                        unidadNombre: unidadNombre,
-                        decimals: 2,
-                        title: 'Precio local · último mes con dato (' + MESES[j + 1] + ') · Precios de productos'
-                    };
-                }
-            }
-        }
+
         var info = precioVentaPasadaInfo(cta);
         if (!info.title) {
-            info.title = 'Precio unitario promedio de la venta ' + (CC.state.anioGasto || '') + ' (importe SAP ÷ uds).';
+            info.title = 'Precio unitario promedio de la venta ' + (anio || '') + ' (importe SAP ÷ uds).';
         }
         return info;
     }
@@ -5120,9 +5239,15 @@
                 var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
                 if (!td || !cta) return;
                 var raw = String(inp.value || '').trim().replace(/,/g, '');
-                var fake = { gasto: cta.gasto, ppto: (cta.ppto || []).slice() };
+                var fake = {
+                    gasto: cta.gasto,
+                    ppto: (cta.ppto || []).slice(),
+                    codigo: cta.codigo
+                };
                 fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreQty(Number(raw) || 0);
-                td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell');
+                var lockedMes = mesBloqueadoBudget(Number(inp.getAttribute('data-m')));
+                td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell') +
+                    (lockedMes ? ' is-locked' : '');
                 inp.classList.toggle('is-neg', (Number(raw) || 0) < 0);
                 var rowLive = inp.closest('tr');
                 var totalEl = rowLive && rowLive.querySelector('[data-uds-total]');
@@ -5280,7 +5405,9 @@
             inp.classList.toggle('is-neg', (Number(shown) || 0) < 0);
             var td = inp.closest('td');
             if (td) {
-                td.className = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell');
+                var lockedMesUpd = mesBloqueadoBudget(i);
+                td.className = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') +
+                    (lockedMesUpd ? ' is-locked' : '');
                 var wrap = td.querySelector('.cc-matrix-month');
                 if (wrap) {
                     var tag = wrap.querySelector('.cc-month-price-tag');
@@ -5314,7 +5441,6 @@
 
     function monthCellClass(cta, i) {
         var cls = 'cc-month-cell';
-        if (esBudgetTipo()) return cls + ' is-plain';
         var raw = cta.ppto && cta.ppto[i];
         // Amarillo: mes pendiente de capturar.
         if (!mesLleno(raw)) {
@@ -5323,8 +5449,8 @@
         }
         var val = Number(raw) || 0;
         var past = pastQtyMes(cta, i);
-        // Verde: unidades proyectadas mayores (o iguales) a la referencia (venta o SIOP anterior).
-        // Rojo: unidades proyectadas menores a esa referencia.
+        // Verde: proyección >= venta / proy. anterior.
+        // Rojo: proyección < venta / proy. anterior.
         if (past > 0 && val < past) cls += ' is-over';
         else cls += ' is-ok';
         return cls;
@@ -7635,7 +7761,7 @@
                     ? 'El tipo queda fijo al crear el ciclo'
                     : (editing
                         ? 'Este ciclo aún no tenía tipo: elige Budget, Forecast o SIOP y guarda'
-                        : 'Budget: meses en blanco · Forecast: venta real + Budget · SIOP: dato anterior arriba, captura en el input');
+                        : 'Budget: meses en blanco · Forecast: venta real + Budget · SIOP: precarga proyección del año (dato o 0), editable');
             }
             syncTipoBudgetModalUi();
             if (editing) {
@@ -7856,6 +7982,7 @@
             var mon = String(it.moneda || 'MXN').toUpperCase();
             var meses = Array.isArray(it.precio_meses) ? it.precio_meses.slice(0, 12) : [];
             while (meses.length < 12) meses.push(null);
+            CC._pcmPrevGlobal = base > 0 ? base : precioModaDeMeses(meses);
 
             setVal('pcm-empresa', it.empresa || '');
             setVal('pcm-codigo', codigo);
@@ -7930,8 +8057,15 @@
             }
             var jobs = [];
             var base2 = base > 0 ? Math.round(base * 100) / 100 : 0;
+            var prevGlobal = Number(CC._pcmPrevGlobal) || 0;
+            var globalCambio = base2 > 0 && prevGlobal > 0 && Math.abs(base2 - prevGlobal) > 0.005;
             for (var i = 0; i < 12; i++) {
                 var p = meses[i];
+                // Si cambió el global, los meses que tenían el global anterior pasan al nuevo
+                // (los que difieren, p.ej. Dic=7, se conservan).
+                if (globalCambio && p !== null && p > 0 && Math.abs(p - prevGlobal) < 0.005) {
+                    p = base2;
+                }
                 if (p === null || !(p > 0)) continue;
                 jobs.push({
                     empresa: emp,
@@ -7961,7 +8095,7 @@
                     });
                 }
             }
-            // Fila global (mes=0): precio del campo Global o moda de los meses.
+            // Fila global (mes=0): siempre el valor del campo Global.
             var globalSave = base2 > 0 ? base2 : precioModaDeMeses(meses);
             if (globalSave > 0) {
                 jobs.push({

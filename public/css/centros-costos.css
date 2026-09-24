@@ -3416,8 +3416,10 @@
     z-index: 4;
     background: #fafafa;
 }
-.cc-matrix-row.is-on .sticky-col,
-.cc-matrix-row.is-on td {
+.cc-matrix-row.is-on .sticky-col {
+    background: #f4f4f5;
+}
+.cc-matrix-row.is-on td:not(.cc-matrix-cell) {
     background: #f4f4f5;
 }
 .cc-matrix-row.is-done .sticky-col {
@@ -3526,15 +3528,15 @@
 }
 .cc-legend-item.is-ok .cc-legend-swatch {
     background: #ecfdf5;
-    border-color: #6ee7b7;
+    border-color: #a7f3d0;
 }
 .cc-legend-item.is-over .cc-legend-swatch {
     background: #fef2f2;
-    border-color: #fca5a5;
+    border-color: #fecaca;
 }
 .cc-legend-item.is-empty .cc-legend-swatch {
     background: #fffbeb;
-    border-color: #fcd34d;
+    border-color: #fde68a;
 }
 .cc-matrix-table .cc-matrix-group-row td {
     background: #f4f4f5;
@@ -3583,9 +3585,25 @@
 }
 .cc-matrix-cell.is-plain,
 .cc-matrix-row.is-on td.cc-matrix-cell.is-plain { background: #fff; }
-.cc-matrix-cell.is-empty { background: #fffbeb; }
-.cc-matrix-cell.is-ok { background: #ecfdf5; }
-.cc-matrix-cell.is-over { background: #fef2f2; }
+/* Colorimetría: gana sobre selección de fila */
+.cc-matrix-cell.is-empty,
+.cc-matrix-row.is-on td.cc-matrix-cell.is-empty,
+.cc-matrix-row.is-done td.cc-matrix-cell.is-empty {
+    background: #fffbeb !important;
+    box-shadow: none;
+}
+.cc-matrix-cell.is-ok,
+.cc-matrix-row.is-on td.cc-matrix-cell.is-ok,
+.cc-matrix-row.is-done td.cc-matrix-cell.is-ok {
+    background: #ecfdf5 !important;
+    box-shadow: none;
+}
+.cc-matrix-cell.is-over,
+.cc-matrix-row.is-on td.cc-matrix-cell.is-over,
+.cc-matrix-row.is-done td.cc-matrix-cell.is-over {
+    background: #fef2f2 !important;
+    box-shadow: none;
+}
 .cc-matrix-month {
     display: flex;
     flex-direction: column;

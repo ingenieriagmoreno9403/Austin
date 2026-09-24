@@ -426,9 +426,11 @@ class ProyeccionesVentasController extends Controller
                 $g['precio_meses'][$idx] = round($precio, 4);
                 $g['monedas_meses'][$idx] = $moneda;
             } elseif ($mes === 0 && $precio > 0) {
-                // Fila sin mes = precio global de respaldo.
-                $g['costo_unitario'] = round($precio, 4);
-                $g['moneda'] = $moneda;
+                // Fila global explícita (mes=0): manda sobre la moda de meses.
+                if (! isset($g['global_explicito']) || $g['global_explicito'] === null) {
+                    $g['global_explicito'] = round($precio, 4);
+                    $g['moneda'] = $moneda;
+                }
             }
             unset($g);
         }
@@ -458,17 +460,26 @@ class ProyeccionesVentasController extends Controller
             $g['meses_count'] = count($filled);
             $g['precios_distintos'] = count($freq);
 
-            if ($freq) {
+            $globalExplicito = isset($g['global_explicito']) ? (float) $g['global_explicito'] : 0.0;
+            unset($g['global_explicito']);
+
+            if ($globalExplicito > 0) {
+                // Precio global de Ventas/Costos (mes=0).
+                $g['costo_unitario'] = $globalExplicito;
+            } elseif ($freq) {
                 arsort($freq);
                 $modeKey = (string) array_key_first($freq);
                 $g['costo_unitario'] = (float) $modeKey;
-            } elseif ((float) $g['costo_unitario'] <= 0 && $last !== null) {
+            } elseif ($last !== null) {
                 $g['costo_unitario'] = (float) $g['precio_meses'][$last - 1];
             }
 
             if ($freqMon) {
                 arsort($freqMon);
-                $g['moneda'] = (string) array_key_first($freqMon);
+                // Si hay global explícito, conserva su moneda; si no, moda de meses.
+                if ($globalExplicito <= 0) {
+                    $g['moneda'] = (string) array_key_first($freqMon);
+                }
             }
 
             if ($g['meses_count'] === 0) {
