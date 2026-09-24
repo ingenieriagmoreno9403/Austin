@@ -1298,12 +1298,12 @@ class ProyeccionesVentasController extends Controller
             'empresa' => $empresa,
             'anio' => $anio,
             'grouped' => 1,
+            'sin_paginar' => 1,
             'per_page' => 50000,
             'page' => 1,
         ]);
         $listJson = $this->listCostos($listReq)->getData(true);
         $items = is_array($listJson['items'] ?? null) ? $listJson['items'] : [];
-        $cardsPorProducto = $this->cardCodesPorProducto($anio, $empresa);
 
         $rows = [];
         foreach ($items as $it) {
