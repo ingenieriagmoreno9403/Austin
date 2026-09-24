@@ -734,7 +734,7 @@ class SistemasController extends Controller
     {
         $rutas = [
             'cc' => ['admincentros', 'controlcentros', 'analisisprogreso'],
-            'pv' => ['ventas/asignaciones', 'ventas/captura', 'ventas/analisis'],
+            'pv' => ['ventas/asignaciones', 'ventas/captura', 'ventas/analisis', 'ventas/costos'],
         ];
         $buscar = $rutas[$grupo] ?? [];
         if (!$buscar) {
