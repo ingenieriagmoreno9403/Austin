@@ -1,7 +1,8 @@
 @extends('layouts.app')
 
 @section('css')
-<link href="{{ asset('css/centros-costos.css') }}" rel="stylesheet">
+<!-- cc-analisis-assets 2026-09-23 -->
+<link href="{{ asset('css/centros-costos.css') }}?v={{ (int) @filemtime(public_path('css/centros-costos.css')) }}" rel="stylesheet">
 <style>
     #an-kpis {
         display: grid;
@@ -157,7 +158,7 @@
 
 @section('js')
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="{{ asset('js/centros-costos.js') }}"></script>
+<script src="{{ asset('js/centros-costos.js') }}?v={{ (int) @filemtime(public_path('js/centros-costos.js')) }}"></script>
 <script>
     CC.boot(Object.assign(@json($bootstrap), { page: 'analisis' }));
 </script>
