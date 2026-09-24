@@ -887,7 +887,7 @@
             var hit = gastoCacheEntry(key);
             if (hit) {
                 applyGastoMap(hit.por, hit.meta);
-                return;
+            return;
             }
         }
         if (force) {
@@ -1384,14 +1384,14 @@
         else delete CC.state.completados[key];
 
         var monthsToSave = months.slice();
-        var nombre = '';
-        var list = (control && control._allCtas) || [];
-        for (var i = 0; i < list.length; i++) {
-            if (String(list[i].codigo) === String(cuenta)) {
-                nombre = list[i].nombre || '';
-                break;
+            var nombre = '';
+            var list = (control && control._allCtas) || [];
+            for (var i = 0; i < list.length; i++) {
+                if (String(list[i].codigo) === String(cuenta)) {
+                    nombre = list[i].nombre || '';
+                    break;
+                }
             }
-        }
         var costo = 0;
         for (var j = 0; j < list.length; j++) {
             if (String(list[j].codigo) === String(cuenta)) {
@@ -1707,18 +1707,18 @@
                 // Solo invalidar por generación (cambio de ciclo real). No comparar el select
                 // otra vez: renderCicloPicks puede tocar el valor sin ser un cambio de ciclo.
                 if (gen !== CC._capturaLoadGen) return { applied: false };
-                CC.state.overlays = json.overlays || {};
-                CC.state.completados = json.completados || {};
-                CC.state.ajustes = json.ajustes || {};
-                CC.state.costos = json.costos || {};
+            CC.state.overlays = json.overlays || {};
+            CC.state.completados = json.completados || {};
+            CC.state.ajustes = json.ajustes || {};
+            CC.state.costos = json.costos || {};
                 CC.state.costosMaster = json.costosMaster || {};
                 CC.state.costosMeses = json.costosMeses || {};
                 CC.state.preciosMeses = json.preciosMeses || {};
-                CC.state.budgets = {};
+            CC.state.budgets = {};
                 CC.state.budgetKeysFromServer = {};
-                var rawBudgets = json.budgets || {};
-                Object.keys(rawBudgets).forEach(function (k) {
-                    CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
+            var rawBudgets = json.budgets || {};
+            Object.keys(rawBudgets).forEach(function (k) {
+                CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
                     CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
                 });
                 Object.keys(CC.state.completados || {}).forEach(function (k) {
@@ -1730,7 +1730,7 @@
                 });
             }).then(function (result) {
                 if (gen !== CC._capturaLoadGen) return;
-                CC._capturaReady = true;
+            CC._capturaReady = true;
                 if (result && result.applied) {
                     refreshCapturaAfterBudgetsLoaded();
                 }
@@ -1738,7 +1738,7 @@
                 if (gen !== CC._capturaLoadGen) return;
                 console.warn('[PV] No se pudo cargar captura del ciclo', ciclo, err);
                 // No vaciar budgets si ya había datos de una carga buena previa del mismo gen.
-                CC._capturaReady = true;
+            CC._capturaReady = true;
             });
         });
     }
@@ -3842,7 +3842,7 @@
         var cc = val('ctl-centro');
         if (!emp || !cc) {
             if (el) {
-                el.innerHTML = '<option value="">Elige un cliente primero…</option>';
+            el.innerHTML = '<option value="">Elige un cliente primero…</option>';
                 el.value = '';
             }
             if (qEl) {
@@ -3860,17 +3860,17 @@
         if (qEl) qEl.disabled = !ctas.length;
         if (el) {
             var html = '<option value="">Todos los productos</option>';
-            ctas.forEach(function (cta) {
-                var pend = ctaPendiente(cta) ? 1 : 0;
-                html += '<option value="' + escapeHtml(cta.codigo) + '">' +
-                    escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo) + '   ·   ' + markPendLabel(pend)) + '</option>';
-            });
-            el.innerHTML = html;
-            if (control.cuenta && ctas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
-                el.value = control.cuenta;
-            } else {
-                el.value = '';
-            }
+        ctas.forEach(function (cta) {
+            var pend = ctaPendiente(cta) ? 1 : 0;
+            html += '<option value="' + escapeHtml(cta.codigo) + '">' +
+                escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo) + '   ·   ' + markPendLabel(pend)) + '</option>';
+        });
+        el.innerHTML = html;
+        if (control.cuenta && ctas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
+            el.value = control.cuenta;
+        } else {
+            el.value = '';
+        }
         }
         var st = statsDeCentro({
             codigo: cc,
@@ -5629,7 +5629,7 @@
             if (!c || !list.length || control.locked) return;
             var run = function () {
                 list.forEach(function (cta) {
-                    persistBudget(c.empresa, c.codigo, cta.codigo, (cta.gasto || []).slice());
+            persistBudget(c.empresa, c.codigo, cta.codigo, (cta.gasto || []).slice());
                 });
                 refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
                 toast('success', 'Copiado', list.length === 1
@@ -5681,7 +5681,7 @@
             if (!c || !list.length || control.locked) return;
             var run = function () {
                 list.forEach(function (cta) {
-                    persistBudget(c.empresa, c.codigo, cta.codigo, [null, null, null, null, null, null, null, null, null, null, null, null], { completado: false });
+            persistBudget(c.empresa, c.codigo, cta.codigo, [null, null, null, null, null, null, null, null, null, null, null, null], { completado: false });
                 });
                 refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
                 toast('success', 'Limpio', list.length === 1
@@ -5713,8 +5713,8 @@
             var rate = 1 + (pctVal / 100);
             var run = function () {
                 list.forEach(function (cta) {
-                    var months = (cta.gasto || []).map(function (v) { return (Number(v) || 0) * rate; });
-                    persistBudget(c.empresa, c.codigo, cta.codigo, months);
+            var months = (cta.gasto || []).map(function (v) { return (Number(v) || 0) * rate; });
+            persistBudget(c.empresa, c.codigo, cta.codigo, months);
                 });
                 refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
                 toast('success', 'Ajuste aplicado', list.length === 1
@@ -5741,8 +5741,8 @@
             var list = targetCtasForTools();
             if (!c || !list.length || control.locked) return;
             list.forEach(function (cta) {
-                var months = monthsFromGrid(cta, true);
-                persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
+            var months = monthsFromGrid(cta, true);
+            persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
             });
             refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
             toast('success', 'Completado', list.length === 1
