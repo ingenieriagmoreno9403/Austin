@@ -111,12 +111,17 @@ class ProyeccionesVentasController extends Controller
         $q = trim((string) $request->get('q', ''));
         $anio = $this->anioProyeccionCostos((int) $request->get('anio', 0));
         $page = max(1, (int) $request->get('page', 1));
+        $sinPaginar = in_array(strtolower((string) $request->get('sin_paginar', '')), ['1', 'true', 'yes'], true);
         $perPage = (int) $request->get('per_page', 25);
-        if ($perPage < 10) {
-            $perPage = 10;
-        }
-        if ($perPage > 200) {
-            $perPage = 200;
+        if (! $sinPaginar) {
+            if ($perPage < 10) {
+                $perPage = 10;
+            }
+            if ($perPage > 200) {
+                $perPage = 200;
+            }
+        } elseif ($perPage < 1) {
+            $perPage = 50000;
         }
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
@@ -1278,8 +1283,8 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Descarga plantilla Formato Precios (Empresa, CardCode, ItemCode, Mes, Precio)
-     * prellenada con el maestro local.
+     * Descarga plantilla Formato Precios (Empresa, CardCode, ItemCode, Mes, Precio).
+     * Una fila por mes (1–12), con CardCode en cada fila.
      */
     public function plantillaCostos(Request $request)
     {
@@ -1292,12 +1297,14 @@ class ProyeccionesVentasController extends Controller
         $listReq = Request::create('/ProyeccionesVentas/api/costos', 'GET', [
             'empresa' => $empresa,
             'anio' => $anio,
-            'grouped' => 0,
+            'grouped' => 1,
+            'sin_paginar' => 1,
             'per_page' => 50000,
             'page' => 1,
         ]);
         $listJson = $this->listCostos($listReq)->getData(true);
         $items = is_array($listJson['items'] ?? null) ? $listJson['items'] : [];
+        $cardsPorProducto = $this->cardCodesPorProducto($anio, $empresa);
 
         $rows = [];
         foreach ($items as $it) {
@@ -1306,13 +1313,28 @@ class ProyeccionesVentasController extends Controller
             if ($emp === '' || $cod === '') {
                 continue;
             }
-            $rows[] = [
-                $emp,
-                trim((string) ($it['card_code'] ?? '')),
-                $cod,
-                ((int) ($it['mes'] ?? 0)) > 0 ? (int) $it['mes'] : '',
-                round((float) ($it['costo_unitario'] ?? 0), 4),
-            ];
+            $cardPropio = trim((string) ($it['card_code'] ?? ''));
+            $cards = $cardPropio !== ''
+                ? [$cardPropio]
+                : array_values($cardsPorProducto[$emp.'|'.$cod] ?? []);
+            if ($cards === []) {
+                $cards = [''];
+            }
+            $global = round((float) ($it['costo_unitario'] ?? 0), 4);
+            $precioMeses = is_array($it['precio_meses'] ?? null) ? $it['precio_meses'] : [];
+            foreach ($cards as $card) {
+                for ($mes = 1; $mes <= 12; $mes++) {
+                    $p = $precioMeses[$mes - 1] ?? null;
+                    if ($p !== null && (float) $p > 0) {
+                        $precio = round((float) $p, 4);
+                    } elseif ($global > 0) {
+                        $precio = $global;
+                    } else {
+                        $precio = '';
+                    }
+                    $rows[] = [$emp, $card, $cod, $mes, $precio];
+                }
+            }
         }
 
         $suffix = $empresa !== '' ? '_'.$empresa : '';
@@ -1322,8 +1344,73 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Importa precios desde Excel con columnas Empresa, CardCode, ItemCode, Mes, Precio.
-     * Actualiza el maestro local por Empresa + ItemCode (CardCode/Mes se ignoran).
+     * CardCode (cliente) por Empresa|ItemCode.
+     * Primero el año pedido; si el producto no tiene cliente ese año, cualquier ciclo.
+     *
+     * @return array<string, array<string, string>>
+     */
+    protected function cardCodesPorProducto(int $anio, string $empresa = ''): array
+    {
+        $delAnio = [];
+        $cualquiera = [];
+        $push = function (array &$bucket, string $emp, string $cod, string $card): void {
+            $emp = strtoupper(trim($emp));
+            $cod = trim($cod);
+            $card = trim($card);
+            if ($emp === '' || $cod === '' || $card === '') {
+                return;
+            }
+            $bucket[$emp.'|'.$cod][$card] = $card;
+        };
+
+        if (Schema::hasTable('tbl_pv_asignaciones') && Schema::hasTable('tbl_pv_asignacion_productos')) {
+            $q = DB::table('tbl_pv_asignacion_productos as ap')
+                ->join('tbl_pv_asignaciones as a', 'a.id', '=', 'ap.asignacion_id')
+                ->select('a.empresa', 'a.cliente_codigo', 'a.ciclo_codigo', 'ap.producto_codigo');
+            if ($empresa !== '') {
+                $q->whereRaw('UPPER(a.empresa) = ?', [$empresa]);
+            }
+            if (Schema::hasTable('tbl_pv_ciclos')) {
+                $q->leftJoin('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
+                    ->addSelect('c.anio_presupuesto');
+            }
+            foreach ($q->get() as $row) {
+                $push($cualquiera, (string) $row->empresa, (string) $row->producto_codigo, (string) $row->cliente_codigo);
+                if (Schema::hasTable('tbl_pv_ciclos') && (int) ($row->anio_presupuesto ?? 0) === $anio) {
+                    $push($delAnio, (string) $row->empresa, (string) $row->producto_codigo, (string) $row->cliente_codigo);
+                }
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_proyecciones')) {
+            $q = DB::table('tbl_pv_proyecciones as p')
+                ->select('p.empresa', 'p.cliente_codigo', 'p.producto_codigo', 'p.ciclo_codigo');
+            if ($empresa !== '') {
+                $q->whereRaw('UPPER(p.empresa) = ?', [$empresa]);
+            }
+            if (Schema::hasTable('tbl_pv_ciclos')) {
+                $q->leftJoin('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(p.ciclo_codigo)'))
+                    ->addSelect('c.anio_presupuesto');
+            }
+            foreach ($q->get() as $row) {
+                $push($cualquiera, (string) $row->empresa, (string) $row->producto_codigo, (string) $row->cliente_codigo);
+                if (Schema::hasTable('tbl_pv_ciclos') && (int) ($row->anio_presupuesto ?? 0) === $anio) {
+                    $push($delAnio, (string) $row->empresa, (string) $row->producto_codigo, (string) $row->cliente_codigo);
+                }
+            }
+        }
+
+        $out = $cualquiera;
+        foreach ($delAnio as $key => $cards) {
+            $out[$key] = $cards;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Importa precios desde Excel con columnas Empresa, CardCode, ItemCode, Mes y Precio.
+     * Mes va de 1 a 12, una fila por mes. También acepta columnas Ene–Dic.
      */
     public function importarCostosExcel(Request $request): JsonResponse
     {
@@ -1356,9 +1443,10 @@ class ProyeccionesVentasController extends Controller
         }
 
         $map = $this->mapearEncabezadosPrecios($sheet[0] ?? []);
-        if ($map['empresa'] === null || $map['item'] === null || $map['precio'] === null) {
+        $tieneMeses = count($map['meses']) > 0;
+        if ($map['empresa'] === null || $map['item'] === null || ($map['precio'] === null && ! $tieneMeses && $map['mes'] === null)) {
             return response()->json([
-                'message' => 'Faltan columnas: Empresa, ItemCode y Precio (como en Formato Precios.xlsx).',
+                'message' => 'Faltan columnas: Empresa, ItemCode y Precio o los meses Ene–Dic.',
             ], 422);
         }
 
@@ -1373,7 +1461,7 @@ class ProyeccionesVentasController extends Controller
         $vistos = [];
 
         DB::transaction(function () use (
-            $sheet, $map, $userId, $anio, $hasAnio, &$actualizados, &$creados, &$omitidos, &$propagadasTot, &$errores, &$vistos
+            $sheet, $map, $tieneMeses, $userId, $anio, $hasAnio, &$actualizados, &$creados, &$omitidos, &$propagadasTot, &$errores, &$vistos
         ) {
             for ($i = 1; $i < count($sheet); $i++) {
                 $row = $sheet[$i];
@@ -1381,17 +1469,20 @@ class ProyeccionesVentasController extends Controller
                 $empresa = strtoupper($this->celdaTexto($row[$map['empresa']] ?? ''));
                 $codigo = $this->celdaTexto($row[$map['item']] ?? '');
                 $card = $map['card'] !== null ? $this->celdaTexto($row[$map['card']] ?? '') : '';
-                $mesRaw = $map['mes'] !== null ? ($row[$map['mes']] ?? null) : null;
-                $mes = 0;
-                if ($mesRaw !== null && $mesRaw !== '') {
-                    $mes = (int) $mesRaw;
-                    if ($mes < 0 || $mes > 12) {
-                        $mes = 0;
+                $precioRaw = $map['precio'] !== null ? ($row[$map['precio']] ?? null) : null;
+                $filaVacia = $empresa === '' && $codigo === '' && ($precioRaw === null || $precioRaw === '');
+                if ($filaVacia && $tieneMeses) {
+                    $hayMes = false;
+                    foreach ($map['meses'] as $colMes) {
+                        $celda = $row[$colMes] ?? null;
+                        if ($celda !== null && $celda !== '') {
+                            $hayMes = true;
+                            break;
+                        }
                     }
+                    $filaVacia = ! $hayMes;
                 }
-                $precioRaw = $row[$map['precio']] ?? null;
-
-                if ($empresa === '' && $codigo === '' && ($precioRaw === null || $precioRaw === '')) {
+                if ($filaVacia) {
                     $omitidos++;
                     continue;
                 }
@@ -1400,25 +1491,56 @@ class ProyeccionesVentasController extends Controller
                     continue;
                 }
 
-                $precio = $this->celdaNumeroPrecio($precioRaw);
-                if ($precio === null) {
+                $preciosFila = [];
+                if ($tieneMeses) {
+                    foreach ($map['meses'] as $numMes => $colMes) {
+                        $precioMes = $this->celdaNumeroPrecio($row[$colMes] ?? null);
+                        if ($precioMes === null) {
+                            continue;
+                        }
+                        if ($precioMes < 0) {
+                            $errores[] = ['fila' => $fila, 'mensaje' => 'Precio inválido en mes '.$numMes];
+                            continue;
+                        }
+                        $preciosFila[(int) $numMes] = round($precioMes, 4);
+                    }
+                }
+                if ($map['precio'] !== null) {
+                    $precio = $this->celdaNumeroPrecio($precioRaw);
+                    if ($precio !== null && $precio < 0) {
+                        $errores[] = ['fila' => $fila, 'mensaje' => 'Precio inválido'];
+                    } elseif ($precio !== null) {
+                        $mes = 0;
+                        if (! $tieneMeses && $map['mes'] !== null) {
+                            $mesRaw = $row[$map['mes']] ?? null;
+                            if ($mesRaw !== null && $mesRaw !== '') {
+                                $mes = (int) $mesRaw;
+                                if ($mes < 0 || $mes > 12) {
+                                    $mes = 0;
+                                }
+                            }
+                        }
+                        if (! isset($preciosFila[$mes])) {
+                            $preciosFila[$mes] = round($precio, 4);
+                        }
+                    }
+                }
+                if ($preciosFila === []) {
                     $omitidos++;
                     continue;
                 }
-                if ($precio < 0) {
-                    $errores[] = ['fila' => $fila, 'mensaje' => 'Precio inválido'];
-                    continue;
-                }
 
-                $key = $empresa.'|'.$card.'|'.$codigo.'|'.$mes;
-                $vistos[$key] = [
-                    'empresa' => $empresa,
-                    'card_code' => $card,
-                    'codigo' => $codigo,
-                    'mes' => $mes,
-                    'precio' => round($precio, 4),
-                    'fila' => $fila,
-                ];
+                foreach ($preciosFila as $mes => $precio) {
+                    $key = $empresa.'|'.$card.'|'.$codigo.'|'.$mes;
+                    $vistos[$key] = [
+                        'empresa' => $empresa,
+                        'card_code' => $card,
+                        'codigo' => $codigo,
+                        'mes' => $mes,
+                        'precio' => $precio,
+                        'fila' => $fila,
+                    ];
+                }
             }
 
             foreach ($vistos as $hit) {
@@ -1504,7 +1626,7 @@ class ProyeccionesVentasController extends Controller
 
     /**
      * @param  array<int, mixed>  $header
-     * @return array{empresa: ?int, card: ?int, item: ?int, mes: ?int, precio: ?int}
+     * @return array{empresa: ?int, card: ?int, item: ?int, mes: ?int, precio: ?int, meses: array<int, int>}
      */
     protected function mapearEncabezadosPrecios(array $header): array
     {
@@ -1514,6 +1636,21 @@ class ProyeccionesVentasController extends Controller
             'item' => null,
             'mes' => null,
             'precio' => null,
+            'meses' => [],
+        ];
+        $aliasMes = [
+            'ene' => 1, 'enero' => 1, 'jan' => 1, 'january' => 1,
+            'feb' => 2, 'febrero' => 2, 'february' => 2,
+            'mar' => 3, 'marzo' => 3, 'march' => 3,
+            'abr' => 4, 'abril' => 4, 'apr' => 4, 'april' => 4,
+            'may' => 5, 'mayo' => 5,
+            'jun' => 6, 'junio' => 6, 'june' => 6,
+            'jul' => 7, 'julio' => 7, 'july' => 7,
+            'ago' => 8, 'agosto' => 8, 'aug' => 8, 'august' => 8,
+            'sep' => 9, 'sept' => 9, 'septiembre' => 9, 'september' => 9,
+            'oct' => 10, 'octubre' => 10, 'october' => 10,
+            'nov' => 11, 'noviembre' => 11, 'november' => 11,
+            'dic' => 12, 'diciembre' => 12, 'dec' => 12, 'december' => 12,
         ];
         foreach ($header as $idx => $raw) {
             $h = mb_strtolower(trim((string) $raw));
@@ -1521,7 +1658,9 @@ class ProyeccionesVentasController extends Controller
             if ($h === '') {
                 continue;
             }
-            if ($map['empresa'] === null && in_array($h, ['empresa', 'company', 'empr'], true)) {
+            if (isset($aliasMes[$h])) {
+                $map['meses'][$aliasMes[$h]] = (int) $idx;
+            } elseif ($map['empresa'] === null && in_array($h, ['empresa', 'company', 'empr'], true)) {
                 $map['empresa'] = (int) $idx;
             } elseif ($map['card'] === null && in_array($h, ['cardcode', 'cliente', 'centrocosto', 'centro', 'cc'], true)) {
                 $map['card'] = (int) $idx;
@@ -1529,10 +1668,11 @@ class ProyeccionesVentasController extends Controller
                 $map['item'] = (int) $idx;
             } elseif ($map['mes'] === null && in_array($h, ['mes', 'month', 'periodo'], true)) {
                 $map['mes'] = (int) $idx;
-            } elseif ($map['precio'] === null && in_array($h, ['precio', 'price', 'preciounitario', 'costo', 'costounitario', 'costo_unitario'], true)) {
+            } elseif ($map['precio'] === null && in_array($h, ['precio', 'price', 'preciounitario', 'precioglobal', 'costo', 'costounitario', 'costo_unitario'], true)) {
                 $map['precio'] = (int) $idx;
             }
         }
+        ksort($map['meses']);
 
         return $map;
     }

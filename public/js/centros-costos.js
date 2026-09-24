@@ -330,7 +330,7 @@
         var cuentas = [];
         list.forEach(function (a) {
             (a.cuentas || []).forEach(function (x) {
-                var k = String(x.codigo || '');
+                var k = codigoCuentaKey(x.codigo) || String(x.codigo || '');
                 if (!k || seen[k]) return;
                 seen[k] = true;
                 cuentas.push(x);
@@ -690,11 +690,35 @@
         return '<td class="num' + (listo ? '' : ' is-loading') + '">' + (listo ? money(n) : 'Cargando…') + '</td>';
     }
 
+    function presupuestoGuardado(empresa, cc, codigo) {
+        var budgets = CC.state.budgets || {};
+        var direct = budgetKey(empresa, cc, codigo);
+        if (budgets[direct]) return budgets[direct];
+        var want = String(direct).toUpperCase();
+        var code = codigoCuentaKey(codigo);
+        var emp = String(empresa || '').toUpperCase();
+        var centro = String(cc || '').trim();
+        var keys = Object.keys(budgets);
+        var i;
+        for (i = 0; i < keys.length; i++) {
+            if (String(keys[i]).toUpperCase() === want) return budgets[keys[i]];
+        }
+        for (i = 0; i < keys.length; i++) {
+            var parts = String(keys[i]).split('|');
+            if (parts.length < 3) continue;
+            if (String(parts[0]).toUpperCase() !== emp) continue;
+            if (String(parts[1]).trim() !== centro) continue;
+            var ck = codigoCuentaKey(parts.slice(2).join('|'));
+            if (code && ck === code) return budgets[keys[i]];
+        }
+        return null;
+    }
+
     function pptoDe(empresa, cc, cuenta, gasto) {
-        var key = budgetKey(empresa, cc, cuenta.codigo);
-        if (CC.state.budgets[key]) return CC.state.budgets[key].slice();
-        if (cuenta.ppto) return cuenta.ppto.slice();
-        return (gasto || cuenta.gasto || [0,0,0,0,0,0,0,0,0,0,0,0]).map(function () { return null; });
+        var saved = presupuestoGuardado(empresa, cc, cuenta && cuenta.codigo);
+        if (saved) return saved.slice();
+        if (cuenta && cuenta.ppto) return cuenta.ppto.slice();
+        return (gasto || (cuenta && cuenta.gasto) || [0,0,0,0,0,0,0,0,0,0,0,0]).map(function () { return null; });
     }
 
     function persistBudget(empresa, cc, cuenta, months, opts) {
@@ -3316,6 +3340,7 @@
         renderControlTable();
         renderControlCharts();
         renderVisorTable();
+        if (CC.state.page === 'analisis') renderAnalisis();
         if (CC.state.page === 'detalle') {
             paintDetalleHeader();
             renderDetalleTable();
@@ -3743,6 +3768,8 @@
             if (cicloEl) cicloEl.addEventListener('change', function () {
                 applyAnalisisCiclo(this.value);
             });
+            var monEl = document.getElementById('ctl-moneda');
+            if (monEl) monEl.addEventListener('change', applyCurrencyView);
             var empBox = document.getElementById('an-empresas');
             if (empBox) {
                 empBox.addEventListener('click', function (e) {
@@ -3765,7 +3792,16 @@
         var ciclo = val('an-ciclo') || cicloAnalisisPreferido();
         var cicloEl = document.getElementById('an-ciclo');
         if (cicloEl && ciclo) cicloEl.value = ciclo;
+        var period = findCiclo(ciclo);
+        if (period) {
+            CC.state.period = Object.assign({}, CC.state.period, period);
+            if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
+            if (period.anio) CC.state.anioPresupuesto = period.anio;
+        }
+        paintAnalisisYears();
         CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
+        var mon = document.getElementById('ctl-moneda');
+        if (mon) mon.value = String(CC.state.currency || 'MXN').toUpperCase() === 'USD' ? 'USD' : 'MXN';
         if (CC._anCapturaCiclo !== String(CC.state.cicloCodigo || '')) {
             CC._anCapturaCiclo = String(CC.state.cicloCodigo || '');
             loadOverlaysForCycle().then(function () { CC.initAnalisis(); });
@@ -3857,11 +3893,10 @@
     function snapshotCentros() {
         return CC.state.centros.map(mergedCentro).map(function (c) {
             var ctas = cuentasDeCentro(c);
-            var gasto = totGastoCentro(c, ctas);
-            var ppto = totPptoCentro(c, ctas);
-            var filled = ctas.filter(function (cta) {
-                return mesesTodosLlenos(pptoDe(c.empresa, c.codigo, cta, cta.gasto)) || cuentaMarcada(c.empresa, c.codigo, cta.codigo);
-            }).length;
+            var st = statsDeCentro(c);
+            var gasto = st.totG;
+            var ppto = st.totP;
+            var filled = st.capturadas;
             var users = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             return Object.assign({}, c, {
                 gasto: gasto,
@@ -4081,7 +4116,16 @@
             data: { labels: labels, datasets: datasets },
             options: {
                 responsive: true, maintainAspectRatio: false,
-                plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
+                plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 12 } },
+                    tooltip: {
+                        callbacks: {
+                            label: function (ctx) {
+                                return ctx.dataset.label + ': ' + money(ctx.parsed.y);
+                            }
+                        }
+                    }
+                },
                 scales: {
                     x: { grid: { display: false } },
                     y: { ticks: { callback: function (v) { return money(v); } }, grid: { color: '#f1f1f3' } }

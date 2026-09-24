@@ -49,6 +49,13 @@
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
             <select id="an-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
+            <label class="cc-header-moneda-wrap">
+                <span>Ver en</span>
+                <select id="ctl-moneda" class="cc-select cc-header-ciclo cc-header-moneda" aria-label="Ver valores en MXN o USD">
+                    <option value="MXN">MXN</option>
+                    <option value="USD">USD</option>
+                </select>
+            </label>
             <a class="cc-btn" href="{{ route('centros.control', ['vista' => 'visor']) }}"><i class="fa-solid fa-pen-to-square"></i> Ir a captura</a>
         </div>
     </div>

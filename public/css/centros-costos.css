@@ -3078,6 +3078,14 @@
         justify-content: center;
     }
     .cc-captura-quick .cc-btn { flex: 1 1 140px; }
+    .cc-captura-quick.cc-captura-quick-inline {
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+    }
+    .cc-captura-quick.cc-captura-quick-inline .cc-btn {
+        flex: 0 0 auto;
+        width: auto;
+    }
 }
 @media (max-width: 640px) {
     .cc-cta-compare { grid-template-columns: 1fr; }
@@ -3334,19 +3342,21 @@
 }
 .cc-matrix-toolbar {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.55rem 1rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
     margin: 0 0 0.7rem;
 }
 .cc-captura-quick-inline {
     display: flex;
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 0.4rem;
-    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
 }
 .cc-captura-quick-inline .cc-btn {
     width: auto;
@@ -3787,8 +3797,11 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
+    align-self: stretch;
     gap: 0.35rem;
-    max-width: 28rem;
+    width: 100%;
+    max-width: none;
+    margin-left: auto;
 }
 .cc-snap-badge {
     display: inline-flex;

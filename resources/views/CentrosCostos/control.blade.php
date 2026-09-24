@@ -27,6 +27,13 @@
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
             <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
+            <select id="ctl-moneda" class="cc-select cc-header-ciclo cc-header-moneda" aria-label="Moneda de cambio">
+                <option value="MXN">MXN</option>
+                <option value="USD">USD</option>
+            </select>
+            <button type="button" class="cc-btn" onclick="CC.showModal('modalIndicadores')">
+                <i class="fa-solid fa-circle-info"></i> Indicadores
+            </button>
             <div id="ctl-import-tools" class="cc-import-tools" hidden>
                 <button type="button" class="cc-btn" id="ctl-plantilla">
                     <i class="fa-solid fa-file-arrow-down"></i> Plantilla
@@ -36,9 +43,6 @@
                 </button>
                 <input type="file" id="ctl-import-file" accept=".xlsx,.xls,.csv" hidden>
             </div>
-            <button type="button" class="cc-btn" onclick="CC.showModal('modalIndicadores')">
-                <i class="fa-solid fa-circle-info"></i> Indicadores
-            </button>
         </div>
     </div>
 
@@ -84,11 +88,6 @@
                     </select>
                 </div>
                 <div class="cc-nav-tools">
-                    <select id="ctl-moneda" class="cc-select" aria-label="Moneda">
-                        <option value="MXN">MXN</option>
-                        <option value="USD">USD</option>
-                    </select>
-                    <div class="cc-nav-fx" id="ctl-fx-hint">Captura en MXN · se guarda en pesos</div>
                     <label class="cc-nav-pend-toggle">
                         <input type="checkbox" id="ctl-pendientes"> Solo pendientes
                     </label>
