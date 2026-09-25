@@ -8022,6 +8022,7 @@
 
     function initCostos() {
         var url = CC.state.costosUrl || '/ProyeccionesVentas/api/costos';
+        var puedeEditar = !!CC.state.puedeEditarCostos;
         var items = [];
         var page = 1;
         var lastPage = 1;
@@ -8041,6 +8042,24 @@
         var prevBtn = document.getElementById('pv-costos-prev');
         var nextBtn = document.getElementById('pv-costos-next');
         if (!tbody) return;
+
+        // Botones que modifican precios: solo con permiso editar_ventas_costos.
+        ['pv-costos-excel', 'pv-costos-import-api', 'pv-costos-import-lista'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (!puedeEditar) {
+                el.hidden = true;
+                el.disabled = true;
+            }
+        });
+        ['pcm-save', 'pcm-apply-all', 'pcm-reset'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (!puedeEditar) {
+                el.hidden = true;
+                el.disabled = true;
+            }
+        });
 
         function costosAnio() {
             var fromSel = anioSel ? Number(anioSel.value) : 0;
@@ -8156,7 +8175,8 @@
                     ' data-mes="0"' +
                     ' title="Ver historial de cambios">' +
                     '<i class="fa-solid fa-clock-rotate-left"></i></button>' +
-                    '<button type="button" class="cc-btn cc-btn-sm" data-sync-api-costo' +
+                    (puedeEditar
+                        ? ('<button type="button" class="cc-btn cc-btn-sm" data-sync-api-costo' +
                     ' data-emp="' + escapeHtml(it.empresa) + '"' +
                     ' data-cod="' + escapeHtml(codigo) + '"' +
                     ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
@@ -8166,12 +8186,14 @@
                     '<i class="fa-solid fa-cloud-arrow-down"></i></button>' +
                     '<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
                     ' title="Editar precios por mes">' +
-                    '<i class="fa-solid fa-calendar-days"></i></button>' +
+                    '<i class="fa-solid fa-calendar-days"></i></button>')
+                        : '') +
                     '</div></td>' +
                     '</tr>';
             }).join('');
             tbody.querySelectorAll('[data-edit-meses-costo]').forEach(function (btn) {
                 btn.addEventListener('click', function () {
+                    if (!puedeEditar) return;
                     var i = Number(btn.getAttribute('data-idx'));
                     openCostoMesesModal(items[i]);
                 });
@@ -8190,6 +8212,7 @@
             });
             tbody.querySelectorAll('[data-sync-api-costo]').forEach(function (btn) {
                 btn.addEventListener('click', function () {
+                    if (!puedeEditar) return;
                     actualizarPrecioDesdeApi(btn);
                 });
             });
@@ -9088,6 +9111,9 @@
         CC.state.costosImportExcelUrl = boot.costosImportExcelUrl || '/ProyeccionesVentas/api/costos/importar-excel';
         CC.state.costosImportListaUrl = boot.costosImportListaUrl || '/ProyeccionesVentas/api/costos/importar-lista-precios';
         CC.state.costosHistorialUrl = boot.costosHistorialUrl || '/ProyeccionesVentas/api/costos/historial';
+        CC.state.puedeEditarCostos = boot.hasOwnProperty('puedeEditarCostos')
+            ? !!boot.puedeEditarCostos
+            : true;
         CC.state.empresasLocales = boot.empresasLocales || [];
         CC.state.unidadesMedida = boot.unidadesMedida || {};
         CC.state.gastoCache = {};

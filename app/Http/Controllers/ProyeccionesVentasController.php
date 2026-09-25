@@ -19,6 +19,7 @@ use App\Models\Empresas;
 use App\Models\User;
 use App\Services\AutinApiClient;
 use App\Traits\MenuTrait;
+use App\Traits\SistemasTraits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -34,6 +35,7 @@ use Throwable;
 class ProyeccionesVentasController extends Controller
 {
     use MenuTrait;
+    use SistemasTraits;
 
     /** @var array<string, bool> */
     protected $pvUserPermCache = [];
@@ -96,8 +98,27 @@ class ProyeccionesVentasController extends Controller
             'costosImportExcelUrl' => route('pv.api.costos.import_excel'),
             'costosImportListaUrl' => route('pv.api.costos.import_lista'),
             'costosHistorialUrl' => route('pv.api.costos.historial'),
-            'puedeEditarCostos' => true,
+            'puedeEditarCostos' => $this->puedeEditarPreciosVentas(),
         ]);
+    }
+
+    /**
+     * Permiso de sistema: editar precios en Maestro (/Ventas/Costos).
+     */
+    protected function puedeEditarPreciosVentas(): bool
+    {
+        return $this->forpermisos('editar_ventas_costos') === 'editar_ventas_costos';
+    }
+
+    protected function denyUnlessPuedeEditarPrecios(): ?JsonResponse
+    {
+        if ($this->puedeEditarPreciosVentas()) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'No tienes permiso para editar precios de productos (editar_ventas_costos).',
+        ], 403);
     }
 
     public function listCostos(Request $request): JsonResponse
@@ -529,6 +550,9 @@ class ProyeccionesVentasController extends Controller
      */
     public function actualizarCostoDesdeApi(Request $request): JsonResponse
     {
+        if ($deny = $this->denyUnlessPuedeEditarPrecios()) {
+            return $deny;
+        }
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
             return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
         }
@@ -750,6 +774,9 @@ class ProyeccionesVentasController extends Controller
 
     public function guardarCostoProducto(Request $request): JsonResponse
     {
+        if ($deny = $this->denyUnlessPuedeEditarPrecios()) {
+            return $deny;
+        }
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
             return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
         }
@@ -872,6 +899,9 @@ class ProyeccionesVentasController extends Controller
      */
     public function guardarCostosMeses(Request $request): JsonResponse
     {
+        if ($deny = $this->denyUnlessPuedeEditarPrecios()) {
+            return $deny;
+        }
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
             return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
         }
@@ -1348,6 +1378,9 @@ class ProyeccionesVentasController extends Controller
      */
     public function importarCostosExcel(Request $request): JsonResponse
     {
+        if ($deny = $this->denyUnlessPuedeEditarPrecios()) {
+            return $deny;
+        }
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
             return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
         }
@@ -1844,6 +1877,9 @@ class ProyeccionesVentasController extends Controller
         ]);
 
         $preview = ! empty($data['preview']);
+        if (! $preview && ($deny = $this->denyUnlessPuedeEditarPrecios())) {
+            return $deny;
+        }
         $todasEmpresas = ! array_key_exists('todas_empresas', $data) || (bool) $data['todas_empresas'];
         $empresaFiltro = $todasEmpresas ? '' : strtoupper(trim((string) ($data['empresa'] ?? '')));
         $anioApi = (int) ($data['anio'] ?? date('Y'));
@@ -2187,6 +2223,9 @@ class ProyeccionesVentasController extends Controller
         ]);
 
         $preview = ! empty($data['preview']);
+        if (! $preview && ($deny = $this->denyUnlessPuedeEditarPrecios())) {
+            return $deny;
+        }
         $todasEmpresas = ! array_key_exists('todas_empresas', $data) || (bool) $data['todas_empresas'];
         $empresaFiltro = $todasEmpresas ? '' : strtoupper(trim((string) ($data['empresa'] ?? '')));
         $anioProy = $this->anioProyeccionCostos((int) ($data['anio_proyeccion'] ?? 0));
