@@ -70,6 +70,7 @@ class ProyeccionesVentasController extends Controller
             'vistaInicial' => (string) $request->get('vista', ''),
             'detalleUrl' => route('pv.detalle'),
             'misAsignaciones' => $this->misAsignacionesList(''),
+            'puedeEditarPreciosCaptura' => $this->puedeEditarPreciosCaptura(),
         ]);
     }
 
@@ -80,6 +81,7 @@ class ProyeccionesVentasController extends Controller
             'empresaInicial' => (string) $request->get('empresa', ''),
             'cicloInicial' => (string) $request->get('ciclo', ''),
             'misAsignaciones' => $this->misAsignacionesList((string) $request->get('ciclo', '')),
+            'puedeEditarPreciosCaptura' => $this->puedeEditarPreciosCaptura(),
         ]);
     }
 
@@ -110,6 +112,14 @@ class ProyeccionesVentasController extends Controller
         return $this->forpermisos('editar_ventas_costos') === 'editar_ventas_costos';
     }
 
+    /**
+     * Permiso de sistema: editar precio por mes en Captura (/Ventas/Captura).
+     */
+    protected function puedeEditarPreciosCaptura(): bool
+    {
+        return $this->forpermisos('editar_precios_captura') === 'editar_precios_captura';
+    }
+
     protected function denyUnlessPuedeEditarPrecios(): ?JsonResponse
     {
         if ($this->puedeEditarPreciosVentas()) {
@@ -118,6 +128,29 @@ class ProyeccionesVentasController extends Controller
 
         return response()->json([
             'message' => 'No tienes permiso para editar precios de productos (editar_ventas_costos).',
+        ], 403);
+    }
+
+    protected function denyUnlessPuedeEditarPreciosCaptura(): ?JsonResponse
+    {
+        if ($this->puedeEditarPreciosCaptura()) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'No tienes permiso para editar precios por mes en Captura (editar_precios_captura).',
+        ], 403);
+    }
+
+    /** Maestro (Costos) o Captura: sincronizar precios mensuales. */
+    protected function denyUnlessPuedeEditarPreciosMeses(): ?JsonResponse
+    {
+        if ($this->puedeEditarPreciosVentas() || $this->puedeEditarPreciosCaptura()) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'No tienes permiso para editar precios por mes.',
         ], 403);
     }
 
@@ -899,7 +932,7 @@ class ProyeccionesVentasController extends Controller
      */
     public function guardarCostosMeses(Request $request): JsonResponse
     {
-        if ($deny = $this->denyUnlessPuedeEditarPrecios()) {
+        if ($deny = $this->denyUnlessPuedeEditarPreciosMeses()) {
             return $deny;
         }
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
@@ -4010,6 +4043,10 @@ class ProyeccionesVentasController extends Controller
         $motivo = $this->motivoBloqueoCaptura($ciclo, $empresa, $centro);
         if ($motivo) {
             return response()->json(['message' => $motivo], 403);
+        }
+
+        if (array_key_exists('precio_meses', $data) && ($deny = $this->denyUnlessPuedeEditarPreciosCaptura())) {
+            return $deny;
         }
 
         $row = PvPresupuesto::query()->firstOrNew([

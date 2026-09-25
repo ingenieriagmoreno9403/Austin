@@ -3094,6 +3094,10 @@
     function openPrecioMesesModal(codigo) {
         var c = control.centro;
         if (!c || !codigo) return;
+        if (!CC.state.puedeEditarPreciosCaptura) {
+            toast('warning', 'Sin permiso', 'No tienes permiso para editar precios por mes en Captura.');
+            return;
+        }
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         if (!cta) {
             toast('warning', 'Producto', 'No se encontró el producto.');
@@ -3211,6 +3215,10 @@
             var codigo = control._precioEditCodigo || control.cuenta;
             if (!c || !codigo || control.locked) {
                 toast('warning', 'Sin permiso', 'No se puede editar el precio en este momento.');
+                return;
+            }
+            if (!CC.state.puedeEditarPreciosCaptura) {
+                toast('warning', 'Sin permiso', 'No tienes permiso para editar precios por mes en Captura.');
                 return;
             }
             var meses = readPrecioMesesFromEditor();
@@ -5213,6 +5221,10 @@
 
     function precioProyeccionCellHtml(cta) {
         var info = precioProyeccionInfo(cta);
+        if (!CC.state.puedeEditarPreciosCaptura) {
+            return '<div class="cc-price-readonly" title="Sin permiso para editar precios por mes">' +
+                precioInfoHtml(info) + '</div>';
+        }
         return '<button type="button" class="cc-price-edit' + (info.porMes ? ' is-custom' : '') + '" data-edit-precio="' +
             escapeHtml(cta.codigo) + '" title="Clic para ajustar el precio por mes. El precio global aplica hasta que cambies un mes.">' +
             precioInfoHtml(info) +
@@ -9114,6 +9126,9 @@
         CC.state.puedeEditarCostos = boot.hasOwnProperty('puedeEditarCostos')
             ? !!boot.puedeEditarCostos
             : true;
+        CC.state.puedeEditarPreciosCaptura = boot.hasOwnProperty('puedeEditarPreciosCaptura')
+            ? !!boot.puedeEditarPreciosCaptura
+            : false;
         CC.state.empresasLocales = boot.empresasLocales || [];
         CC.state.unidadesMedida = boot.unidadesMedida || {};
         CC.state.gastoCache = {};
