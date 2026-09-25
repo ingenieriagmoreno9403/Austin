@@ -363,169 +363,6 @@
         color: #fff;
     }
 
-    .home-cal {
-        display: grid;
-        grid-template-columns: minmax(0, 1.35fr) minmax(260px, 340px);
-        gap: 0;
-        margin-top: 1rem;
-        overflow: hidden;
-        align-items: stretch;
-    }
-    .home-cal-main {
-        padding: 1.25rem 1.35rem 1.35rem;
-        border-right: 1px solid var(--line);
-        min-width: 0;
-    }
-    .home-cal-head {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 1rem;
-        margin-bottom: 1rem;
-    }
-    .home-cal-month {
-        font-size: 0.82rem;
-        color: var(--muted);
-        text-transform: capitalize;
-        font-weight: 500;
-    }
-    .home-cal-week {
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
-        gap: 0.3rem;
-        margin-bottom: 0.4rem;
-        font-size: 0.66rem;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--muted);
-        text-align: center;
-    }
-    .home-cal-grid {
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
-        gap: 0.3rem;
-    }
-    .home-cal-legend {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.7rem 1rem;
-        margin-top: 0.85rem;
-        font-size: 0.72rem;
-        font-weight: 600;
-        color: var(--muted);
-    }
-    .home-cal-legend span {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-    }
-    .home-cal-legend i {
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        display: block;
-    }
-    .home-cal-legend .is-ok { background: #16a34a; }
-    .home-cal-legend .is-warn { background: #d97706; }
-    .home-cal-legend .is-late { background: var(--red); }
-
-    .home-cal-day {
-        height: 46px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid transparent;
-        background: var(--soft);
-        border-radius: 10px;
-        font-size: 0.84rem;
-        font-weight: 600;
-        color: var(--ink);
-        cursor: pointer;
-        padding: 0;
-    }
-    .home-cal-day.is-empty {
-        visibility: hidden;
-        pointer-events: none;
-    }
-    .home-cal-day:hover {
-        background: #fff;
-        border-color: #e4e4e4;
-    }
-    .home-cal-day.is-selected {
-        background: var(--red);
-        border-color: var(--red);
-        color: #fff;
-    }
-    .home-cal-day .dot {
-        width: 4px;
-        height: 4px;
-        border-radius: 50%;
-        background: var(--red);
-        margin-top: 3px;
-    }
-    .home-cal-day.is-selected .dot { background: #fff; }
-    .home-cal-day.is-ok .dot { background: #16a34a; }
-    .home-cal-day.is-warn .dot { background: #d97706; }
-    .home-cal-day.is-late .dot { background: var(--red); }
-    .home-cal-day.is-selected.is-ok .dot,
-    .home-cal-day.is-selected.is-warn .dot,
-    .home-cal-day.is-selected.is-late .dot { background: #fff; }
-
-    .home-cal-side {
-        padding: 1.25rem 1.2rem 1.35rem;
-        background: var(--soft);
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-    }
-    .home-cal-side h3 {
-        margin: 0 0 0.3rem;
-        font-size: 1rem;
-        font-weight: 650;
-    }
-    .home-cal-side > p {
-        margin: 0 0 1rem;
-        font-size: 0.8rem;
-        color: var(--muted);
-    }
-    .home-cal-list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-        max-height: 360px;
-        overflow: auto;
-    }
-    .home-cal-list li {
-        font-size: 0.84rem;
-        line-height: 1.35;
-        background: #fff;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 0.65rem 0.75rem;
-    }
-    .home-cal-list strong {
-        display: block;
-        font-weight: 650;
-        margin-bottom: 0.1rem;
-    }
-    .home-cal-list span {
-        color: var(--muted);
-        font-size: 0.78rem;
-    }
-    .home-cal-empty {
-        margin: 0;
-        font-size: 0.84rem;
-        color: var(--muted);
-        background: transparent !important;
-        border: none !important;
-        padding: 0 !important;
-    }
-
     .home-quick {
         display: flex;
         flex-wrap: wrap;
@@ -558,8 +395,6 @@
         .home-line-name { grid-area: name; }
         .home-line-date { grid-area: date; }
         .home-line-progress { grid-area: progress; }
-        .home-cal { grid-template-columns: 1fr; }
-        .home-cal-main { border-right: none; border-bottom: 1px solid var(--line); }
         .home-logo { height: 64px; }
     }
     @media (max-width: 520px) {
@@ -588,7 +423,6 @@
     $nombreCorto = auth()->user()->name ? explode(' ', auth()->user()->name)[0] : '';
     $cc = $resumenCentros ?? [];
     $pv = $resumenPv ?? [];
-    $mm = $datosMantenimientoMaquinas ?? [];
 @endphp
 
 <div class="home">
@@ -676,29 +510,6 @@
         </div>
     </section>
 
-    <section class="home-cal home-panel" aria-label="Mantenimiento">
-        <div class="home-cal-main">
-            <div class="home-cal-head">
-                <h2>Mantenimiento</h2>
-                <span class="home-cal-month" id="calendarMantenimientoMesTitulo"></span>
-            </div>
-            <div class="home-cal-week">
-                <span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span><span>Do</span>
-            </div>
-            <div class="home-cal-grid" id="calendarGridMantenimiento"></div>
-            <div class="home-cal-legend">
-                <span><i class="is-ok"></i> Realizado</span>
-                <span><i class="is-warn"></i> Pendiente</span>
-                <span><i class="is-late"></i> Vencido</span>
-            </div>
-        </div>
-        <aside class="home-cal-side">
-            <h3 id="calendarMantenimientoFechaLabel">Hoy</h3>
-            <p>{{ number_format($mm['cumplimientoSemanal'] ?? 0, 1) }}% de cumplimiento esta semana · {{ $mm['realizadosSemana'] ?? 0 }}/{{ $mm['totalSemanal'] ?? 0 }}</p>
-            <ul class="home-cal-list" id="calendarMantenimientoDiaLista"></ul>
-        </aside>
-    </section>
-
     @php
         $modulosPermitidos = collect($varpantallas ?? [])
             ->pluck('nombre')
@@ -776,101 +587,5 @@
     @endif
     @endif
 </div>
-
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    const mantenimientosCalendario = @json($mm['mantenimientosCalendario'] ?? []);
-    const grid = document.getElementById('calendarGridMantenimiento');
-    const fechaLabel = document.getElementById('calendarMantenimientoFechaLabel');
-    const diaLista = document.getElementById('calendarMantenimientoDiaLista');
-    const mesTitulo = document.getElementById('calendarMantenimientoMesTitulo');
-    if (!grid) {
-        return;
-    }
-
-    const esc = function (value) {
-        return String(value || '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    };
-    const pad2 = function (n) { return String(n).padStart(2, '0'); };
-    const hoy = new Date();
-    const year = hoy.getFullYear();
-    const month = hoy.getMonth();
-
-    const porFecha = mantenimientosCalendario.reduce(function (acc, item) {
-        const key = item && item.fecha ? String(item.fecha) : '';
-        if (!key) return acc;
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(item);
-        return acc;
-    }, {});
-
-    const claseDia = function (lista) {
-        if (!lista || !lista.length) return '';
-        if (lista.some(function (i) { return String(i.estatus).toUpperCase() === 'VENCIDO'; })) return ' is-late';
-        if (lista.some(function (i) { return String(i.estatus).toUpperCase() === 'PENDIENTE'; })) return ' is-warn';
-        if (lista.some(function (i) { return String(i.estatus).toUpperCase() === 'REALIZADO'; })) return ' is-ok';
-        return '';
-    };
-
-    const pintarDia = function (iso) {
-        if (!fechaLabel || !diaLista) return;
-        const fecha = new Date(iso + 'T00:00:00');
-        fechaLabel.textContent = fecha.toLocaleDateString('es-MX', { day: 'numeric', month: 'long' });
-        const lista = porFecha[iso] || [];
-        if (!lista.length) {
-            diaLista.innerHTML = '<li class="home-cal-empty">Sin mantenimientos este día.</li>';
-            return;
-        }
-        diaLista.innerHTML = lista.map(function (item) {
-            return '<li><strong>' + esc(item.maquina || 'Máquina') + '</strong><span>' + esc(item.actividad || item.estatus || '') + '</span></li>';
-        }).join('');
-    };
-
-    const first = new Date(year, month, 1);
-    const offset = (first.getDay() + 6) % 7;
-    const total = new Date(year, month + 1, 0).getDate();
-    if (mesTitulo) {
-        mesTitulo.textContent = first.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
-    }
-
-    grid.innerHTML = '';
-    for (let i = 0; i < offset; i++) {
-        const empty = document.createElement('button');
-        empty.type = 'button';
-        empty.className = 'home-cal-day is-empty';
-        empty.tabIndex = -1;
-        grid.appendChild(empty);
-    }
-
-    for (let day = 1; day <= total; day++) {
-        const iso = year + '-' + pad2(month + 1) + '-' + pad2(day);
-        const eventos = porFecha[iso] || [];
-        const cell = document.createElement('button');
-        cell.type = 'button';
-        cell.className = 'home-cal-day' + claseDia(eventos);
-        cell.dataset.dateIso = iso;
-        cell.innerHTML = String(day) + (eventos.length ? '<span class="dot"></span>' : '');
-        cell.addEventListener('click', function () {
-            grid.querySelectorAll('.home-cal-day.is-selected').forEach(function (el) {
-                el.classList.remove('is-selected');
-            });
-            cell.classList.add('is-selected');
-            pintarDia(iso);
-        });
-        grid.appendChild(cell);
-    }
-
-    const hoyIso = year + '-' + pad2(month + 1) + '-' + pad2(hoy.getDate());
-    const hoyCell = grid.querySelector('[data-date-iso="' + hoyIso + '"]');
-    if (hoyCell) {
-        hoyCell.classList.add('is-selected');
-        pintarDia(hoyIso);
-    }
-});
-</script>
 
 @endsection
