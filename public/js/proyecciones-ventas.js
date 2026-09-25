@@ -1557,7 +1557,6 @@
                 // Actualiza mapa local de precios mensuales del maestro.
                 CC.state.costosMeses = CC.state.costosMeses || {};
                 var keyCard = String(empresa || '').toUpperCase() + '|' + String(cc || '').trim() + '|' + String(cuenta || '').trim();
-                var keyProd = String(empresa || '').toUpperCase() + '|' + String(cuenta || '').trim();
                 var entry = {
                     meses: (json.precio_meses || precioMeses || []).slice(0, 12),
                     monedas: []
@@ -1566,7 +1565,6 @@
                     entry.monedas[i] = entry.meses[i] != null ? moneda : null;
                 }
                 CC.state.costosMeses[keyCard] = entry;
-                CC.state.costosMeses[keyProd] = entry;
                 // Global del maestro = moda (no el último mes).
                 var moda = precioModaDeMeses(entry.meses);
                 if (json.precio_global != null && Number(json.precio_global) > 0) {
@@ -1582,8 +1580,6 @@
                         origen: 'maestro_local'
                     };
                     CC.state.costosMaster[keyCard] = masterEntry;
-                    CC.state.costosMaster[keyProd] = masterEntry;
-                    CC.state.costosMaster[String(cuenta || '').trim()] = masterEntry;
                 }
                 return json;
             });
@@ -2764,7 +2760,7 @@
         var bits = [];
         if (a) bits.push(a + (a === 1 ? ' asignación' : ' asignaciones'));
         if (cc) bits.push(cc + (cc === 1 ? ' cliente' : ' clientes'));
-        if (ctas) bits.push(ctas + (ctas === 1 ? ' cuenta' : ' cuentas'));
+        if (ctas) bits.push(ctas + (ctas === 1 ? ' producto' : ' productos'));
         if (us) bits.push(us + (us === 1 ? ' usuario' : ' usuarios'));
         return bits.join(' · ');
     }
@@ -2781,7 +2777,7 @@
         return head + '<p style="margin:.75rem 0 .35rem">También se borra lo que ya tiene cargado:</p><ul style="text-align:left;margin:.2rem 0 0;padding-left:1.2rem">' +
             (a ? '<li>' + a + (a === 1 ? ' asignación' : ' asignaciones') + '</li>' : '') +
             (cc ? '<li>' + cc + (cc === 1 ? ' cliente' : ' clientes') + '</li>' : '') +
-            (ctas ? '<li>' + ctas + (ctas === 1 ? ' cuenta' : ' cuentas') + '</li>' : '') +
+            (ctas ? '<li>' + ctas + (ctas === 1 ? ' producto' : ' productos') + '</li>' : '') +
             (us ? '<li>' + us + (us === 1 ? ' usuario asignado' : ' usuarios asignados') + '</li>' : '') +
             '</ul>';
     }
@@ -3136,8 +3132,8 @@
                 return '<div class="cc-tc-month' + (custom ? ' is-custom' : '') + '">' +
                     '<label for="pm-m-' + i + '">' + m + '</label>' +
                     refHtml +
-                    '<input id="pm-m-' + i + '" type="number" step="0.01" min="0" placeholder="' +
-                    (base > 0 ? base.toFixed(2) : '0') + '" value="' + (seed > 0 ? seed.toFixed(2) : '') + '">' +
+                    '<input id="pm-m-' + i + '" type="text" inputmode="decimal" placeholder="' +
+                    (base > 0 ? base.toFixed(2) : '0.00') + '" value="' + (seed > 0 ? seed.toFixed(2) : '') + '">' +
                     '</div>';
             }).join('');
         }
@@ -3145,14 +3141,21 @@
         showModal('modalPrecioMeses');
     }
 
+    function parsePrecioInput(raw) {
+        var s = String(raw || '').trim().replace(',', '.');
+        if (s === '') return NaN;
+        var v = Number(s);
+        return isFinite(v) ? v : NaN;
+    }
+
     function highlightPrecioMesesEditor() {
-        var base = Number(val('pm-base')) || 0;
+        var base = parsePrecioInput(val('pm-base')) || 0;
         MONTHS.forEach(function (_, i) {
             var wrap = document.querySelector('#pm-months .cc-tc-month:nth-child(' + (i + 1) + ')');
             var el = document.getElementById('pm-m-' + i);
             if (!wrap || !el) return;
             var raw = String(el.value || '').trim();
-            var v = Number(raw);
+            var v = parsePrecioInput(raw);
             var custom = raw !== '' && isFinite(v) && v > 0 && Math.abs(v - base) > 0.0001;
             wrap.classList.toggle('is-custom', custom || (raw !== '' && isFinite(v) && v > 0));
         });
@@ -3163,7 +3166,7 @@
         for (var i = 0; i < 12; i++) {
             var el = document.getElementById('pm-m-' + i);
             var raw = el ? String(el.value || '').trim() : '';
-            var v = Number(raw);
+            var v = parsePrecioInput(raw);
             out.push(raw !== '' && isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : null);
         }
         return out;
@@ -3175,7 +3178,7 @@
         var maestro = (c && codigo) ? lookupMaestroMeses(c.empresa, c.codigo, codigo) : null;
         var refMeses = (maestro && maestro.meses) || [];
         base = Number(base);
-        if (!(base > 0)) base = Number(val('pm-base')) || 0;
+        if (!(base > 0)) base = parsePrecioInput(val('pm-base')) || 0;
         for (var i = 0; i < 12; i++) {
             var el = document.getElementById('pm-m-' + i);
             if (!el) continue;
@@ -3191,7 +3194,7 @@
         CC._precioMesesBound = true;
         var applyAll = document.getElementById('pm-apply-all');
         if (applyAll) applyAll.addEventListener('click', function () {
-            var base = Number(val('pm-base'));
+            var base = parsePrecioInput(val('pm-base'));
             if (!(base > 0)) {
                 toast('warning', 'Precio base', 'Captura un precio global válido.');
                 return;
@@ -3205,7 +3208,7 @@
         var reset = document.getElementById('pm-reset');
         if (reset) {
             reset.addEventListener('click', function () {
-                seedPrecioMesesDesdeMaestro(Number(val('pm-base')) || 0);
+                seedPrecioMesesDesdeMaestro(parsePrecioInput(val('pm-base')) || 0);
                 toast('info', 'Precargado', 'Meses con precio de productos; si falta, el global.');
             });
         }
@@ -3223,7 +3226,7 @@
             }
             var meses = readPrecioMesesFromEditor();
             // Si quedó algún mes vacío, completa con global para dejar los 12 asignados.
-            var base = Number(val('pm-base')) || 0;
+            var base = parsePrecioInput(val('pm-base')) || 0;
             var filled = 0;
             for (var i = 0; i < 12; i++) {
                 if (meses[i] == null && base > 0) meses[i] = Math.round(base * 100) / 100;
@@ -3271,6 +3274,13 @@
                     highlightPrecioMesesEditor();
                 }
             });
+            monthsBox.addEventListener('blur', function (ev) {
+                if (!(ev.target && ev.target.id && ev.target.id.indexOf('pm-m-') === 0)) return;
+                var v = parsePrecioInput(ev.target.value);
+                if (isFinite(v) && v > 0) ev.target.value = v.toFixed(2);
+                else if (String(ev.target.value || '').trim() === '') ev.target.value = '';
+                highlightPrecioMesesEditor();
+            }, true);
         }
     }
 
@@ -3703,7 +3713,9 @@
         return hit || null;
     }
 
-    /** Precios mensuales del maestro Precios de productos (Empresa+CardCode+ItemCode). */
+    /** Precios mensuales del maestro Precios de productos (Empresa+CardCode+ItemCode).
+     *  Con cliente: solo clave exacta EMP|Card|Item. Sin fallback a EMP|Item / Item
+     *  (evita mezclar meses de otro cliente con el mismo producto). */
     function lookupMaestroMeses(empresa, cliente, codigo) {
         var map = CC.state.costosMeses || {};
         if (!codigo) return null;
@@ -3711,9 +3723,14 @@
         var card = String(cliente || '').trim();
         var cod = String(codigo || '').trim();
         var hit = null;
-        if (emp && card && cod) hit = map[emp + '|' + card + '|' + cod];
-        if (!hit && emp && cod) hit = map[emp + '|' + cod];
-        if (!hit) hit = map[cod] || map[cod.toUpperCase()] || null;
+        if (emp && card && cod) {
+            hit = map[emp + '|' + card + '|' + cod] || null;
+        } else if (emp && cod) {
+            hit = map[emp + '|' + cod] || null;
+            if (!hit) hit = map[cod] || map[cod.toUpperCase()] || null;
+        } else if (cod) {
+            hit = map[cod] || map[cod.toUpperCase()] || null;
+        }
         if (!hit || !hit.meses) return null;
         return hit;
     }

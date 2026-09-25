@@ -476,7 +476,7 @@
                 <div class="row g-2 align-items-end mb-3">
                     <div class="col-sm-5">
                         <label class="form-label" for="pm-base">Precio global (lista)</label>
-                        <input id="pm-base" class="form-control" type="number" step="0.01" min="0" readonly>
+                        <input id="pm-base" class="form-control" type="text" inputmode="decimal" readonly>
                         <small class="text-muted" id="pm-base-hint"></small>
                     </div>
                     <div class="col-sm-7 d-flex gap-2 flex-wrap">

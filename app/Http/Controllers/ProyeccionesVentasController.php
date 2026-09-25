@@ -3092,10 +3092,12 @@ class ProyeccionesVentasController extends Controller
             $card = $hasCard ? trim((string) ($row->card_code ?? '')) : '';
             $idx = $mes - 1;
             if ($card !== '') {
+                // Solo clave exacta cliente+producto: no contaminar EMP|Item con otro CardCode.
                 $put($emp.'|'.$card.'|'.$cod, $idx, $precio, $moneda);
+            } else {
+                $put($emp.'|'.$cod, $idx, $precio, $moneda);
+                $put($cod, $idx, $precio, $moneda);
             }
-            $put($emp.'|'.$cod, $idx, $precio, $moneda);
-            $put($cod, $idx, $precio, $moneda);
         });
 
         return $out;
