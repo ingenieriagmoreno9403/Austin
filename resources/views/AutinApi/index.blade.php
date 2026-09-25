@@ -319,6 +319,40 @@
                 </div>
             </div>
 
+            <div id="sapListasPreciosFilters" class="col-12" style="display:none;">
+                <div class="border rounded-3 p-3 bg-light">
+                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                        <strong class="text-marino"><i class="fas fa-tags me-1"></i> Filtros listas de precios</strong>
+                        <span class="sap-meta mb-0">Proxy <code>/Sistemas/AutinApi/listas-precios</code></span>
+                    </div>
+                    <p class="sap-meta mb-2">
+                        Consulta listas de precios SAP por empresa y cliente.
+                        Ejemplo: <code>?Empresa=IMSA&amp;CodigoCliente=D136&amp;per_page=100</code>
+                    </p>
+                    <div class="row g-2">
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">Empresa</label>
+                            <select id="lpEmpresa" class="form-select form-select-sm">
+                                <option value="">Todas</option>
+                                @foreach($databases as $db)
+                                    <option value="{{ strtoupper($db) }}">{{ strtoupper($db) }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">CodigoCliente</label>
+                            <input type="text" id="lpCodigoCliente" class="form-control form-control-sm" placeholder="D136">
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <div class="sap-meta">
+                                Usa el <em>por página</em> de arriba. Ejemplo local:
+                                <code>/Sistemas/AutinApi/listas-precios?Empresa=IMSA&amp;CodigoCliente=D136&amp;per_page=100</code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="col-12 d-flex gap-2 flex-wrap">
                 <button type="submit" class="btn btn-primary" id="sapBtnLoad">
                     <i class="fas fa-search me-1"></i> Consultar
@@ -331,6 +365,9 @@
                 </button>
                 <button type="button" class="btn btn-outline-primary" id="sapBtnVentasQuick">
                     <i class="fas fa-file-invoice-dollar me-1"></i> Abrir ventas
+                </button>
+                <button type="button" class="btn btn-outline-primary" id="sapBtnListasPreciosQuick">
+                    <i class="fas fa-tags me-1"></i> Abrir listas-precios
                 </button>
             </div>
         </form>
@@ -380,13 +417,20 @@
             && document.getElementById('sapResource').value === 'ventas';
     }
 
+    function isListasPrecios() {
+        return document.getElementById('sapScope').value === 'global'
+            && document.getElementById('sapResource').value === 'listas-precios';
+    }
+
     function toggleFilters() {
         const gasto = isGastoReal();
         const ventas = isVentas();
-        const especial = gasto || ventas;
+        const listas = isListasPrecios();
+        const especial = gasto || ventas || listas;
 
         document.getElementById('sapGastoRealFilters').style.display = gasto ? '' : 'none';
         document.getElementById('sapVentasFilters').style.display = ventas ? '' : 'none';
+        document.getElementById('sapListasPreciosFilters').style.display = listas ? '' : 'none';
         document.getElementById('sapGenericCodeWrap').style.display = especial ? 'none' : '';
         document.getElementById('sapGenericNameWrap').style.display = especial ? 'none' : '';
 
@@ -471,6 +515,9 @@
                 setParam(params, 'U_LINEA_QV', document.getElementById('ventasLinea').value);
                 setParam(params, 'fecha_desde', toSlashDate(document.getElementById('ventasFechaDesde').value));
                 setParam(params, 'fecha_hasta', toSlashDate(document.getElementById('ventasFechaHasta').value));
+            } else if (resource === 'listas-precios') {
+                setParam(params, 'Empresa', document.getElementById('lpEmpresa').value);
+                setParam(params, 'CodigoCliente', document.getElementById('lpCodigoCliente').value);
             } else {
                 if (empresaFiltro) params.set('Empresa', empresaFiltro);
                 if (resource === 'centros-costo') {
@@ -619,6 +666,22 @@
         if (!document.getElementById('ventasYear').value) {
             document.getElementById('ventasYear').value = String(new Date().getFullYear());
         }
+        currentPage = 1;
+        loadData();
+    });
+
+    document.getElementById('sapBtnListasPreciosQuick').addEventListener('click', function () {
+        document.getElementById('sapScope').value = 'global';
+        fillResources();
+        document.getElementById('sapResource').value = 'listas-precios';
+        toggleFilters();
+        if (!document.getElementById('lpEmpresa').value) {
+            document.getElementById('lpEmpresa').value = 'IMSA';
+        }
+        if (!document.getElementById('lpCodigoCliente').value) {
+            document.getElementById('lpCodigoCliente').value = 'D136';
+        }
+        document.getElementById('sapPerPage').value = '100';
         currentPage = 1;
         loadData();
     });

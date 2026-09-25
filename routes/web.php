@@ -311,6 +311,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
             Route::get('/centros-costo', [AutinApiController::class, 'centrosCostoGlobal'])->name('autin-api.centros-global');
             Route::get('/gasto-real', [AutinApiController::class, 'gastoReal'])->name('autin-api.gasto-real');
             Route::get('/ventas', [AutinApiController::class, 'ventas'])->name('autin-api.ventas');
+            Route::get('/listas-precios', [AutinApiController::class, 'listasPrecios'])->name('autin-api.listas-precios');
 
             Route::get('/{database}/catalogos', [AutinApiController::class, 'catalogos'])
                 ->where('database', 'austin|imsa|pitic|sydney')
@@ -1216,6 +1217,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::delete('/CentrosCostos/api/ciclos/{ciclo}', [CentrosCostosController::class, 'destroyCiclo'])->name('centros.api.ciclos.destroy');
     Route::get('/CentrosCostos/api/empresas', [CentrosCostosController::class, 'empresasSap'])->name('centros.api.empresas');
     Route::get('/CentrosCostos/api/centros', [CentrosCostosController::class, 'centrosSap'])->name('centros.api.centros');
+    Route::get('/CentrosCostos/api/departamentos', [CentrosCostosController::class, 'departamentosCentros'])->name('centros.api.departamentos');
     Route::get('/CentrosCostos/api/cuentas', [CentrosCostosController::class, 'cuentasSap'])->name('centros.api.cuentas');
     Route::get('/CentrosCostos/api/mis-asignaciones', [CentrosCostosController::class, 'misAsignaciones'])->name('centros.api.mis');
     Route::get('/ControlCentros', [CentrosCostosController::class, 'control'])->name('centros.control');
@@ -1243,6 +1245,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/ProyeccionesVentas/api/ciclos', [ProyeccionesVentasController::class, 'listCiclos'])->name('pv.api.ciclos');
     Route::post('/ProyeccionesVentas/api/ciclos', [ProyeccionesVentasController::class, 'storeCiclo'])->name('pv.api.ciclos.store');
     Route::post('/ProyeccionesVentas/api/ciclos/{ciclo}/estado', [ProyeccionesVentasController::class, 'updateCicloEstado'])->name('pv.api.ciclos.estado');
+    Route::put('/ProyeccionesVentas/api/ciclos/{ciclo}/tipo-cambio-meses', [ProyeccionesVentasController::class, 'updateTipoCambioMeses'])->name('pv.api.ciclos.tc_meses');
     Route::delete('/ProyeccionesVentas/api/ciclos/{ciclo}', [ProyeccionesVentasController::class, 'destroyCiclo'])->name('pv.api.ciclos.destroy');
     Route::get('/ProyeccionesVentas/api/empresas', [ProyeccionesVentasController::class, 'empresasSap'])->name('pv.api.empresas');
     Route::get('/ProyeccionesVentas/api/centros', [ProyeccionesVentasController::class, 'centrosSap'])->name('pv.api.centros');
@@ -1251,8 +1254,18 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/Ventas/Captura', [ProyeccionesVentasController::class, 'control'])->name('pv.control');
     Route::get('/Ventas/Captura/detalle', [ProyeccionesVentasController::class, 'detalle'])->name('pv.detalle');
     Route::get('/Ventas/Analisis', [ProyeccionesVentasController::class, 'analisis'])->name('pv.analisis');
+    Route::get('/Ventas/Costos', [ProyeccionesVentasController::class, 'costos'])->name('pv.costos');
+    Route::get('/ProyeccionesVentas/api/costos', [ProyeccionesVentasController::class, 'listCostos'])->name('pv.api.costos');
+    Route::get('/ProyeccionesVentas/api/costos/historial', [ProyeccionesVentasController::class, 'historialCostoProducto'])->name('pv.api.costos.historial');
+    Route::put('/ProyeccionesVentas/api/costos', [ProyeccionesVentasController::class, 'guardarCostoProducto'])->name('pv.api.costos.save');
+    Route::put('/ProyeccionesVentas/api/costos/meses', [ProyeccionesVentasController::class, 'guardarCostosMeses'])->name('pv.api.costos.meses');
+    Route::post('/ProyeccionesVentas/api/costos/importar-api', [ProyeccionesVentasController::class, 'importarCostosDesdeApi'])->name('pv.api.costos.import');
+    Route::post('/ProyeccionesVentas/api/costos/actualizar-desde-api', [ProyeccionesVentasController::class, 'actualizarCostoDesdeApi'])->name('pv.api.costos.actualizar_api');
+    Route::get('/ProyeccionesVentas/api/costos/plantilla', [ProyeccionesVentasController::class, 'plantillaCostos'])->name('pv.api.costos.plantilla');
+    Route::post('/ProyeccionesVentas/api/costos/importar-excel', [ProyeccionesVentasController::class, 'importarCostosExcel'])->name('pv.api.costos.import_excel');
     Route::get('/ProyeccionesVentas/api/catalogo', [ProyeccionesVentasController::class, 'catalogo'])->name('pv.catalogo');
     Route::get('/ProyeccionesVentas/api/gasto-real', [ProyeccionesVentasController::class, 'gastoReal'])->name('pv.api.gasto_real');
+    Route::get('/ProyeccionesVentas/api/listas-precios', [ProyeccionesVentasController::class, 'listasPrecios'])->name('pv.api.listas_precios');
     Route::get('/ProyeccionesVentas/api/captura', [ProyeccionesVentasController::class, 'captura'])->name('pv.api.captura');
     Route::put('/ProyeccionesVentas/api/captura/presupuesto', [ProyeccionesVentasController::class, 'guardarPresupuesto'])->name('pv.api.captura.presupuesto');
     Route::put('/ProyeccionesVentas/api/captura/centro', [ProyeccionesVentasController::class, 'guardarCapturaCentro'])->name('pv.api.captura.centro');

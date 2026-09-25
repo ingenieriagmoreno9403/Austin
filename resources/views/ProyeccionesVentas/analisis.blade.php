@@ -1,7 +1,7 @@
 @extends('layouts.app')
 
 @section('css')
-<link href="{{ asset('css/centros-costos.css') }}" rel="stylesheet">
+<link href="{{ asset('css/centros-costos.css') }}?v={{ (int) @filemtime(public_path('css/centros-costos.css')) }}" rel="stylesheet">
 @endsection
 
 @section('content')
@@ -24,10 +24,28 @@
     @include('ProyeccionesVentas.partials.nav')
 
     <div class="cc-panel">
-        <div class="cc-filters">
-            <select id="an-empresa" class="cc-select"></select>
-            <select id="an-user" class="cc-select"></select>
+        <div class="cc-filters cc-filters-asig">
+            <label class="cc-filter-field" for="an-empresa">Empresa
+                <select id="an-empresa" class="cc-select"></select>
+            </label>
+            <label class="cc-filter-field" for="an-cliente">Cliente
+                <select id="an-cliente" class="cc-select"></select>
+            </label>
+            <label class="cc-filter-field" for="an-user">Usuario
+                <select id="an-user" class="cc-select"></select>
+            </label>
         </div>
+    </div>
+
+    <div id="an-loading" class="cc-panel" hidden>
+        <div class="cc-loading-inline">
+            <div class="cc-api-wait-spinner is-sm" aria-hidden="true"></div>
+            <div class="cc-loading-inline-copy">
+                <strong>Cargando análisis</strong>
+                <span id="an-loading-msg">Preparando clientes, ventas y proyecciones…</span>
+            </div>
+        </div>
+        <div class="cc-api-wait-bar" aria-hidden="true"><span></span></div>
     </div>
 
     <div id="an-empty" class="cc-panel" hidden>
@@ -38,7 +56,7 @@
     </div>
 
     <div id="an-work">
-    <div class="cc-kpis">
+    <div class="cc-kpis cc-kpis-equal">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Productos ya capturados</div></div>
         <div class="cc-kpi alert"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Clientes debajo del 40%</div></div>
         <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Proy. &gt; 110% de la venta real</div></div>
@@ -64,34 +82,44 @@
         <div class="cc-panel">
             <div class="cc-panel-head">
                 <h3 id="an-chart-emp-title"><i class="fa-solid fa-chart-column"></i> Venta {{ $bootstrap['anioGasto'] }} vs proyección {{ $bootstrap['anioPresupuesto'] }}</h3>
+                <label class="cc-chart-prod" for="an-chart-producto">Producto
+                    <select id="an-chart-producto" class="cc-select"></select>
+                </label>
             </div>
+            <p class="text-muted mb-2" style="font-size:.82rem" id="an-chart-hint">Venta y proyección por empresa</p>
             <div class="cc-chart"><canvas id="chart-empresas"></canvas></div>
         </div>
         <div class="cc-panel">
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-grip"></i> Estacionalidad</h3>
+                <div class="cc-panel-head-tools">
+                    <input id="an-heat-q" class="cc-input cc-heat-search" type="search" placeholder="Buscar empresa o producto…" aria-label="Buscar en estacionalidad">
+                </div>
             </div>
-            <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Venta {{ $bootstrap['anioGasto'] }}</p>
-            <div class="cc-heat mb-2" id="an-heat"></div>
-            <div class="cc-heat-months" id="an-heat-months"></div>
+            <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Venta {{ $bootstrap['anioGasto'] }} · por empresa</p>
+            <div class="cc-heat-scroll">
+                <div class="cc-heat-stack" id="an-heat"></div>
+                <div class="cc-heat-empty" id="an-heat-empty" hidden>Sin coincidencias</div>
+            </div>
+            <div class="cc-heat-months is-labeled" id="an-heat-months"></div>
             <div class="cc-legend">
-                <span>Ene → Dic · intensidad = venta real del año de referencia</span>
+                <span>Ene → Dic · intensidad = importe de venta real · elige una empresa para ver productos</span>
             </div>
         </div>
     </div>
 
     <div class="cc-panel">
         <div class="cc-panel-head">
-            <h3><i class="fa-solid fa-list-check"></i> Detalle de captura y aplicación</h3>
+            <h3><i class="fa-solid fa-list-check"></i> Detalle por producto</h3>
             <div class="cc-panel-head-tools">
-                <input id="an-q" class="cc-input cc-table-search" type="search" placeholder="Buscar en la tabla…">
+                <input id="an-q" class="cc-input cc-table-search" type="search" placeholder="Buscar producto, cliente o usuario…">
             </div>
         </div>
         <div class="cc-table-wrap">
             <table class="cc-table">
                 <thead>
                     <tr>
-                        <th>Empresa</th>
+                        <th>Producto</th>
                         <th>Cliente</th>
                         <th>Usuario</th>
                         <th>Estado</th>
@@ -113,7 +141,7 @@
 
 @section('js')
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="{{ asset('js/proyecciones-ventas.js') }}"></script>
+<script src="{{ asset('js/proyecciones-ventas.js') }}?v={{ (int) @filemtime(public_path('js/proyecciones-ventas.js')) }}"></script>
 <script>
     CC.boot(Object.assign(@json($bootstrap), { page: 'analisis' }));
 </script>

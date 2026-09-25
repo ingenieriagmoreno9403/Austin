@@ -10,8 +10,20 @@
         <div>
             <div class="cc-kicker" id="cc-page-kicker">Captura mensual · Venta {{ $bootstrap['anioGasto'] }} vs proyección {{ $bootstrap['anioPresupuesto'] }}</div>
             <h1 class="cc-title" id="cc-page-title">Captura de proyecciones</h1>
-            <p class="cc-sub" id="cc-page-sub">Elige ciclo, empresa y cliente. Captura la cantidad a vender por producto y contrástala con la venta real.</p>
+            <p class="cc-sub" id="cc-page-sub">Elige ciclo, empresa y cliente. Captura las cantidades de todos los productos en la misma tabla.</p>
         </div>
+        <img class="cc-header-logo" src="{{ asset('Images/logo_horizontal.png') }}" alt="Austin Powder">
+    </div>
+
+    <div class="cc-toolbar">
+        <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
+            <button type="button" class="is-active" data-vista="captura">
+                <i class="fa-solid fa-pen-to-square me-1"></i> Captura de proyecciones
+            </button>
+            <button type="button" data-vista="visor">
+                <i class="fa-solid fa-table me-1"></i> Visor de clientes
+            </button>
+        </nav>
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
             <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Ciclo"></select>
@@ -29,19 +41,6 @@
             </button>
         </div>
     </div>
-
-    <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
-        @if(!empty($modPermisos['captura']))
-        <button type="button" class="is-active" data-vista="captura">
-            <i class="fa-solid fa-pen-to-square me-1"></i> Captura de proyecciones
-        </button>
-        @endif
-        @if(!empty($modPermisos['visor']))
-        <button type="button" data-vista="visor">
-            <i class="fa-solid fa-table me-1"></i> Visor de clientes
-        </button>
-        @endif
-    </nav>
 
     <div id="ctl-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
@@ -78,20 +77,27 @@
                         <option value="">Elige una empresa primero…</option>
                     </select>
                 </div>
-                <div class="cc-nav-field">
-                    <label for="ctl-cuenta">Producto <em class="cc-nav-status" id="ctl-cta-status" hidden></em></label>
-                    <select id="ctl-cuenta" class="cc-select" disabled>
-                        <option value="">Elige un cliente primero…</option>
-                    </select>
-                </div>
+                <select id="ctl-cuenta" hidden aria-hidden="true" tabindex="-1">
+                    <option value="">Elige producto…</option>
+                </select>
+                <em class="cc-nav-status" id="ctl-cta-status" hidden></em>
                 <div class="cc-nav-tools">
-                    <select id="ctl-moneda" class="cc-select" aria-label="Moneda">
-                        <option value="MXN">MXN</option>
-                        <option value="USD">USD</option>
-                    </select>
+                    <div class="cc-nav-currency">
+                        <select id="ctl-moneda" class="cc-select" aria-label="Moneda">
+                            <option value="MXN">MXN</option>
+                            <option value="USD">USD</option>
+                        </select>
+                        <span class="cc-fx-chip" id="ctl-fx-nav" title="Tipo de cambio del ciclo">TC —</span>
+                    </div>
                     <label class="cc-nav-pend-toggle">
                         <input type="checkbox" id="ctl-pendientes"> Solo pendientes
                     </label>
+                    <button type="button" class="cc-btn cc-btn-block" id="ctl-btn-ventas-pasadas" disabled>
+                        <i class="fa-solid fa-clock-rotate-left"></i> Ventas pasadas
+                    </button>
+                    <button type="button" class="cc-btn cc-btn-block" id="ctl-add-btn" disabled>
+                        <i class="fa-solid fa-plus"></i> Agregar producto
+                    </button>
                 </div>
                 <div class="cc-nav-progress">
                     <div class="cc-nav-progress-top">
@@ -110,6 +116,7 @@
                     <div class="cc-nav-stat">
                         <small>Venta {{ $bootstrap['anioGasto'] }}</small>
                         <strong id="kpi-ctl-gasto">—</strong>
+                        <em class="cc-snap-nav" id="ctl-venta-snap-nav">Snapshot: —</em>
                     </div>
                     <div class="cc-nav-stat">
                         <small>Proy. {{ $bootstrap['anioPresupuesto'] }}</small>
@@ -123,8 +130,8 @@
             <div class="cc-panel cc-captura-main">
                 <div class="cc-captura-form-center">
                     <div id="ctl-form-empty" class="cc-empty cc-captura-form-empty">
-                        <i class="fa-solid fa-list"></i>
-                        Elige empresa, cliente y producto a la izquierda para capturar la proyección.
+                        <i class="fa-solid fa-table"></i>
+                        Elige empresa y cliente a la izquierda para capturar todos los productos en una sola tabla.
                     </div>
 
                     <div id="ctl-form-body" hidden>
@@ -136,9 +143,9 @@
                                         <h4 id="ctl-form-cc" class="cc-cta-cc">—</h4>
                                     </div>
                                     <div class="cc-cta-ident is-cuenta">
-                                        <span class="cc-cta-ident-label">Producto</span>
-                                        <h4 id="ctl-form-cta">Producto</h4>
-                                        <em class="cc-form-kicker" id="ctl-form-grupo" hidden>—</em>
+                                        <span class="cc-cta-ident-label">Productos</span>
+                                        <h4 id="ctl-form-cta">—</h4>
+                                        <em class="cc-form-kicker" id="ctl-form-grupo">Edita Ene–Dic por fila</em>
                                     </div>
                                 </div>
                                 <span class="cc-badge" id="ctl-form-estado">Pendiente</span>
@@ -148,38 +155,33 @@
                             <div class="cc-cta-compare-card">
                                 <small>Se vendió {{ $bootstrap['anioGasto'] }}</small>
                                 <strong id="ctl-form-gasto">—</strong>
-                                <span>Cantidad vendida el año anterior</span>
+                                <span>Importe de venta real</span>
+                                <div class="cc-snap-badge is-empty" id="ctl-venta-snap-badge" title="Origen de la venta del año de referencia">
+                                    <i class="fa-solid fa-database" aria-hidden="true"></i>
+                                    <span id="ctl-venta-snap-text">Sin snapshot</span>
+                                </div>
                             </div>
                             <div class="cc-cta-compare-card is-now">
                                 <small id="ctl-form-ppto-label">Proyección</small>
                                 <strong id="ctl-form-ppto">—</strong>
-                                <span id="ctl-form-delta">vs venta real</span>
+                                <span id="ctl-form-delta">Unidades × precio unitario</span>
                             </div>
                         </div>
-                        <div class="cc-cta-fill mb-4">
+                        <div class="cc-cta-fill mb-3">
                             <div class="cc-cta-fill-top">
-                                <span>Llenado del producto</span>
+                                <span>Llenado del cliente</span>
                                 <strong id="ctl-form-avance">—</strong>
                             </div>
                             <div class="cc-progress warn" id="ctl-form-avance-wrap"><span id="ctl-form-avance-bar" style="width:0%"></span></div>
-                            <div class="cc-cta-fill-meta" id="ctl-form-avance-meta">0 de 12 meses capturados</div>
+                            <div class="cc-cta-fill-meta" id="ctl-form-avance-meta">0 de 0 productos capturados</div>
                         </div>
-                        <div class="cc-ajuste-row">
-                            <div class="cc-ajuste-copy">
-                                <label for="ctl-ajuste-pct">Sugerir % sobre la venta real</label>
-                                <p>Se aplica a la cantidad vendida del año anterior. Puede ser negativo.</p>
-                            </div>
-                            <div class="cc-ajuste-ctrl">
-                                <input id="ctl-ajuste-pct" type="number" step="0.1" placeholder="-30" aria-label="Porcentaje de ajuste">
-                                <span>%</span>
-                                <button type="button" class="cc-btn cc-btn-ink" id="ctl-apply-infl">Aplicar</button>
-                            </div>
-                        </div>
-                        <div class="cc-month-row">
-                            <div class="cc-month-grid" id="ctl-month-grid"></div>
-                            <div class="cc-captura-quick">
+                        <div class="cc-matrix-toolbar">
+                            <div class="cc-captura-quick cc-captura-quick-inline">
                                 <button type="button" class="cc-btn" id="ctl-copy-year">
                                     <i class="fa-solid fa-clone"></i> Copiar {{ $bootstrap['anioGasto'] }}
+                                </button>
+                                <button type="button" class="cc-btn" id="ctl-refresh-venta" title="Vuelve a consultar SAP y actualiza el snapshot local de venta {{ $bootstrap['anioGasto'] }}">
+                                    <i class="fa-solid fa-cloud-arrow-down"></i> Actualizar venta SAP
                                 </button>
                                 <button type="button" class="cc-btn" id="ctl-btn-dispersar" onclick="CC.showModal('modalDispersar')">
                                     <i class="fa-solid fa-share-nodes"></i> Dispersar
@@ -190,8 +192,41 @@
                                 <button type="button" class="cc-btn" id="ctl-completar">
                                     <i class="fa-solid fa-check"></i> Completado
                                 </button>
+                                <label class="cc-prod-filter" for="ctl-prod-q">
+                                    <span>Buscar</span>
+                                    <input id="ctl-prod-q" class="cc-input" type="search" placeholder="Código o nombre…" disabled>
+                                </label>
+                                <div class="cc-ajuste-ctrl" title="Sugerir % sobre la venta real. Se aplica a los productos visibles (o al seleccionado). Puede ser negativo.">
+                                    <label for="ctl-ajuste-pct">% venta</label>
+                                    <input id="ctl-ajuste-pct" type="number" step="0.1" placeholder="-30" aria-label="Porcentaje de ajuste sobre la venta real">
+                                    <span>%</span>
+                                    <button type="button" class="cc-btn cc-btn-ink" id="ctl-apply-infl">Aplicar</button>
+                                </div>
+                            </div>
+                            <div class="cc-matrix-fx">
+                                <span class="cc-snap-badge is-empty" id="ctl-venta-snap-pill" title="Snapshot de venta real">
+                                    <i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>
+                                    <span id="ctl-venta-snap-pill-text">Venta local: —</span>
+                                </span>
+                                <span class="cc-fx-badge" id="ctl-fx-badge">Vista MXN · TC —</span>
+                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
                             </div>
                         </div>
+                        <div class="cc-matrix-legend" id="ctl-matrix-legend" aria-label="Indicadores de color">
+                            <span class="cc-legend-label">Indicadores</span>
+                            <span class="cc-legend-item is-ok"><span class="cc-legend-swatch" aria-hidden="true"></span> <span id="ctl-legend-ok">Mayor o igual a venta pasada</span></span>
+                            <span class="cc-legend-item is-over"><span class="cc-legend-swatch" aria-hidden="true"></span> <span id="ctl-legend-over">Menor a venta pasada</span></span>
+                            <span class="cc-legend-item is-empty"><span class="cc-legend-swatch" aria-hidden="true"></span> Pendiente de capturar</span>
+                        </div>
+                        <div class="cc-matrix-wrap">
+                            <table class="cc-matrix-table" id="ctl-matrix-table">
+                                <thead id="ctl-matrix-thead"></thead>
+                                <tbody id="ctl-matrix-tbody">
+                                    <tr><td colspan="17"><div class="cc-empty">Sin productos</div></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="ctl-month-grid" hidden></div>
                     </div>
                     <div class="cc-captura-save">
                         <button type="button" class="cc-btn" id="ctl-guardar">
@@ -210,8 +245,8 @@
                 <h3><i class="fa-solid fa-table"></i> Detalle por producto y mes</h3>
                 <div class="cc-panel-head-tools">
                     <div class="cc-scope-toggle" id="ctl-scope-tabla" data-for="tabla" role="group" aria-label="Filtro del detalle">
-                        <button type="button" data-scope-val="cuenta" class="is-on">Este producto</button>
-                        <button type="button" data-scope-val="centro">Todo el cliente</button>
+                        <button type="button" data-scope-val="cuenta">Este producto</button>
+                        <button type="button" data-scope-val="centro" class="is-on">Todo el cliente</button>
                     </div>
                     <label class="cc-scope-check" id="ctl-chart-todas-wrap" hidden>
                         <input type="checkbox" id="ctl-chart-todas"> Ver todas
@@ -223,7 +258,7 @@
                     </div>
                 </div>
             </div>
-            <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Se muestra el producto en el que estás trabajando. Cambia a Todo el cliente para ver todos los productos.</p>
+            <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Resumen del cliente. Elige una fila en la tabla de captura para filtrar a un producto.</p>
             <div class="cc-table-wrap">
                 <table class="cc-table">
                     <thead id="ctl-thead"></thead>
@@ -235,6 +270,7 @@
                 <div>Total proyección {{ $bootstrap['anioPresupuesto'] }} <strong id="ctl-tot-ppto">—</strong></div>
                 <div>Productos pendientes <strong id="ctl-pend">—</strong></div>
             </div>
+            <div class="cc-sticky-meses" id="ctl-tot-meses" aria-label="Totales por mes"></div>
         </div>
 
         <div class="cc-panel cc-captura-chart">
@@ -253,11 +289,11 @@
                     <strong id="visor-kpi-n">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
-                    <small>Tot Venta</small>
+                    <small id="visor-kpi-gasto-lbl">Total venta {{ $bootstrap['anioGasto'] }}</small>
                     <strong id="visor-kpi-gasto">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
-                    <small>Tot Proyección</small>
+                    <small id="visor-kpi-ppto-lbl">Total proyectado {{ $bootstrap['anioPresupuesto'] }}</small>
                     <strong id="visor-kpi-ppto">—</strong>
                 </div>
                 <div class="cc-visor-kpi">
@@ -285,9 +321,8 @@
                                 <th></th>
                                 <th>Empresa</th>
                                 <th>Cliente</th>
-                                <th>Departamento</th>
-                                <th class="num">Tot Venta</th>
-                                <th class="num">Tot Proy.</th>
+                                <th class="num" id="visor-th-venta">Total venta {{ $bootstrap['anioGasto'] }}</th>
+                                <th class="num" id="visor-th-proy">Total proyectado {{ $bootstrap['anioPresupuesto'] }}</th>
                                 <th>Usuario</th>
                                 <th>Fecha Modif</th>
                                 <th>Progreso</th>
@@ -343,7 +378,118 @@
     </div>
 </div>
 
+<div class="modal fade cc-modal" id="modalVentasPasadas" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0">Ventas pasadas</h5>
+                    <p class="text-muted mb-0 mt-1" id="vp-sub" style="font-size:.82rem">Elige empresa y cliente para consultar el historial.</p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="cc-vp-tools">
+                    <div class="cc-vp-field">
+                        <label for="vp-anio">Año</label>
+                        <select id="vp-anio" class="cc-select"></select>
+                    </div>
+                    <div class="cc-vp-field">
+                        <label for="vp-metric">Mostrar</label>
+                        <select id="vp-metric" class="cc-select">
+                            <option value="qty">Cantidad (uds)</option>
+                            <option value="mxn">Importe MXN</option>
+                            <option value="usd">Importe USD</option>
+                        </select>
+                    </div>
+                    <div class="cc-vp-field cc-vp-search">
+                        <label for="vp-q">Buscar</label>
+                        <input id="vp-q" class="cc-input" type="search" placeholder="Producto…">
+                    </div>
+                    <button type="button" class="cc-btn cc-btn-ink" id="vp-cargar">
+                        <i class="fa-solid fa-rotate"></i> Cargar
+                    </button>
+                </div>
+                <div class="cc-vp-meta" id="vp-meta">—</div>
+                <div class="cc-table-wrap cc-vp-table-wrap">
+                    <table class="cc-table cc-vp-table">
+                        <thead id="vp-thead"></thead>
+                        <tbody id="vp-tbody">
+                            <tr><td colspan="16"><div class="cc-empty">Elige un año y pulsa Cargar</div></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cerrar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade cc-modal" id="modalAgregarProducto" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0">Agregar producto</h5>
+                    <p class="text-muted mb-0 mt-1" id="ctl-add-sub" style="font-size:.82rem">Catálogo de la empresa, aunque no se le haya vendido a este cliente.</p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="cc-pick-search">
+                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+                    <input id="ctl-add-q" class="cc-input" type="search" placeholder="Buscar por código o nombre…" autocomplete="off">
+                </div>
+                <div class="cc-add-prod-list" id="ctl-add-list">
+                    <div class="cc-add-prod-empty">Cargando productos…</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cerrar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @include('ProyeccionesVentas.partials.modal-indicadores')
+
+<div class="modal fade cc-modal" id="modalPrecioMeses" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0">Precio por mes</h5>
+                    <p class="text-muted mb-0 mt-1" id="pm-sub" style="font-size:.82rem">Producto</p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted mb-3" style="font-size:.85rem">
+                    Cada mes se precarga con el precio de <strong>Precios de productos</strong>.
+                    Si un mes no tiene dato, se usa el precio global. Al guardar quedan asignados los 12 meses.
+                </p>
+                <div class="row g-2 align-items-end mb-3">
+                    <div class="col-sm-5">
+                        <label class="form-label" for="pm-base">Precio global (lista)</label>
+                        <input id="pm-base" class="form-control" type="number" step="0.01" min="0" readonly>
+                        <small class="text-muted" id="pm-base-hint"></small>
+                    </div>
+                    <div class="col-sm-7 d-flex gap-2 flex-wrap">
+                        <button type="button" class="cc-btn" id="pm-apply-all">Usar global en los 12</button>
+                        <button type="button" class="cc-btn" id="pm-reset" title="Rellena cada mes con Precios de productos o el global">Usar precios productos</button>
+                    </div>
+                </div>
+                <div class="cc-tc-months" id="pm-months"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="cc-btn cc-btn-ink" id="pm-save">Guardar precios</button>
+            </div>
+        </div>
+    </div>
+</div>
 @endsection
 
 @section('js')

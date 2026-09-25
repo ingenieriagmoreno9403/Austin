@@ -16,21 +16,148 @@
     var SK = {
         admin: 'austin.pv.admin.v1',
         budget: 'austin.pv.budget.v1',
-        period: 'austin.pv.period.v1',
-        ciclos: 'austin.pv.ciclos.v1',
-        currency: 'austin.pv.currency.v1'
+        period: 'austin.pv.period.v2',
+        ciclos: 'austin.pv.ciclos.v2',
+        currency: 'austin.pv.currency.v1',
+        qtyRaw: 'austin.pv.qtyRaw.v1'
     };
 
-    function money(n, currency) {
-        var val = Number(n) || 0;
-        return val.toLocaleString('es-MX', {
+    function money(n, currency, monthIdx) {
+        var cur = currency || CC.state.currency || 'MXN';
+        var val = toDisplayAmount(n, monthIdx);
+        return (cur === 'USD' ? 'US$' : '$') + val.toLocaleString('es-MX', {
             minimumFractionDigits: 0,
             maximumFractionDigits: 2
         });
     }
 
-    function moneyDec(n) {
-        return (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    function moneyDec(n, monthIdx) {
+        return toDisplayAmount(n, monthIdx).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function fxBaseRate() {
+        var p = CC.state.period || {};
+        var tc = Number(p.tipoCambio);
+        return tc > 0 ? tc : 20;
+    }
+
+    /** TC base del ciclo, o el de un mes (0–11) si hay override. */
+    function fxRate(monthIdx) {
+        ensureFxMeses();
+        if (monthIdx === null || monthIdx === undefined || monthIdx === '') {
+            return fxBaseRate();
+        }
+        var i = Number(monthIdx);
+        if (!isFinite(i) || i < 0 || i > 11) return fxBaseRate();
+        var v = Number((CC.state.fxMeses || [])[i]);
+        return v > 0 ? v : fxBaseRate();
+    }
+
+    function ensureFxMeses() {
+        var base = fxBaseRate();
+        var src = (CC.state.period && CC.state.period.tipoCambioMeses) || CC.state.fxMeses || [];
+        if (!CC.state.fxMeses || CC.state.fxMeses.length !== 12) {
+            var out = [];
+            for (var i = 0; i < 12; i++) {
+                var v = Number(src[i]);
+                out.push(v > 0 ? v : base);
+            }
+            CC.state.fxMeses = out;
+            if (CC.state.period) CC.state.period.tipoCambioMeses = out.slice();
+        }
+        return CC.state.fxMeses;
+    }
+
+    function syncFxMesesFromPeriod(period) {
+        var p = period || CC.state.period || {};
+        var base = Number(p.tipoCambio) > 0 ? Number(p.tipoCambio) : 20;
+        var src = Array.isArray(p.tipoCambioMeses) ? p.tipoCambioMeses : [];
+        var out = [];
+        for (var i = 0; i < 12; i++) {
+            var v = Number(src[i]);
+            out.push(v > 0 ? v : base);
+        }
+        CC.state.fxMeses = out;
+        if (CC.state.period) {
+            CC.state.period.tipoCambio = base;
+            CC.state.period.tipoCambioMeses = out.slice();
+        }
+        return out;
+    }
+
+    function fxMesesVarian() {
+        var base = fxBaseRate();
+        var meses = ensureFxMeses();
+        for (var i = 0; i < 12; i++) {
+            if (Math.abs(Number(meses[i]) - base) > 0.0001) return true;
+        }
+        return false;
+    }
+
+    function isUsdView() {
+        return String(CC.state.currency || 'MXN').toUpperCase() === 'USD';
+    }
+
+    /** Valor guardado (base MXN) → lo que se muestra según moneda. Solo importes. */
+    function toDisplayAmount(n, monthIdx) {
+        var val = Number(n);
+        if (!isFinite(val)) val = 0;
+        if (isUsdView()) val = val / fxRate(monthIdx);
+        return Math.round(val * 100) / 100;
+    }
+
+    /** Valor capturado en pantalla → lo que se guarda (siempre en MXN base). Solo importes. */
+    function toStoreAmount(n, monthIdx) {
+        var val = Number(n);
+        if (!isFinite(val)) val = 0;
+        if (isUsdView()) val = val * fxRate(monthIdx);
+        return Math.round(val * 100) / 100;
+    }
+
+    /**
+     * Cantidades (unidades): el tipo de cambio NO las afecta.
+     * Se muestran y guardan tal cual.
+     */
+    function toStoreQty(n) {
+        var val = Number(n);
+        if (!isFinite(val)) val = 0;
+        return Math.round(val * 100) / 100;
+    }
+
+    function formatInputQty(n) {
+        if (!mesLleno(n)) return '';
+        var v = Number(n);
+        if (!isFinite(v)) return '';
+        if (Math.abs(v - Math.round(v)) < 0.00001) return String(Math.round(v));
+        return String(Math.round(v * 100) / 100);
+    }
+
+    /** @deprecated Usar formatInputQty para meses (unidades). */
+    function formatInputAmount(n) {
+        return formatInputQty(n);
+    }
+
+    function paintFxBadge() {
+        var tc = fxBaseRate();
+        var cur = isUsdView() ? 'USD' : 'MXN';
+        var varian = fxMesesVarian();
+        var label = cur === 'USD'
+            ? ('Vista USD · TC ' + tc.toFixed(2) + ' MXN/USD' + (varian ? ' · por mes' : ''))
+            : ('Vista MXN · TC ' + tc.toFixed(2) + ' MXN/USD' + (varian ? ' · por mes' : ''));
+        var shortLabel = 'TC ' + tc.toFixed(2) + (varian ? '*' : '');
+        ['ctl-fx-badge', 'ctl-fx-nav'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.hidden = false;
+            el.textContent = id === 'ctl-fx-nav' ? shortLabel : label;
+            el.setAttribute('title', 'Clic para editar TC base y por mes. Base: 1 USD = ' + tc.toFixed(2) + ' MXN');
+            el.classList.toggle('is-usd', cur === 'USD');
+            el.classList.add('is-clickable');
+            el.setAttribute('role', 'button');
+            el.tabIndex = 0;
+        });
+        var mon = document.getElementById('ctl-moneda');
+        if (mon) mon.setAttribute('title', '1 USD = ' + tc.toFixed(2) + ' MXN (base)' + (varian ? '; hay TC distinto por mes' : ''));
     }
 
     function mesLleno(v) {
@@ -145,23 +272,47 @@
             overlays: {},
             budgets: {},
             completados: {},
+            preciosMeses: {},
             charts: {}
         }
     };
 
     function centroKey(c) {
-        return (c.empresa || '') + '|' + (c.codigo || '');
+        return String((c && c.empresa) || '').toUpperCase().trim() + '|' + String((c && c.codigo) || '').trim();
     }
 
     function budgetKey(empresa, cc, cuenta) {
-        return [empresa, cc, cuenta].join('|');
+        return [
+            String(empresa || '').toUpperCase().trim(),
+            String(cc || '').trim(),
+            String(cuenta || '').trim()
+        ].join('|');
+    }
+
+    /** Resuelve la clave real en budgets/completados (tolerante a mayúsculas). */
+    function resolveStateKey(map, empresa, cc, cuenta) {
+        map = map || {};
+        var primary = budgetKey(empresa, cc, cuenta);
+        if (Object.prototype.hasOwnProperty.call(map, primary)) return primary;
+        var needle = primary.toUpperCase();
+        var keys = Object.keys(map);
+        for (var i = 0; i < keys.length; i++) {
+            if (String(keys[i]).toUpperCase() === needle) return keys[i];
+        }
+        return primary;
+    }
+
+    function budgetMonthsOf(empresa, cc, cuenta) {
+        var key = resolveStateKey(CC.state.budgets, empresa, cc, cuenta);
+        var row = CC.state.budgets && CC.state.budgets[key];
+        return Array.isArray(row) ? row.slice() : null;
     }
 
     function cuentaMarcada(empresa, cc, codigo) {
         var done = CC.state.completados || {};
-        var k = budgetKey(empresa, cc, codigo);
+        var k = resolveStateKey(done, empresa, cc, codigo);
         if (done[k]) return true;
-        var needle = String(k).toUpperCase();
+        var needle = budgetKey(empresa, cc, codigo).toUpperCase();
         return Object.keys(done).some(function (key) {
             return done[key] && String(key).toUpperCase() === needle;
         });
@@ -186,30 +337,78 @@
         });
     }
 
+    function productosVentaRealDeCentro(c) {
+        var key = gastoCacheKey(c);
+        var por = (CC.state.gastoCache && CC.state.gastoCache[key]) || {};
+        var out = [];
+        var seen = {};
+        Object.keys(por).forEach(function (k) {
+            var row = por[k];
+            if (!row || typeof row !== 'object' || !row.gasto || row.gasto.length !== 12) return;
+            var codigo = String(row.codigo || k || '').trim();
+            if (!codigo || seen[codigo]) return;
+            seen[codigo] = true;
+            var extra = extraFromRow(row);
+            out.push({
+                codigo: codigo,
+                nombre: row.nombre || codigo,
+                grupo: 'Venta real',
+                gasto: row.gasto.slice(),
+                importe: extra.importe,
+                importeUsd: extra.importe_usd,
+                precio: extra.precio,
+                unidad: extra.unidad || '',
+                unidadNombre: extra.unidad_nombre || '',
+                costoVenta: Number(extra.costo) || 0,
+                costoVentaMoneda: String(extra.costo_moneda || 'MXN').toUpperCase(),
+                empresa: c.empresa
+            });
+        });
+        return out;
+    }
+
+    function mergeCuentasAnalisis(c, base) {
+        var seen = {};
+        (base || []).forEach(function (cta) {
+            seen[String(cta.codigo)] = true;
+            seen[codigoCuentaKey(cta.codigo)] = true;
+        });
+        var extra = productosVentaRealDeCentro(c).filter(function (cta) {
+            return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
+        });
+        return (base || []).concat(extra);
+    }
+
     function cuentasDeCentro(c) {
         var asig = asigDe(c);
         if (asig && asig.cuentas && asig.cuentas.length) {
-            var gmap = gastoLookupDeCentro(c);
-            var emap = extrasLookupDeCentro(c);
-            return asig.cuentas.map(function (x) {
+            var packed = packedLookupDeCentro(c);
+            var mapped = asig.cuentas.map(function (x) {
                 var sap = (CC.state.cuentas || []).filter(function (cta) {
                     return String(cta.codigo) === String(x.codigo);
                 })[0];
                 var nombre = x.nombre || (sap && sap.nombre) || x.codigo;
-                var extra = extraMensualDe(x.codigo, nombre, emap);
+                var extra = extraMensualDe(x.codigo, nombre, packed.extras, packed.nombres);
                 return {
                     codigo: x.codigo,
                     nombre: nombre,
                     grupo: x.agrupacion || (sap && sap.grupo) || 'Asignadas',
-                    gasto: gastoMensualDe(x.codigo, nombre, gmap),
+                    gasto: gastoMensualDe(x.codigo, nombre, packed.map, packed.nombres),
                     importe: extra.importe,
                     importeUsd: extra.importe_usd,
                     precio: extra.precio,
+                    unidad: extra.unidad || '',
+                    unidadNombre: extra.unidad_nombre || '',
+                    costoVenta: Number(extra.costo) || 0,
+                    costoVentaMoneda: String(extra.costo_moneda || 'MXN').toUpperCase(),
                     empresa: c.empresa
                 };
             });
+            if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, mapped);
+            return mapped;
         }
-        if (CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis') return [];
+        if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, []);
+        if (CC.state.page === 'control' || CC.state.page === 'detalle') return [];
         var all = CC.state.cuentas.filter(function (cta) {
             return !cta.empresa || !c.empresa || String(cta.empresa).toUpperCase() === String(c.empresa).toUpperCase();
         });
@@ -220,14 +419,23 @@
         return all;
     }
 
+    function codigoClienteAsig(a) {
+        return String((a && (a.centro_codigo || a.cliente_codigo)) || '').trim();
+    }
+
+    function nombreClienteAsig(a) {
+        return String((a && (a.centro_nombre || a.cliente_nombre)) || '').trim();
+    }
+
     function asigsDe(c) {
         var ciclo = (document.getElementById('ctl-ciclo') && val('ctl-ciclo'))
             || (document.getElementById('an-ciclo') && val('an-ciclo'))
             || CC.state.cicloCodigo || '';
+        var cicloNeedle = String(ciclo || '').toUpperCase();
         return (CC.state.misAsignaciones || []).filter(function (a) {
-            var sameCc = String(a.centro_codigo) === String(c.codigo);
+            var sameCc = codigoClienteAsig(a) === String(c.codigo || '').trim();
             var sameEmp = String(a.empresa || '').toLowerCase() === String(c.empresa || a.empresa || '').toLowerCase();
-            var sameCiclo = !ciclo || String(a.ciclo || '') === String(ciclo);
+            var sameCiclo = !cicloNeedle || String(a.ciclo || '').toUpperCase() === cicloNeedle;
             return sameCc && sameEmp && sameCiclo;
         });
     }
@@ -291,18 +499,81 @@
 
     function moneyGasto(n) {
         n = Number(n) || 0;
-        return n ? money(n) : '—';
+        if (!n) return '—';
+        // n ya viene en la moneda de vista (LineTotal / LineTotalUSD de SAP).
+        return (isUsdView() ? 'US$' : '$') + n.toLocaleString('es-MX', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2
+        });
     }
 
-    function gastoMensualDe(codigo, nombre, mapOpt) {
+    /** Misma regla que el control de centros de costos: más de 3 decimales se recortan, no se suben. */
+    function decimalPlaces(n) {
+        var v = Math.abs(Number(n) || 0);
+        if (!isFinite(v)) return 0;
+        var s = v.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+        var dot = s.indexOf('.');
+        return dot < 0 ? 0 : (s.length - dot - 1);
+    }
+
+    function round2(n) {
+        var v = Number(n);
+        if (!isFinite(v)) return 0;
+        if (decimalPlaces(v) > 3) {
+            var sign = v < 0 ? -1 : 1;
+            return sign * Math.floor(Math.abs(v) * 100 + 1e-8) / 100;
+        }
+        return Math.round(v * 100) / 100;
+    }
+
+    function moneyDosDecimales(n) {
+        var v = round2(n);
+        if (!v) return '—';
+        return (isUsdView() ? 'US$' : '$') + v.toLocaleString('es-MX', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function usdSeriesOf(cta) {
+        if (!cta) return zeros12();
+        if (cta.importeUsd && cta.importeUsd.length === 12) return cta.importeUsd;
+        if (cta.importe_usd && cta.importe_usd.length === 12) return cta.importe_usd;
+        return zeros12();
+    }
+
+    /** Venta real del mes en la moneda de vista: USD → LineTotalUSD; MXN → LineTotal. */
+    function importeMesVentaVista(cta, i) {
+        if (!cta) return 0;
+        if (isUsdView()) {
+            var usd = Number((usdSeriesOf(cta)[i]) || 0);
+            if (usd) return usd;
+            return toDisplayAmount(importeMesVentaMxn(cta, i), i);
+        }
+        var mxn = Number((cta.importe && cta.importe[i]) || 0);
+        if (mxn) return mxn;
+        var usdOnly = Number((usdSeriesOf(cta)[i]) || 0);
+        if (usdOnly) return usdOnly * fxRate(i);
+        return importeMesVentaMxn(cta, i);
+    }
+
+    /** Total anual de venta real en la moneda de vista (suma mensual SAP). */
+    function importeVentaVista(cta) {
+        if (!cta) return 0;
+        var total = 0;
+        for (var i = 0; i < 12; i++) total += importeMesVentaVista(cta, i);
+        return total;
+    }
+
+    function gastoMensualDe(codigo, nombre, mapOpt, nombresOpt) {
         var map = mapOpt || control._gastoMap || {};
         var hit = map[String(codigo)] || map[codigoCuentaKey(codigo)];
         var nk = nombreCuentaKey(nombre);
         if ((!hit || hit.length !== 12) && nk) {
             hit = map['n:' + nk] || map['nc:' + nk.replace(/\s+/g, '')];
         }
-        if ((!hit || hit.length !== 12) && nk && !mapOpt) {
-            var list = control._gastoNombres || [];
+        if ((!hit || hit.length !== 12) && nk) {
+            var list = nombresOpt || control._gastoNombres || [];
             for (var i = 0; i < list.length; i++) {
                 if (nombresGastoCompatibles(nk, list[i].key)) {
                     hit = list[i].gasto;
@@ -318,7 +589,11 @@
         return {
             importe: (row && row.importe && row.importe.length === 12) ? row.importe : zeros12(),
             importe_usd: (row && row.importe_usd && row.importe_usd.length === 12) ? row.importe_usd : zeros12(),
-            precio: (row && row.precio && row.precio.length === 12) ? row.precio : zeros12()
+            precio: (row && row.precio && row.precio.length === 12) ? row.precio : zeros12(),
+            unidad: (row && row.unidad) ? String(row.unidad) : '',
+            unidad_nombre: (row && row.unidad_nombre) ? String(row.unidad_nombre) : '',
+            costo: Number(row && row.costo) || 0,
+            costo_moneda: String((row && row.costo_moneda) || 'MXN').toUpperCase()
         };
     }
 
@@ -355,6 +630,48 @@
         return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
     }
 
+    /** ¿Hay entrada usable en caché de sesión? No confiar en {} sin meta (envenena el snapshot). */
+    function gastoCacheEntry(key) {
+        if (!key) return null;
+        var por = CC.state.gastoCache && CC.state.gastoCache[key];
+        var meta = CC.state.gastoMeta && CC.state.gastoMeta[key];
+        if (por == null && !meta) return null;
+        var n = por && typeof por === 'object' ? Object.keys(por).length : 0;
+        if (meta && meta.fuente) {
+            return { por: por || {}, meta: meta };
+        }
+        // Datos sin meta (p.ej. Análisis / Ventas pasadas): usarlos pero marcar caché.
+        if (n > 0) {
+            return {
+                por: por,
+                meta: {
+                    fuente: 'cache',
+                    synced_at: null,
+                    year: (key.split('|')[2] || CC.state.anioGasto || ''),
+                    mensaje: null
+                }
+            };
+        }
+        return null;
+    }
+
+    function rememberGastoCache(key, por, meta) {
+        if (!key) return;
+        CC.state.gastoCache = CC.state.gastoCache || {};
+        CC.state.gastoMeta = CC.state.gastoMeta || {};
+        var n = por && typeof por === 'object' ? Object.keys(por).length : 0;
+        var fuente = meta && meta.fuente ? String(meta.fuente) : '';
+        // No guardar vacíos/errores: permiten reconsultar el snapshot en BD al cambiar de cliente.
+        if (n === 0 && (!fuente || fuente === 'error')) {
+            delete CC.state.gastoCache[key];
+            delete CC.state.gastoMeta[key];
+            if (CC.state.gastoLookup) delete CC.state.gastoLookup[key];
+            return;
+        }
+        CC.state.gastoCache[key] = por || {};
+        if (meta) CC.state.gastoMeta[key] = meta;
+    }
+
     function packedLookupDeCentro(c) {
         var empty = { map: {}, extras: {}, nombres: [] };
         if (!c) {
@@ -365,7 +682,7 @@
             };
         }
         var key = gastoCacheKey(c);
-        if (control._gastoReq === key && control._gastoMap) {
+        if (control._gastoReq === key && control._gastoLoadedFor === key && control._gastoMap) {
             return {
                 map: control._gastoMap,
                 extras: control._gastoExtras || {},
@@ -374,12 +691,19 @@
         }
         var packed = CC.state.gastoLookup && CC.state.gastoLookup[key];
         if (packed) {
+            if (packed.map && packed.extras) return packed;
+            var porCached = CC.state.gastoCache && CC.state.gastoCache[key];
+            if (porCached && Object.keys(porCached).length) {
+                var rebuilt = mapFromPorCuenta(porCached);
+                CC.state.gastoLookup[key] = rebuilt;
+                return rebuilt;
+            }
             if (packed.map) return packed;
             return { map: packed, extras: {}, nombres: [] };
         }
-        var por = CC.state.gastoCache && CC.state.gastoCache[key];
-        if (!por) return empty;
-        var built = mapFromPorCuenta(por);
+        var hit = gastoCacheEntry(key);
+        if (!hit) return empty;
+        var built = mapFromPorCuenta(hit.por);
         CC.state.gastoLookup = CC.state.gastoLookup || {};
         CC.state.gastoLookup[key] = built;
         return built;
@@ -393,15 +717,15 @@
         return packedLookupDeCentro(c).extras || {};
     }
 
-    function extraMensualDe(codigo, nombre, extrasOpt) {
+    function extraMensualDe(codigo, nombre, extrasOpt, nombresOpt) {
         var extras = extrasOpt || control._gastoExtras || {};
         var hit = extras[String(codigo)] || extras[codigoCuentaKey(codigo)];
         var nk = nombreCuentaKey(nombre);
         if (!hit && nk) {
             hit = extras['n:' + nk] || extras['nc:' + nk.replace(/\s+/g, '')];
         }
-        if (!hit && nk && !extrasOpt) {
-            var list = control._gastoNombres || [];
+        if (!hit && nk) {
+            var list = nombresOpt || control._gastoNombres || [];
             for (var i = 0; i < list.length; i++) {
                 if (nombresGastoCompatibles(nk, list[i].key)) {
                     hit = list[i].extra;
@@ -412,14 +736,257 @@
         return extraFromRow(hit);
     }
 
-    function applyGastoMap(porCuenta) {
+    function applyGastoMap(porCuenta, meta) {
         var built = mapFromPorCuenta(porCuenta);
         control._gastoMap = built.map;
         control._gastoExtras = built.extras;
         control._gastoNombres = built.nombres;
+        control._gastoLoadedFor = control._gastoReq || '';
+        control._gastoMeta = meta || {};
         if (control._gastoReq) {
             CC.state.gastoLookup = CC.state.gastoLookup || {};
             CC.state.gastoLookup[control._gastoReq] = built;
+        }
+        paintVentaSnapshotHint(meta);
+        if (!control.centro) return;
+        stripSiopSeedLocalOnce(control.centro);
+        control._allCtas = cuentasEnriquecidas(control.centro);
+        if (CC._capturaReady) seedPresupuestoDesdeVentaReal(control.centro);
+        updateControlProgress();
+        renderNavCuentas();
+        renderCtaChips();
+        renderCapturaForm();
+        renderControlTable();
+        renderControlCharts();
+        renderDetalleTable();
+        renderDetalleChart();
+        renderVisorTable();
+        paintDetalleHeader();
+    }
+
+    function paintVentaSnapshotHint(meta) {
+        meta = meta || control._gastoMeta || {};
+        var year = meta.year || CC.state.anioGasto || '';
+        var when = meta.synced_at || '';
+        var fuente = String(meta.fuente || '');
+        var label = 'Sin snapshot';
+        var shortLabel = 'Venta local: —';
+        var navLabel = 'Snapshot: —';
+        var state = 'is-empty';
+        var title = 'Aún no hay venta local para este cliente. Se consultará SAP al cargar.';
+
+        if (fuente === 'snapshot' || fuente === 'snapshot_fallback') {
+            label = when ? ('Snapshot ' + when) : ('Snapshot venta ' + year);
+            shortLabel = when ? ('Local · ' + when) : ('Local · venta ' + year);
+            navLabel = when ? ('Snapshot: ' + when) : 'Snapshot local';
+            state = fuente === 'snapshot_fallback' ? 'is-warn' : 'is-local';
+            title = 'Venta ' + year + ' desde BD local' + (when ? (' (sync ' + when + ')') : '') +
+                (fuente === 'snapshot_fallback' ? '. SAP no respondió; se usó el último snapshot.' : '.');
+        } else if (fuente === 'api') {
+            label = when ? ('SAP ahora · ' + when) : ('SAP · venta ' + year);
+            shortLabel = when ? ('SAP · ' + when) : 'SAP · recién sync';
+            navLabel = when ? ('SAP: ' + when) : 'SAP recién sync';
+            state = 'is-api';
+            title = 'Venta ' + year + ' consultada en SAP y guardada en snapshot' +
+                (when ? (' (' + when + ')') : '') + '.';
+        } else if (fuente === 'cache') {
+            label = 'Caché de sesión';
+            shortLabel = 'Caché sesión';
+            navLabel = 'Snapshot: caché';
+            state = 'is-cache';
+            title = 'Venta ' + year + ' en caché de esta sesión.';
+        } else if (fuente === 'error') {
+            label = 'Error al cargar';
+            shortLabel = 'Error venta';
+            navLabel = 'Snapshot: error';
+            state = 'is-error';
+            title = (meta.mensaje || 'No se pudo cargar la venta real.');
+        }
+
+        var badge = document.getElementById('ctl-venta-snap-badge');
+        var badgeTxt = document.getElementById('ctl-venta-snap-text');
+        if (badge) {
+            badge.className = 'cc-snap-badge ' + state;
+            badge.title = title;
+        }
+        if (badgeTxt) badgeTxt.textContent = label;
+
+        var pill = document.getElementById('ctl-venta-snap-pill');
+        var pillTxt = document.getElementById('ctl-venta-snap-pill-text');
+        if (pill) {
+            pill.className = 'cc-snap-badge ' + state;
+            pill.title = title + ' Clic en «Actualizar venta SAP» para refrescar.';
+        }
+        if (pillTxt) pillTxt.textContent = shortLabel;
+
+        var nav = document.getElementById('ctl-venta-snap-nav');
+        if (nav) {
+            nav.textContent = navLabel;
+            nav.title = title;
+            nav.className = 'cc-snap-nav ' + state;
+        }
+    }
+
+    var apiWaitDepth = 0;
+
+    function ensureApiWait() {
+        var el = document.getElementById('cc-api-wait');
+        if (el) return el;
+        el = document.createElement('div');
+        el.id = 'cc-api-wait';
+        el.className = 'cc-api-wait';
+        el.hidden = true;
+        el.setAttribute('role', 'status');
+        el.setAttribute('aria-live', 'polite');
+        el.innerHTML =
+            '<div class="cc-api-wait-card">' +
+                '<div class="cc-api-wait-spinner" aria-hidden="true"></div>' +
+                '<div class="cc-api-wait-title">Por favor espera</div>' +
+                '<div class="cc-api-wait-msg" id="cc-api-wait-msg">Cargando datos…</div>' +
+                '<div class="cc-api-wait-bar" aria-hidden="true"><span></span></div>' +
+            '</div>';
+        document.body.appendChild(el);
+        return el;
+    }
+
+    function showApiWait(msg) {
+        apiWaitDepth += 1;
+        var el = ensureApiWait();
+        var m = document.getElementById('cc-api-wait-msg');
+        if (m) m.textContent = msg || 'Cargando datos de la API…';
+        el.hidden = false;
+        document.body.classList.add('cc-api-waiting');
+    }
+
+    function hideApiWait() {
+        if (apiWaitDepth > 0) apiWaitDepth -= 1;
+        if (apiWaitDepth > 0) return;
+        var el = document.getElementById('cc-api-wait');
+        if (el) el.hidden = true;
+        document.body.classList.remove('cc-api-waiting');
+    }
+
+    function loadingBlockHtml(msg) {
+        return '<div class="cc-loading-inline">' +
+            '<div class="cc-api-wait-spinner is-sm" aria-hidden="true"></div>' +
+            '<div class="cc-loading-inline-copy">' +
+                '<strong>Por favor espera</strong>' +
+                '<span>' + escapeHtml(msg || 'Cargando…') + '</span>' +
+            '</div>' +
+            '</div>';
+    }
+
+    function loadGastoRealCentro(c, opts) {
+        opts = opts || {};
+        if (!c || !CC.state.gastoUrl) return;
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+        var force = !!opts.force;
+        control._gastoReq = key;
+        if (!force) {
+            var hit = gastoCacheEntry(key);
+            if (hit) {
+                applyGastoMap(hit.por, hit.meta);
+            return;
+            }
+        }
+        if (force) {
+            if (CC.state.gastoCache) delete CC.state.gastoCache[key];
+            if (CC.state.gastoMeta) delete CC.state.gastoMeta[key];
+            if (CC.state.gastoLookup) delete CC.state.gastoLookup[key];
+        }
+        control._gastoMap = {};
+        control._gastoMeta = {};
+        var badgeTxt = document.getElementById('ctl-venta-snap-text');
+        var pillTxt = document.getElementById('ctl-venta-snap-pill-text');
+        var nav = document.getElementById('ctl-venta-snap-nav');
+        if (badgeTxt) badgeTxt.textContent = force ? 'Actualizando SAP…' : 'Cargando…';
+        if (pillTxt) pillTxt.textContent = force ? 'Actualizando…' : 'Cargando…';
+        if (nav) nav.textContent = 'Snapshot: cargando…';
+        ['ctl-venta-snap-badge', 'ctl-venta-snap-pill'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.className = 'cc-snap-badge is-cache';
+        });
+        showApiWait(force
+            ? ('Actualizando venta ' + year + ' desde SAP…')
+            : ('Cargando venta ' + year + '…'));
+        var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
+            '&cc=' + encodeURIComponent(c.codigo || '') +
+            '&year=' + encodeURIComponent(year) +
+            '&ref=' + encodeURIComponent(year);
+        if (force) qs += '&force=1';
+        fetch(CC.state.gastoUrl + qs, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (res) { return res.json(); }).then(function (json) {
+            if (control._gastoReq !== key) return;
+            var por = (json && json.por_cuenta) || {};
+            var meta = {
+                fuente: (json && json.fuente) || '',
+                synced_at: (json && json.synced_at) || null,
+                year: (json && json.year) || year,
+                mensaje: (json && json.mensaje) || null
+            };
+            rememberGastoCache(key, por, meta);
+            applyGastoMap(por, meta);
+            if (force) {
+                toast('success', 'Venta actualizada',
+                    'Snapshot ' + year + (meta.synced_at ? (' · ' + meta.synced_at) : '') +
+                    (meta.fuente ? (' · ' + meta.fuente) : ''));
+            } else if (meta.fuente === 'api') {
+                toast('info', 'Snapshot guardado', 'Venta ' + year + ' quedó en BD local para próximas cargas.');
+            }
+        }).catch(function () {
+            if (control._gastoReq !== key) return;
+            applyGastoMap({}, { fuente: 'error', year: year });
+            if (force) toast('error', 'No se actualizó', 'No se pudo consultar SAP.');
+        }).then(function () {
+            hideApiWait();
+        });
+    }
+
+    function preciosCacheKey(c) {
+        return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '');
+    }
+
+    function lookupPrecioLista(codigo) {
+        var map = control._preciosMap || {};
+        if (!codigo) return null;
+        return map[String(codigo)]
+            || map[String(codigo).toUpperCase()]
+            || map[codigoCuentaKey(codigo)]
+            || null;
+    }
+
+    function mapaPreciosArticulo(porArticulo) {
+        var map = {};
+        Object.keys(porArticulo || {}).forEach(function (key) {
+            var row = porArticulo[key];
+            if (!row || typeof row !== 'object') return;
+            var codigo = String(row.codigo || key || '').trim();
+            if (!codigo) return;
+            var entry = {
+                codigo: codigo,
+                nombre: row.nombre || '',
+                precio: Number(row.precio) || 0,
+                moneda: String(row.moneda || 'MXN').toUpperCase(),
+                unidad: String(row.unidad || '').trim(),
+                unidad_nombre: String(row.unidad_nombre || '').trim(),
+                lista: row.lista || '',
+                no_lista: row.no_lista || ''
+            };
+            map[codigo] = entry;
+            map[codigo.toUpperCase()] = entry;
+            map[codigoCuentaKey(codigo)] = entry;
+        });
+        return map;
+    }
+
+    function applyPreciosMap(porArticulo) {
+        var map = mapaPreciosArticulo(porArticulo);
+        control._preciosMap = map;
+        if (control._preciosReq) {
+            CC.state.preciosCache = CC.state.preciosCache || {};
+            CC.state.preciosCache[control._preciosReq] = map;
         }
         if (!control.centro) return;
         control._allCtas = cuentasEnriquecidas(control.centro);
@@ -435,45 +1002,413 @@
         paintDetalleHeader();
     }
 
-    function loadGastoRealCentro(c) {
-        if (!c || !CC.state.gastoUrl) return;
-        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
-        control._gastoReq = key;
-        if (CC.state.gastoCache && CC.state.gastoCache[key]) {
-            applyGastoMap(CC.state.gastoCache[key]);
+    function loadListasPreciosCentro(c) {
+        if (!c || !CC.state.listasPreciosUrl) return;
+        var key = preciosCacheKey(c);
+        control._preciosReq = key;
+        if (CC.state.preciosCache && CC.state.preciosCache[key]) {
+            control._preciosMap = CC.state.preciosCache[key];
+            if (control.centro) {
+                control._allCtas = cuentasEnriquecidas(control.centro);
+                renderControlTable();
+            }
             return;
         }
-        control._gastoMap = {};
-        fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(c.empresa || '') +
-            '&cc=' + encodeURIComponent(c.codigo || '') +
-            '&year=' + encodeURIComponent(year), {
+        // Si ya hay maestro local de precios, no bloquear la UI con SAP (fallback en segundo plano).
+        var hasMaster = CC.state.costosMaster && Object.keys(CC.state.costosMaster).length > 0;
+        control._preciosMap = {};
+        if (!hasMaster) {
+            showApiWait('Consultando listas de precios…');
+        }
+        fetch(CC.state.listasPreciosUrl + '?empresa=' + encodeURIComponent(c.empresa || '') +
+            '&cliente=' + encodeURIComponent(c.codigo || '') +
+            '&year=' + encodeURIComponent(CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear()), {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
-            if (control._gastoReq !== key) return;
-            var por = (json && json.por_cuenta) || {};
-            CC.state.gastoCache = CC.state.gastoCache || {};
-            CC.state.gastoCache[key] = por;
-            applyGastoMap(por);
+            if (control._preciosReq !== key) return;
+            applyPreciosMap((json && json.por_articulo) || {});
         }).catch(function () {
-            if (control._gastoReq !== key) return;
-            applyGastoMap({});
+            if (control._preciosReq !== key) return;
+            applyPreciosMap({});
+        }).then(function () {
+            if (!hasMaster) hideApiWait();
         });
     }
 
+    function syncVentasPasadasBtn() {
+        var btn = document.getElementById('ctl-btn-ventas-pasadas');
+        if (!btn) return;
+        btn.disabled = !(val('ctl-empresa') && val('ctl-centro'));
+    }
+
+    function fillVentasPasadasYears() {
+        var sel = document.getElementById('vp-anio');
+        if (!sel) return;
+        var current = Number(sel.value) || 0;
+        var ref = Number(CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear()) || new Date().getFullYear();
+        var minY = ref - 3;
+        var years = [];
+        for (var y = ref; y >= minY; y--) years.push(y);
+        var preferred = current || ref;
+        if (preferred > ref || preferred < minY) preferred = ref;
+        sel.innerHTML = years.map(function (y) {
+            return '<option value="' + y + '"' + (y === preferred ? ' selected' : '') + '>' + y + '</option>';
+        }).join('');
+        if (!sel.value) sel.value = String(preferred);
+    }
+
+    function openVentasPasadas() {
+        var emp = val('ctl-empresa');
+        var cc = val('ctl-centro');
+        if (!emp || !cc) {
+            toast('warning', 'Elige empresa y cliente', '');
+            return;
+        }
+        var c = control.centro;
+        var sub = document.getElementById('vp-sub');
+        if (sub) {
+            sub.textContent = String(emp).toUpperCase() + ' · ' +
+                labelNombreCodigo((c && c.nombre) || cc, (c && c.codigo) || cc);
+        }
+        fillVentasPasadasYears();
+        control._vpMetric = val('vp-metric') || 'qty';
+        control._vpQuery = '';
+        var q = document.getElementById('vp-q');
+        if (q) q.value = '';
+        showModal('modalVentasPasadas');
+        loadVentasPasadas(true);
+    }
+
+    function fetchVentasPasadas(empresa, cc, year) {
+        var key = String(empresa || '').toUpperCase() + '|' + String(cc || '') + '|' + year;
+        var hit = gastoCacheEntry(key);
+        if (hit) {
+            return Promise.resolve({
+                ok: true,
+                year: year,
+                por_cuenta: hit.por,
+                fuente: (hit.meta && hit.meta.fuente) || 'cache',
+                synced_at: hit.meta && hit.meta.synced_at,
+                cached: true
+            });
+        }
+        return fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(empresa || '') +
+            '&cc=' + encodeURIComponent(cc || '') +
+            '&year=' + encodeURIComponent(year), {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (res) { return res.json(); }).then(function (json) {
+            var por = (json && json.por_cuenta) || {};
+            rememberGastoCache(key, por, {
+                fuente: (json && json.fuente) || (json && json.ok ? 'api' : 'error'),
+                synced_at: (json && json.synced_at) || null,
+                year: (json && json.year) || year,
+                mensaje: (json && json.mensaje) || null
+            });
+            return json || { ok: false, por_cuenta: {}, mensaje: 'Sin respuesta' };
+        });
+    }
+
+    function rowsFromPorCuenta(por) {
+        return Object.keys(por || {}).map(function (k) {
+            var row = por[k] || {};
+            var gasto = Array.isArray(row.gasto) ? row.gasto : zeros12();
+            var importe = Array.isArray(row.importe) ? row.importe : zeros12();
+            var usd = Array.isArray(row.importe_usd) ? row.importe_usd : zeros12();
+            return {
+                codigo: row.codigo || k,
+                nombre: row.nombre || row.codigo || k,
+                gasto: gasto,
+                importe: importe,
+                importe_usd: usd,
+                totQty: sum(gasto),
+                totMxn: sum(importe),
+                totUsd: sum(usd)
+            };
+        }).sort(function (a, b) {
+            return (b.totMxn || b.totQty) - (a.totMxn || a.totQty);
+        });
+    }
+
+    function formatVpCell(v, metric) {
+        var n = Number(v) || 0;
+        if (!n) return '—';
+        var txt = n.toLocaleString('es-MX', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: metric === 'qty' ? 2 : 2
+        });
+        if (metric === 'mxn') return '$' + txt;
+        if (metric === 'usd') return 'US$' + txt;
+        return txt;
+    }
+
+    function renderVentasPasadasTable(rows, year, metric) {
+        var thead = document.getElementById('vp-thead');
+        var tbody = document.getElementById('vp-tbody');
+        var meta = document.getElementById('vp-meta');
+        if (!thead || !tbody) return;
+        metric = metric || control._vpMetric || 'qty';
+        var q = normSearch(control._vpQuery || ((document.getElementById('vp-q') || {}).value || ''));
+        var list = (rows || []).filter(function (r) {
+            if (!q) return true;
+            return normSearch((r.codigo || '') + ' ' + (r.nombre || '')).indexOf(q) !== -1;
+        });
+        var totLabel = metric === 'mxn' ? 'Tot. MXN' : (metric === 'usd' ? 'Tot. USD' : 'Tot. uds');
+        var head = '<tr><th class="sticky-col">Producto</th><th class="num">' + totLabel + '</th>';
+        MONTHS.forEach(function (m) { head += '<th class="num">' + m + '</th>'; });
+        head += '</tr>';
+        thead.innerHTML = head;
+
+        if (!list.length) {
+            tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">Sin ventas en ' + year +
+                (q ? ' para ese filtro' : '') + '</div></td></tr>';
+            if (meta) meta.textContent = 'Año ' + year + ' · 0 productos';
+            return;
+        }
+
+        var seriesKey = metric === 'mxn' ? 'importe' : (metric === 'usd' ? 'importe_usd' : 'gasto');
+        var totKey = metric === 'mxn' ? 'totMxn' : (metric === 'usd' ? 'totUsd' : 'totQty');
+        var grand = list.reduce(function (a, r) { return a + (Number(r[totKey]) || 0); }, 0);
+        tbody.innerHTML = list.map(function (r) {
+            var series = r[seriesKey] || zeros12();
+            var cells = '';
+            for (var i = 0; i < 12; i++) {
+                cells += '<td class="num' + ((Number(series[i]) || 0) ? '' : ' text-muted') + '">' +
+                    formatVpCell(series[i], metric) + '</td>';
+            }
+            return '<tr><td class="sticky-col">' + htmlNombreCodigo(r.nombre, r.codigo) + '</td>' +
+                '<td class="num fw-semibold">' + formatVpCell(r[totKey], metric) + '</td>' +
+                cells + '</tr>';
+        }).join('') +
+            '<tr class="cc-vp-total"><td class="sticky-col"><strong>Total</strong></td>' +
+            '<td class="num fw-semibold">' + formatVpCell(grand, metric) + '</td>' +
+            MONTHS.map(function (_, i) {
+                var t = list.reduce(function (a, r) {
+                    return a + (Number((r[seriesKey] || [])[i]) || 0);
+                }, 0);
+                return '<td class="num fw-semibold">' + formatVpCell(t, metric) + '</td>';
+            }).join('') + '</tr>';
+
+        if (meta) {
+            meta.textContent = 'Año ' + year + ' · ' + list.length +
+                (list.length === 1 ? ' producto' : ' productos') +
+                ' · Total ' + formatVpCell(grand, metric);
+        }
+    }
+
+    function loadVentasPasadas(force) {
+        var emp = val('ctl-empresa');
+        var cc = val('ctl-centro');
+        var ref = Number(CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear()) || new Date().getFullYear();
+        var year = Number(val('vp-anio')) || ref;
+        if (year > ref) year = ref;
+        if (year < ref - 3) year = ref - 3;
+        var anioSel = document.getElementById('vp-anio');
+        if (anioSel && Number(anioSel.value) !== year) anioSel.value = String(year);
+        var metric = val('vp-metric') || 'qty';
+        control._vpMetric = metric;
+        var tbody = document.getElementById('vp-tbody');
+        var meta = document.getElementById('vp-meta');
+        var btn = document.getElementById('vp-cargar');
+        if (!emp || !cc) {
+            if (tbody) tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">Elige empresa y cliente</div></td></tr>';
+            return;
+        }
+        if (!force && control._vpRows && Number(control._vpYear) === year) {
+            renderVentasPasadasTable(control._vpRows, year, metric);
+            return;
+        }
+        if (tbody) tbody.innerHTML = '<tr><td colspan="14">' + loadingBlockHtml('Cargando ventas ' + year + ' desde SAP…') + '</td></tr>';
+        if (meta) meta.textContent = 'Consultando SAP…';
+        if (btn) btn.disabled = true;
+        control._vpReq = String(emp).toUpperCase() + '|' + cc + '|' + year;
+        showApiWait('Cargando ventas pasadas de ' + year + '…');
+        fetchVentasPasadas(emp, cc, year).then(function (json) {
+            if (control._vpReq !== String(emp).toUpperCase() + '|' + cc + '|' + year) return;
+            if (btn) btn.disabled = false;
+            if (!json || !json.ok) {
+                control._vpRows = [];
+                control._vpYear = year;
+                if (tbody) {
+                    tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">' +
+                        escapeHtml((json && json.mensaje) || 'No se pudieron cargar las ventas') +
+                        '</div></td></tr>';
+                }
+                if (meta) meta.textContent = 'Año ' + year + ' · sin datos';
+                return;
+            }
+            control._vpRows = rowsFromPorCuenta(json.por_cuenta || {});
+            control._vpYear = year;
+            renderVentasPasadasTable(control._vpRows, year, metric);
+        }).catch(function (err) {
+            if (btn) btn.disabled = false;
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="14"><div class="cc-empty">' +
+                    escapeHtml((err && err.message) || 'Error de red') + '</div></td></tr>';
+            }
+        }).then(function () {
+            hideApiWait();
+        });
+    }
+
+    function bindVentasPasadas() {
+        var openBtn = document.getElementById('ctl-btn-ventas-pasadas');
+        if (openBtn) openBtn.addEventListener('click', openVentasPasadas);
+        var cargar = document.getElementById('vp-cargar');
+        if (cargar) cargar.addEventListener('click', function () { loadVentasPasadas(true); });
+        var anio = document.getElementById('vp-anio');
+        if (anio) anio.addEventListener('change', function () { loadVentasPasadas(true); });
+        var metric = document.getElementById('vp-metric');
+        if (metric) metric.addEventListener('change', function () {
+            control._vpMetric = this.value || 'qty';
+            if (control._vpRows) renderVentasPasadasTable(control._vpRows, control._vpYear, control._vpMetric);
+            else loadVentasPasadas(false);
+        });
+        var q = document.getElementById('vp-q');
+        if (q) q.addEventListener('input', function () {
+            control._vpQuery = this.value || '';
+            if (control._vpRows) renderVentasPasadasTable(control._vpRows, control._vpYear, control._vpMetric);
+        });
+    }
+
+    function preciosMesesDe(empresa, cc, codigo) {
+        var map = CC.state.preciosMeses || {};
+        var k = budgetKey(empresa, cc, codigo);
+        var arr = map[k];
+        if (!arr) {
+            var needle = String(k).toUpperCase();
+            Object.keys(map).some(function (key) {
+                if (String(key).toUpperCase() === needle) {
+                    arr = map[key];
+                    return true;
+                }
+                return false;
+            });
+        }
+        var out = [];
+        for (var i = 0; i < 12; i++) {
+            var v = arr && arr[i];
+            out.push((v === null || v === undefined || v === '' || !(Number(v) > 0)) ? null : Math.round(Number(v) * 10000) / 10000);
+        }
+        return out;
+    }
+
+    function setPrecioMesesLocal(empresa, cc, codigo, meses) {
+        CC.state.preciosMeses = CC.state.preciosMeses || {};
+        CC.state.preciosMeses[budgetKey(empresa, cc, codigo)] = (meses || []).slice(0, 12);
+    }
+
+    /** Precio unitario efectivo del mes: override proyección → maestro Costos del mes → global. */
+    function precioUnitarioMes(cta, monthIdx) {
+        var arr = (cta && cta.precioMeses) || [];
+        var v = Number(arr[monthIdx]);
+        if (isFinite(v) && v > 0) return v;
+        var maestroMes = Number(cta && cta.precioMaestroMeses && cta.precioMaestroMeses[monthIdx]);
+        if (isFinite(maestroMes) && maestroMes > 0) return maestroMes;
+        var base = Number(cta && cta.precioLista) || 0;
+        if (base > 0) return base;
+        return 0;
+    }
+
+    function precioMesTieneOverride(cta, monthIdx) {
+        var v = Number((cta && cta.precioMeses && cta.precioMeses[monthIdx]));
+        return isFinite(v) && v > 0;
+    }
+
+    /** True si el mes difiere del global (override o precio del maestro distinto). */
+    function precioMesEsDistinto(cta, monthIdx) {
+        var base = Number(cta && cta.precioLista) || 0;
+        var p = precioUnitarioMes(cta, monthIdx);
+        if (!(p > 0)) return false;
+        if (precioMesTieneOverride(cta, monthIdx)) {
+            return !(base > 0) || Math.abs(p - base) > 0.0001;
+        }
+        var maestroMes = Number(cta && cta.precioMaestroMeses && cta.precioMaestroMeses[monthIdx]);
+        if (isFinite(maestroMes) && maestroMes > 0 && base > 0) {
+            return Math.abs(maestroMes - base) > 0.0001;
+        }
+        return false;
+    }
+
+    function precioMesesVarian(cta) {
+        for (var i = 0; i < 12; i++) {
+            if (precioMesEsDistinto(cta, i)) return true;
+        }
+        return false;
+    }
+
+    /** Moda de precios mensuales > 0 (para sincronizar “global” del maestro). */
+    function precioModaDeMeses(meses) {
+        var freq = {};
+        var arr = meses || [];
+        for (var i = 0; i < arr.length; i++) {
+            var p = Number(arr[i]);
+            if (!(p > 0)) continue;
+            var k = (Math.round(p * 10000) / 10000).toFixed(4);
+            freq[k] = (freq[k] || 0) + 1;
+        }
+        var best = null;
+        var bestN = 0;
+        Object.keys(freq).forEach(function (k) {
+            if (freq[k] > bestN) {
+                bestN = freq[k];
+                best = Number(k);
+            }
+        });
+        return best && best > 0 ? best : 0;
+    }
+
+    function mesesVacios12() {
+        return [null, null, null, null, null, null, null, null, null, null, null, null];
+    }
+
+    function qtyMesIgual(a, b) {
+        var av = mesLleno(a) ? (Number(a) || 0) : 0;
+        var bv = mesLleno(b) ? (Number(b) || 0) : 0;
+        return av === bv;
+    }
+
+    function monthsIgualReferencia(months, ref) {
+        if (!Array.isArray(months)) return false;
+        ref = Array.isArray(ref) ? ref : [];
+        for (var i = 0; i < 12; i++) {
+            if (!qtyMesIgual(months[i], ref[i])) return false;
+        }
+        return true;
+    }
+
     function pptoDe(empresa, cc, cuenta, gasto) {
-        var key = budgetKey(empresa, cc, cuenta.codigo);
-        if (CC.state.budgets[key]) return CC.state.budgets[key].slice();
-        if (cuenta.ppto) return cuenta.ppto.slice();
-        return (gasto || cuenta.gasto || [0,0,0,0,0,0,0,0,0,0,0,0]).map(function () { return null; });
+        var code = cuenta && typeof cuenta === 'object' ? cuenta.codigo : cuenta;
+        var found = budgetMonthsOf(empresa, cc, code);
+        if (found) return found;
+        if (cuenta && cuenta.ppto) return cuenta.ppto.slice();
+        return (gasto || (cuenta && cuenta.gasto) || [0,0,0,0,0,0,0,0,0,0,0,0]).map(function () { return null; });
+    }
+
+    function protectLockedMonths(empresa, cc, cuenta, months, opts) {
+        opts = opts || {};
+        var out = (months || []).slice();
+        while (out.length < 12) out.push(null);
+        out = out.slice(0, 12);
+        if (opts.allowLocked) return out;
+        var lock = budgetLockCount();
+        if (!lock) return out;
+        var prev = budgetMonthsOf(empresa, cc, cuenta);
+        if (!prev) return out;
+        for (var i = 0; i < lock; i++) {
+            out[i] = prev[i];
+        }
+        return out;
     }
 
     function persistBudget(empresa, cc, cuenta, months, opts) {
         opts = opts || {};
-        CC.state.budgets[budgetKey(empresa, cc, cuenta)] = months.slice();
+        months = protectLockedMonths(empresa, cc, cuenta, months, opts);
         var ciclo = cicloActualCodigo();
         if (!ciclo) return;
         var key = budgetKey(empresa, cc, cuenta);
+        var timerKey = String(ciclo).toUpperCase() + '|' + key;
+        CC.state.budgets = CC.state.budgets || {};
+        CC.state.budgets[key] = months.slice();
         CC.state.completados = CC.state.completados || {};
         var allFilled = mesesTodosLlenos(months);
         var done = Object.prototype.hasOwnProperty.call(opts, 'completado')
@@ -481,13 +1416,12 @@
             : allFilled;
         if (done && !allFilled) {
             months = months.map(function (v) { return mesLleno(v) ? v : 0; });
-            CC.state.budgets[budgetKey(empresa, cc, cuenta)] = months.slice();
+            CC.state.budgets[key] = months.slice();
         }
         if (done) CC.state.completados[key] = true;
         else delete CC.state.completados[key];
-        if (CC._budgetSaveTimers && CC._budgetSaveTimers[key]) clearTimeout(CC._budgetSaveTimers[key]);
-        CC._budgetSaveTimers = CC._budgetSaveTimers || {};
-        CC._budgetSaveTimers[key] = setTimeout(function () {
+
+        var monthsToSave = months.slice();
             var nombre = '';
             var list = (control && control._allCtas) || [];
             for (var i = 0; i < list.length; i++) {
@@ -496,7 +1430,18 @@
                     break;
                 }
             }
-            fetch('/ProyeccionesVentas/api/captura/presupuesto', {
+        var costo = 0;
+        for (var j = 0; j < list.length; j++) {
+            if (String(list[j].codigo) === String(cuenta)) {
+                costo = Number(list[j].costo) || 0;
+                break;
+            }
+        }
+        var precioMeses = preciosMesesDe(empresa, cc, cuenta);
+        var ajuste = Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0;
+
+        function doSave() {
+            return fetch('/ProyeccionesVentas/api/captura/presupuesto', {
                 method: 'PUT',
                 headers: apiJsonHeaders(),
                 body: JSON.stringify({
@@ -505,28 +1450,144 @@
                     centro: cc,
                     cuenta: cuenta,
                     cuenta_nombre: nombre,
-                    meses: months.slice(),
+                    meses: monthsToSave,
                     completado: done,
-                    ajuste_pct: Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0,
-                    costo_unitario: (function () {
-                        var list = (control && control._allCtas) || [];
-                        for (var j = 0; j < list.length; j++) {
-                            if (String(list[j].codigo) === String(cuenta)) return Number(list[j].costo) || 0;
-                        }
-                        return 0;
-                    })()
+                    ajuste_pct: ajuste,
+                    precio_meses: precioMeses,
+                    costo_unitario: costo
                 })
             }).then(function (res) {
                 return res.json().then(function (json) {
                     if (!res.ok) throw new Error(json.message || 'No se pudo guardar la proyección');
+                    // Solo sincroniza estado local si seguimos en el mismo ciclo.
+                    if (String(cicloActualCodigo() || '').toUpperCase() !== String(ciclo).toUpperCase()) return json;
                     CC.state.completados = CC.state.completados || {};
                     if (json.completado) CC.state.completados[key] = true;
                     else delete CC.state.completados[key];
+                    if (json.precio_meses) setPrecioMesesLocal(empresa, cc, cuenta, json.precio_meses);
+                    return json;
                 });
             }).catch(function (err) {
                 toast('error', 'No se guardó la proyección', err && err.message ? err.message : 'Error de red');
             });
+        }
+
+        if (CC._budgetSaveTimers && CC._budgetSaveTimers[timerKey]) clearTimeout(CC._budgetSaveTimers[timerKey]);
+        CC._budgetSaveTimers = CC._budgetSaveTimers || {};
+        CC._budgetSavePending = CC._budgetSavePending || {};
+        CC._budgetSavePending[timerKey] = doSave;
+        CC._budgetSaveTimers[timerKey] = setTimeout(function () {
+            delete CC._budgetSaveTimers[timerKey];
+            var fn = CC._budgetSavePending[timerKey];
+            delete CC._budgetSavePending[timerKey];
+            if (fn) fn();
         }, 350);
+    }
+
+    /** Antes de cambiar de ciclo: manda a guardar lo pendiente al ciclo correcto. */
+    function flushPendingBudgetSaves() {
+        var pending = CC._budgetSavePending || {};
+        var timers = CC._budgetSaveTimers || {};
+        var keys = Object.keys(pending);
+        var jobs = keys.map(function (k) {
+            if (timers[k]) clearTimeout(timers[k]);
+            delete timers[k];
+            var fn = pending[k];
+            delete pending[k];
+            try {
+                return fn ? Promise.resolve(fn()) : Promise.resolve();
+            } catch (e) {
+                return Promise.resolve();
+            }
+        });
+        return Promise.all(jobs);
+    }
+
+    function cancelPendingBudgetSaves() {
+        var timers = CC._budgetSaveTimers || {};
+        Object.keys(timers).forEach(function (k) {
+            clearTimeout(timers[k]);
+            delete timers[k];
+        });
+        CC._budgetSavePending = {};
+    }
+
+    function persistPrecioMesesProducto(empresa, cc, cuenta, precioMeses, opts) {
+        opts = opts || {};
+        setPrecioMesesLocal(empresa, cc, cuenta, precioMeses);
+        var months = (CC.state.budgets && CC.state.budgets[budgetKey(empresa, cc, cuenta)])
+            ? CC.state.budgets[budgetKey(empresa, cc, cuenta)].slice()
+            : null;
+        if (!months) {
+            var cta = ((control && control._allCtas) || []).filter(function (x) {
+                return String(x.codigo) === String(cuenta);
+            })[0];
+            months = cta && cta.ppto ? cta.ppto.slice() : [null, null, null, null, null, null, null, null, null, null, null, null];
+        }
+        persistBudget(empresa, cc, cuenta, months);
+        // Sincroniza también Ventas/Costos (crear/actualizar por mes).
+        return syncPrecioMesesACostos(empresa, cc, cuenta, precioMeses, opts);
+    }
+
+    function syncPrecioMesesACostos(empresa, cc, cuenta, precioMeses, opts) {
+        opts = opts || {};
+        var url = (CC.state.costosUrl || '/ProyeccionesVentas/api/costos') + '/meses';
+        var cta = ((control && control._allCtas) || []).filter(function (x) {
+            return String(x.codigo) === String(cuenta);
+        })[0];
+        var moneda = String(opts.moneda || (cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var nombre = opts.nombre || (cta && cta.nombre) || cuenta;
+        var cardName = opts.card_name || (control.centro && control.centro.nombre) || '';
+        return fetch(url, {
+            method: 'PUT',
+            headers: apiJsonHeaders(),
+            body: JSON.stringify({
+                empresa: empresa,
+                card_code: cc || '',
+                card_name: cardName,
+                producto_codigo: cuenta,
+                producto_nombre: nombre,
+                moneda: moneda,
+                anio: CC.state.anioPresupuesto || 2027,
+                meses: precioMeses
+            })
+        }).then(function (r) {
+            return r.json().then(function (json) {
+                if (!r.ok) throw new Error((json && json.message) || 'No se pudo sincronizar Ventas/Costos');
+                // Actualiza mapa local de precios mensuales del maestro.
+                CC.state.costosMeses = CC.state.costosMeses || {};
+                var keyCard = String(empresa || '').toUpperCase() + '|' + String(cc || '').trim() + '|' + String(cuenta || '').trim();
+                var keyProd = String(empresa || '').toUpperCase() + '|' + String(cuenta || '').trim();
+                var entry = {
+                    meses: (json.precio_meses || precioMeses || []).slice(0, 12),
+                    monedas: []
+                };
+                for (var i = 0; i < 12; i++) {
+                    entry.monedas[i] = entry.meses[i] != null ? moneda : null;
+                }
+                CC.state.costosMeses[keyCard] = entry;
+                CC.state.costosMeses[keyProd] = entry;
+                // Global del maestro = moda (no el último mes).
+                var moda = precioModaDeMeses(entry.meses);
+                if (json.precio_global != null && Number(json.precio_global) > 0) {
+                    moda = Number(json.precio_global);
+                }
+                if (moda > 0) {
+                    CC.state.costosMaster = CC.state.costosMaster || {};
+                    var masterEntry = {
+                        costo: moda,
+                        moneda: moneda,
+                        mes: null,
+                        card_code: cc || '',
+                        origen: 'maestro_local'
+                    };
+                    CC.state.costosMaster[keyCard] = masterEntry;
+                    CC.state.costosMaster[keyProd] = masterEntry;
+                    CC.state.costosMaster[String(cuenta || '').trim()] = masterEntry;
+                }
+                return json;
+            });
+        });
     }
 
     function persistOverlay(c, patch) {
@@ -570,7 +1631,11 @@
     }
 
     function cicloActualCodigo() {
-        return String((CC.state.period && CC.state.period.codigo) || CC.state.cicloCodigo || '');
+        var fromCtl = document.getElementById('ctl-ciclo') ? val('ctl-ciclo') : '';
+        if (fromCtl) return String(fromCtl);
+        var fromAn = document.getElementById('an-ciclo') ? val('an-ciclo') : '';
+        if (fromAn) return String(fromAn);
+        return String(CC.state.cicloCodigo || (CC.state.period && CC.state.period.codigo) || '');
     }
 
     function persistPeriod() {
@@ -616,6 +1681,31 @@
         });
     }
 
+    /**
+     * Una sola vez: si se capturó en vista USD, los meses se guardaron × TC.
+     * Los dejamos en unidades reales para que MXN/USD ya no los mueva.
+     */
+    function unscaleQtyBudgetsIfNeeded() {
+        if (loadJSON(SK.qtyRaw, false)) return;
+        var cur = String(CC.state.currency || 'MXN').toUpperCase();
+        if (cur !== 'USD') {
+            saveJSON(SK.qtyRaw, true);
+            return;
+        }
+        var tc = fxBaseRate();
+        if (!(tc > 0)) {
+            saveJSON(SK.qtyRaw, true);
+            return;
+        }
+        Object.keys(CC.state.budgets || {}).forEach(function (k) {
+            CC.state.budgets[k] = (CC.state.budgets[k] || []).map(function (v) {
+                if (!mesLleno(v)) return v;
+                return Math.round((Number(v) / tc) * 100) / 100;
+            });
+        });
+        saveJSON(SK.qtyRaw, true);
+    }
+
     function overlayStoreKey() {
         return SK.admin + ':' + String((CC.state.period && CC.state.period.codigo) || 'default');
     }
@@ -625,33 +1715,224 @@
     }
 
     function loadOverlaysForCycle() {
-        var ciclo = cicloActualCodigo();
-        CC._capturaReady = false;
-        CC.state.overlays = {};
-        CC.state.budgets = {};
-        CC.state.completados = {};
-        if (!ciclo) {
-            CC._capturaReady = true;
-            return Promise.resolve();
-        }
-        return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
-            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-        }).then(function (r) { return r.json(); }).then(function (json) {
+        return flushPendingBudgetSaves().catch(function () {
+            return null;
+        }).then(function () {
+            // Capturar ciclo DESPUÉS del flush (el combo ya debe estar estable).
+            var ciclo = String(cicloActualCodigo() || '').trim();
+            CC._capturaLoadGen = (CC._capturaLoadGen || 0) + 1;
+            var gen = CC._capturaLoadGen;
+            CC._seedDoneFor = {};
+            CC._siopStrippedFor = '';
+            CC._budgetsBaseLoaded = false;
+            CC._capturaReady = false;
+            CC.state.overlays = {};
+            CC.state.budgets = {};
+            CC.state.budgetsBase = {};
+            CC.state.budgetKeysFromServer = {};
+            CC.state.completados = {};
+            CC.state.preciosMeses = {};
+            CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
+            if (!ciclo) {
+                CC._capturaReady = true;
+                CC._budgetsBaseLoaded = true;
+                return;
+            }
+            return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(function (r) {
+                if (!r.ok) throw new Error('captura ' + r.status);
+                return r.json();
+            }).then(function (json) {
+                // Solo invalidar por generación (cambio de ciclo real). No comparar el select
+                // otra vez: renderCicloPicks puede tocar el valor sin ser un cambio de ciclo.
+                if (gen !== CC._capturaLoadGen) return { applied: false };
             CC.state.overlays = json.overlays || {};
             CC.state.completados = json.completados || {};
             CC.state.ajustes = json.ajustes || {};
             CC.state.costos = json.costos || {};
+                CC.state.costosMaster = json.costosMaster || {};
+                CC.state.costosMeses = json.costosMeses || {};
+                CC.state.preciosMeses = json.preciosMeses || {};
             CC.state.budgets = {};
+                CC.state.budgetKeysFromServer = {};
             var rawBudgets = json.budgets || {};
             Object.keys(rawBudgets).forEach(function (k) {
                 CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
+                    CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+                });
+                Object.keys(CC.state.completados || {}).forEach(function (k) {
+                    if (CC.state.completados[k]) CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+                });
+                unscaleQtyBudgetsIfNeeded();
+                return loadBudgetsBaseForSeed(gen, ciclo).then(function () {
+                    return { applied: true, ciclo: ciclo };
+                });
+            }).then(function (result) {
+                if (gen !== CC._capturaLoadGen) return;
+            CC._capturaReady = true;
+                if (result && result.applied) {
+                    refreshCapturaAfterBudgetsLoaded();
+                }
+            }).catch(function (err) {
+                if (gen !== CC._capturaLoadGen) return;
+                console.warn('[PV] No se pudo cargar captura del ciclo', ciclo, err);
+                // No vaciar budgets si ya había datos de una carga buena previa del mismo gen.
+            CC._capturaReady = true;
             });
-            CC._capturaReady = true;
+        });
+    }
+
+    function refreshCapturaAfterBudgetsLoaded() {
+        if (!(val('ctl-empresa') && val('ctl-centro'))) return;
+        if (!control.centro) return;
+        stripSiopSeedLocalOnce(control.centro);
+        control._allCtas = cuentasEnriquecidas(control.centro);
+        seedPresupuestoDesdeVentaReal(control.centro);
+        updateControlProgress();
+        renderNavCuentas();
+        renderCtaChips();
+        renderCapturaForm();
+        renderControlTable();
+        renderControlCharts();
+        renderVisorTable();
+    }
+
+    function cicloSortKey(c) {
+        c = c || {};
+        var id = Number(c.id) || 0;
+        if (id) return id;
+        return Date.parse(String(c.inicio || c.fin || c.capturaHasta || '')) || 0;
+    }
+
+    /** Ciclo previo del mismo año de presupuesto (el más reciente entre los más antiguos). */
+    function cicloProyectoAnterior() {
+        var current = cicloActualCodigo();
+        var cur = findCiclo(current) || CC.state.period || {};
+        var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
+        var curKey = cicloSortKey(cur);
+        var sameYear = (CC.state.ciclos || []).filter(function (c) {
+            return String(c.codigo || '').toUpperCase() !== String(current || '').toUpperCase()
+                && (!anio || Number(c.anio) === anio);
+        });
+        var earlier = sameYear.filter(function (c) {
+            return curKey > 0 && cicloSortKey(c) < curKey;
+        }).sort(function (a, b) {
+            return cicloSortKey(b) - cicloSortKey(a);
+        });
+        if (earlier[0] && earlier[0].codigo) return earlier[0].codigo;
+        // Si el SIOP se dio de alta primero, usar el único otro ciclo del mismo año.
+        if (sameYear.length === 1 && sameYear[0].codigo) return sameYear[0].codigo;
+        return '';
+    }
+
+    /** Ciclo base para heredar cantidades (Forecast/SIOP). */
+    function cicloBaseProyeccion() {
+        var current = cicloActualCodigo();
+        var cur = findCiclo(current) || CC.state.period || {};
+        var tipo = cur.tipoBudget || budgetTipo();
+        var anio = Number(cur.anio || CC.state.anioPresupuesto) || 0;
+        var curId = Number(cur.id) || 0;
+        var ciclos = CC.state.ciclos || [];
+        var sameYear = ciclos.filter(function (c) {
+            return String(c.codigo || '').toUpperCase() !== String(current || '').toUpperCase()
+                && (!anio || Number(c.anio) === anio);
+        });
+
+        // SIOP: preferir Budget del mismo año (proyección base 2027), luego Forecast, luego el ciclo anterior.
+        if (esSiopTipo(tipo)) {
+            var budget = sameYear.filter(function (c) {
+                return String(c.tipoBudget || '') === 'BUDGET';
+            }).sort(function (a, b) {
+                return (Number(b.id) || 0) - (Number(a.id) || 0);
+            });
+            if (budget[0] && budget[0].codigo) return budget[0].codigo;
+
+            var forecast = sameYear.filter(function (c) {
+                return esForecastTipo(c.tipoBudget);
+            }).sort(function (a, b) {
+                var idA = Number(a.id) || 0;
+                var idB = Number(b.id) || 0;
+                if (curId) {
+                    var beforeA = idA > 0 && idA < curId ? 1 : 0;
+                    var beforeB = idB > 0 && idB < curId ? 1 : 0;
+                    if (beforeA !== beforeB) return beforeB - beforeA;
+                }
+                return idB - idA;
+            });
+            if (forecast[0] && forecast[0].codigo) return forecast[0].codigo;
+
+            var prev = cicloProyectoAnterior();
+            if (prev) return prev;
+
+            var prevYear = ciclos.filter(function (c) {
+                return String(c.codigo) !== String(current) && Number(c.anio) === (anio - 1);
+            }).sort(function (a, b) {
+                return (Number(b.id) || 0) - (Number(a.id) || 0);
+            });
+            return (prevYear[0] && prevYear[0].codigo) || '';
+        }
+
+        if (!esForecastTipo(tipo)) return '';
+
+        // Forecast: preferir SIOP / Budget del mismo año (no otro Forecast).
+        var siop = sameYear.filter(function (c) { return String(c.tipoBudget || '') === 'SIOP'; });
+        if (siop.length) return siop[0].codigo;
+        var plain = sameYear.filter(function (c) {
+            var t = String(c.tipoBudget || '');
+            return !t || (!esForecastTipo(t) && t !== 'SIOP');
+        });
+        if (plain.length) return plain[0].codigo;
+        var other = sameYear.filter(function (c) { return !esForecastTipo(c.tipoBudget); });
+        return (other[0] && other[0].codigo) || '';
+    }
+
+    /** En SIOP, la fila de arriba compara contra el proyecto anterior; si no hay, la venta real. */
+    function pastQtyMes(cta, monthIdx) {
+        if (esSiopTipo()) {
+            var c = control.centro;
+            if (c && cta) {
+                var row = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+                if (row && mesLleno(row[monthIdx])) return Number(row[monthIdx]) || 0;
+            }
+            return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
+        }
+        return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
+    }
+
+    function pastQtyCaption() {
+        if (esSiopTipo()) {
+            var code = CC.state.cicloBaseCodigo || '';
+            return code ? ('proy. ' + code) : 'proy. anterior';
+        }
+        return 'venta ' + (CC.state.anioGasto || '');
+    }
+
+    function loadBudgetsBaseForSeed(gen, cicloEsperado) {
+        var base = cicloBaseProyeccion();
+        CC.state.budgetsBase = {};
+        CC.state.cicloBaseCodigo = base || '';
+        CC._budgetsBaseLoaded = false;
+        if (!base) {
+            CC._budgetsBaseLoaded = true;
+            return Promise.resolve();
+        }
+        return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(base), {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) {
+            if (!r.ok) throw new Error('base ' + r.status);
+            return r.json();
+        }).then(function (json) {
+            if (gen != null && gen !== CC._capturaLoadGen) return;
+            var raw = json.budgets || {};
+            Object.keys(raw).forEach(function (k) {
+                CC.state.budgetsBase[k] = normalizeLoadedMonths(raw[k], false);
+            });
+            CC._budgetsBaseLoaded = true;
         }).catch(function () {
-            CC.state.overlays = {};
-            CC.state.budgets = {};
-            CC.state.completados = {};
-            CC._capturaReady = true;
+            if (gen != null && gen !== CC._capturaLoadGen) return;
+            CC.state.budgetsBase = {};
+            CC._budgetsBaseLoaded = true;
         });
     }
 
@@ -671,14 +1952,43 @@
         })[0] || null;
     }
 
+    /** Normaliza tipo de budget del ciclo ('' = sin bloqueo Forecast). */
+    function normalizeTipoBudgetClient(t) {
+        t = String(t || '').trim();
+        if (/^budget$/i.test(t)) return 'BUDGET';
+        if (t === '3+9' || t === '6+6' || t === '9+3' || t === 'SIOP') return t;
+        return '';
+    }
+
+    /**
+     * Aplica el periodo del ciclo elegido. Sustituye el period completo para no
+     * heredar tipoBudget / años del ciclo anterior (bug: quedaban 6 meses bloqueados).
+     */
+    function applyPeriodFromCiclo(period, codigoFallback) {
+        var next = period ? Object.assign({}, period) : {};
+        if (!next.codigo && codigoFallback) next.codigo = codigoFallback;
+        next.tipoBudget = normalizeTipoBudgetClient(next.tipoBudget);
+        CC.state.period = next;
+        syncFxMesesFromPeriod(CC.state.period);
+        if (next.anioReferencia) CC.state.anioGasto = next.anioReferencia;
+        if (next.anio) CC.state.anioPresupuesto = next.anio;
+        if (next.codigo) CC.state.cicloCodigo = next.codigo;
+        var anioLbl = document.getElementById('pv-costos-anio-label');
+        if (anioLbl && CC.state.anioPresupuesto) anioLbl.textContent = String(CC.state.anioPresupuesto);
+        persistPeriod();
+        return next;
+    }
+
     function upsertCiclo(data) {
         var list = CC.state.ciclos || [];
         var i = -1;
         list.forEach(function (c, idx) {
             if (String(c.codigo).toUpperCase() === String(data.codigo).toUpperCase()) i = idx;
         });
-        if (i >= 0) list[i] = Object.assign({}, list[i], data);
-        else list.unshift(data);
+        var row = Object.assign({}, i >= 0 ? list[i] : {}, data);
+        row.tipoBudget = normalizeTipoBudgetClient(row.tipoBudget);
+        if (i >= 0) list[i] = row;
+        else list.unshift(row);
         CC.state.ciclos = list;
         saveJSON(SK.ciclos, list);
     }
@@ -700,8 +2010,323 @@
             estado: val('p-estado'),
             inflacion: Number(val('p-inflacion')) || 4,
             tipoCambio: Number(val('p-tc')) || 20,
+            tipoBudget: val('p-tipo-budget') || 'BUDGET',
             observaciones: val('p-obs')
         };
+    }
+
+    function budgetTipo() {
+        return normalizeTipoBudgetClient(CC.state.period && CC.state.period.tipoBudget);
+    }
+
+    function esForecastTipo(t) {
+        t = String(t || budgetTipo() || '');
+        return t === '3+9' || t === '6+6' || t === '9+3';
+    }
+
+    function esSiopTipo(t) {
+        return String(t || budgetTipo() || '') === 'SIOP';
+    }
+
+    /** Budget: captura normal, meses en blanco y editables. */
+    function esBudgetTipo(t) {
+        return String(t || budgetTipo() || '') === 'BUDGET';
+    }
+
+    /** Meses a precargar desde venta real del año en curso (índices 0..n-1). SIOP = 0. */
+    function budgetSeedCount() {
+        var t = budgetTipo();
+        if (t === '3+9') return 3;
+        if (t === '6+6') return 6;
+        if (t === '9+3') return 9;
+        return 0;
+    }
+
+    /** Meses bloqueados (venta real fija). En SIOP ninguno. */
+    function budgetLockCount() {
+        var t = budgetTipo();
+        if (t === '3+9') return 3;
+        if (t === '6+6') return 6;
+        if (t === '9+3') return 9;
+        return 0;
+    }
+
+    function mesBloqueadoBudget(monthIdx) {
+        var i = Number(monthIdx);
+        if (!isFinite(i) || i < 0) return false;
+        return i < budgetLockCount();
+    }
+
+    function labelTipoBudget(t) {
+        t = String(t || budgetTipo() || '');
+        if (t === 'BUDGET') return 'Budget';
+        if (t === '3+9') return 'Forecast 3+9';
+        if (t === '6+6') return 'Forecast 6+6';
+        if (t === '9+3') return 'Forecast 9+3';
+        if (t === 'SIOP') return 'SIOP';
+        return '—';
+    }
+
+    function descTipoBudget(t) {
+        t = String(t || budgetTipo() || '');
+        if (t === 'BUDGET') {
+            return '<strong>Budget:</strong> los 12 meses quedan en blanco y editables. Ahí se captura la proyección; no se precarga venta real ni se bloquea ningún mes.';
+        }
+        if (t === '3+9') {
+            return '<strong>Forecast 3+9:</strong> los 3 primeros meses (ene–mar) se cargan con la venta real del año en curso y quedan fijos. Los 9 restantes se cargan del Budget y se pueden modificar.';
+        }
+        if (t === '6+6') {
+            return '<strong>Forecast 6+6:</strong> los 6 primeros meses (ene–jun) se cargan con la venta real del año en curso y quedan fijos. Los 6 restantes se cargan del Budget y se pueden modificar.';
+        }
+        if (t === '9+3') {
+            return '<strong>Forecast 9+3:</strong> los 9 primeros meses (ene–sep) se cargan con la venta real del año en curso y quedan fijos. Los 3 restantes se cargan del Budget y se pueden modificar.';
+        }
+        if (t === 'SIOP') {
+            return '<strong>SIOP:</strong> se precarga el Budget del mismo año (proyección ' + (CC.state.anioPresupuesto || '') + '): meses con dato se copian, sin dato quedan en 0. Todos editables. Arriba ves la referencia para comparar.';
+        }
+        return 'Selecciona el tipo de forecast o SIOP.';
+    }
+
+    function syncTipoBudgetModalUi() {
+        var tipo = val('p-tipo-budget') || 'BUDGET';
+        var desc = document.getElementById('p-tipo-budget-desc');
+        if (desc) desc.innerHTML = descTipoBudget(tipo);
+        var hint = document.getElementById('p-tipo-budget-hint');
+        if (hint && !document.getElementById('p-tipo-budget').disabled) {
+            if (esBudgetTipo(tipo)) {
+                hint.textContent = 'Budget: los 12 meses quedan en blanco para capturar la proyección.';
+            } else if (esSiopTipo(tipo)) {
+                hint.textContent = 'SIOP: se precarga la proyección ' + (CC.state.anioPresupuesto || '') + ' (dato o 0) · todos editables · arriba ves la referencia.';
+            } else {
+                hint.textContent = 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
+            }
+        }
+    }
+
+    /**
+     * Al abrir Captura de un cliente: solo precarga si el producto NO tiene fila
+     * guardada en este ciclo. Nunca pisa capturas ya persistidas al cambiar de ciclo.
+     * Forecast: primeros N meses = venta real (fijos); el resto = Budget.
+     * SIOP: precarga proyección del mismo año (dato o 0); todos editables.
+     */
+    function budgetTieneFilaEnServidor(empresa, cc, cuenta) {
+        var map = CC.state.budgetKeysFromServer || {};
+        var primary = budgetKey(empresa, cc, cuenta).toUpperCase();
+        if (map[primary]) return true;
+        return Object.keys(map).some(function (k) {
+            return String(k).toUpperCase() === primary;
+        });
+    }
+
+    function budgetNecesitaSeed(empresa, cc, cuenta, months) {
+        if (budgetTieneFilaEnServidor(empresa, cc, cuenta)) return false;
+        if (months && months.some(mesLleno)) return false;
+        return true;
+    }
+
+    function baseBudgetMonthsOf(empresa, cc, cuenta) {
+        var map = CC.state.budgetsBase || {};
+        var key = resolveStateKey(map, empresa, cc, cuenta);
+        var row = map[key];
+        return Array.isArray(row) ? row.slice() : null;
+    }
+
+    /** Antes vaciaba el input SIOP si coincidía con el ciclo anterior; eso impedía ver la precarga. */
+    function stripSiopSeedLocalOnce() {
+        // no-op: SIOP precarga la proyección del año (base) en el input y la deja editable.
+    }
+
+    function monthsPositiveCount(months) {
+        var n = 0;
+        var arr = months || [];
+        for (var i = 0; i < 12; i++) {
+            if (Number(arr[i]) > 0) n += 1;
+        }
+        return n;
+    }
+
+    /** SIOP: re-precargar si está en ceros pero la proyección base sí tiene datos. */
+    function siopDebeReseedDesdeBase(existing, baseRow) {
+        var baseN = monthsPositiveCount(baseRow);
+        if (baseN <= 0) return false;
+        if (!existing) return true;
+        return monthsPositiveCount(existing) <= 0;
+    }
+
+    /**
+     * SIOP: precarga la proyección del mismo año (Budget / Forecast base).
+     * Meses con dato → ese valor; sin dato → 0. Todos editables.
+     * Si SIOP ya está en ceros y la base tiene datos, vuelve a precargar.
+     */
+    function seedSiopDesdeProyeccionBase(c, cicloSeed, loadGen) {
+        var ctas = control._allCtas || [];
+        if (!ctas.length) return 0;
+        var seeded = 0;
+        ctas.forEach(function (cta) {
+            var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var needs = siopDebeReseedDesdeBase(existing, baseRow)
+                || budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing);
+            if (!needs) return;
+            if (!baseRow && !budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
+
+            var months = [];
+            for (var i = 0; i < 12; i++) {
+                if (baseRow && Number(baseRow[i]) > 0) {
+                    months.push(toStoreQty(Number(baseRow[i]) || 0));
+                } else if (baseRow && mesLleno(baseRow[i])) {
+                    months.push(toStoreQty(Number(baseRow[i]) || 0));
+                } else {
+                    months.push(0);
+                }
+            }
+            // Si la base no aportó nada positivo y ya había fila, no pisar.
+            if (monthsPositiveCount(months) <= 0 && existing && monthsPositiveCount(existing) > 0) {
+                return;
+            }
+            var key = budgetKey(c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets = CC.state.budgets || {};
+            CC.state.budgets[key] = months.slice();
+            CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+            CC.state.budgetKeysFromServer[key.toUpperCase()] = true;
+            persistBudget(c.empresa, c.codigo, cta.codigo, months, { allowLocked: true });
+            seeded += 1;
+        });
+        if (seeded && loadGen === (CC._capturaLoadGen || 0)
+            && String(cicloActualCodigo() || '').toUpperCase() === String(cicloSeed).toUpperCase()) {
+            control._allCtas = cuentasEnriquecidas(c);
+            toast('success', 'SIOP', 'Se precargaron ' + seeded +
+                ' producto' + (seeded === 1 ? '' : 's') +
+                ' desde ' + (CC.state.cicloBaseCodigo || 'proyección ' + (CC.state.anioPresupuesto || '')) +
+                ' (sin dato = 0). Todos los meses editables.');
+            drawMatrixTable();
+            updateControlProgress();
+        }
+        return seeded;
+    }
+
+    /**
+     * SIOP: si ya hay fila guardada con meses vacíos (null), completa con 0 en memoria.
+     */
+    function fillSiopNullMonthsWithZero(c) {
+        if (!c || !esSiopTipo()) return;
+        var list = control._allCtas || cuentasDeCentro(c);
+        var changed = false;
+        list.forEach(function (cta) {
+            var found = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            if (!found) return;
+            var months = found.slice();
+            var dirty = false;
+            for (var i = 0; i < 12; i++) {
+                if (!mesLleno(months[i])) {
+                    months[i] = 0;
+                    dirty = true;
+                }
+            }
+            if (!dirty) return;
+            var key = resolveStateKey(CC.state.budgets, c.empresa, c.codigo, cta.codigo)
+                || budgetKey(c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets[key] = months;
+            changed = true;
+        });
+        if (changed) {
+            control._allCtas = cuentasEnriquecidas(c);
+        }
+    }
+
+    function seedPresupuestoDesdeVentaReal(c) {
+        if (!c || control.locked) return;
+        if (!CC._capturaReady) return;
+        var cicloSeed = cicloActualCodigo();
+        if (!cicloSeed) return;
+        var tipo = budgetTipo();
+        if (!tipo) {
+            if ((control._allCtas || []).length) {
+                console.warn('[PV] Ciclo sin tipoBudget; no se precarga Forecast/SIOP');
+            }
+            return;
+        }
+        if (esBudgetTipo(tipo)) return;
+
+        var seedKey = String(cicloSeed).toUpperCase() + '|' + budgetKey(c.empresa, c.codigo, '*');
+        CC._seedDoneFor = CC._seedDoneFor || {};
+        var loadGen = CC._capturaLoadGen || 0;
+
+        if (esSiopTipo(tipo)) {
+            if (!CC._budgetsBaseLoaded) return;
+            // Permitir re-seed si la base tiene datos y SIOP está en ceros (aunque ya se haya intentado).
+            var baseStamp = String(CC.state.cicloBaseCodigo || '') + '|' + Object.keys(CC.state.budgetsBase || {}).length;
+            var siopStamp = seedKey + '|' + baseStamp;
+            fillSiopNullMonthsWithZero(c);
+            if (CC._siopSeedStamp === siopStamp && CC._seedDoneFor[seedKey]) {
+                // Ya precargamos con esta misma base; igual intenta rellenar ceros si la base mejoró.
+                seedSiopDesdeProyeccionBase(c, cicloSeed, loadGen);
+                return;
+            }
+            seedSiopDesdeProyeccionBase(c, cicloSeed, loadGen);
+            CC._seedDoneFor[seedKey] = true;
+            CC._siopSeedStamp = siopStamp;
+            return;
+        }
+
+        var n = budgetSeedCount(); // 3/6/9 en Forecast
+        if (CC._seedDoneFor[seedKey]) return;
+
+        var ctas = control._allCtas || [];
+        if (!ctas.length) return;
+        var seeded = 0;
+        var fromBase = 0;
+        var fromVenta = 0;
+        ctas.forEach(function (cta) {
+            var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            if (!budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
+            var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var gasto = cta.gasto || [];
+            var months = [];
+            var usedBase = false;
+            var usedVenta = false;
+            for (var i = 0; i < 12; i++) {
+                if (i < n) {
+                    // Forecast: primeros N meses = venta real del año en curso (fijos).
+                    months.push(toStoreQty(Number(gasto[i]) || 0));
+                    usedVenta = true;
+                } else if (baseRow && mesLleno(baseRow[i])) {
+                    // Forecast: resto = Budget (editable).
+                    months.push(toStoreQty(Number(baseRow[i]) || 0));
+                    usedBase = true;
+                } else {
+                    months.push(null);
+                }
+            }
+            if (!months.some(mesLleno)) return;
+            var key = budgetKey(c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets = CC.state.budgets || {};
+            CC.state.budgets[key] = months.slice();
+            CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+            CC.state.budgetKeysFromServer[key.toUpperCase()] = true;
+            persistBudget(c.empresa, c.codigo, cta.codigo, months, { allowLocked: true });
+            seeded += 1;
+            if (usedBase) fromBase += 1;
+            if (usedVenta) fromVenta += 1;
+        });
+        CC._seedDoneFor[seedKey] = true;
+        if (seeded && loadGen === (CC._capturaLoadGen || 0)
+            && String(cicloActualCodigo() || '').toUpperCase() === String(cicloSeed).toUpperCase()) {
+            control._allCtas = cuentasEnriquecidas(c);
+            var parts = [];
+            if (fromVenta) {
+                parts.push(n + ' mes' + (n === 1 ? '' : 'es') + ' de venta ' + (CC.state.anioGasto || '') + ' (fijos)');
+            }
+            if (fromBase) {
+                parts.push('resto desde Budget' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : ''));
+            }
+            if (budgetLockCount()) parts.push('meses iniciales bloqueados');
+            toast('success', labelTipoBudget(tipo), 'Se precargaron ' + seeded +
+                (seeded === 1 ? ' producto' : ' productos') +
+                (parts.length ? (' · ' + parts.join(' · ')) : ''));
+            renderCapturaForm();
+            updateControlProgress();
+        }
     }
 
     function attachGasto(cuentas) {
@@ -927,14 +2552,14 @@
                 '<div class="cc-ciclo-meta">' +
                     '<div><small>Año real</small><strong>' + (c.anioReferencia || '—') + '</strong></div>' +
                     '<div><small>Año proyección</small><strong>' + (c.anio || '—') + '</strong></div>' +
-                    '<div><small>Ventana</small><strong>' + formatDate(c.inicio) + ' — ' + formatDate(c.fin) + '</strong></div>' +
+                    '<div><small>Budget</small><strong>' + escapeHtml(labelTipoBudget(c.tipoBudget)) + '</strong></div>' +
                     '<div><small>Tipo de cambio</small><strong>USD $' + Number(c.tipoCambio || 0).toFixed(2) + '</strong></div>' +
                 '</div>' +
                 '<div class="cc-ciclo-obs">' + escapeHtml(c.observaciones || 'Sin observaciones') + '</div>' +
                 '<div class="actions">' +
                     '<span class="cc-ciclo-load">' + resumenCargaCiclo(c) + '</span>' +
                     '<span style="display:flex;gap:.4rem">' +
-                    (puede('eliminarCiclo') ? '<button type="button" class="cc-btn cc-btn-danger" data-del-ciclo="' + escapeHtml(c.codigo) + '">Eliminar</button>' : '') +
+                    '<button type="button" class="cc-btn cc-btn-danger" data-del-ciclo="' + escapeHtml(c.codigo) + '">Eliminar</button>' +
                     '<a class="cc-btn cc-btn-ink" href="' + cicloUrl(c.codigo) + '">Abrir</a>' +
                     '</span></div></article>';
         }).join('');
@@ -1080,7 +2705,7 @@
         if (!a && !ctas) return 'Sin asignaciones todavía';
         var bits = [];
         if (a) bits.push(a + (a === 1 ? ' asignación' : ' asignaciones'));
-        if (cc) bits.push(cc + (cc === 1 ? ' centro' : ' centros'));
+        if (cc) bits.push(cc + (cc === 1 ? ' cliente' : ' clientes'));
         if (ctas) bits.push(ctas + (ctas === 1 ? ' cuenta' : ' cuentas'));
         if (us) bits.push(us + (us === 1 ? ' usuario' : ' usuarios'));
         return bits.join(' · ');
@@ -1097,7 +2722,7 @@
         }
         return head + '<p style="margin:.75rem 0 .35rem">También se borra lo que ya tiene cargado:</p><ul style="text-align:left;margin:.2rem 0 0;padding-left:1.2rem">' +
             (a ? '<li>' + a + (a === 1 ? ' asignación' : ' asignaciones') + '</li>' : '') +
-            (cc ? '<li>' + cc + (cc === 1 ? ' centro de costos' : ' centros de costo') + '</li>' : '') +
+            (cc ? '<li>' + cc + (cc === 1 ? ' cliente' : ' clientes') + '</li>' : '') +
             (ctas ? '<li>' + ctas + (ctas === 1 ? ' cuenta' : ' cuentas') + '</li>' : '') +
             (us ? '<li>' + us + (us === 1 ? ' usuario asignado' : ' usuarios asignados') + '</li>' : '') +
             '</ul>';
@@ -1115,10 +2740,6 @@
     }
 
     CC.eliminarCiclo = function (codigo) {
-        if (!puede('eliminarCiclo')) {
-            toast('error', 'Sin permiso', 'No tiene permiso para eliminar la proyección.');
-            return;
-        }
         var c = findCiclo(codigo) || { codigo: codigo, nombre: codigo, asignaciones: 0, cuentas: 0, usuarios: 0, centros: 0 };
         var go = function () {
             return fetch('/ProyeccionesVentas/api/ciclos/' + encodeURIComponent(c.codigo), {
@@ -1235,16 +2856,355 @@
                 estadoEl.className = 'cc-badge ' + s.cls;
             }
         }
-        setText('period-fx', 'USD $' + Number(p.tipoCambio || 0).toFixed(2));
+        setText('period-fx', 'USD $' + Number(p.tipoCambio || 0).toFixed(2) +
+            (p.tipoBudget ? (' · Budget ' + labelTipoBudget(p.tipoBudget)) : ''));
         setText('th-gasto', 'Venta ' + (p.anioReferencia || 2026));
         setText('th-ppto', 'Proy. ' + (p.anio || 2027));
         setText('ind-inflacion', (p.inflacion || 0) + ' %');
-        setText('ind-tc', '$ ' + Number(p.tipoCambio || 0).toFixed(2));
+        syncFxMesesFromPeriod(p);
+        var baseEl = document.getElementById('ind-tc-base');
+        if (baseEl) baseEl.value = String(fxBaseRate());
         setText('ind-anio-ref', p.anioReferencia || 2026);
         setText('ind-anio', p.anio || 2027);
+        paintFxBadge();
         var kicker = document.querySelector('.cc-kicker');
         if (kicker && CC.state.page === 'admin-ciclo') {
-            kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · centros y permisos';
+            kicker.innerHTML = 'Ciclo ' + escapeHtml(p.codigo || '') + ' · clientes y permisos';
+        }
+    }
+
+    function renderTcMesesEditor() {
+        syncFxMesesFromPeriod(CC.state.period);
+        var box = document.getElementById('ind-tc-months');
+        var baseEl = document.getElementById('ind-tc-base');
+        if (baseEl) baseEl.value = fxBaseRate().toFixed(2);
+        if (!box) return;
+        var meses = ensureFxMeses();
+        box.innerHTML = MONTHS.map(function (m, i) {
+            var v = Number(meses[i]) || fxBaseRate();
+            var custom = Math.abs(v - fxBaseRate()) > 0.0001;
+            return '<div class="cc-tc-month' + (custom ? ' is-custom' : '') + '">' +
+                '<label for="ind-tc-m-' + i + '">' + m + '</label>' +
+                '<input id="ind-tc-m-' + i + '" type="number" step="0.01" min="0.01" value="' + v.toFixed(2) + '">' +
+                '</div>';
+        }).join('');
+    }
+
+    function readTcMesesFromEditor() {
+        var base = Number(val('ind-tc-base'));
+        if (!(base > 0)) base = fxBaseRate();
+        var out = [];
+        for (var i = 0; i < 12; i++) {
+            var el = document.getElementById('ind-tc-m-' + i);
+            var v = el ? Number(el.value) : base;
+            out.push(v > 0 ? Math.round(v * 10000) / 10000 : base);
+        }
+        return { base: base, meses: out };
+    }
+
+    function applyTcBaseToMonthsEditor() {
+        var base = Number(val('ind-tc-base'));
+        if (!(base > 0)) base = fxBaseRate();
+        for (var i = 0; i < 12; i++) {
+            var el = document.getElementById('ind-tc-m-' + i);
+            if (el) el.value = base.toFixed(2);
+        }
+        renderTcMesesEditorHighlight();
+    }
+
+    function renderTcMesesEditorHighlight() {
+        var base = Number(val('ind-tc-base')) || fxBaseRate();
+        MONTHS.forEach(function (_, i) {
+            var wrap = document.querySelector('#ind-tc-months .cc-tc-month:nth-child(' + (i + 1) + ')');
+            var el = document.getElementById('ind-tc-m-' + i);
+            if (!wrap || !el) return;
+            var v = Number(el.value) || base;
+            wrap.classList.toggle('is-custom', Math.abs(v - base) > 0.0001);
+        });
+    }
+
+    function saveTcMeses() {
+        var pack = readTcMesesFromEditor();
+        var codigo = cicloActualCodigo();
+        if (!codigo) {
+            toast('warning', 'Sin ciclo', 'Elige un ciclo antes de guardar el tipo de cambio.');
+            return Promise.resolve(false);
+        }
+        return fetch('/ProyeccionesVentas/api/ciclos/' + encodeURIComponent(codigo) + '/tipo-cambio-meses', {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': csrfToken()
+            },
+            body: JSON.stringify({
+                tipoCambio: pack.base,
+                tipoCambioMeses: pack.meses
+            })
+        }).then(function (res) {
+            return res.json().then(function (json) {
+                if (!res.ok) throw new Error((json && json.message) || 'No se pudo guardar el TC');
+                var ciclo = json.ciclo || {};
+                CC.state.period = Object.assign({}, CC.state.period || {}, ciclo);
+                syncFxMesesFromPeriod(CC.state.period);
+                upsertCiclo(CC.state.period);
+                persistPeriod();
+                paintFxBadge();
+                renderPeriodBanner();
+                if (CC.state.page === 'control') {
+                    if (control.centro) {
+                        control._allCtas = cuentasEnriquecidas(control.centro);
+                        updateControlProgress();
+                        renderCapturaForm();
+                        renderControlTable();
+                    }
+                }
+                toast('success', 'TC guardado', 'Base ' + pack.base.toFixed(2) + (fxMesesVarian() ? ' · con variaciones mensuales' : ' · 12 meses iguales'));
+                return true;
+            });
+        }).catch(function (err) {
+            toast('danger', 'Error', err.message || 'No se pudo guardar');
+            return false;
+        });
+    }
+
+    function openTcMesesModal() {
+        renderTcMesesEditor();
+        showModal('modalIndicadores');
+    }
+
+    function bindTcMesesUi() {
+        if (CC._tcMesesBound) return;
+        CC._tcMesesBound = true;
+        ['ctl-fx-badge', 'ctl-fx-nav'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('click', function () { openTcMesesModal(); });
+            el.addEventListener('keydown', function (ev) {
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    openTcMesesModal();
+                }
+            });
+        });
+        var applyAll = document.getElementById('ind-tc-apply-all');
+        if (applyAll) applyAll.addEventListener('click', function () {
+            var base = Number(val('ind-tc-base'));
+            if (!(base > 0)) {
+                toast('warning', 'TC base', 'Captura un tipo de cambio base válido.');
+                return;
+            }
+            for (var i = 0; i < 12; i++) {
+                var el = document.getElementById('ind-tc-m-' + i);
+                if (el) el.value = base.toFixed(2);
+            }
+            renderTcMesesEditorHighlight();
+        });
+        var reset = document.getElementById('ind-tc-reset');
+        if (reset) reset.addEventListener('click', function () {
+            var base = fxBaseRate();
+            var baseEl = document.getElementById('ind-tc-base');
+            if (baseEl) baseEl.value = base.toFixed(2);
+            for (var i = 0; i < 12; i++) {
+                var el = document.getElementById('ind-tc-m-' + i);
+                if (el) el.value = base.toFixed(2);
+            }
+            renderTcMesesEditorHighlight();
+        });
+        var save = document.getElementById('ind-tc-save');
+        if (save) save.addEventListener('click', function () {
+            save.disabled = true;
+            saveTcMeses().then(function (ok) {
+                save.disabled = false;
+                if (ok) {
+                    var modal = document.getElementById('modalIndicadores');
+                    if (modal && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modal).hide();
+                }
+            });
+        });
+        var monthsBox = document.getElementById('ind-tc-months');
+        if (monthsBox) {
+            monthsBox.addEventListener('input', function (ev) {
+                if (ev.target && ev.target.id && ev.target.id.indexOf('ind-tc-m-') === 0) {
+                    renderTcMesesEditorHighlight();
+                }
+            });
+        }
+    }
+
+    function openPrecioMesesModal(codigo) {
+        var c = control.centro;
+        if (!c || !codigo) return;
+        var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
+        if (!cta) {
+            toast('warning', 'Producto', 'No se encontró el producto.');
+            return;
+        }
+        control._precioEditCodigo = String(codigo);
+        selectCuenta(codigo);
+        var sub = document.getElementById('pm-sub');
+        if (sub) sub.textContent = labelNombreCodigo(cta.nombre, cta.codigo);
+        var base = Number(cta.precioLista) || 0;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var baseEl = document.getElementById('pm-base');
+        if (baseEl) baseEl.value = base > 0 ? base.toFixed(2) : '';
+        var baseHint = document.getElementById('pm-base-hint');
+        if (baseHint) {
+            baseHint.textContent = base > 0
+                ? ('Global: ' + moneyLista(base, mon) + (cta.unidad ? ' / ' + cta.unidad : '') +
+                    ' · cada mes se precarga con Precios de productos o, si falta, con este global')
+                : 'Sin precio de lista; captura un valor base o por mes.';
+        }
+        var box = document.getElementById('pm-months');
+        if (box) {
+            var maestro = lookupMaestroMeses(c.empresa, c.codigo, codigo);
+            var refMeses = (maestro && maestro.meses) || [];
+            var refMons = (maestro && maestro.monedas) || [];
+            box.innerHTML = MONTHS.map(function (m, i) {
+                var ref = Number(refMeses[i]);
+                // Precarga: precio del mes en Precios de productos; si no hay, el global.
+                var seed = (isFinite(ref) && ref > 0) ? ref : (base > 0 ? base : 0);
+                var custom = seed > 0 && base > 0 && Math.abs(seed - base) > 0.0001;
+                var refMon = String(refMons[i] || mon || 'MXN').toUpperCase();
+                var refHtml = (isFinite(ref) && ref > 0)
+                    ? ('<div class="cc-tc-month-ref" title="Precio en Precios de productos (mes ' + (i + 1) + ')">' +
+                        escapeHtml(moneyLista(ref, refMon)) + '</div>')
+                    : '<div class="cc-tc-month-ref is-empty" title="Sin precio en Precios de productos · se usa el global">—</div>';
+                return '<div class="cc-tc-month' + (custom ? ' is-custom' : '') + '">' +
+                    '<label for="pm-m-' + i + '">' + m + '</label>' +
+                    refHtml +
+                    '<input id="pm-m-' + i + '" type="number" step="0.01" min="0" placeholder="' +
+                    (base > 0 ? base.toFixed(2) : '0') + '" value="' + (seed > 0 ? seed.toFixed(2) : '') + '">' +
+                    '</div>';
+            }).join('');
+        }
+        highlightPrecioMesesEditor();
+        showModal('modalPrecioMeses');
+    }
+
+    function highlightPrecioMesesEditor() {
+        var base = Number(val('pm-base')) || 0;
+        MONTHS.forEach(function (_, i) {
+            var wrap = document.querySelector('#pm-months .cc-tc-month:nth-child(' + (i + 1) + ')');
+            var el = document.getElementById('pm-m-' + i);
+            if (!wrap || !el) return;
+            var raw = String(el.value || '').trim();
+            var v = Number(raw);
+            var custom = raw !== '' && isFinite(v) && v > 0 && Math.abs(v - base) > 0.0001;
+            wrap.classList.toggle('is-custom', custom || (raw !== '' && isFinite(v) && v > 0));
+        });
+    }
+
+    function readPrecioMesesFromEditor() {
+        var out = [];
+        for (var i = 0; i < 12; i++) {
+            var el = document.getElementById('pm-m-' + i);
+            var raw = el ? String(el.value || '').trim() : '';
+            var v = Number(raw);
+            out.push(raw !== '' && isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : null);
+        }
+        return out;
+    }
+
+    function seedPrecioMesesDesdeMaestro(base) {
+        var c = control.centro;
+        var codigo = control._precioEditCodigo || control.cuenta;
+        var maestro = (c && codigo) ? lookupMaestroMeses(c.empresa, c.codigo, codigo) : null;
+        var refMeses = (maestro && maestro.meses) || [];
+        base = Number(base);
+        if (!(base > 0)) base = Number(val('pm-base')) || 0;
+        for (var i = 0; i < 12; i++) {
+            var el = document.getElementById('pm-m-' + i);
+            if (!el) continue;
+            var ref = Number(refMeses[i]);
+            var seed = (isFinite(ref) && ref > 0) ? ref : base;
+            el.value = seed > 0 ? seed.toFixed(2) : '';
+        }
+        highlightPrecioMesesEditor();
+    }
+
+    function bindPrecioMesesUi() {
+        if (CC._precioMesesBound) return;
+        CC._precioMesesBound = true;
+        var applyAll = document.getElementById('pm-apply-all');
+        if (applyAll) applyAll.addEventListener('click', function () {
+            var base = Number(val('pm-base'));
+            if (!(base > 0)) {
+                toast('warning', 'Precio base', 'Captura un precio global válido.');
+                return;
+            }
+            for (var i = 0; i < 12; i++) {
+                var el = document.getElementById('pm-m-' + i);
+                if (el) el.value = base.toFixed(2);
+            }
+            highlightPrecioMesesEditor();
+        });
+        var reset = document.getElementById('pm-reset');
+        if (reset) {
+            reset.addEventListener('click', function () {
+                seedPrecioMesesDesdeMaestro(Number(val('pm-base')) || 0);
+                toast('info', 'Precargado', 'Meses con precio de productos; si falta, el global.');
+            });
+        }
+        var save = document.getElementById('pm-save');
+        if (save) save.addEventListener('click', function () {
+            var c = control.centro;
+            var codigo = control._precioEditCodigo || control.cuenta;
+            if (!c || !codigo || control.locked) {
+                toast('warning', 'Sin permiso', 'No se puede editar el precio en este momento.');
+                return;
+            }
+            var meses = readPrecioMesesFromEditor();
+            // Si quedó algún mes vacío, completa con global para dejar los 12 asignados.
+            var base = Number(val('pm-base')) || 0;
+            var filled = 0;
+            for (var i = 0; i < 12; i++) {
+                if (meses[i] == null && base > 0) meses[i] = Math.round(base * 100) / 100;
+                if (meses[i] != null && meses[i] > 0) filled++;
+            }
+            if (!filled) {
+                toast('warning', 'Sin precios', 'Captura al menos un mes o un precio global.');
+                return;
+            }
+            var cta = (control._allCtas || []).filter(function (x) {
+                return String(x.codigo) === String(codigo);
+            })[0];
+            save.disabled = true;
+            Promise.resolve(persistPrecioMesesProducto(c.empresa, c.codigo, codigo, meses, {
+                moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase(),
+                nombre: (cta && cta.nombre) || codigo,
+                card_name: (c && c.nombre) || ''
+            })).then(function (json) {
+                if (control._allCtas) {
+                    control._allCtas = cuentasEnriquecidas(c);
+                }
+                updateMatrixRow(codigo);
+                renderControlTable();
+                renderControlCharts();
+                var modal = document.getElementById('modalPrecioMeses');
+                if (modal && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modal).hide();
+                var syncMsg = (json && json.message) ? (' · ' + json.message) : '';
+                toast('success', 'Precio guardado',
+                    filled + ' mes' + (filled === 1 ? '' : 'es') + ' en proyección' + syncMsg);
+            }).catch(function (err) {
+                toast('error', 'Parcial', (err && err.message)
+                    ? ('Proyección ok, pero Costos: ' + err.message)
+                    : 'Se guardó la proyección; falló sincronizar Costos.');
+                if (control._allCtas) control._allCtas = cuentasEnriquecidas(c);
+                updateMatrixRow(codigo);
+                renderControlTable();
+            }).then(function () {
+                save.disabled = false;
+            });
+        });
+        var monthsBox = document.getElementById('pm-months');
+        if (monthsBox) {
+            monthsBox.addEventListener('input', function (ev) {
+                if (ev.target && ev.target.id && ev.target.id.indexOf('pm-m-') === 0) {
+                    highlightPrecioMesesEditor();
+                }
+            });
         }
     }
 
@@ -1308,13 +3268,22 @@
         });
     }
 
-    function totGastoCentro(c, ctas) {
-        return (ctas || cuentasDeCentro(c)).reduce(function (a, cta) { return a + sum(cta.gasto); }, 0);
+    function totPptoCentro(c, ctas) {
+        return (ctas || cuentasEnriquecidas(c)).reduce(function (a, cta) {
+            if (cta.importeProy != null) return a + Number(cta.importeProy || 0);
+            var full = Object.assign({}, cta, {
+                ppto: cta.ppto || pptoDe(c.empresa, c.codigo, cta, cta.gasto),
+                precioLista: cta.precioLista != null ? cta.precioLista : Number((lookupPrecioLista(cta.codigo) || {}).precio) || 0,
+                precioMoneda: cta.precioMoneda || String((lookupPrecioLista(cta.codigo) || {}).moneda || 'MXN').toUpperCase()
+            });
+            return a + importeProyeccionMxn(full);
+        }, 0);
     }
 
-    function totPptoCentro(c, ctas) {
-        return (ctas || cuentasDeCentro(c)).reduce(function (a, cta) {
-            return a + sum(pptoDe(c.empresa, c.codigo, cta, cta.gasto));
+    function totGastoCentro(c, ctas) {
+        return (ctas || cuentasEnriquecidas(c)).reduce(function (a, cta) {
+            if (cta.importeVenta != null) return a + Number(cta.importeVenta || 0);
+            return a + importeVentaMxn(cta);
         }, 0);
     }
 
@@ -1337,11 +3306,10 @@
             var btn = document.getElementById('btn-guardar-ciclo');
             if (btn) btn.disabled = true;
             saveCicloApi(data).then(function (ciclo) {
-                CC.state.period = Object.assign({}, CC.state.period, data, ciclo || {});
-                persistPeriod();
+                applyPeriodFromCiclo(Object.assign({}, data, ciclo || {}), data.codigo);
                 hideModal('modalPeriodo');
                 if (CC.state.page === 'admin') {
-                    toast('success', 'Ciclo abierto', data.codigo + ' · ' + data.nombre);
+                    toast('success', 'Ciclo abierto', data.codigo + ' · ' + labelTipoBudget(data.tipoBudget) + ' · ' + data.nombre);
                     window.location = cicloUrl(data.codigo);
                     return;
                 }
@@ -1354,6 +3322,10 @@
                 if (btn) btn.disabled = false;
             });
         });
+        var tipoEl = document.getElementById('p-tipo-budget');
+        if (tipoEl) tipoEl.addEventListener('change', syncTipoBudgetModalUi);
+        var anioEl = document.getElementById('p-anio');
+        if (anioEl) anioEl.addEventListener('change', syncTipoBudgetModalUi);
         CC._periodoBound = true;
     }
 
@@ -1494,11 +3466,12 @@
     }
 
     /* ---------- Control ---------- */
-    var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, vista: 'captura', scopeTabla: 'cuenta', chartVerTodas: false };
+    var control = { centro: null, cuenta: null, soloPendientes: false, grupoCerrado: {}, grupoCerradoDet: {}, grupoCerradoMatrix: {}, vista: 'captura', scopeTabla: 'centro', chartVerTodas: false, prodQuery: '' };
 
     function asignacionesDelCiclo(ciclo) {
+        var needle = String(ciclo || '').toUpperCase();
         return (CC.state.misAsignaciones || []).filter(function (a) {
-            return !ciclo || String(a.ciclo || '') === String(ciclo);
+            return !needle || String(a.ciclo || '').toUpperCase() === needle;
         });
     }
 
@@ -1509,12 +3482,14 @@
     function centrosAgrupadosDesdeAsignaciones(list) {
         var map = {};
         (list || []).forEach(function (a) {
-            var emp = String(a.empresa || '').toUpperCase();
-            var k = emp + '|' + String(a.centro_codigo || '');
+            var emp = String(a.empresa || '').toUpperCase().trim();
+            var code = codigoClienteAsig(a);
+            var k = emp + '|' + code;
+            if (!emp || !code) return;
             if (!map[k]) {
                 map[k] = {
-                    codigo: a.centro_codigo,
-                    nombre: a.centro_nombre || a.centro_codigo,
+                    codigo: code,
+                    nombre: nombreClienteAsig(a) || code,
                     empresa: emp,
                     usuario: a.usuario || '',
                     usuarios: [],
@@ -1533,7 +3508,7 @@
             var row = map[k];
             if (a.es_principal || !row.usuario) row.usuario = a.usuario || row.usuario;
             if (a.usuario && row.usuarios.indexOf(a.usuario) === -1) row.usuarios.push(a.usuario);
-            if (a.centro_nombre) row.nombre = a.centro_nombre;
+            if (nombreClienteAsig(a)) row.nombre = nombreClienteAsig(a);
             row.capturar = row.capturar || !!a.capturar;
             row.editar = row.editar || !!a.editar;
             row.revisar = row.revisar || !!a.revisar;
@@ -1601,29 +3576,127 @@
         var ini = CC.state.cicloInicial || '';
         if (ini && mine.filter(function (c) { return c.codigo === ini; }).length) return ini;
         var ranked = mine.slice().sort(function (a, b) {
-            return scoreTemporadaCaptura(b.codigo) - scoreTemporadaCaptura(a.codigo);
+            var d = scoreTemporadaCaptura(b.codigo) - scoreTemporadaCaptura(a.codigo);
+            if (d) return d;
+            var tb = findCiclo(b.codigo) || {};
+            var ta = findCiclo(a.codigo) || {};
+            var hasB = tb.tipoBudget ? 1 : 0;
+            var hasA = ta.tipoBudget ? 1 : 0;
+            if (hasB !== hasA) return hasB - hasA;
+            return (Number(tb.id) || 0) - (Number(ta.id) || 0);
         });
         return (ranked[0] && ranked[0].codigo) || '';
     }
 
     function setCapturaEnabled(on) {
-        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct'].forEach(function (id) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-refresh-venta', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q', 'ctl-add-btn'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.disabled = !on;
         });
+    }
+
+    function lookupMaestroLocal(empresa, cliente, codigo) {
+        var map = CC.state.costosMaster || {};
+        if (!codigo) return null;
+        var emp = String(empresa || '').toUpperCase();
+        var card = String(cliente || '').trim();
+        var cod = String(codigo || '').trim();
+        var hit = null;
+        if (emp && card && cod) {
+            hit = map[emp + '|' + card + '|' + cod];
+        }
+        if (!hit && emp && cod) {
+            hit = map[emp + '|' + cod];
+        }
+        if (!hit) {
+            hit = map[cod] || map[cod.toUpperCase()] || null;
+        }
+        return hit || null;
+    }
+
+    /** Precios mensuales del maestro Precios de productos (Empresa+CardCode+ItemCode). */
+    function lookupMaestroMeses(empresa, cliente, codigo) {
+        var map = CC.state.costosMeses || {};
+        if (!codigo) return null;
+        var emp = String(empresa || '').toUpperCase();
+        var card = String(cliente || '').trim();
+        var cod = String(codigo || '').trim();
+        var hit = null;
+        if (emp && card && cod) hit = map[emp + '|' + card + '|' + cod];
+        if (!hit && emp && cod) hit = map[emp + '|' + cod];
+        if (!hit) hit = map[cod] || map[cod.toUpperCase()] || null;
+        if (!hit || !hit.meses) return null;
+        return hit;
+    }
+
+    function listaPrecioDeCentro(c, codigo) {
+        if (!c || !codigo) return null;
+        var own = CC.state.preciosCache && CC.state.preciosCache[preciosCacheKey(c)];
+        if (own) {
+            return own[String(codigo)]
+                || own[String(codigo).toUpperCase()]
+                || own[codigoCuentaKey(codigo)]
+                || null;
+        }
+        if (control.centro
+            && String(control.centro.codigo) === String(c.codigo)
+            && String(control.centro.empresa || '').toUpperCase() === String(c.empresa || '').toUpperCase()
+            && control._preciosReq === preciosCacheKey(c)) {
+            return lookupPrecioLista(codigo);
+        }
+        return null;
     }
 
     function cuentasEnriquecidas(c) {
         return cuentasDeCentro(c).map(function (cta) {
             var ppto = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
             var totP = sum(ppto);
-            return Object.assign({}, cta, {
+            var lista = listaPrecioDeCentro(c, cta.codigo) || lookupPrecioLista(cta.codigo) || {};
+            var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
+            var maestroMesesHit = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
+            var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
+            var masterPrecio = (master && Number(master.costo)) || 0;
+            var masterMes = (master && Number(master.mes)) || 0;
+            // Preferir precio local global (moda / mes=0) sobre lista SAP.
+            var precioLista = masterPrecio > 0 ? masterPrecio : (Number(lista.precio) || 0);
+            var precioMoneda = '';
+            if (masterPrecio > 0 && master && master.moneda) {
+                precioMoneda = String(master.moneda).toUpperCase();
+            } else {
+                precioMoneda = String(lista.moneda || '').toUpperCase() || '';
+            }
+            var precioMaestroMeses = (maestroMesesHit && maestroMesesHit.meses)
+                ? maestroMesesHit.meses.slice(0, 12)
+                : mesesVacios12();
+            var enriched = Object.assign({}, cta, {
                 ppto: ppto,
                 totG: sum(cta.gasto),
                 totP: totP,
                 listo: mesesTodosLlenos(ppto) || cuentaMarcada(c.empresa, c.codigo, cta.codigo),
-                costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0
+                costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
+                precioLista: precioLista,
+                precioMoneda: precioMoneda,
+                precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
+                precioMaestroMeses: precioMaestroMeses,
+                precioLocalMes: masterMes > 0 ? masterMes : null,
+                unidad: String(lista.unidad || cta.unidad || '').trim(),
+                unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
+                listaPrecioNombre: masterPrecio > 0
+                    ? 'Maestro local · global'
+                    : (lista.lista || '')
             });
+            enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
+            if (!enriched.unidadNombre && enriched.unidad) {
+                enriched.unidadNombre = nombreUnidadMedida(enriched.unidad);
+            }
+            var costoLocal = Number(cta.costo) || snap || masterPrecio || 0;
+            enriched.costo = costoLocal;
+            enriched.costoMoneda = (master && master.moneda) || 'MXN';
+            enriched.importeProy = importeProyeccionMxn(enriched);
+            enriched.importeProyVista = importeProyeccionVista(enriched);
+            enriched.importeVenta = importeVentaMxn(enriched);
+            enriched.importeVentaVista = importeVentaVista(enriched);
+            return enriched;
         });
     }
 
@@ -1634,8 +3707,16 @@
             total: ctas.length,
             capturadas: ctas.length - pend,
             pendientes: pend,
-            totG: ctas.reduce(function (a, x) { return a + x.totG; }, 0),
-            totP: ctas.reduce(function (a, x) { return a + x.totP; }, 0),
+            totG: ctas.reduce(function (a, x) { return a + (x.importeVenta || 0); }, 0),
+            totGVista: ctas.reduce(function (a, x) {
+                return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+            }, 0),
+            totP: ctas.reduce(function (a, x) { return a + (x.importeProy || 0); }, 0),
+            totPVista: ctas.reduce(function (a, x) {
+                return a + (x.importeProyVista != null ? x.importeProyVista : importeProyeccionVista(x));
+            }, 0),
+            totUnitsG: ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0),
+            totUnitsP: ctas.reduce(function (a, x) { return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto)); }, 0),
             avance: pct(ctas.length - pend, ctas.length || 1)
         };
     }
@@ -1741,18 +3822,43 @@
     function paintVisibleTableTotals(ctas, prefix) {
         prefix = prefix || 'ctl';
         if (!document.getElementById(prefix + '-tot-gasto')) return;
+        var mesesEl = document.getElementById(prefix + '-tot-meses');
         if (!ctas) {
             setText(prefix + '-tot-gasto', '—');
             setText(prefix + '-tot-ppto', '—');
             setText(prefix + '-pend', '—');
+            if (mesesEl) mesesEl.innerHTML = '';
             return;
         }
-        var totG = ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0);
-        var totP = ctas.reduce(function (a, x) { return a + (x.totP || 0); }, 0);
+        var totG = ctas.reduce(function (a, x) {
+            return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+        }, 0);
+        var totP = ctas.reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
         var pend = ctas.filter(ctaPendiente).length;
-        setText(prefix + '-tot-gasto', money(totG));
-        setText(prefix + '-tot-ppto', money(totP));
+        setText(prefix + '-tot-gasto', moneyGasto(totG));
+        setText(prefix + '-tot-ppto', moneyGasto(totP));
         setText(prefix + '-pend', pend);
+
+        if (mesesEl) {
+            var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            ctas.forEach(function (cta) {
+                for (var i = 0; i < 12; i++) {
+                    mesG[i] += Number(importeMesVentaVista(cta, i)) || 0;
+                    var mp = importeMesProyVista(cta, i);
+                    if (mp != null) mesP[i] += Number(mp) || 0;
+                }
+            });
+            var yyG = String(CC.state.anioGasto).slice(2);
+            var yyP = String(CC.state.anioPresupuesto).slice(2);
+            mesesEl.innerHTML = MONTHS.map(function (m, i) {
+                return '<div class="cc-sticky-mes">' +
+                    '<span class="cc-sticky-mes-label">' + m + '</span>' +
+                    '<span class="cc-sticky-mes-venta" title="Venta ’' + yyG + '">' + (mesG[i] ? moneyGasto(mesG[i]) : '—') + '</span>' +
+                    '<span class="cc-sticky-mes-proy" title="Proy. ’' + yyP + '">' + (mesP[i] ? moneyGasto(mesP[i]) : '—') + '</span>' +
+                    '</div>';
+            }).join('');
+        }
     }
 
     function renderMisCentros() {
@@ -1769,7 +3875,8 @@
         var asigs = asignacionesDelCiclo(ciclo);
         var emps = {};
         asigs.forEach(function (a) {
-            var e = String(a.empresa || '').toUpperCase();
+            var e = String(a.empresa || '').toUpperCase().trim();
+            if (!e) return;
             (emps[e] = emps[e] || []).push(a);
         });
         return emps;
@@ -1790,11 +3897,12 @@
             el.hidden = !has;
             if (has) {
                 el.textContent = n > 0 ? (n + (n === 1 ? ' pendiente' : ' pendientes')) : 'Listo';
-                el.className = 'cc-nav-status ' + (n > 0 ? 'is-warn' : 'is-ok');
+                el.className = 'cc-nav-status ' + (n > 0 ? 'is-danger' : 'is-ok');
             }
         }
         if (selectEl) {
-            selectEl.classList.toggle('is-warn', has && n > 0);
+            selectEl.classList.toggle('is-danger', has && n > 0);
+            selectEl.classList.toggle('is-warn', false);
             selectEl.classList.toggle('is-ok', has && n === 0);
         }
     }
@@ -1817,9 +3925,11 @@
         var cur = String(el.value || '').toUpperCase();
         var html = '<option value="">Elige empresa…</option>';
         keys.forEach(function (e) {
+            var pend = CC._capturaReady ? pendientesDeEmpresa(e) : null;
             var label = e;
-            if (CC._capturaReady) label += '   ·   ' + markPendLabel(pendientesDeEmpresa(e));
-            html += '<option value="' + escapeHtml(e) + '">' + escapeHtml(label) + '</option>';
+            if (pend !== null) label += '   ·   ' + markPendLabel(pend);
+            var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
+            html += '<option' + (optClass ? ' class="' + optClass + '"' : '') + ' value="' + escapeHtml(e) + '">' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         if (cur && keys.indexOf(cur) !== -1) el.value = cur;
@@ -1834,38 +3944,48 @@
     function renderNavCentros() {
         var el = document.getElementById('ctl-centro');
         if (!el) return;
-        var emp = String(val('ctl-empresa') || '').toUpperCase();
+        var emp = String(val('ctl-empresa') || '').toUpperCase().trim();
         if (!emp) {
             el.innerHTML = '<option value="">Elige una empresa primero…</option>';
             el.disabled = true;
-            el.classList.remove('is-warn', 'is-ok');
+            el.classList.remove('is-warn', 'is-ok', 'is-danger');
             paintNavStatus('ctl-cc-status', null, el);
             return;
         }
-        var list = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
-        var cur = val('ctl-centro');
+        var raw = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
+        var seenCc = {};
+        var list = [];
+        raw.forEach(function (a) {
+            var code = String(a.centro_codigo || '').trim();
+            if (!code || seenCc[code]) return;
+            seenCc[code] = true;
+            list.push(a);
+        });
+        var cur = String(val('ctl-centro') || '').trim();
         var html = '<option value="">Elige cliente…</option>';
         list.forEach(function (a) {
             var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
+            var pend = null;
             if (CC._capturaReady) {
-                var st = statsDeCentro({
+                pend = statsDeCentro({
                     codigo: a.centro_codigo,
                     nombre: a.centro_nombre || a.centro_codigo,
                     empresa: emp
-                });
-                label += '   ·   ' + markPendLabel(st.pendientes);
+                }).pendientes;
+                label += '   ·   ' + markPendLabel(pend);
             }
-            html += '<option value="' + escapeHtml(a.centro_codigo) + '">' + escapeHtml(label) + '</option>';
+            var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
+            html += '<option' + (optClass ? ' class="' + optClass + '"' : '') + ' value="' + escapeHtml(String(a.centro_codigo || '').trim()) + '">' + escapeHtml(label) + '</option>';
         });
         el.innerHTML = html;
         el.disabled = !list.length;
-        var exists = list.filter(function (a) { return String(a.centro_codigo) === String(cur); }).length;
+        var exists = list.filter(function (a) { return String(a.centro_codigo || '').trim() === cur; }).length;
         if (exists) el.value = cur;
-        else if (CC.state.centroInicial && list.filter(function (a) { return String(a.centro_codigo) === String(CC.state.centroInicial); }).length) {
-            el.value = CC.state.centroInicial;
-        } else if (list.length === 1) el.value = list[0].centro_codigo;
+        else if (CC.state.centroInicial && list.filter(function (a) { return String(a.centro_codigo || '').trim() === String(CC.state.centroInicial).trim(); }).length) {
+            el.value = String(CC.state.centroInicial).trim();
+        } else if (list.length === 1) el.value = String(list[0].centro_codigo || '').trim();
         else el.value = '';
-        var chosen = list.filter(function (a) { return String(a.centro_codigo) === String(el.value); })[0];
+        var chosen = list.filter(function (a) { return String(a.centro_codigo || '').trim() === String(el.value || '').trim(); })[0];
         paintNavStatus('ctl-cc-status', (CC._capturaReady && chosen) ? statsDeCentro({
             codigo: chosen.centro_codigo,
             nombre: chosen.centro_nombre,
@@ -1875,14 +3995,19 @@
 
     function renderNavCuentas() {
         var el = document.getElementById('ctl-cuenta');
-        if (!el) return;
+        var qEl = document.getElementById('ctl-prod-q');
         var emp = val('ctl-empresa');
         var cc = val('ctl-centro');
         if (!emp || !cc) {
+            if (el) {
             el.innerHTML = '<option value="">Elige un cliente primero…</option>';
-            el.disabled = true;
-            el.classList.remove('is-warn', 'is-ok');
-            paintNavStatus('ctl-cta-status', null, el);
+                el.value = '';
+            }
+            if (qEl) {
+                qEl.value = '';
+                qEl.disabled = true;
+            }
+            paintNavStatus('ctl-cta-status', null, qEl || el);
             return;
         }
         var centro = control.centro;
@@ -1890,29 +4015,41 @@
             ? control._allCtas
             : (centro ? cuentasEnriquecidas(centro) : []);
         if (control.soloPendientes) ctas = ctas.filter(ctaPendiente);
-        var html = '<option value="">Elige producto…</option>';
+        if (qEl) qEl.disabled = !ctas.length;
+        if (el) {
+            var html = '<option value="">Todos los productos</option>';
         ctas.forEach(function (cta) {
             var pend = ctaPendiente(cta) ? 1 : 0;
             html += '<option value="' + escapeHtml(cta.codigo) + '">' +
                 escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo) + '   ·   ' + markPendLabel(pend)) + '</option>';
         });
         el.innerHTML = html;
-        el.disabled = !ctas.length;
         if (control.cuenta && ctas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
             el.value = control.cuenta;
         } else {
             el.value = '';
         }
-        var cta = ctas.filter(function (x) { return String(x.codigo) === String(el.value); })[0];
-        paintNavStatus('ctl-cta-status', cta ? (ctaPendiente(cta) ? 1 : 0) : null, el);
+        }
+        var st = statsDeCentro({
+            codigo: cc,
+            nombre: '',
+            empresa: emp
+        });
+        paintNavStatus('ctl-cta-status', st.pendientes, qEl || el);
     }
 
     function renderCicloPicks() {
         var el = document.getElementById('ctl-ciclo');
         if (!el) return;
         var ciclos = ciclosDeMisAsignaciones();
-        var selected = el.value || cicloControlPreferido();
-        if (!CC._cicloUserPicked) selected = cicloControlPreferido() || selected;
+        var cur = String(el.value || '').trim();
+        var selected = cur;
+        if (!selected) {
+            selected = cicloControlPreferido() || '';
+        } else if (!CC._cicloUserPicked) {
+            // Mantener el valor ya puesto en el combo; no forzar otro ciclo al re-render.
+            selected = cur;
+        }
         el.innerHTML = ciclos.map(function (c) {
             var season = cicloEnTemporadaCaptura(c.codigo);
             var label = (c.codigo ? (c.codigo + ' — ') : '') + (c.nombre || c.codigo);
@@ -1920,25 +4057,33 @@
             return '<option value="' + escapeHtml(c.codigo) + '">' + escapeHtml(label) + '</option>';
         }).join('') || '<option value="">Sin ciclos</option>';
         if (selected) el.value = selected;
+        if (el.value) CC.state.cicloCodigo = el.value;
     }
 
     function applyControlPath(ciclo, emp, cc) {
         var cicloSel = document.getElementById('ctl-ciclo');
         var empEl = document.getElementById('ctl-empresa');
         var ccEl = document.getElementById('ctl-centro');
-        var prevCiclo = val('ctl-ciclo');
-        var prevEmp = val('ctl-empresa');
-        var prevCc = val('ctl-centro');
-        var cicloChanged = ciclo && String(ciclo) !== String(prevCiclo);
+        // Comparar contra el ciclo en estado (no el select): en el evento change
+        // el <select> ya tiene el valor nuevo y cicloChanged quedaba siempre false.
+        var prevCiclo = String(CC.state.cicloCodigo || '').trim();
+        var prevEmp = empEl ? String(empEl.value || '').trim() : '';
+        var prevCc = ccEl ? String(ccEl.value || '').trim() : '';
+        var cicloChanged = !!(ciclo && String(ciclo) !== prevCiclo);
         if (cicloSel && ciclo) cicloSel.value = ciclo;
         function finishPath() {
             if (empEl && emp) empEl.value = emp;
             renderNavCentros();
             if (ccEl && cc) {
-                ccEl.value = cc;
+                ccEl.value = String(cc).trim();
             } else if (ccEl && (cicloChanged || (emp && emp !== prevEmp))) {
-                ccEl.value = '';
-                control.cuenta = null;
+                // No borrar si renderNavCentros ya eligió el único cliente.
+                if (!ccEl.value) control.cuenta = null;
+            }
+            // Si quedó vacío pero hay exactamente un cliente, tomarlo.
+            if (ccEl && !String(ccEl.value || '').trim()) {
+                var opts = Array.prototype.slice.call(ccEl.options || []).filter(function (o) { return o.value; });
+                if (opts.length === 1) ccEl.value = opts[0].value;
             }
             var centroChanged = cicloChanged || val('ctl-empresa') !== prevEmp || val('ctl-centro') !== prevCc;
             if (centroChanged) control.cuenta = null;
@@ -1949,15 +4094,31 @@
         }
         if (cicloChanged) {
             CC._cicloUserPicked = true;
-            CC.state.cicloCodigo = ciclo;
-            var period = findCiclo(ciclo);
-            if (period) {
-                CC.state.period = Object.assign({}, CC.state.period, period);
-                if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
-                if (period.anio) CC.state.anioPresupuesto = period.anio;
-            }
+            applyPeriodFromCiclo(findCiclo(ciclo), ciclo);
             CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-            if (empEl && !emp) empEl.value = '';
+            // Si la empresa ya no aplica en el ciclo nuevo, limpiarla (y el cliente).
+            var empKeep = String(emp || (empEl && empEl.value) || '').toUpperCase().trim();
+            var empsOk = Object.keys(asigsPorEmpresa(ciclo) || {}).map(function (k) {
+                return String(k).toUpperCase();
+            });
+            if (empKeep && empsOk.indexOf(empKeep) === -1) {
+                emp = '';
+                cc = '';
+                if (empEl) empEl.value = '';
+                if (ccEl) ccEl.value = '';
+            } else if (empKeep) {
+                emp = empKeep;
+                var ccsOk = (asigsPorEmpresa(ciclo)[empKeep] || []).map(function (a) {
+                    return String(a.centro_codigo || '').trim();
+                });
+                var ccKeep = String(cc || (ccEl && ccEl.value) || '').trim();
+                if (ccKeep && ccsOk.indexOf(ccKeep) === -1) {
+                    cc = '';
+                    if (ccEl) ccEl.value = '';
+                } else if (ccKeep) {
+                    cc = ccKeep;
+                }
+            }
             fillVisorFilters();
             loadOverlaysForCycle().then(finishPath);
             return;
@@ -1995,22 +4156,21 @@
 
         var cicloSel = document.getElementById('ctl-ciclo');
         renderCicloPicks();
+        syncVentasPasadasBtn();
         var ciclo = val('ctl-ciclo') || cicloControlPreferido();
         if (cicloSel && ciclo) cicloSel.value = ciclo;
         CC.state.cicloCodigo = ciclo || '';
-        var period = findCiclo(ciclo);
-        if (period) {
-            CC.state.period = Object.assign({}, CC.state.period, period);
-            if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
-            if (period.anio) CC.state.anioPresupuesto = period.anio;
-        }
+        // Evita que re-renders posteriores cambien el ciclo sin recargar presupuestos.
+        if (ciclo) CC._cicloUserPicked = true;
+        applyPeriodFromCiclo(findCiclo(ciclo), ciclo);
         CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
 
         if (!CC._controlBound) {
             if (cicloSel) cicloSel.addEventListener('change', function () {
                 CC._cicloUserPicked = true;
                 control.cuenta = null;
-                applyControlPath(this.value, '', '');
+                // Conservar empresa/cliente si siguen en el ciclo nuevo (para reutilizar snapshot).
+                applyControlPath(this.value, val('ctl-empresa'), val('ctl-centro'));
             });
             document.getElementById('ctl-empresa').addEventListener('change', function () {
                 control.cuenta = null;
@@ -2024,6 +4184,12 @@
             if (ctaSel) ctaSel.addEventListener('change', function () {
                 selectCuenta(this.value || null);
             });
+            var prodQ = document.getElementById('ctl-prod-q');
+            if (prodQ) prodQ.addEventListener('input', function () {
+                control.prodQuery = String(this.value || '');
+                renderCapturaForm();
+                renderControlTable();
+            });
             var qEl = document.getElementById('ctl-q');
             if (qEl) qEl.addEventListener('input', function () {
                 renderCtaChips();
@@ -2032,18 +4198,26 @@
             document.getElementById('ctl-moneda').addEventListener('change', function () {
                 CC.state.currency = this.value;
                 saveJSON(SK.currency, CC.state.currency);
-                loadControlCentro();
+                paintFxBadge();
+                renderCapturaForm();
+                renderControlTable();
+                renderControlCharts();
+                updateControlProgress();
+                renderVisorTable();
             });
             var pend = document.getElementById('ctl-pendientes');
             if (pend) pend.addEventListener('change', function () {
                 control.soloPendientes = this.checked;
                 renderNavCuentas();
                 renderCtaChips();
+                renderCapturaForm();
                 renderControlTable();
             });
             bindControlTools();
+            bindAgregarProducto();
             bindImportMasivo();
             bindCapturaQuick();
+            bindVentasPasadas();
             bindVistas();
             bindVisor();
             bindScopeToggles();
@@ -2051,6 +4225,7 @@
         }
         var mon = document.getElementById('ctl-moneda');
         if (mon) mon.value = CC.state.currency;
+        paintFxBadge();
         if (CC.state.centroInicial) {
             var found = CC.state.centros.filter(function (c) { return String(c.codigo) === String(CC.state.centroInicial); })[0];
             if (found) {
@@ -2069,7 +4244,7 @@
             loadControlCentro();
             fillVisorFilters();
             renderVisorTable();
-            setVista(vistaControlPermitida(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura'));
+            setVista(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura');
         });
     };
 
@@ -2094,13 +4269,7 @@
         renderCicloPicks();
         if (ciclo) {
             setVal('ctl-ciclo', ciclo);
-            CC.state.cicloCodigo = ciclo;
-            var period = findCiclo(ciclo);
-            if (period) {
-                CC.state.period = Object.assign({}, CC.state.period, period);
-                if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
-                if (period.anio) CC.state.anioPresupuesto = period.anio;
-            }
+            applyPeriodFromCiclo(findCiclo(ciclo), ciclo);
         }
         renderPeriodBanner();
         CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
@@ -2126,6 +4295,7 @@
             mon.addEventListener('change', function () {
                 CC.state.currency = this.value || 'MXN';
                 saveJSON(SK.currency, CC.state.currency);
+                paintFxBadge();
                 paintDetalleHeader();
                 renderDetalleTable();
                 renderDetalleChart();
@@ -2138,17 +4308,65 @@
         renderNavCentros();
     }
 
+    function centroDesdeAsignacion(emp, codigo, ciclo) {
+        var e = String(emp || '').toUpperCase().trim();
+        var code = String(codigo || '').trim();
+        if (!e || !code) return null;
+        var fromState = (CC.state.centros || []).map(mergedCentro).filter(function (c) {
+            return String(c.codigo || '').trim() === code
+                && String(c.empresa || '').toUpperCase().trim() === e;
+        })[0];
+        if (fromState) return fromState;
+        var list = asigsPorEmpresa(ciclo || val('ctl-ciclo') || CC.state.cicloCodigo)[e] || [];
+        var a = list.filter(function (x) {
+            return String(x.centro_codigo || '').trim() === code;
+        })[0];
+        if (!a) {
+            // Último recurso: buscar en todas las asignaciones del ciclo (por si empresa viene con otro casing).
+            a = asignacionesDelCiclo(ciclo || val('ctl-ciclo') || CC.state.cicloCodigo).filter(function (x) {
+                return String(x.centro_codigo || '').trim() === code
+                    && String(x.empresa || '').toUpperCase().trim() === e;
+            })[0] || null;
+        }
+        if (!a) return null;
+        return mergedCentro({
+            codigo: String(a.centro_codigo || '').trim(),
+            nombre: a.centro_nombre || a.centro_codigo,
+            empresa: e,
+            usuario: a.usuario || '',
+            estado: 'abierto',
+            modo: (a.capturar || a.editar) ? 'captura' : 'solo_revision',
+            departamento: '',
+            ciclo: a.ciclo || ciclo || CC.state.cicloCodigo || '',
+            capturar: !!a.capturar,
+            editar: !!a.editar,
+            revisar: !!a.revisar,
+            permisos: a.permisos || [],
+            sap: true
+        });
+    }
+
     function loadControlCentro() {
-        var emp = val('ctl-empresa');
-        var codigo = val('ctl-centro');
+        var emp = String(val('ctl-empresa') || '').trim();
+        var codigo = String(val('ctl-centro') || '').trim();
+        if (control._addClienteKey !== (emp + '|' + codigo)) {
+            control._addClienteKey = emp + '|' + codigo;
+            var addQ = document.getElementById('ctl-add-q');
+            if (addQ) addQ.value = '';
+        }
         if (!emp || !codigo) {
             control.centro = null;
             control.cuenta = null;
             control._allCtas = [];
             control._ctas = [];
+            control._preciosMap = {};
+            control._preciosReq = null;
+            control._gastoMeta = {};
+            paintVentaSnapshotHint({});
             setCapturaEnabled(false);
             updateControlProgress();
             renderNavCuentas();
+            syncVentasPasadasBtn();
             renderCtaChips();
             renderCapturaForm();
             renderControlTable();
@@ -2156,17 +4374,23 @@
             renderVisorTable();
             return;
         }
-        control.centro = CC.state.centros.map(mergedCentro).filter(function (c) {
-            return c.codigo === codigo && c.empresa === emp;
-        })[0] || null;
+        // Mantener centros alineados al ciclo actual (evita combo con valor y tabla vacía).
+        var cicloNow = val('ctl-ciclo') || CC.state.cicloCodigo || '';
+        var periodCodigo = String((CC.state.period && CC.state.period.codigo) || '').trim();
+        if (cicloNow && (String(CC.state.cicloCodigo || '') !== String(cicloNow) || periodCodigo.toUpperCase() !== String(cicloNow).toUpperCase())) {
+            applyPeriodFromCiclo(findCiclo(cicloNow), cicloNow);
+        }
+        CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(cicloNow));
+        control.centro = centroDesdeAsignacion(emp, codigo, cicloNow);
         if (!control.centro) {
             var tb = document.getElementById('ctl-tbody');
-            if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes clientes asignados en este ciclo. Pide una asignación.</div></td></tr>';
+            if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes este cliente asignado en el ciclo seleccionado.</div></td></tr>';
             setCapturaEnabled(false);
             control._allCtas = [];
             control._ctas = [];
             updateControlProgress();
             renderNavCuentas();
+            syncVentasPasadasBtn();
             renderCtaChips();
             renderCapturaForm();
             renderVisorTable();
@@ -2174,7 +4398,7 @@
         }
         var c = control.centro;
         var asig = asigDe(c) || c;
-        var cicloCode = c.ciclo || val('ctl-ciclo') || CC.state.cicloCodigo || '';
+        var cicloCode = c.ciclo || cicloNow;
         var locked = !puedeEscribirAsig(asig, cicloCode);
         control.locked = locked;
         setCapturaEnabled(!locked);
@@ -2186,6 +4410,8 @@
                 : '<span class="text-muted">Sin permiso</span>';
         }
         loadGastoRealCentro(c);
+        loadListasPreciosCentro(c);
+        stripSiopSeedLocalOnce(c);
         control._allCtas = cuentasEnriquecidas(c);
         if (control.cuenta && !control._allCtas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
             control.cuenta = null;
@@ -2194,11 +4420,34 @@
         renderNavEmpresas();
         renderNavCentros();
         renderNavCuentas();
+        syncVentasPasadasBtn();
         renderCtaChips();
         renderCapturaForm();
         renderControlTable();
         renderControlCharts();
         renderVisorTable();
+    }
+
+    /** Rojo < 40%, amarillo 40–79%, verde desde 80%. */
+    function semaforoAvance(pct) {
+        var n = Number(pct) || 0;
+        if (n >= 80) return 'good';
+        if (n >= 40) return 'warn';
+        return 'bad';
+    }
+
+    function paintBarraProgreso(wrapId, barId, pct, labelId) {
+        var n = Math.max(0, Math.min(Number(pct) || 0, 100));
+        var cls = semaforoAvance(n);
+        var bar = document.getElementById(barId);
+        var wrap = document.getElementById(wrapId);
+        if (bar) bar.style.width = n + '%';
+        if (wrap) wrap.className = 'cc-progress ' + cls;
+        if (labelId) {
+            var label = document.getElementById(labelId);
+            if (label) label.className = 'cc-semaforo-' + cls;
+        }
+        return cls;
     }
 
     function updateControlProgress() {
@@ -2213,10 +4462,12 @@
             setText('ctl-nav-pend-n', '—');
             setText('ctl-nav-pend-sub', 'Elige un cliente para ver cuántos productos faltan por proyectar');
             if (box) box.className = 'cc-nav-pend';
-            var bar0 = document.getElementById('ctl-avance-bar');
-            var wrap0 = document.getElementById('ctl-avance-wrap');
-            if (bar0) bar0.style.width = '0%';
-            if (wrap0) wrap0.className = 'cc-progress warn';
+            var barEmpty = document.getElementById('ctl-avance-bar');
+            var wrapEmpty = document.getElementById('ctl-avance-wrap');
+            var labelEmpty = document.getElementById('kpi-ctl-avance');
+            if (barEmpty) barEmpty.style.width = '0%';
+            if (wrapEmpty) wrapEmpty.className = 'cc-progress';
+            if (labelEmpty) labelEmpty.className = '';
             paintVisibleTableTotals(null);
             paintScopeHints();
             return;
@@ -2227,20 +4478,17 @@
         setText('kpi-ctl-avance', st.avance + '%');
         setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
         setText('ctl-pend-label', st.pendientes + (st.pendientes === 1 ? ' pendiente' : ' pendientes'));
-        setText('kpi-ctl-gasto', moneyGasto(st.totG));
+        setText('kpi-ctl-gasto', moneyGasto(st.totGVista != null ? st.totGVista : st.totG));
         setText('kpi-ctl-ppto', money(st.totP));
         setText('kpi-ctl-pend', st.pendientes);
-        var bar = document.getElementById('ctl-avance-bar');
-        var wrap = document.getElementById('ctl-avance-wrap');
-        if (bar) bar.style.width = Math.min(st.avance, 100) + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (st.pendientes ? 'warn' : 'good');
+        paintBarraProgreso('ctl-avance-wrap', 'ctl-avance-bar', st.avance, 'kpi-ctl-avance');
         setText('ctl-nav-pend-n', st.pendientes);
         setText('ctl-nav-pend-sub', st.total
             ? (st.pendientes
                 ? ('De ' + st.total + ' productos asignados a este cliente')
                 : ('Los ' + st.total + ' productos de este cliente ya tienen proyección'))
             : 'Este cliente no tiene productos asignados');
-        if (box) box.className = 'cc-nav-pend' + (st.pendientes ? '' : ' is-ok');
+        if (box) box.className = 'cc-nav-pend' + (st.pendientes ? ' is-danger' : ' is-ok');
         paintScopeHints();
     }
 
@@ -2277,8 +4525,21 @@
         if (el && String(el.value || '') !== String(control.cuenta || '')) {
             el.value = control.cuenta || '';
         }
+        // Si el producto está en un grupo colapsado de la matriz, abrirlo.
+        if (codigo) {
+            var ctaSel = (control._allCtas || []).filter(function (x) {
+                return String(x.codigo) === String(codigo);
+            })[0];
+            var gName = ctaSel && (ctaSel.grupo || 'Sin agrupación');
+            if (gName && control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]) {
+                control.grupoCerradoMatrix[gName] = false;
+                drawMatrixTable();
+            }
+        }
         renderCtaChips();
-        renderCapturaForm();
+        paintMatrixSelection();
+        paintMatrixHint();
+        paintCompletarBtn(currentCta());
         renderControlTable();
         renderControlCharts();
         renderDetalleTable();
@@ -2286,32 +4547,123 @@
         paintScopeHints();
     }
 
+    function matrixCtas() {
+        var q = normSearch(control.prodQuery || ((document.getElementById('ctl-prod-q') || {}).value || ''));
+        var ctas = (control._allCtas || []).slice();
+        if (control.soloPendientes) ctas = ctas.filter(ctaPendiente);
+        if (q) {
+            ctas = ctas.filter(function (cta) {
+                return normSearch(
+                    (cta.codigo || '') + ' ' + (cta.nombre || '') + ' ' + (cta.grupo || '')
+                ).indexOf(q) !== -1;
+            });
+        }
+        return ctas;
+    }
+
+    function normSearch(s) {
+        var t = String(s == null ? '' : s).toLowerCase();
+        if (t.normalize) t = t.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        return t.replace(/\s+/g, ' ').trim();
+    }
+
+    function targetCtasForTools() {
+        var selected = currentCta();
+        if (selected) return [selected];
+        return matrixCtas();
+    }
+
     function renderCapturaForm() {
         var empty = document.getElementById('ctl-form-empty');
         var body = document.getElementById('ctl-form-body');
-        var cta = currentCta();
-        if (!control.centro || !cta) {
-            if (empty) empty.hidden = false;
+        if (!control.centro) {
+            if (empty) {
+                empty.hidden = false;
+                empty.innerHTML = '<i class="fa-solid fa-table"></i>' +
+                    '<div>Elige empresa y cliente a la izquierda para capturar todos los productos en una sola tabla</div>';
+            }
             if (body) body.hidden = true;
             return;
         }
+        var cc = control.centro;
+        var ctas = matrixCtas();
+        var st = statsDeCentro(cc);
         if (empty) empty.hidden = true;
         if (body) body.hidden = false;
-        setText('ctl-form-grupo', cta.grupo || '');
-        var cc = control.centro;
-        paintNombreCodigo('ctl-form-cc', cc ? cc.nombre : '', cc ? cc.codigo : '');
-        paintNombreCodigo('ctl-form-cta', cta.nombre, cta.codigo);
-        var aj = document.getElementById('ctl-ajuste-pct');
-        if (aj && control.centro) {
-            var akey = budgetKey(control.centro.empresa, control.centro.codigo, cta.codigo);
-            var saved = CC.state.ajustes && CC.state.ajustes[akey];
-            aj.value = (saved != null && saved !== '') ? saved : '';
-        }
+        paintNombreCodigo('ctl-form-cc', cc.nombre || '', cc.codigo || '');
+        setText('ctl-form-cta', st.total + (st.total === 1 ? ' producto' : ' productos'));
+        setText('ctl-form-grupo', !st.total
+            ? 'Agrega un producto para capturarlo aquí'
+            : (ctas.length === st.total
+                ? 'Edita Ene–Dic por fila'
+                : ('Mostrando ' + ctas.length + ' de ' + st.total)));
         paintFormPresupuestoLabel();
-        paintFormEstado(cta);
-        paintCompletarBtn(cta);
-        updateFormTotals(cta);
-        drawMonthGrid(cta);
+        paintFormEstadoCliente(st);
+        paintCompletarBtn(currentCta() || ctas[0] || null);
+        updateFormTotalsCliente(st);
+        paintFxBadge();
+        drawMatrixTable(ctas);
+        paintMatrixHint();
+    }
+
+    function paintFormEstadoCliente(st) {
+        var el = document.getElementById('ctl-form-estado');
+        if (!el) return;
+        var listo = st && st.total > 0 && !st.pendientes;
+        el.textContent = listo ? 'Capturada' : (st && st.pendientes ? (st.pendientes + ' pend.') : 'Pendiente');
+        el.className = 'cc-badge ' + (listo ? 'cc-badge-aceptado' : 'cc-badge-en_proceso');
+    }
+
+    function updateFormTotalsCliente(st) {
+        st = st || (control.centro ? statsDeCentro(control.centro) : { totG: 0, totP: 0, totGVista: 0, totPVista: 0, capturadas: 0, total: 0, pendientes: 0, avance: 0 });
+        var ventaVista = st.totGVista != null ? st.totGVista : st.totG;
+        var proyVista = st.totPVista != null ? st.totPVista : st.totP;
+        setText('ctl-form-gasto', moneyGasto(ventaVista));
+        setText('ctl-form-ppto', moneyGasto(proyVista));
+        var d = deltaPct(proyVista, ventaVista);
+        var el = document.getElementById('ctl-form-delta');
+        if (el) el.textContent = st.pendientes
+            ? (st.pendientes + (st.pendientes === 1 ? ' producto pendiente' : ' productos pendientes'))
+            : (st.totP ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada');
+        setText('ctl-form-avance', st.avance + '%');
+        setText('ctl-form-avance-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
+        paintBarraProgreso('ctl-form-avance-wrap', 'ctl-form-avance-bar', st.avance, 'ctl-form-avance');
+    }
+
+    function paintMatrixLegend() {
+        var legend = document.getElementById('ctl-matrix-legend');
+        var ok = document.getElementById('ctl-legend-ok');
+        var over = document.getElementById('ctl-legend-over');
+        if (legend) legend.hidden = false;
+        if (esSiopTipo()) {
+            var src = CC.state.cicloBaseCodigo || 'proyecto anterior';
+            if (ok) ok.textContent = 'Mayor o igual a ' + src;
+            if (over) over.textContent = 'Menor a ' + src;
+            return;
+        }
+        var anio = CC.state.anioGasto || '';
+        if (ok) ok.textContent = 'Mayor o igual a venta' + (anio ? (' ' + anio) : ' pasada');
+        if (over) over.textContent = 'Menor a venta' + (anio ? (' ' + anio) : ' pasada');
+    }
+
+    function paintMatrixHint() {
+        var hint = document.getElementById('ctl-matrix-hint');
+        paintMatrixLegend();
+        if (!hint) return;
+        var cta = currentCta();
+        var arriba = pastQtyCaption();
+        if (esBudgetTipo()) {
+            hint.textContent = cta
+                ? ('Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Los meses quedan en blanco: captura la proyección en cada celda.')
+                : 'Budget: los 12 meses quedan en blanco para capturar la proyección.';
+            return;
+        }
+        if (cta) {
+            hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
+                '. Arriba = ' + arriba + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
+            return;
+        }
+        hint.textContent = 'Arriba de cada mes: ' + arriba + '. Abajo: proyección. Clic en un producto para herramientas puntuales.';
     }
 
     function nombrePresupuestoActual() {
@@ -2324,6 +4676,10 @@
     }
 
     function paintFormEstado(cta) {
+        if (!cta) {
+            if (control.centro) paintFormEstadoCliente(statsDeCentro(control.centro));
+            return;
+        }
         var st = document.getElementById('ctl-form-estado');
         if (!st) return;
         var listo = !ctaPendiente(cta);
@@ -2334,12 +4690,12 @@
     function paintCompletarBtn(cta) {
         var btn = document.getElementById('ctl-completar');
         if (!btn) return;
-        if (!cta || control.locked) {
+        if (control.locked || !control.centro) {
             btn.hidden = true;
             return;
         }
         btn.hidden = false;
-        var on = !ctaPendiente(cta);
+        var on = cta ? !ctaPendiente(cta) : !(statsDeCentro(control.centro).pendientes);
         btn.setAttribute('data-on', on ? '1' : '0');
         btn.innerHTML = '<i class="fa-solid fa-check"></i> Completado';
     }
@@ -2349,23 +4705,30 @@
     }
 
     function paintCtaFill(cta) {
+        if (!cta) {
+            updateFormTotalsCliente();
+            return;
+        }
         var filled = mesesCapturados(cta);
         var av = Math.round((filled / 12) * 100);
         setText('ctl-form-avance', av + '%');
         setText('ctl-form-avance-meta', filled + ' de 12 meses capturados');
-        var bar = document.getElementById('ctl-form-avance-bar');
-        var wrap = document.getElementById('ctl-form-avance-wrap');
-        if (bar) bar.style.width = av + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (filled === 12 ? 'good' : 'warn');
+        paintBarraProgreso('ctl-form-avance-wrap', 'ctl-form-avance-bar', av, 'ctl-form-avance');
     }
 
     function updateFormTotals(cta) {
-        setText('ctl-form-gasto', moneyGasto(cta.totG));
-        setText('ctl-form-ppto', money(cta.totP));
-        var d = deltaPct(cta.totP, cta.totG);
+        if (!cta) {
+            updateFormTotalsCliente();
+            return;
+        }
+        var ventaVista = cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+        var proyVista = importeProyeccionVista(cta);
+        setText('ctl-form-gasto', moneyGasto(ventaVista));
+        setText('ctl-form-ppto', moneyGasto(proyVista));
+        var d = deltaPct(proyVista, ventaVista);
         var el = document.getElementById('ctl-form-delta');
         if (el) el.textContent = !ctaPendiente(cta)
-            ? (cta.totP ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada en 0')
+            ? ((cta.importeProy || cta.totP) ? ((d > 0 ? '+' : '') + d + '% vs ' + CC.state.anioGasto) : 'Completada en 0')
             : 'Aún sin capturar';
         paintCtaFill(cta);
     }
@@ -2373,6 +4736,368 @@
     function qtyLabel(n) {
         var val = Number(n) || 0;
         return val.toLocaleString('es-MX', { maximumFractionDigits: 2 });
+    }
+
+    /**
+     * Semestre pasado respecto a la proyección, en el año de venta real (anioGasto).
+     * Si hoy es Jul–Dic → Ene–Jun; si hoy es Ene–Jun → Jul–Dic del año anterior de referencia
+     * (en la práctica usamos Jul–Dic del mismo anioGasto cuando aún estamos en H1).
+     * Solo unidades (no importe).
+     */
+    function indicesSemestreAnterior() {
+        var m = new Date().getMonth();
+        if (m >= 6) {
+            return { from: 0, to: 5, label: 'Ene–Jun' };
+        }
+        return { from: 6, to: 11, label: 'Jul–Dic' };
+    }
+
+    function unidadesSemestreAnterior(cta) {
+        var idx = indicesSemestreAnterior();
+        var gasto = (cta && cta.gasto) || [];
+        var total = 0;
+        for (var i = idx.from; i <= idx.to; i++) {
+            total += Number(gasto[i]) || 0;
+        }
+        return total;
+    }
+
+    /** ¿Hay alguna venta real cargada en el año (cualquier mes)? */
+    function tieneVentaRealAnio(cta) {
+        var gasto = (cta && cta.gasto) || [];
+        for (var i = 0; i < 12; i++) {
+            if (Number(gasto[i]) || 0) return true;
+        }
+        return false;
+    }
+
+    function labelSemestreAnterior() {
+        var idx = indicesSemestreAnterior();
+        var yy = String(CC.state.anioGasto || '');
+        return idx.label + (yy ? ' ' + yy : '');
+    }
+
+    /** Precio de lista (moneda nativa) → monto en la moneda de vista. Usa TC del mes si se indica. */
+    function precioListaEnVista(precio, monedaNativa, monthIdx) {
+        var amount = Number(precio) || 0;
+        var src = String(monedaNativa || 'MXN').toUpperCase();
+        var view = isUsdView() ? 'USD' : 'MXN';
+        if (src === view) return amount;
+        var tc = fxRate(monthIdx);
+        if (!(tc > 0)) tc = fxBaseRate();
+        if (src === 'USD' && view === 'MXN') return amount * tc;
+        if (src === 'MXN' && view === 'USD') return tc > 0 ? amount / tc : amount;
+        return amount;
+    }
+
+    /** Unidades capturadas (Ene–Dic). Sin tipo de cambio. */
+    function unidadesAnuales(ppto) {
+        var total = 0;
+        (ppto || []).forEach(function (v) {
+            if (mesLleno(v)) total += Number(v) || 0;
+        });
+        return total;
+    }
+
+    /**
+     * Proyección monetaria en base MXN: suma mensual de unidades × precio con TC del mes.
+     */
+    function importeProyeccionMxn(cta) {
+        if (!cta) return 0;
+        var total = 0;
+        for (var i = 0; i < 12; i++) {
+            var m = importeMesProyMxn(cta, i);
+            if (m != null) total += Number(m) || 0;
+        }
+        return total;
+    }
+
+    /** Venta real en MXN (suma de LineTotal SAP) o, si no hay, qty × precio lista. */
+    function importeVentaMxn(cta) {
+        if (!cta) return 0;
+        var fromSap = sum(cta.importe || []);
+        if (fromSap) return fromSap;
+        var usd = sum(usdSeriesOf(cta));
+        if (usd) {
+            var total = 0;
+            for (var j = 0; j < 12; j++) {
+                var u = Number(usdSeriesOf(cta)[j]) || 0;
+                if (u) total += u * fxRate(j);
+            }
+            return total;
+        }
+        var total2 = 0;
+        for (var i = 0; i < 12; i++) {
+            total2 += importeMesVentaMxn(cta, i);
+        }
+        return total2;
+    }
+
+    /** Importe MXN de un mes de venta real. */
+    function importeMesVentaMxn(cta, i) {
+        if (!cta) return 0;
+        var fromSap = Number((cta.importe && cta.importe[i]) || 0);
+        if (fromSap) return fromSap;
+        var usd = Number(usdSeriesOf(cta)[i]) || 0;
+        if (usd) return usd * fxRate(i);
+        var qty = Number((cta.gasto && cta.gasto[i]) || 0);
+        var precio = Number(cta.precioLista) || 0;
+        if (!qty || !precio) return 0;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        return qty * (mon === 'USD' ? precio * fxRate(i) : precio);
+    }
+
+    /** Importe proyectado del mes ya en moneda de vista (USD/MXN). */
+    function importeMesProyVista(cta, i) {
+        var m = importeMesProyMxn(cta, i);
+        if (m == null) return null;
+        return toDisplayAmount(m, i);
+    }
+
+    /** Total proyección en moneda de vista (misma base que VENTA en pantalla). */
+    function importeProyeccionVista(cta) {
+        if (!cta) return 0;
+        var total = 0;
+        for (var i = 0; i < 12; i++) {
+            var m = importeMesProyVista(cta, i);
+            if (m != null) total += Number(m) || 0;
+        }
+        return total;
+    }
+
+    /** Importe MXN de un mes proyectado: unidades × precio del mes (override o lista) × TC.
+     *  Si no hay precio de lista, usa el precio implícito de la venta real de ese mes. */
+    function importeMesProyMxn(cta, i) {
+        if (!cta || !mesLleno(cta.ppto && cta.ppto[i])) return null;
+        var uds = Number(cta.ppto[i]) || 0;
+        if (!uds) return 0;
+        var precio = precioUnitarioMes(cta, i);
+        if (precio > 0) {
+            var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
+            return uds * precioMxn;
+        }
+        var qtyVenta = Number((cta.gasto && cta.gasto[i]) || 0);
+        var impVenta = Number((cta.importe && cta.importe[i]) || 0);
+        if (qtyVenta > 0 && impVenta > 0) {
+            return uds * (impVenta / qtyVenta);
+        }
+        var precioImp = precioImplicitoVenta(cta);
+        if (precioImp > 0) return uds * precioImp;
+        return null;
+    }
+
+    /** Precio MXN/unidad promedio de la venta real (importe ÷ unidades). */
+    function precioImplicitoVenta(cta) {
+        if (!cta) return 0;
+        var qty = 0;
+        var imp = 0;
+        for (var i = 0; i < 12; i++) {
+            var q = Number((cta.gasto && cta.gasto[i]) || 0);
+            var m = Number((cta.importe && cta.importe[i]) || 0);
+            if (q > 0 && m > 0) {
+                qty += q;
+                imp += m;
+            }
+        }
+        return qty > 0 ? (imp / qty) : 0;
+    }
+
+    function moneyLista(precio, monedaNativa, monthIdx, decimals) {
+        var view = isUsdView() ? 'USD' : 'MXN';
+        var val = precioListaEnVista(precio, monedaNativa, monthIdx);
+        var dec = (decimals == null || decimals === '') ? 2 : Number(decimals);
+        if (!isFinite(dec) || dec < 0) dec = 2;
+        return (view === 'USD' ? 'US$' : '$') + val.toLocaleString('es-MX', {
+            minimumFractionDigits: dec,
+            maximumFractionDigits: dec
+        });
+    }
+
+    /** Precio de referencia: global de Precios de productos (moda / mes=0), no el último mes. */
+    function precioVentaAnioRef(cta) {
+        var unidad = String((cta && cta.unidad) || '').trim();
+        var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
+        var mon = String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var anio = CC.state.anioGasto || '';
+
+        // 1) Global ya enriquecido en la cuenta (costosMaster → moda / mes=0).
+        var local = Number(cta && cta.precioLista) || 0;
+        if (local > 0 && (cta.listaPrecioNombre || '').indexOf('Maestro local') === 0) {
+            return {
+                precio: local,
+                moneda: mon,
+                unidad: unidad,
+                unidadNombre: unidadNombre,
+                decimals: 2,
+                title: 'Precio global · Precios de productos' + (anio ? (' · proy. ' + anio) : '')
+            };
+        }
+
+        // 2) Lookup directo al maestro (por si precioLista vino de lista SAP).
+        var c = control.centro;
+        if (c && cta && cta.codigo) {
+            var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
+            if (master && Number(master.costo) > 0) {
+                return {
+                    precio: Number(master.costo),
+                    moneda: String(master.moneda || mon || 'MXN').toUpperCase(),
+                    unidad: unidad,
+                    unidadNombre: unidadNombre,
+                    decimals: 2,
+                    title: 'Precio global · Precios de productos' + (anio ? (' · proy. ' + anio) : '')
+                };
+            }
+            // 3) Moda de meses del maestro si aún no hay fila global.
+            var maestro = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
+            var moda = precioModaDeMeses((maestro && maestro.meses) || []);
+            if (moda > 0) {
+                return {
+                    precio: moda,
+                    moneda: mon,
+                    unidad: unidad,
+                    unidadNombre: unidadNombre,
+                    decimals: 2,
+                    title: 'Precio global (moda) · Precios de productos' + (anio ? (' · proy. ' + anio) : '')
+                };
+            }
+        }
+
+        var info = precioVentaPasadaInfo(cta);
+        if (!info.title) {
+            info.title = 'Precio unitario promedio de la venta ' + (anio || '') + ' (importe SAP ÷ uds).';
+        }
+        return info;
+    }
+
+    /** @deprecated Preferir precioVentaAnioRef en Captura (vista de ventas). */
+    function costoPiezaVentaAnio(cta) {
+        return precioVentaAnioRef(cta);
+    }
+
+    /** Precio unitario promedio de la venta del año de referencia (ponderado por unidades). */
+    function precioVentaPasadaInfo(cta) {
+        var unidad = String((cta && cta.unidad) || '').trim();
+        var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
+        if (!cta) return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
+        var qtyTot = 0;
+        var mxnTot = 0;
+        var usdTot = 0;
+        var wPrice = 0;
+        var wQty = 0;
+        for (var i = 0; i < 12; i++) {
+            var q = Number((cta.gasto && cta.gasto[i]) || 0);
+            qtyTot += q;
+            mxnTot += Number((cta.importe && cta.importe[i]) || 0);
+            usdTot += Number((cta.importeUsd && cta.importeUsd[i]) || (cta.importe_usd && cta.importe_usd[i]) || 0);
+            var p = Number((cta.precio && cta.precio[i]) || 0);
+            if (q && p) {
+                wPrice += Math.abs(q) * p;
+                wQty += Math.abs(q);
+            }
+        }
+        if (qtyTot && usdTot) {
+            return {
+                precio: Math.abs(usdTot / qtyTot),
+                moneda: 'USD',
+                unidad: unidad,
+                unidadNombre: unidadNombre,
+                decimals: 2,
+                title: 'Promedio ponderado (LineTotalUSD ÷ uds). VENTA es la suma SAP; uds × precio a 2 decimales puede diferir unos dólares.'
+            };
+        }
+        if (qtyTot && mxnTot) {
+            return {
+                precio: Math.abs(mxnTot / qtyTot),
+                moneda: 'MXN',
+                unidad: unidad,
+                unidadNombre: unidadNombre,
+                decimals: 2,
+                title: 'Promedio ponderado (LineTotal ÷ uds). VENTA es la suma SAP; el redondeo del precio puede diferir unos pesos.'
+            };
+        }
+        if (wQty) {
+            return { precio: wPrice / wQty, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
+        }
+        return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
+    }
+
+    /** Precio de lista / proyección: prioriza maestro local (global = moda / mes=0). */
+    function precioProyeccionInfo(cta) {
+        var fromLocal = (cta && cta.listaPrecioNombre && String(cta.listaPrecioNombre).indexOf('Maestro local') === 0);
+        return {
+            precio: Number(cta && cta.precioLista) || 0,
+            moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN',
+            unidad: String((cta && cta.unidad) || '').trim(),
+            unidadNombre: String((cta && cta.unidadNombre) || '').trim(),
+            porMes: precioMesesVarian(cta),
+            title: fromLocal
+                ? 'Precio local global (Precios de productos · moda / mes=0)'
+                : 'Precio de lista / proyección'
+        };
+    }
+
+    function nombreUnidadMedida(codigo) {
+        var code = String(codigo || '').trim();
+        if (!code) return '';
+        var map = CC.state.unidadesMedida || {};
+        return String(map[code.toUpperCase()] || map[code] || '').trim();
+    }
+
+    /** Etiqueta visible: "PIEZAS (PZA)" o solo el código si no hay nombre. */
+    function formatUnidadLabel(codigo, nombre) {
+        var code = String(codigo || '').trim();
+        var name = String(nombre || '').trim() || nombreUnidadMedida(code);
+        if (!code && !name) return '';
+        if (name && code && name.toUpperCase() !== code.toUpperCase()) {
+            return name + ' (' + code + ')';
+        }
+        return name || code;
+    }
+
+    function unidadDe(cta) {
+        if (!cta) return '';
+        return formatUnidadLabel(cta.unidad, cta.unidadNombre);
+    }
+
+    function precioInfoHtml(info) {
+        info = info || {};
+        var precio = Number(info.precio) || 0;
+        var mon = String(info.moneda || 'MXN').toUpperCase();
+        var unidad = formatUnidadLabel(info.unidad, info.unidadNombre);
+        var dec = info.decimals != null ? info.decimals : 2;
+        if (!precio && !unidad) {
+            return '<span class="cc-price-empty">—</span>';
+        }
+        var html = '';
+        if (precio) {
+            html += '<div class="cc-price-amt">' + escapeHtml(moneyLista(precio, mon, null, dec)) + '</div>';
+            if (mon && mon !== (isUsdView() ? 'USD' : 'MXN')) {
+                html += '<div class="cc-price-src">' + escapeHtml(mon) + '</div>';
+            }
+        } else {
+            html += '<div class="cc-price-amt text-muted">Sin precio</div>';
+        }
+        if (unidad) {
+            html += '<div class="cc-price-uom" title="' + escapeHtml(String(info.unidad || '')) + '">' + escapeHtml(unidad) + '</div>';
+        }
+        if (info.porMes) {
+            html += '<div class="cc-price-src is-custom">por mes</div>';
+        }
+        return html;
+    }
+
+    function precioProyeccionCellHtml(cta) {
+        var info = precioProyeccionInfo(cta);
+        return '<button type="button" class="cc-price-edit' + (info.porMes ? ' is-custom' : '') + '" data-edit-precio="' +
+            escapeHtml(cta.codigo) + '" title="Clic para ajustar el precio por mes. El precio global aplica hasta que cambies un mes.">' +
+            precioInfoHtml(info) +
+            '<span class="cc-price-hint">Clic · variar por mes</span>' +
+            '</button>';
+    }
+
+    function precioUnitarioHtml(cta) {
+        return precioInfoHtml(precioProyeccionInfo(cta));
     }
 
     function monthRealHtml(cta, i) {
@@ -2395,23 +5120,144 @@
     }
 
     function drawMonthGrid(cta) {
-        var grid = document.getElementById('ctl-month-grid');
-        if (!grid) return;
-        grid.innerHTML = MONTHS.map(function (m, i) {
-            var cls = monthCellClass(cta, i);
-            var shown = mesLleno(cta.ppto[i]) ? String(Number(cta.ppto[i])) : '';
-            return '<div class="' + cls + '"><div class="m">' + m + '</div>' +
-                monthRealHtml(cta, i) +
-                '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' + (control.locked ? 'disabled' : '') + ' placeholder="Cantidad" class="cc-month-input' + ((Number(shown) || 0) < 0 ? ' is-neg' : '') + '"></div>';
-        }).join('');
-        grid.querySelectorAll('input').forEach(function (inp) {
+        drawMatrixTable(matrixCtas());
+    }
+
+    function matrixProductRowHtml(cta, anioPast) {
+        var d = deltaPct(cta.totP, cta.totG);
+        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var selected = String(cta.codigo) === String(control.cuenta || '');
+        var done = !ctaPendiente(cta);
+        var udsVentaAnio = sum((cta.gasto || []).slice(0, 12));
+        var udsSem = unidadesSemestreAnterior(cta);
+        var udsAnio = cta.unidadesAnio != null ? cta.unidadesAnio : unidadesAnuales(cta.ppto);
+        var precioVenta = precioVentaAnioRef(cta);
+        var uomLabel = unidadDe(cta);
+        var cells = '';
+        for (var i = 0; i < 12; i++) {
+            var shown = formatInputQty(cta.ppto[i]);
+            var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
+            var lockedMes = mesBloqueadoBudget(i);
+            var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
+            var pMes = precioUnitarioMes(cta, i);
+            var pCustom = precioMesEsDistinto(cta, i);
+            var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            cells += '<td class="' + pCls + '">' +
+                '<div class="cc-matrix-month">' +
+                    '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
+                        escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (uomLabel ? ' · ' + uomLabel : '') +
+                            (pastQty ? ' · ' + qtyLabel(pastQty) + ' uds' : '')) + '">' +
+                        (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
+                    '</div>' +
+                    '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
+                    ((control.locked || lockedMes) ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' +
+                    ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
+                    escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
+                        ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
+                        (uomLabel ? ' ' + uomLabel : '')) + '">' +
+                    (pMes > 0
+                        ? ('<div class="cc-month-price-tag' + (pCustom ? ' is-custom' : '') + '" title="' +
+                            escapeHtml('Precio del mes: ' + moneyLista(pMes, mon, i) +
+                                (pCustom ? ' · distinto del global' : ' · global / maestro') +
+                                ' · TC ' + fxRate(i).toFixed(2)) + '">' +
+                            escapeHtml(moneyLista(pMes, mon, i)) + '</div>')
+                        : '') +
+                '</div>' +
+                '</td>';
+        }
+        return '<tr class="cc-matrix-row' + (selected ? ' is-on' : '') + (done ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '" data-group="' + escapeHtml(cta.grupo || 'Sin agrupación') + '">' +
+            '<td class="sticky-col">' +
+                '<button type="button" class="cc-matrix-prod" data-pick-cta="' + escapeHtml(cta.codigo) + '">' +
+                    htmlNombreCodigo(cta.nombre, cta.codigo) +
+                '</button>' +
+                '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
+            '</td>' +
+            '<td class="num cc-price-cell" data-precio-venta title="' +
+                escapeHtml(precioVenta.title || ('Precio unitario promedio de la venta ' + anioPast)) + '">' +
+                (precioVenta.precio
+                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(precioVenta.precio, precioVenta.moneda, null, 2)) + '</div>' +
+                        (uomLabel ? '<div class="cc-price-uom" title="' + escapeHtml(cta.unidad || '') + '">' + escapeHtml(uomLabel) + '</div>' : ''))
+                    : '<span class="cc-price-empty">—</span>') +
+            '</td>' +
+            '<td class="num cc-sem-cell" data-uds-venta title="' +
+                escapeHtml('Total unidades vendidas en ' + anioPast +
+                    ' (misma fuente que Ventas pasadas · TOT. UDS)' +
+                    (uomLabel ? ' · ' + uomLabel : '') +
+                    (udsSem ? '' : (udsVentaAnio ? ' · Ene–Jun: 0; venta en jul–Dic' : ''))) + '">' +
+                (udsVentaAnio
+                    ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsVentaAnio)) + '</div>' +
+                        (uomLabel ? '<div class="cc-sem-uom">' + escapeHtml(uomLabel) + '</div>' : ''))
+                    : '<span class="cc-price-empty">—</span>') +
+            '</td>' +
+            '<td class="num cc-sem-cell" data-uds-total title="' +
+                escapeHtml('Suma de unidades proyectadas Ene–Dic' + (uomLabel ? ' · ' + uomLabel : '')) + '">' +
+                (udsAnio
+                    ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsAnio)) + '</div>' +
+                        (uomLabel ? '<div class="cc-sem-uom">' + escapeHtml(uomLabel) + '</div>' : ''))
+                    : '<span class="cc-price-empty">—</span>') +
+            '</td>' +
+            '<td class="num cc-price-cell" data-precio-unit>' + precioProyeccionCellHtml(cta) + '</td>' +
+            '<td class="num ' + dCls + '" data-delta>' + (cta.totP || done ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>' +
+            cells +
+            '</tr>';
+    }
+
+    function bindMatrixTableEvents(tbody) {
+        tbody.querySelectorAll('.cc-matrix-group-row').forEach(function (row) {
+            row.addEventListener('click', function () {
+                var g = row.getAttribute('data-group');
+                var map = control.grupoCerradoMatrix || (control.grupoCerradoMatrix = {});
+                map[g] = !map[g];
+                drawMatrixTable();
+            });
+        });
+        tbody.querySelectorAll('[data-pick-cta]').forEach(function (btn) {
+            btn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                selectCuenta(btn.getAttribute('data-pick-cta'));
+            });
+        });
+        tbody.querySelectorAll('[data-edit-precio]').forEach(function (btn) {
+            btn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                openPrecioMesesModal(btn.getAttribute('data-edit-precio'));
+            });
+        });
+        tbody.querySelectorAll('input[data-m]').forEach(function (inp) {
+            inp.addEventListener('focus', function () {
+                if (String(control.cuenta || '') !== String(inp.getAttribute('data-cta') || '')) {
+                    control.cuenta = inp.getAttribute('data-cta');
+                    paintMatrixSelection();
+                    paintMatrixHint();
+                    paintCompletarBtn(currentCta());
+                }
+            });
             inp.addEventListener('input', function () {
-                var cell = inp.closest('.cc-month-cell');
-                if (!cell) return;
+                var td = inp.closest('td');
+                var codigo = inp.getAttribute('data-cta');
+                var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
+                if (!td || !cta) return;
                 var raw = String(inp.value || '').trim().replace(/,/g, '');
-                var fake = { gasto: cta.gasto, ppto: (cta.ppto || []).slice() };
-                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : (Number(raw) || 0);
-                cell.className = monthCellClass(fake, Number(inp.getAttribute('data-m')));
+                var fake = {
+                    gasto: cta.gasto,
+                    ppto: (cta.ppto || []).slice(),
+                    codigo: cta.codigo
+                };
+                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreQty(Number(raw) || 0);
+                var lockedMes = mesBloqueadoBudget(Number(inp.getAttribute('data-m')));
+                td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell') +
+                    (lockedMes ? ' is-locked' : '');
+                inp.classList.toggle('is-neg', (Number(raw) || 0) < 0);
+                var rowLive = inp.closest('tr');
+                var totalEl = rowLive && rowLive.querySelector('[data-uds-total]');
+                if (totalEl) {
+                    var udsLive = unidadesAnuales(fake.ppto);
+                    totalEl.innerHTML = udsLive
+                        ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsLive)) + '</div>' +
+                            (unidadDe(cta) ? '<div class="cc-sem-uom">' + escapeHtml(unidadDe(cta)) + '</div>' : ''))
+                        : '<span class="cc-price-empty">—</span>';
+                }
             });
             inp.addEventListener('change', onMonthChange);
             inp.addEventListener('keydown', function (ev) {
@@ -2420,15 +5266,192 @@
         });
     }
 
+    function drawMatrixTable(ctas) {
+        var thead = document.getElementById('ctl-matrix-thead');
+        var tbody = document.getElementById('ctl-matrix-tbody');
+        if (!thead || !tbody) return;
+        ctas = ctas || matrixCtas();
+        var anioPast = CC.state.anioGasto || '';
+        var cur = isUsdView() ? 'USD' : 'MXN';
+        var head = '<tr><th class="sticky-col">Producto</th>' +
+            '<th class="num">Precio<span class="cc-th-past">proyección anterior ' + escapeHtml(String(anioPast || '')) + '</span></th>' +
+            '<th class="num">Uds. venta<span class="cc-th-past">' + escapeHtml(String(anioPast || '')) + '</span></th>' +
+            '<th class="num">Total uds<span class="cc-th-past">proy. 12 meses</span></th>' +
+            '<th class="num">Precio<span class="cc-th-past">proy. local</span></th>' +
+            '<th class="num">Δ%</th>';
+        MONTHS.forEach(function (m, mi) {
+            var tcM = fxRate(mi);
+            var base = fxBaseRate();
+            var diff = Math.abs(tcM - base) > 0.0001;
+            var lockedMes = mesBloqueadoBudget(mi);
+            head += '<th class="num">' + m +
+                '<span class="cc-th-past">vs ' + String(anioPast).slice(2) + '</span>' +
+                '<span class="cc-th-tc' + (diff ? ' is-custom' : '') + '" title="Tipo de cambio del mes">TC ' +
+                tcM.toFixed(2) + '</span>' +
+                (lockedMes ? '<span class="cc-th-budget" title="Mes bloqueado por tipo de budget">fijo</span>' : '') +
+                '</th>';
+        });
+        head += '</tr>';
+        thead.innerHTML = head;
+        if (!ctas.length) {
+            tbody.innerHTML = '<tr><td colspan="18"><div class="cc-empty">' +
+                (control.soloPendientes || control.prodQuery
+                    ? 'Sin productos con ese filtro'
+                    : 'Usa Agregar producto, a la izquierda, para asignarlo y capturarlo aquí') +
+                '</div></td></tr>';
+            return;
+        }
+
+        var groups = {};
+        var groupOrder = [];
+        ctas.forEach(function (cta) {
+            var g = cta.grupo || 'Sin agrupación';
+            if (!groups[g]) {
+                groups[g] = [];
+                groupOrder.push(g);
+            }
+            groups[g].push(cta);
+        });
+        var closedMap = control.grupoCerradoMatrix || (control.grupoCerradoMatrix = {});
+        var html = '';
+        groupOrder.forEach(function (g) {
+            var list = groups[g];
+            var closed = !!closedMap[g];
+            var capturados = list.filter(function (x) { return !ctaPendiente(x); }).length;
+            var udsGrupo = list.reduce(function (a, x) {
+                return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto));
+            }, 0);
+            html += '<tr class="cc-group-row cc-matrix-group-row" data-group="' + escapeHtml(g) + '">' +
+                '<td class="sticky-col" colspan="6">' +
+                    '<i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' +
+                    escapeHtml(g) + ' · ' + list.length + (list.length === 1 ? ' producto' : ' productos') +
+                    '<span class="cc-matrix-group-meta">' + capturados + '/' + list.length + ' capturados' +
+                    (udsGrupo ? (' · ' + qtyLabel(udsGrupo) + ' uds proy.') : '') + '</span>' +
+                '</td>' +
+                '<td colspan="12" class="cc-matrix-group-spacer"></td>' +
+                '</tr>';
+            if (!closed) {
+                list.forEach(function (cta) {
+                    html += matrixProductRowHtml(cta, anioPast);
+                });
+            }
+        });
+        tbody.innerHTML = html;
+        bindMatrixTableEvents(tbody);
+    }
+
+    function paintMatrixSelection() {
+        var tbody = document.getElementById('ctl-matrix-tbody');
+        if (!tbody) return;
+        tbody.querySelectorAll('.cc-matrix-row').forEach(function (row) {
+            row.classList.toggle('is-on', String(row.getAttribute('data-cta') || '') === String(control.cuenta || ''));
+        });
+    }
+
+    function updateMatrixRow(codigo) {
+        var c = control.centro;
+        if (!c || !codigo) return;
+        var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
+        var row = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
+        if (!cta || !row) {
+            // Puede estar en un grupo cerrado: reabrir y redibujar.
+            if (cta) {
+                var gName = cta.grupo || 'Sin agrupación';
+                if (control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]) {
+                    control.grupoCerradoMatrix[gName] = false;
+                }
+            }
+            drawMatrixTable();
+            return;
+        }
+        var d = deltaPct(cta.totP, cta.totG);
+        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var done = !ctaPendiente(cta);
+        row.classList.toggle('is-done', done);
+        row.classList.toggle('is-on', String(control.cuenta || '') === String(codigo));
+        var udsTotal = row.querySelector('[data-uds-total]');
+        var precioCell = row.querySelector('[data-precio-unit]');
+        var delta = row.querySelector('[data-delta]');
+        var status = row.querySelector('.cc-matrix-status');
+        if (udsTotal) {
+            var udsAnio = cta.unidadesAnio != null ? cta.unidadesAnio : unidadesAnuales(cta.ppto);
+            udsTotal.innerHTML = udsAnio
+                ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsAnio)) + '</div>' +
+                    (unidadDe(cta) ? '<div class="cc-sem-uom">' + escapeHtml(unidadDe(cta)) + '</div>' : ''))
+                : '<span class="cc-price-empty">—</span>';
+        }
+        if (precioCell) precioCell.innerHTML = precioProyeccionCellHtml(cta);
+        if (precioCell) {
+            var editBtn = precioCell.querySelector('[data-edit-precio]');
+            if (editBtn) {
+                editBtn.addEventListener('click', function (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    openPrecioMesesModal(editBtn.getAttribute('data-edit-precio'));
+                });
+            }
+        }
+        if (delta) {
+            delta.className = 'num ' + dCls;
+            delta.textContent = (cta.totP || done) ? ((d > 0 ? '+' : '') + d + '%') : '—';
+        }
+        if (status) status.textContent = done ? 'Capturado' : (mesesCapturados(cta) + '/12');
+        for (var i = 0; i < 12; i++) {
+            var inp = row.querySelector('input[data-m="' + i + '"]');
+            if (!inp) continue;
+            if (document.activeElement === inp) continue;
+            var shown = formatInputQty(cta.ppto[i]);
+            if (String(inp.value) !== shown) inp.value = shown;
+            inp.classList.toggle('is-neg', (Number(shown) || 0) < 0);
+            var td = inp.closest('td');
+            if (td) {
+                var lockedMesUpd = mesBloqueadoBudget(i);
+                td.className = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') +
+                    (lockedMesUpd ? ' is-locked' : '');
+                var wrap = td.querySelector('.cc-matrix-month');
+                if (wrap) {
+                    var tag = wrap.querySelector('.cc-month-price-tag');
+                    var pMes = precioUnitarioMes(cta, i);
+                    var pCustom = precioMesEsDistinto(cta, i);
+                    var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+                    if (pMes > 0) {
+                        if (!tag) {
+                            tag = document.createElement('div');
+                            wrap.appendChild(tag);
+                        }
+                        tag.className = 'cc-month-price-tag' + (pCustom ? ' is-custom' : '');
+                        tag.textContent = moneyLista(pMes, mon, i);
+                        tag.title = 'Precio del mes: ' + moneyLista(pMes, mon, i) +
+                            (pCustom ? ' · distinto del global' : ' · global / maestro') +
+                            ' · TC ' + fxRate(i).toFixed(2);
+                    } else if (tag) {
+                        tag.remove();
+                    }
+                }
+            }
+        }
+        updateFormTotalsCliente(statsDeCentro(c));
+        paintFormEstadoCliente(statsDeCentro(c));
+        paintMatrixHint();
+    }
+
+    function cssEscape(value) {
+        return String(value == null ? '' : value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+
     function monthCellClass(cta, i) {
         var cls = 'cc-month-cell';
         var raw = cta.ppto && cta.ppto[i];
+        // Amarillo: mes pendiente de capturar.
         if (!mesLleno(raw)) {
             cls += ' is-empty';
             return cls;
         }
-        var val = Number(raw);
-        if (cta.gasto[i] && val > cta.gasto[i] * 1.2) cls += ' is-over';
+        var val = Number(raw) || 0;
+        var past = pastQtyMes(cta, i);
+        // Verde: proyección >= venta / proy. anterior.
+        // Rojo: proyección < venta / proy. anterior.
+        if (past > 0 && val < past) cls += ' is-over';
         else cls += ' is-ok';
         return cls;
     }
@@ -2436,12 +5459,12 @@
     function monthsFromGrid(cta, fillEmpty) {
         var c = control.centro;
         var months = (c && cta) ? pptoDe(c.empresa, c.codigo, cta, cta.gasto).slice() : [null, null, null, null, null, null, null, null, null, null, null, null];
-        var grid = document.getElementById('ctl-month-grid');
-        if (!grid) return months;
-        grid.querySelectorAll('input[data-m]').forEach(function (inp) {
+        if (!cta) return months;
+        var selector = '#ctl-matrix-tbody input[data-cta="' + cssEscape(cta.codigo) + '"][data-m], #ctl-month-grid input[data-cta="' + cssEscape(cta.codigo) + '"][data-m]';
+        document.querySelectorAll(selector).forEach(function (inp) {
             var m = Number(inp.getAttribute('data-m'));
             var raw = String(inp.value || '').trim().replace(/,/g, '');
-            months[m] = raw === '' ? (fillEmpty ? 0 : null) : (Number(raw) || 0);
+            months[m] = raw === '' ? (fillEmpty ? 0 : null) : toStoreQty(Number(raw) || 0);
         });
         return months;
     }
@@ -2460,6 +5483,10 @@
         })[0];
         if (pend) {
             selectCuenta(pend.codigo);
+            var row = document.querySelector('#ctl-matrix-tbody tr[data-cta="' + cssEscape(pend.codigo) + '"]');
+            if (row && row.scrollIntoView) row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            var firstEmpty = row && row.querySelector('td.is-empty input, .cc-matrix-cell.is-empty input');
+            if (firstEmpty) firstEmpty.focus();
             return true;
         }
         celebrarCentroCompleto();
@@ -2505,18 +5532,26 @@
 
     function guardarCapturaActual() {
         var c = control.centro;
-        var cta = currentCta();
-        if (c && cta && !control.locked) {
+        if (!c || control.locked) return true;
+        var ctas = control._allCtas || [];
+        var incompletos = [];
+        ctas.forEach(function (cta) {
             var months = monthsFromGrid(cta);
             var faltan = cuentaMesesVacios(months);
             if (faltan.length) {
-                toast('warning', 'Faltan meses', 'Llena los 12 meses (el 0 sí cuenta) o pulsa Completado.');
-                drawMonthGrid(Object.assign({}, cta, { ppto: months, totP: sum(months) }));
-                return false;
+                incompletos.push(labelNombreCodigo(cta.nombre, cta.codigo));
+                return;
             }
             persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
+        });
+        if (incompletos.length) {
+            toast('warning', 'Faltan meses', incompletos.length === 1
+                ? ('Completa los 12 meses de ' + incompletos[0] + ' (el 0 sí cuenta) o pulsa Completado.')
+                : ('Hay ' + incompletos.length + ' productos incompletos. Llena los 12 meses o usa Completado.'));
+            drawMatrixTable();
+            return false;
         }
-        if (c) persistOverlay(c, { estado: c.estado === 'abierto' ? 'en_proceso' : c.estado });
+        persistOverlay(c, { estado: c.estado === 'abierto' ? 'en_proceso' : c.estado });
         renderVisorTable();
         return true;
     }
@@ -2531,13 +5566,12 @@
         renderCtaChips();
         renderControlTable();
         renderControlCharts();
-        var cta = currentCta() || control._allCtas.filter(function (x) { return String(x.codigo) === String(codigo); })[0];
-        if (cta) {
-            paintFormEstado(cta);
-            paintCompletarBtn(cta);
-            updateFormTotals(cta);
-            if (!opts.skipFormGrid) drawMonthGrid(cta);
+        if (opts.skipFormGrid) {
+            updateMatrixRow(codigo);
+        } else {
+            renderCapturaForm();
         }
+        paintCompletarBtn(currentCta());
         renderVisorTable();
     }
 
@@ -2556,7 +5590,7 @@
         var tbody = document.getElementById(tbodyId);
         if (!thead || !tbody) return;
         if (!c) {
-            tbody.innerHTML = '<tr><td colspan="28"><div class="cc-empty">Elige un cliente para ver el detalle</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="30"><div class="cc-empty">Elige un cliente para ver el detalle</div></td></tr>';
             if (tbodyId === 'ctl-tbody') paintVisibleTableTotals(null, 'ctl');
             if (tbodyId === 'det-tbody') paintVisibleTableTotals(null, 'det');
             return;
@@ -2581,38 +5615,70 @@
         });
         var closedMap = control[opts.groupKey] || (control[opts.groupKey] = {});
 
-        var head = '<tr><th class="sticky-col">Cuenta</th><th class="num">Gasto ' + CC.state.anioGasto + '</th><th class="num">Ppto ' + CC.state.anioPresupuesto + '</th><th class="num">Δ%</th>';
-        MONTHS.forEach(function (m) { head += '<th class="num">' + m + ' ' + String(CC.state.anioGasto).slice(2) + '</th><th class="num">' + m + ' ' + String(CC.state.anioPresupuesto).slice(2) + '</th>'; });
+        var yyG = String(CC.state.anioGasto).slice(2);
+        var yyP = String(CC.state.anioPresupuesto).slice(2);
+        var head = '<tr><th class="sticky-col">Producto</th>' +
+            '<th class="num">Precio<span class="cc-th-past">venta ’' + yyG + '</span></th>' +
+            '<th class="num">Venta ' + CC.state.anioGasto + '</th>' +
+            '<th class="num">Precio<span class="cc-th-past">proy. ’' + yyP + '</span></th>' +
+            '<th class="num">Proy. ' + CC.state.anioPresupuesto + '</th>' +
+            '<th class="num">Δ%</th>';
+        MONTHS.forEach(function (m) { head += '<th class="num">' + m + ' ' + yyG + '</th><th class="num">' + m + ' ' + yyP + '</th>'; });
         head += '</tr>';
         thead.innerHTML = head;
 
         var html = '';
         var hideGroups = opts.scope === 'cuenta' && control.cuenta && ctas.length <= 1;
         Object.keys(groups).forEach(function (g) {
-            var gTotG = groups[g].reduce(function (a, x) { return a + x.totG; }, 0);
-            var gTotP = groups[g].reduce(function (a, x) { return a + x.totP; }, 0);
+            var gTotG = groups[g].reduce(function (a, x) {
+                return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+            }, 0);
+            var gTotP = groups[g].reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
             var closed = !!closedMap[g];
             if (!hideGroups) {
-                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="4"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
-                html += '<td class="num" colspan="2">' + money(gTotG) + ' → ' + money(gTotP) + '</td><td colspan="22"></td></tr>';
+                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="6"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
+                html += '<td class="num cc-group-totals" colspan="2">' +
+                    '<span class="cc-group-tot"><em>Venta ' + CC.state.anioGasto + '</em> ' + moneyGasto(gTotG) + '</span>' +
+                    '<span class="cc-group-tot-sep">→</span>' +
+                    '<span class="cc-group-tot is-proy"><em>Proy. ' + CC.state.anioPresupuesto + '</em> ' + moneyGasto(gTotP) + '</span>' +
+                    '</td><td colspan="22"></td></tr>';
             }
             if (!closed || hideGroups) {
                 groups[g].forEach(function (cta) {
-                    var d = deltaPct(cta.totP, cta.totG);
+                    var impG = cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+                    var impP = importeProyeccionVista(cta);
+                    // Δ% en la misma moneda que se muestra (evita mezclar LineTotal MXN vs proy×TC).
+                    var d = deltaPct(impP, impG);
                     var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
-                    html += '<td class="num">' + moneyGasto(cta.totG) + '</td><td class="num fw-semibold">' + money(cta.totP) + '</td>';
-                    html += '<td class="num ' + dCls + '">' + (cta.totP ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
+                    var pPast = precioVentaPasadaInfo(cta);
+                    html += '<td class="num cc-price-cell" title="' +
+                        escapeHtml(pPast.title || ('Precio unitario promedio de la venta ' + CC.state.anioGasto)) + '">' +
+                        precioInfoHtml(pPast) + '</td>';
+                    html += '<td class="num" title="Suma de LineTotalUSD (SAP). No es uds × precio redondeado.">' + moneyGasto(impG) + '</td>';
+                    html += '<td class="num cc-price-cell" title="Precio de lista actual (proyección ' + CC.state.anioPresupuesto + ')">' + precioInfoHtml(precioProyeccionInfo(cta)) + '</td>';
+                    html += '<td class="num fw-semibold">' + moneyGasto(impP) + '</td>';
+                    html += '<td class="num ' + dCls + '" title="Variación de importe en la moneda de vista (VENTA vs PROY)">' +
+                        (impP || !ctaPendiente(cta) ? ((d > 0 ? '+' : '') + d + '%') : '—') + '</td>';
                     for (var i = 0; i < 12; i++) {
                         var lleno = mesLleno(cta.ppto[i]);
+                        var udsProy = lleno ? (Number(cta.ppto[i]) || 0) : 0;
+                        var udsPast = Number((cta.gasto && cta.gasto[i]) || 0);
                         var pCls = lleno
-                            ? (cta.gasto[i] && cta.ppto[i] > cta.gasto[i] * 1.2 ? 'is-over' : 'is-ok')
+                            ? (udsPast > 0 && udsProy < udsPast ? 'is-over' : 'is-ok')
                             : 'is-empty';
-                        html += '<td class="num text-muted" style="font-size:.75rem">' + moneyGasto(cta.gasto[i] || 0) + '</td>';
-                        html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem">' +
-                            (lleno ? money(cta.ppto[i] || 0) : '—') + '</td>';
+                        var impMesG = importeMesVentaVista(cta, i);
+                        var impMesP = importeMesProyVista(cta, i);
+                        html += '<td class="num text-muted" style="font-size:.75rem" title="' +
+                            escapeHtml('Venta ' + CC.state.anioGasto + (udsPast ? ' · ' + qtyLabel(udsPast) + ' uds' : '') + (isUsdView() ? ' · LineTotalUSD' : ' · LineTotal')) + '">' +
+                            (impMesG ? moneyGasto(impMesG) : (udsPast ? qtyLabel(udsPast) : '—')) + '</td>';
+                        html += '<td class="num fw-semibold ' + pCls + '" style="font-size:.78rem" title="' +
+                            escapeHtml('Proy. ' + CC.state.anioPresupuesto + (lleno ? ' · ' + qtyLabel(udsProy) + ' uds' : '') + ' · TC ' + fxRate(i).toFixed(2)) + '">' +
+                            (lleno
+                                ? (impMesP != null ? moneyGasto(impMesP) : qtyLabel(udsProy))
+                                : '—') + '</td>';
                     }
                     html += '</tr>';
                 });
@@ -2621,7 +5687,42 @@
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
             ? 'No hay filas para este producto con los filtros actuales'
             : 'Sin productos asignados a este cliente';
-        tbody.innerHTML = html || '<tr><td colspan="28"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
+        if (!html) {
+            tbody.innerHTML = '<tr><td colspan="30"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
+        } else {
+            // Fila de totales por mes (todas las cuentas filtradas, aunque el grupo esté cerrado).
+            var sumG = 0;
+            var sumP = 0;
+            var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            ctas.forEach(function (cta) {
+                sumG += cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+                sumP += importeProyeccionVista(cta);
+                for (var mi = 0; mi < 12; mi++) {
+                    mesG[mi] += Number(importeMesVentaVista(cta, mi)) || 0;
+                    var mp = importeMesProyVista(cta, mi);
+                    if (mp != null) mesP[mi] += Number(mp) || 0;
+                }
+            });
+            var dTot = deltaPct(sumP, sumG);
+            var dTotCls = dTot > 15 ? 'text-danger' : (dTot < 0 ? 'text-success' : 'text-muted');
+            html += '<tr class="cc-month-totals-row">' +
+                '<td class="sticky-col"><strong>Totales</strong>' +
+                '<span class="cc-month-totals-sub">' + ctas.length + (ctas.length === 1 ? ' producto' : ' productos') + '</span></td>' +
+                '<td class="num">—</td>' +
+                '<td class="num fw-semibold">' + moneyGasto(sumG) + '</td>' +
+                '<td class="num">—</td>' +
+                '<td class="num fw-semibold">' + moneyGasto(sumP) + '</td>' +
+                '<td class="num ' + dTotCls + '">' + ((dTot > 0 ? '+' : '') + dTot + '%') + '</td>';
+            for (var ti = 0; ti < 12; ti++) {
+                html += '<td class="num" title="' + escapeHtml('Total venta ' + MONTHS[ti] + ' ' + CC.state.anioGasto) + '">' +
+                    (mesG[ti] ? moneyGasto(mesG[ti]) : '—') + '</td>';
+                html += '<td class="num fw-semibold" title="' + escapeHtml('Total proy. ' + MONTHS[ti] + ' ' + CC.state.anioPresupuesto) + '">' +
+                    (mesP[ti] ? moneyGasto(mesP[ti]) : '—') + '</td>';
+            }
+            html += '</tr>';
+            tbody.innerHTML = html;
+        }
 
         tbody.querySelectorAll('.cc-group-row').forEach(function (row) {
             row.addEventListener('click', function () {
@@ -2650,24 +5751,34 @@
         var m = Number(inp.getAttribute('data-m'));
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         if (!c || !cta) return;
+        if (mesBloqueadoBudget(m)) {
+            toast('warning', 'Mes bloqueado', 'Este mes viene de la venta real del año en curso (' + labelTipoBudget() + ') y no se puede editar.');
+            refreshControlAfterEdit(codigo, { skipFormGrid: true });
+            return;
+        }
         var raw = String(inp.value || '').trim().replace(/,/g, '');
-        var valN = raw === '' ? null : (Number(raw) || 0);
+        var valN = raw === '' ? null : toStoreQty(Number(raw) || 0);
         var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
         var wasEmpty = !mesesTodosLlenos(months) && months.every(function (x) { return !mesLleno(x); });
         months[m] = valN;
         persistBudget(c.empresa, c.codigo, codigo, months);
 
-        var cell = inp.closest('.cc-month-cell');
+        var cell = inp.closest('.cc-month-cell, .cc-matrix-cell, td');
         if (cell) {
             var fake = { gasto: cta.gasto, ppto: months };
-            cell.className = monthCellClass(fake, m);
+            var cls = monthCellClass(fake, m);
+            if (cell.classList.contains('cc-matrix-cell') || cell.tagName === 'TD') {
+                cell.className = cls.replace('cc-month-cell', 'cc-matrix-cell') + (mesBloqueadoBudget(m) ? ' is-locked' : '');
+            } else {
+                cell.className = cls;
+            }
         }
 
-        if (wasEmpty && valN > 0 && m === 0 && !control.locked) {
+        if (wasEmpty && valN > 0 && m === 0 && !control.locked && !budgetLockCount()) {
             if (window.Swal) {
                 Swal.fire({
-                    title: '¿Gasto fijo mensual?',
-                    html: 'Capturaste <b>' + money(valN) + '</b> en enero para <b>' + escapeHtml(cta.nombre) + '</b>. ¿Lo replicamos en los 12 meses?',
+                    title: '¿Cantidad fija mensual?',
+                    html: 'Capturaste <b>' + escapeHtml(qtyLabel(valN)) + '</b> unidades en enero para <b>' + escapeHtml(cta.nombre) + '</b>. ¿Lo replicamos en los 12 meses?',
                     icon: 'question',
                     showCancelButton: true,
                     confirmButtonColor: '#0a0a0a',
@@ -2675,8 +5786,11 @@
                     cancelButtonText: 'Solo enero'
                 }).then(function (res) {
                     if (res.isConfirmed) {
-                        persistBudget(c.empresa, c.codigo, codigo, months.map(function () { return valN; }));
-                        toast('success', 'Gasto fijo aplicado', 'Los 12 meses quedaron en ' + money(valN));
+                        var filled = months.map(function (v, idx) {
+                            return mesBloqueadoBudget(idx) ? v : valN;
+                        });
+                        persistBudget(c.empresa, c.codigo, codigo, filled);
+                        toast('success', 'Cantidad fija aplicada', 'Los meses editables quedaron en ' + qtyLabel(valN));
                     }
                     refreshControlAfterEdit(codigo);
                 });
@@ -2690,44 +5804,129 @@
         var copy = document.getElementById('ctl-copy-year');
         if (copy) copy.addEventListener('click', function () {
             var c = control.centro;
-            var cta = currentCta();
-            if (!c || !cta || control.locked) return;
+            var list = targetCtasForTools();
+            if (!c || !list.length || control.locked) return;
+            var run = function () {
+                list.forEach(function (cta) {
             persistBudget(c.empresa, c.codigo, cta.codigo, (cta.gasto || []).slice());
-            refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Copiado', 'Se copió la cantidad vendida de ' + CC.state.anioGasto + ' a los 12 meses');
+                });
+                refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                toast('success', 'Copiado', list.length === 1
+                    ? ('Se copió la venta de ' + CC.state.anioGasto + ' a ' + labelNombreCodigo(list[0].nombre, list[0].codigo))
+                    : ('Se copió ' + CC.state.anioGasto + ' en ' + list.length + ' productos'));
+            };
+            if (list.length > 1 && window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: 'Copiar a ' + list.length + ' productos',
+                    text: 'Se reemplazará la proyección visible con la venta real de ' + CC.state.anioGasto + '.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Copiar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) run(); });
+                return;
+            }
+            run();
+        });
+        var refreshVenta = document.getElementById('ctl-refresh-venta');
+        if (refreshVenta) refreshVenta.addEventListener('click', function () {
+            var c = control.centro;
+            if (!c) {
+                toast('warning', 'Cliente', 'Elige un cliente primero.');
+                return;
+            }
+            var go = function () {
+                loadGastoRealCentro(c, { force: true });
+            };
+            if (window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: '¿Actualizar venta ' + (CC.state.anioGasto || '') + '?',
+                    text: 'Se consultará SAP y se reemplazará el snapshot local de este cliente.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Actualizar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) go(); });
+                return;
+            }
+            if (window.confirm('¿Actualizar venta ' + (CC.state.anioGasto || '') + ' desde SAP?')) go();
         });
         var clear = document.getElementById('ctl-clear-year');
         if (clear) clear.addEventListener('click', function () {
             var c = control.centro;
-            var cta = currentCta();
-            if (!c || !cta || control.locked) return;
+            var list = targetCtasForTools();
+            if (!c || !list.length || control.locked) return;
+            var run = function () {
+                list.forEach(function (cta) {
             persistBudget(c.empresa, c.codigo, cta.codigo, [null, null, null, null, null, null, null, null, null, null, null, null], { completado: false });
-            refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Limpio', 'Se quitó la proyección de ' + cta.nombre);
+                });
+                refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                toast('success', 'Limpio', list.length === 1
+                    ? ('Se quitó la proyección de ' + labelNombreCodigo(list[0].nombre, list[0].codigo))
+                    : ('Se limpiaron ' + list.length + ' productos'));
+            };
+            if (list.length > 1 && window.Swal) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Limpiar ' + list.length + ' productos',
+                    text: 'Se borrarán las cantidades proyectadas visibles.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Limpiar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#b91c1c'
+                }).then(function (r) { if (r.isConfirmed) run(); });
+                return;
+            }
+            run();
         });
         var infl = document.getElementById('ctl-apply-infl');
         if (infl) infl.addEventListener('click', function () {
             var c = control.centro;
-            var cta = currentCta();
-            if (!c || !cta || control.locked) return;
+            var list = targetCtasForTools();
+            if (!c || !list.length || control.locked) return;
             var pctIn = document.getElementById('ctl-ajuste-pct');
             var pctVal = pctIn ? Number(pctIn.value) : 0;
             if (!isFinite(pctVal)) pctVal = 0;
             var rate = 1 + (pctVal / 100);
+            var run = function () {
+                list.forEach(function (cta) {
             var months = (cta.gasto || []).map(function (v) { return (Number(v) || 0) * rate; });
             persistBudget(c.empresa, c.codigo, cta.codigo, months);
-            refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Ajuste aplicado', 'Cantidad ' + CC.state.anioGasto + ' × (1 ' + (pctVal >= 0 ? '+ ' : '− ') + Math.abs(pctVal) + '%)');
+                });
+                refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                toast('success', 'Ajuste aplicado', list.length === 1
+                    ? ('Cantidad ' + CC.state.anioGasto + ' × (1 ' + (pctVal >= 0 ? '+ ' : '− ') + Math.abs(pctVal) + '%)')
+                    : (list.length + ' productos × (1 ' + (pctVal >= 0 ? '+ ' : '− ') + Math.abs(pctVal) + '%)'));
+            };
+            if (list.length > 1 && window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: 'Aplicar % a ' + list.length + ' productos',
+                    text: 'Se recalculará la proyección visible con el porcentaje indicado.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Aplicar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) run(); });
+                return;
+            }
+            run();
         });
         var completar = document.getElementById('ctl-completar');
         if (completar) completar.addEventListener('click', function () {
             var c = control.centro;
-            var cta = currentCta();
-            if (!c || !cta || control.locked) return;
+            var list = targetCtasForTools();
+            if (!c || !list.length || control.locked) return;
+            list.forEach(function (cta) {
             var months = monthsFromGrid(cta, true);
             persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
-            refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Completado', 'Los meses vacíos quedaron en 0');
+            });
+            refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+            toast('success', 'Completado', list.length === 1
+                ? 'Los meses vacíos quedaron en 0'
+                : ('Se completaron ' + list.length + ' productos (vacíos en 0)'));
         });
     }
 
@@ -2783,7 +5982,7 @@
         }
         var stt = statsDeCentro(c);
         var dep = deptoDeCentro(c);
-        var barCls = stt.pendientes ? 'warn' : 'good';
+        var barCls = semaforoAvance(stt.avance);
         setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
         var title = document.getElementById('cc-page-title');
         if (title) title.innerHTML = escapeHtml(c.nombre || c.codigo || 'Cliente');
@@ -2792,11 +5991,11 @@
             facts.hidden = false;
             facts.innerHTML =
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
-                factHtml('Tot Venta', money(stt.totG)) +
-                factHtml('Tot Proy.', money(stt.totP)) +
+                factHtml('TOTAL VENTA', textoImporteVisor(totalVentaAnioCliente(c))) +
+                factHtml('TOTAL PROYECTADO', textoImporteVisor(totalProyectadoCliente(c))) +
                 factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
-                factHtml('Progreso', stt.avance + '%',
+                factHtml('Progreso', '<span class="cc-semaforo-' + barCls + '">' + stt.avance + '%</span>',
                     '<div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span></div>' +
                     '<div class="cc-progress ' + barCls + '"><span style="width:' + Math.min(stt.avance, 100) + '%"></span></div></div>') +
                 '<div class="cc-detalle-fact"><small>Estado</small><div style="margin-top:.2rem">' + renderBadge(c.estado) + '</div></div>';
@@ -2804,7 +6003,6 @@
     }
 
     function setVista(name) {
-        name = vistaControlPermitida(name);
         if (name !== 'captura' && name !== 'visor') name = 'captura';
         control.vista = name;
         var cap = document.getElementById('vista-captura');
@@ -2880,12 +6078,122 @@
         });
     }
 
+    function gastoRealListo(c) {
+        if (!c) return false;
+        var key = gastoCacheKey(c);
+        return !!(CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key));
+    }
+
+    /** Importe de lo vendido el año de referencia (SAP), todos los productos del cliente. */
+    function totalVentaAnioCliente(c) {
+        if (!gastoRealListo(c)) return null;
+        var por = (CC.state.gastoCache && CC.state.gastoCache[gastoCacheKey(c)]) || {};
+        var seen = {};
+        var total = 0;
+        Object.keys(por).forEach(function (k) {
+            var row = por[k];
+            if (!row || typeof row !== 'object') return;
+            var codigo = String(row.codigo || k || '').trim();
+            if (!codigo || seen[codigo]) return;
+            seen[codigo] = true;
+            total += importeVentaVista({
+                importe: row.importe,
+                importeUsd: row.importe_usd,
+                importe_usd: row.importe_usd,
+                gasto: row.gasto,
+                precioLista: 0,
+                precioMoneda: 'MXN'
+            });
+        });
+        return total;
+    }
+
+    /** Importe de la proyección que ya se capturó en el ciclo. */
+    function totalProyectadoCliente(c) {
+        var s = statsDeCentro(c);
+        return s.totPVista != null ? s.totPVista : (s.totP || 0);
+    }
+
+    function textoImporteVisor(n) {
+        if (n == null) return '…';
+        return moneyGasto(n);
+    }
+
+    function paintVisorLabels() {
+        var g = CC.state.anioGasto || '';
+        var p = CC.state.anioPresupuesto || '';
+        setText('visor-kpi-gasto-lbl', 'Total venta' + (g ? ' ' + g : ''));
+        setText('visor-kpi-ppto-lbl', 'Total proyectado' + (p ? ' ' + p : ''));
+        setText('visor-th-venta', 'Total venta' + (g ? ' ' + g : ''));
+        setText('visor-th-proy', 'Total proyectado' + (p ? ' ' + p : ''));
+    }
+
+    var visorGastoInflight = {};
+
+    function queueVisorGastos() {
+        if (!CC.state.gastoUrl || CC.state.page !== 'control') return;
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        var pending = (CC.state.centros || []).filter(function (c) {
+            var key = gastoCacheKey(c);
+            if (gastoRealListo(c) || visorGastoInflight[key]) return false;
+            return true;
+        });
+        if (!pending.length) return;
+        var inflight = 0;
+        var max = 3;
+        var dirty = false;
+        var paintTimer = null;
+        function schedulePaint() {
+            if (paintTimer) return;
+            paintTimer = setTimeout(function () {
+                paintTimer = null;
+                if (CC.state.page === 'control' && dirty) renderVisorTable();
+            }, 350);
+        }
+        function kick() {
+            while (inflight < max && pending.length) {
+                var c = pending.shift();
+                var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+                if (visorGastoInflight[key]) continue;
+                if (CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key)) continue;
+                visorGastoInflight[key] = true;
+                inflight += 1;
+                (function (centro, cacheKey, yearFrozen) {
+                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                        '&cc=' + encodeURIComponent(centro.codigo || '') +
+                        '&year=' + encodeURIComponent(yearFrozen), {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(function (res) { return res.json(); }).then(function (json) {
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
+                        CC.state.gastoLookup = CC.state.gastoLookup || {};
+                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]);
+                        dirty = true;
+                        schedulePaint();
+                    }).catch(function () {
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[cacheKey] = {};
+                        dirty = true;
+                    }).then(function () {
+                        delete visorGastoInflight[cacheKey];
+                        inflight -= 1;
+                        if (!pending.length && !inflight && dirty) renderVisorTable();
+                        else kick();
+                    });
+                })(c, key, year);
+            }
+        }
+        kick();
+    }
+
     function visorTotales(rows) {
-        var totG = 0, totP = 0, capturadas = 0, totalCtas = 0, listos = 0;
+        var totG = 0, totP = 0, capturadas = 0, totalCtas = 0, listos = 0, ventaPend = 0;
         (rows || []).forEach(function (c) {
             var s = statsDeCentro(c);
-            totG += s.totG;
-            totP += s.totP;
+            var venta = totalVentaAnioCliente(c);
+            if (venta == null) ventaPend += 1;
+            else totG += venta;
+            totP += totalProyectadoCliente(c);
             capturadas += s.capturadas;
             totalCtas += s.total;
             if (!s.pendientes) listos++;
@@ -2895,6 +6203,7 @@
             n: n,
             totG: totG,
             totP: totP,
+            ventaPend: ventaPend,
             capturadas: capturadas,
             totalCtas: totalCtas,
             listos: listos,
@@ -2903,18 +6212,31 @@
         };
     }
 
+    function textoTotalVentaVisor(tot) {
+        if (!tot || !tot.n) return '—';
+        if (tot.ventaPend && tot.ventaPend === tot.n) return '…';
+        var txt = moneyGasto(tot.totG);
+        return tot.ventaPend ? (txt === '—' ? '…' : txt + '…') : txt;
+    }
+
     function paintVisorResumen(tot) {
+        paintVisorLabels();
         setText('visor-avance', tot.n ? (tot.avance + '%') : '—');
         setText('visor-avance-meta', tot.n
             ? (tot.listos + ' de ' + tot.n + ' clientes listos · ' + tot.capturadas + ' de ' + tot.totalCtas + ' productos capturados')
             : 'No hay clientes para sumar');
-        var bar = document.getElementById('visor-avance-bar');
-        var wrap = document.getElementById('visor-avance-wrap');
-        if (bar) bar.style.width = (tot.n ? Math.min(tot.avance, 100) : 0) + '%';
-        if (wrap) wrap.className = 'cc-progress ' + (tot.n && !tot.pendientes ? 'good' : 'warn');
+        if (tot.n) paintBarraProgreso('visor-avance-wrap', 'visor-avance-bar', tot.avance, 'visor-avance');
+        else {
+            var bar0 = document.getElementById('visor-avance-bar');
+            var wrap0 = document.getElementById('visor-avance-wrap');
+            if (bar0) bar0.style.width = '0%';
+            if (wrap0) wrap0.className = 'cc-progress';
+            var label0 = document.getElementById('visor-avance');
+            if (label0) label0.className = '';
+        }
         setText('visor-kpi-n', tot.n || '0');
-        setText('visor-kpi-gasto', money(tot.totG));
-        setText('visor-kpi-ppto', money(tot.totP));
+        setText('visor-kpi-gasto', textoTotalVentaVisor(tot));
+        setText('visor-kpi-ppto', tot.n ? moneyGasto(tot.totP) : '—');
         setText('visor-kpi-pend', tot.pendientes);
         var tf = document.getElementById('visor-tfoot');
         if (!tf) return;
@@ -2923,9 +6245,9 @@
             return;
         }
         tf.innerHTML = '<tr>' +
-            '<td colspan="4">Totales · ' + tot.n + (tot.n === 1 ? ' cliente' : ' clientes') + '</td>' +
-            '<td class="num">' + money(tot.totG) + '</td>' +
-            '<td class="num">' + money(tot.totP) + '</td>' +
+            '<td colspan="3">Totales · ' + tot.n + (tot.n === 1 ? ' cliente' : ' clientes') + '</td>' +
+            '<td class="num">' + textoTotalVentaVisor(tot) + '</td>' +
+            '<td class="num">' + moneyGasto(tot.totP) + '</td>' +
             '<td colspan="2"></td>' +
             '<td>' + tot.capturadas + '/' + tot.totalCtas + ' · ' + tot.avance + '%</td>' +
             '<td>' + tot.listos + ' listos</td>' +
@@ -2938,25 +6260,27 @@
         var rows = visorRowsFiltradas();
         var tot = visorTotales(rows);
         paintVisorResumen(tot);
+        queueVisorGastos();
         if (!rows.length) {
-            tb.innerHTML = '<tr><td colspan="10"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay clientes con esos filtros</div></td></tr>';
+            tb.innerHTML = '<tr><td colspan="9"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay clientes con esos filtros</div></td></tr>';
             return;
         }
+        var anioVenta = CC.state.anioGasto || '';
         tb.innerHTML = rows.map(function (c) {
             var stt = statsDeCentro(c);
-            var dep = deptoDeCentro(c);
-            var barCls = stt.pendientes ? 'warn' : 'good';
+            var barCls = semaforoAvance(stt.avance);
             var fecha = c.fecha || '—';
+            var venta = totalVentaAnioCliente(c);
+            var proy = totalProyectadoCliente(c);
             return '<tr data-key="' + escapeHtml(centroKey(c)) + '">' +
                 '<td><a class="cc-btn cc-btn-detalle" href="' + detalleHref(c) + '"><i class="fa-solid fa-eye"></i> Detalle</a></td>' +
                 '<td>' + escapeHtml(c.empresa || '—') + '</td>' +
                 '<td>' + htmlNombreCodigo(c.nombre, c.codigo) + '</td>' +
-                '<td>' + escapeHtml(dep) + '</td>' +
-                '<td class="num">' + money(stt.totG) + '</td>' +
-                '<td class="num">' + money(stt.totP) + '</td>' +
+                '<td class="num" title="' + escapeHtml('Vendido en ' + anioVenta) + '">' + textoImporteVisor(venta) + '</td>' +
+                '<td class="num" title="Proyección capturada">' + textoImporteVisor(proy) + '</td>' +
                 '<td>' + userCell(c.usuario) + '</td>' +
                 '<td>' + escapeHtml(fecha) + '</td>' +
-                '<td><div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span><strong>' + stt.avance + '%</strong></div>' +
+                '<td><div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span><strong class="cc-semaforo-' + barCls + '">' + stt.avance + '%</strong></div>' +
                     '<div class="cc-progress ' + barCls + '"><span style="width:' + Math.min(stt.avance, 100) + '%"></span></div></div></td>' +
                 '<td>' + renderBadge(c.estado) + '</td></tr>';
         }).join('');
@@ -2974,11 +6298,229 @@
         var mismo = val('d-modo') === 'mismo';
         var label = document.getElementById('d-monto-label');
         var hint = document.getElementById('d-modo-hint');
-        if (label) label.textContent = mismo ? 'Monto mensual' : 'Monto total';
+        if (label) label.textContent = mismo ? 'Unidades mensuales' : 'Unidades totales';
         if (hint) {
             hint.textContent = mismo
-                ? 'Gasto fijo: se copia el mismo monto a cada mes del rango Desde–Hasta.'
-                : 'El total se reparte entre los meses del rango.';
+                ? 'Cantidad fija: se copia el mismo número de unidades a cada mes del rango Desde–Hasta.'
+                : 'El total de unidades se reparte entre los meses del rango (el tipo de cambio no aplica).';
+        }
+    }
+
+    var catalogoEmpresaCache = {};
+
+    function miAsignacionCliente() {
+        var c = control.centro;
+        if (!c) return null;
+        var list = asigsDe(c).filter(function (a) { return a && a.id; });
+        if (!list.length) return null;
+        return list.filter(function (a) { return a.es_principal; })[0] || list[0];
+    }
+
+    function productoYaAsignado(codigo) {
+        var c = control.centro;
+        var asig = c ? asigDe(c) : null;
+        var key = String(codigo || '').toUpperCase();
+        if (!key || !asig) return false;
+        return (asig.cuentas || []).some(function (x) {
+            return String(x.codigo || '').toUpperCase() === key;
+        });
+    }
+
+    function cargarCatalogoEmpresa(done) {
+        var c = control.centro;
+        if (!c) {
+            done([]);
+            return;
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        var key = String(c.empresa || '').toLowerCase() + '|' + year;
+        if (catalogoEmpresaCache[key]) {
+            done(catalogoEmpresaCache[key]);
+            return;
+        }
+        var url = '/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(c.empresa) +
+            '&year=' + encodeURIComponent(year) + '&todas=1';
+        fetch(url, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (json) {
+                var rows = (json && json.cuentas) || [];
+                if (json && json.ok && rows.length) catalogoEmpresaCache[key] = rows;
+                done(rows, json && json.mensaje);
+            })
+            .catch(function () { done([], 'No se pudo cargar el catálogo'); });
+    }
+
+    function pintarResultadosAgregar(q, rows, mensaje) {
+        var box = document.getElementById('ctl-add-list');
+        if (!box) return;
+        q = normSearch(q || '');
+        var pending = (rows || []).filter(function (p) { return !productoYaAsignado(p.codigo); });
+        var hits = q
+            ? pending.filter(function (p) {
+                return normSearch((p.codigo || '') + ' ' + (p.nombre || '') + ' ' + (p.grupo || '')).indexOf(q) !== -1;
+            })
+            : pending;
+        var limit = q ? 40 : 30;
+        var shown = hits.slice(0, limit);
+        if (!shown.length) {
+            box.innerHTML = '<div class="cc-add-prod-empty">' + escapeHtml(mensaje || (q
+                ? 'Sin productos con ese texto, o ya están en el cliente.'
+                : 'Este catálogo no tiene productos para agregar.')) + '</div>';
+            return;
+        }
+        var more = '';
+        if (hits.length > shown.length) {
+            more = '<div class="cc-add-prod-empty">' + (q
+                ? ('Mostrando ' + shown.length + ' de ' + hits.length + '. Sigue escribiendo para acotar.')
+                : ('Mostrando ' + shown.length + ' de ' + hits.length + '. Usa el buscador para encontrar el producto.')) + '</div>';
+        }
+        box.innerHTML = shown.map(function (p) {
+            return '<button type="button" class="cc-add-prod-item" data-add-codigo="' + escapeHtml(p.codigo) + '">' +
+                '<span class="cc-cta-name">' + escapeHtml(p.nombre || p.codigo) + '</span>' +
+                '<span class="cc-cta-code">' + escapeHtml(p.codigo) + '</span>' +
+                '<span class="cc-add-prod-go">Agregar</span></button>';
+        }).join('') + more;
+    }
+
+    function buscarCatalogoParaAgregar(q) {
+        var box = document.getElementById('ctl-add-list');
+        if (box && !catalogoEmpresaCache[catalogoKeyActual()]) {
+            box.innerHTML = '<div class="cc-add-prod-empty">Cargando productos…</div>';
+        }
+        cargarCatalogoEmpresa(function (rows, mensaje) {
+            var input = document.getElementById('ctl-add-q');
+            if (!input || normSearch(input.value) !== normSearch(q)) return;
+            pintarResultadosAgregar(q, rows, mensaje);
+        });
+    }
+
+    function catalogoKeyActual() {
+        var c = control.centro;
+        if (!c) return '';
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        return String(c.empresa || '').toLowerCase() + '|' + year;
+    }
+
+    function abrirModalAgregarProducto() {
+        if (!control.centro || control.locked) {
+            toast('warning', 'Elige un cliente', 'Selecciona empresa y cliente para agregar productos.');
+            return;
+        }
+        var sub = document.getElementById('ctl-add-sub');
+        if (sub) {
+            sub.textContent = 'Catálogo de ' + String(control.centro.empresa || 'la empresa') +
+                ', aunque no se le haya vendido a este cliente.';
+        }
+        var input = document.getElementById('ctl-add-q');
+        if (input) input.value = '';
+        var box = document.getElementById('ctl-add-list');
+        if (box) box.innerHTML = '<div class="cc-add-prod-empty">Cargando productos…</div>';
+        showModal('modalAgregarProducto');
+        cargarCatalogoEmpresa(function (rows, mensaje) {
+            pintarResultadosAgregar('', rows, mensaje);
+            if (input) input.focus();
+        });
+    }
+
+    function enfocarProductoAgregado(codigo) {
+        control.prodQuery = '';
+        var filtro = document.getElementById('ctl-prod-q');
+        if (filtro) filtro.value = '';
+        var addQ = document.getElementById('ctl-add-q');
+        if (addQ) addQ.value = '';
+        hideModal('modalAgregarProducto');
+        control.cuenta = codigo;
+        loadControlCentro();
+        selectCuenta(codigo);
+        var row = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
+        if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        var first = row && row.querySelector('input[data-m]:not([disabled])');
+        if (first && !first.disabled) first.focus();
+    }
+
+    function agregarProductoAlCliente(codigo) {
+        var c = control.centro;
+        var asig = miAsignacionCliente();
+        if (!c || !asig || control.locked) {
+            toast('warning', 'No se puede agregar', 'Este cliente no está abierto para captura.');
+            return;
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        var cacheKey = String(c.empresa || '').toLowerCase() + '|' + year;
+        var prod = (catalogoEmpresaCache[cacheKey] || []).filter(function (p) {
+            return String(p.codigo) === String(codigo);
+        })[0];
+        if (!prod) {
+            toast('warning', 'Producto', 'No se encontró el producto en el catálogo.');
+            return;
+        }
+        if (productoYaAsignado(prod.codigo)) {
+            enfocarProductoAgregado(prod.codigo);
+            toast('warning', 'Ya está en el cliente', prod.nombre || prod.codigo);
+            return;
+        }
+        var cuentas = (asig.cuentas || []).map(function (x) {
+            return {
+                codigo: x.codigo,
+                nombre: x.nombre || '',
+                agrupacion: x.agrupacion || x.grupo || ''
+            };
+        });
+        cuentas.push({
+            codigo: prod.codigo,
+            nombre: prod.nombre || prod.codigo,
+            agrupacion: prod.grupo || ''
+        });
+        var ciclo = cicloActualCodigo();
+        var box = document.getElementById('ctl-add-list');
+        if (box) box.innerHTML = '<div class="cc-add-prod-empty">Agregando ' + escapeHtml(prod.nombre || prod.codigo) + '…</div>';
+        fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones/' + encodeURIComponent(asig.id), {
+            method: 'PUT',
+            headers: apiJsonHeaders(),
+            body: JSON.stringify({ cuentas: cuentas })
+        }).then(function (r) {
+            return r.json().then(function (json) { return { ok: r.ok, json: json }; });
+        }).then(function (res) {
+            if (!res.ok || !res.json || !res.json.asignacion) {
+                throw new Error((res.json && res.json.message) || 'No se pudo asignar el producto');
+            }
+            var saved = res.json.asignacion;
+            CC.state.misAsignaciones = (CC.state.misAsignaciones || []).map(function (a) {
+                return String(a.id) === String(saved.id) ? saved : a;
+            });
+            enfocarProductoAgregado(prod.codigo);
+            toast('success', 'Producto agregado', (prod.nombre || prod.codigo) + ' ya se puede capturar');
+        }).catch(function (err) {
+            var input = document.getElementById('ctl-add-q');
+            buscarCatalogoParaAgregar(input ? input.value : '');
+            toast('error', 'No se agregó', err && err.message ? err.message : 'Error de red');
+        });
+    }
+
+    function bindAgregarProducto() {
+        var openBtn = document.getElementById('ctl-add-btn');
+        var input = document.getElementById('ctl-add-q');
+        var list = document.getElementById('ctl-add-list');
+        if (!openBtn || openBtn._addBound) return;
+        openBtn._addBound = true;
+        openBtn.addEventListener('click', function () {
+            if (openBtn.disabled) return;
+            abrirModalAgregarProducto();
+        });
+        if (input) {
+            var timer = null;
+            input.addEventListener('input', function () {
+                clearTimeout(timer);
+                var q = input.value;
+                timer = setTimeout(function () { buscarCatalogoParaAgregar(q); }, 220);
+            });
+        }
+        if (list) {
+            list.addEventListener('click', function (ev) {
+                var btn = ev.target.closest ? ev.target.closest('[data-add-codigo]') : null;
+                if (!btn) return;
+                agregarProductoAlCliente(btn.getAttribute('data-add-codigo'));
+            });
         }
     }
 
@@ -2992,8 +6534,12 @@
                 e.preventDefault();
                 var c = control.centro;
                 var cta = currentCta();
-                var codigo = cta ? cta.codigo : '';
-                var monto = Number(val('d-monto')) || 0;
+                if (!cta) {
+                    toast('warning', 'Elige un producto', 'Haz clic en una fila de la tabla antes de dispersar.');
+                    return;
+                }
+                var codigo = cta.codigo;
+                var monto = toStoreQty(Number(val('d-monto')) || 0);
                 var from = Number(val('d-desde')) || 0;
                 var to = Number(val('d-hasta')) || 11;
                 var modo = val('d-modo');
@@ -3001,23 +6547,23 @@
                 var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
                 var n = to - from + 1;
                 if (modo === 'igual') {
-                    var each = Math.round(monto / n);
+                    var each = Math.round((monto / n) * 100) / 100;
                     for (var i = from; i <= to; i++) months[i] = each;
                 } else if (modo === 'mismo') {
                     for (var k = from; k <= to; k++) months[k] = monto;
                 } else {
                     var weights = cta.gasto.slice(from, to + 1);
                     var tw = sum(weights) || n;
-                    for (var j = from; j <= to; j++) months[j] = Math.round(monto * ((cta.gasto[j] || 0) / tw));
+                    for (var j = from; j <= to; j++) months[j] = Math.round(monto * ((cta.gasto[j] || 0) / tw) * 100) / 100;
                 }
                 persistBudget(c.empresa, c.codigo, codigo, months);
                 hideModal('modalDispersar');
                 control.cuenta = codigo;
                 refreshControlAfterEdit(codigo);
                 var rango = MONTHS[from] + '–' + MONTHS[to];
-                toast('success', modo === 'mismo' ? 'Gasto fijo' : 'Costo dispersado', modo === 'mismo'
-                    ? money(monto) + ' en cada mes (' + rango + ')'
-                    : money(monto) + ' en ' + cta.nombre);
+                toast('success', modo === 'mismo' ? 'Cantidad fija' : 'Unidades dispersadas', modo === 'mismo'
+                    ? qtyLabel(monto) + ' uds en cada mes (' + rango + ')'
+                    : qtyLabel(monto) + ' uds en ' + cta.nombre);
             });
         }
         var save = document.getElementById('ctl-guardar');
@@ -3245,7 +6791,7 @@
             data: {
                 labels: MONTHS,
                 datasets: [
-                    { type: 'bar', label: 'Gasto ' + CC.state.anioGasto, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
+                    { type: 'bar', label: 'Ventas ' + CC.state.anioGasto, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
                     { type: 'bar', label: 'Ppto ' + CC.state.anioPresupuesto, data: p, backgroundColor: '#a1a1aa', borderRadius: 4, yAxisID: 'y' },
                     { type: 'line', label: 'Contraste %', data: d, borderColor: '#b45309', backgroundColor: 'transparent', tension: 0.3, yAxisID: 'y1', pointRadius: 3, borderWidth: 2 }
                 ]
@@ -3304,26 +6850,95 @@
         setText('an-th-gasto', 'Venta ' + g);
         setText('an-th-ppto', 'Proy. ' + p);
         var months = document.getElementById('an-heat-months');
-        if (months) months.innerHTML = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
+        if (months) {
+            var cells = MONTHS.map(function (m) { return '<span>' + m + '</span>'; }).join('');
+            months.innerHTML = months.classList.contains('is-labeled')
+                ? '<span></span><span class="cc-heat-months-cells">' + cells + '</span>'
+                : cells;
+        }
+    }
+
+    function clienteFilterKey(c) {
+        return String(c.empresa || '') + '|' + String(c.codigo || '');
+    }
+
+    function fillSelectKeepEscaped(el, items, extra) {
+        if (!el) return;
+        var prev = el.value;
+        var html = extra || '';
+        (items || []).forEach(function (it) {
+            if (typeof it === 'string') {
+                html += '<option value="' + escapeHtml(it) + '">' + escapeHtml(it) + '</option>';
+                return;
+            }
+            html += '<option value="' + escapeHtml(it.codigo) + '">' + escapeHtml(it.nombre) + '</option>';
+        });
+        el.innerHTML = html;
+        if (prev) el.value = prev;
     }
 
     function fillAnalisisFilters() {
         var rows = (CC.state.centros || []).map(mergedCentro);
+        var empEl = document.getElementById('an-empresa');
+        var cliEl = document.getElementById('an-cliente');
+        var userEl = document.getElementById('an-user');
+        var emp = empEl ? empEl.value : '';
+        var cli = cliEl ? cliEl.value : '';
+        var user = userEl ? userEl.value : '';
+
         var emps = [];
-        var users = [];
         rows.forEach(function (c) {
             if (c.empresa && emps.indexOf(c.empresa) === -1) emps.push(c.empresa);
+        });
+        emps.sort();
+        if (emp && emps.indexOf(emp) === -1) emp = '';
+
+        var scoped = rows.filter(function (c) {
+            return !emp || c.empresa === emp;
+        });
+        if (cli && !scoped.some(function (c) { return clienteFilterKey(c) === cli; })) cli = '';
+
+        var forUsers = scoped.filter(function (c) {
+            return !cli || clienteFilterKey(c) === cli;
+        });
+        var users = [];
+        forUsers.forEach(function (c) {
             var names = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             names.forEach(function (n) {
                 if (n && users.indexOf(n) === -1) users.push(n);
             });
         });
-        emps.sort();
         users.sort();
-        fillSelectKeep(document.getElementById('an-empresa'), emps, null, null, '<option value="">Todas las empresas</option>');
-        fillSelectKeep(document.getElementById('an-user'), users.map(function (n) {
+        if (user && users.indexOf(user) === -1) user = '';
+
+        var forClients = scoped.filter(function (c) {
+            if (!user) return true;
+            return (c.usuarios || []).indexOf(user) !== -1 || c.usuario === user;
+        });
+        var seenCli = {};
+        var clients = [];
+        forClients.forEach(function (c) {
+            var key = clienteFilterKey(c);
+            if (!key || seenCli[key]) return;
+            seenCli[key] = true;
+            var label = (c.nombre && c.nombre !== c.codigo)
+                ? (c.nombre + ' — ' + c.codigo)
+                : (c.codigo || c.nombre || '—');
+            if (!emp && c.empresa) label = c.empresa + ' · ' + label;
+            clients.push({ codigo: key, nombre: label });
+        });
+        clients.sort(function (a, b) {
+            return String(a.nombre).localeCompare(String(b.nombre), 'es');
+        });
+
+        fillSelectKeepEscaped(empEl, emps, '<option value="">Todas las empresas</option>');
+        fillSelectKeepEscaped(cliEl, clients, '<option value="">Todos los clientes</option>');
+        fillSelectKeepEscaped(userEl, users.map(function (n) {
             return { codigo: n, nombre: n };
-        }), 'codigo', 'nombre', '<option value="">Todos los usuarios</option>');
+        }), '<option value="">Todos los usuarios</option>');
+        if (empEl) empEl.value = emp;
+        if (cliEl) cliEl.value = cli;
+        if (userEl) userEl.value = user;
     }
 
     function fillSelectKeep(el, items, valueKey, labelKey, extra) {
@@ -3334,13 +6949,7 @@
     }
 
     function applyAnalisisCiclo(ciclo) {
-        CC.state.cicloCodigo = ciclo || '';
-        var period = findCiclo(ciclo);
-        if (period) {
-            CC.state.period = Object.assign({}, CC.state.period, period);
-            if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
-            if (period.anio) CC.state.anioPresupuesto = period.anio;
-        }
+        applyPeriodFromCiclo(findCiclo(ciclo), ciclo);
         paintAnalisisYears();
         CC._anCapturaCiclo = null;
         CC._anAsigLoaded = false;
@@ -3352,11 +6961,13 @@
         renderAnalisisCiclos();
         paintAnalisisYears();
         if (!CC._analisisBound) {
-            ['an-q', 'an-empresa', 'an-user'].forEach(function (id) {
+            ['an-q', 'an-empresa', 'an-cliente', 'an-user', 'an-chart-producto'].forEach(function (id) {
                 var el = document.getElementById(id);
                 if (el) el.addEventListener('input', renderAnalisis);
                 if (el && el.tagName === 'SELECT') el.addEventListener('change', renderAnalisis);
             });
+            var heatQ = document.getElementById('an-heat-q');
+            if (heatQ) heatQ.addEventListener('input', applyHeatFilter);
             var cicloEl = document.getElementById('an-ciclo');
             if (cicloEl) cicloEl.addEventListener('change', function () {
                 applyAnalisisCiclo(this.value);
@@ -3366,11 +6977,15 @@
                 empBox.addEventListener('click', function (e) {
                     var hit = e.target.closest('[data-emp]');
                     if (!hit) return;
-                    var sel = document.getElementById('an-empresa');
-                    if (!sel) return;
-                    var next = hit.getAttribute('data-emp') || '';
-                    sel.value = sel.value === next ? '' : next;
-                    renderAnalisis();
+                    toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
+                });
+            }
+            var heatBox = document.getElementById('an-heat');
+            if (heatBox) {
+                heatBox.addEventListener('click', function (e) {
+                    var hit = e.target.closest('[data-emp]');
+                    if (!hit) return;
+                    toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
                 });
             }
             CC._analisisBound = true;
@@ -3380,12 +6995,18 @@
         var cicloEl = document.getElementById('an-ciclo');
         if (cicloEl && ciclo) cicloEl.value = ciclo;
         CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
-        if (CC._anCapturaCiclo !== String(CC.state.cicloCodigo || '')) {
-            CC._anCapturaCiclo = String(CC.state.cicloCodigo || '');
-            loadOverlaysForCycle().then(function () { CC.initAnalisis(); });
-            return;
+        var cicloKey = String(CC.state.cicloCodigo || '');
+        if (CC._anCapturaCiclo !== cicloKey) {
+            CC._anCapturaCiclo = cicloKey;
+            paintAnalisisLoading();
+            loadOverlaysForCycle().then(function () {
+                if (CC.state.page !== 'analisis') return;
+                if (String(CC.state.cicloCodigo || '') !== cicloKey) return;
+                renderAnalisis();
+            });
         }
 
+        paintAnalisisLoading();
         if (!CC._anAsigLoaded) {
             if (CC._anAsigLoading) return;
             if (!ciclo) {
@@ -3396,24 +7017,19 @@
                 renderAnalisis();
                 return;
             }
+            CC._anAsigGen = (CC._anAsigGen || 0) + 1;
+            var asigGen = CC._anAsigGen;
             CC._anAsigLoading = true;
-            fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones', {
-                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).then(function (r) { return r.json(); }).then(function (json) {
-                CC.state.misAsignaciones = json.asignaciones || [];
+            fetchAnalisisAsignaciones(ciclo).then(function (list) {
+                if (asigGen !== CC._anAsigGen) return;
+                CC._anAsigLoading = false;
+                if (String(val('an-ciclo') || CC.state.cicloCodigo || '').toUpperCase() !== String(ciclo).toUpperCase()) return;
+                CC.state.misAsignaciones = list || [];
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
                 fillAnalisisFilters();
                 renderAnalisis();
                 queueAnalisisGastos();
-            }).catch(function () {
-                CC.state.misAsignaciones = CC.state.misAsignaciones || [];
-                CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
-                fillAnalisisFilters();
-                renderAnalisis();
             });
             return;
         }
@@ -3424,39 +7040,140 @@
         queueAnalisisGastos();
     };
 
+    function fetchJsonOk(url) {
+        return fetch(url, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        }).then(function (r) {
+            if (!r.ok) throw new Error(String(r.status));
+            return r.json();
+        });
+    }
+
+    function fetchAnalisisAsignaciones(ciclo) {
+        var todas = '/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones';
+        var mias = '/ProyeccionesVentas/api/mis-asignaciones';
+        return fetchJsonOk(todas).then(function (json) {
+            var list = (json && json.asignaciones) || [];
+            if (list.length) return list;
+            return fetchJsonOk(mias).then(function (mine) {
+                return (mine && mine.asignaciones) || [];
+            }).catch(function () { return []; });
+        }).catch(function () {
+            return fetchJsonOk(mias).then(function (mine) {
+                return (mine && mine.asignaciones) || [];
+            }).catch(function () { return CC.state.misAsignaciones || []; });
+        });
+    }
+
+    function paintAnalisisLoading() {
+        var box = document.getElementById('an-loading');
+        if (!box) return;
+        var waitingAsig = !CC._anAsigLoaded;
+        var waitingCap = !!CC._anCapturaCiclo && !CC._capturaReady;
+        var left = CC._anGastoLeft || 0;
+        var total = CC._anGastoTotal || 0;
+        var on = waitingAsig || waitingCap || left > 0;
+        box.hidden = !on;
+        var msg = document.getElementById('an-loading-msg');
+        if (!msg) return;
+        if (waitingAsig) {
+            msg.textContent = 'Cargando clientes del ciclo…';
+        } else if (left > 0) {
+            var done = Math.max(0, total - left);
+            msg.textContent = 'Cargando ventas reales… ' + done + ' de ' + total + ' clientes. Los totales se completan al terminar.';
+        } else if (waitingCap) {
+            msg.textContent = 'Cargando proyecciones capturadas…';
+        }
+    }
+
     function queueAnalisisGastos() {
-        if (!CC.state.gastoUrl || CC.state.page !== 'analisis') return;
+        if (!CC.state.gastoUrl || CC.state.page !== 'analisis') {
+            CC._anGastoLeft = 0;
+            CC._anGastoTotal = 0;
+            paintAnalisisLoading();
+            return;
+        }
         var year = CC.state.anioGasto || 2026;
         var pending = (CC.state.centros || []).filter(function (c) {
-            var key = gastoCacheKey(c);
-            return !(CC.state.gastoCache && CC.state.gastoCache[key]);
+            var gKey = gastoCacheKey(c);
+            var pKey = preciosCacheKey(c);
+            var gastoOk = !!gastoCacheEntry(gKey);
+            var precioOk = !CC.state.listasPreciosUrl || (CC.state.preciosCache && Object.prototype.hasOwnProperty.call(CC.state.preciosCache, pKey));
+            return !gastoOk || !precioOk;
         });
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        var gen = CC._anGastoGen;
+        CC._anGastoTotal = pending.length;
+        CC._anGastoLeft = pending.length;
+        paintAnalisisLoading();
         if (!pending.length) return;
         var inflight = 0;
-        var max = 3;
+        var max = 4;
         var dirty = false;
+        var paintTimer = null;
+        function schedulePaint() {
+            if (paintTimer) return;
+            paintTimer = setTimeout(function () {
+                paintTimer = null;
+                if (gen !== CC._anGastoGen) return;
+                if (CC.state.page === 'analisis' && dirty) renderAnalisis();
+            }, 400);
+        }
         function kick() {
+            if (gen !== CC._anGastoGen) return;
             while (inflight < max && pending.length) {
                 var c = pending.shift();
                 var key = gastoCacheKey(c);
                 inflight += 1;
                 (function (centro, cacheKey) {
-                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
-                        '&cc=' + encodeURIComponent(centro.codigo || '') +
-                        '&year=' + encodeURIComponent(year), {
-                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                    }).then(function (res) { return res.json(); }).then(function (json) {
-                        CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
-                        CC.state.gastoLookup = CC.state.gastoLookup || {};
-                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]).map;
-                        dirty = true;
-                    }).catch(function () {
-                        CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[cacheKey] = {};
-                    }).then(function () {
+                    var jobs = [];
+                    if (!gastoCacheEntry(cacheKey)) {
+                        jobs.push(fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                            '&cc=' + encodeURIComponent(centro.codigo || '') +
+                            '&year=' + encodeURIComponent(year), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            if (gen !== CC._anGastoGen) return;
+                            var por = (json && json.por_cuenta) || {};
+                            rememberGastoCache(cacheKey, por, {
+                                fuente: (json && json.fuente) || (json && json.ok ? 'api' : 'error'),
+                                synced_at: (json && json.synced_at) || null,
+                                year: (json && json.year) || year,
+                                mensaje: (json && json.mensaje) || null
+                            });
+                            CC.state.gastoLookup = CC.state.gastoLookup || {};
+                            CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
+                            dirty = true;
+                            schedulePaint();
+                        }).catch(function () {
+                            // No envenenar caché con vacío: Captura debe poder leer el snapshot.
+                        }));
+                    }
+                    var pKey = preciosCacheKey(centro);
+                    if (CC.state.listasPreciosUrl && !(CC.state.preciosCache && Object.prototype.hasOwnProperty.call(CC.state.preciosCache, pKey))) {
+                        jobs.push(fetch(CC.state.listasPreciosUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                            '&cliente=' + encodeURIComponent(centro.codigo || '') +
+                            '&year=' + encodeURIComponent(year), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            if (gen !== CC._anGastoGen) return;
+                            CC.state.preciosCache = CC.state.preciosCache || {};
+                            CC.state.preciosCache[pKey] = mapaPreciosArticulo((json && json.por_articulo) || {});
+                            dirty = true;
+                            schedulePaint();
+                        }).catch(function () {
+                            if (gen !== CC._anGastoGen) return;
+                            CC.state.preciosCache = CC.state.preciosCache || {};
+                            CC.state.preciosCache[pKey] = {};
+                        }));
+                    }
+                    Promise.all(jobs).then(function () {
+                        if (gen !== CC._anGastoGen) return;
                         inflight -= 1;
-                        if (!pending.length && !inflight && dirty) renderAnalisis();
+                        CC._anGastoLeft = Math.max(0, (CC._anGastoLeft || 0) - 1);
+                        paintAnalisisLoading();
+                        if (!pending.length && !inflight) renderAnalisis();
                         else kick();
                     });
                 })(c, key);
@@ -3485,32 +7202,261 @@
                 departamento: deptoDeCentro(c),
                 usuarios: users,
                 monthGasto: MONTHS.map(function (_, i) {
-                    return ctas.reduce(function (a, x) { return a + ((x.gasto || [])[i] || 0); }, 0);
+                    return ctas.reduce(function (a, x) { return a + importeMesVentaVista(x, i); }, 0);
+                }),
+                productos: ctas.map(function (cta) {
+                    return {
+                        codigo: cta.codigo,
+                        nombre: cta.nombre || cta.codigo,
+                        months: MONTHS.map(function (_, i) { return importeMesVentaVista(cta, i); })
+                    };
                 })
             });
         });
     }
 
+    function toggleAnalisisEmpresa(next) {
+        var sel = document.getElementById('an-empresa');
+        if (!sel) return;
+        sel.value = sel.value === next ? '' : next;
+        renderAnalisis();
+    }
+
+    function applyHeatFilter() {
+        var q = (val('an-heat-q') || '').toLowerCase().trim();
+        var heat = document.getElementById('an-heat');
+        var empty = document.getElementById('an-heat-empty');
+        if (!heat) return;
+        var rows = heat.querySelectorAll('.cc-heat-row');
+        var shown = 0;
+        rows.forEach(function (row) {
+            var nameEl = row.querySelector('.cc-heat-name');
+            var name = ((nameEl && nameEl.textContent) || '').toLowerCase();
+            var ok = !q || name.indexOf(q) !== -1;
+            row.hidden = !ok;
+            if (ok) shown += 1;
+        });
+        if (empty) empty.hidden = !q || shown > 0;
+    }
+
+    function heatMonthCells(monthG, max) {
+        max = max || 1;
+        return (monthG || MONTHS.map(function () { return 0; })).map(function (v, i) {
+            var t = (v || 0) / max;
+            var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
+            // v es importe de venta real (ya en moneda de vista), no unidades.
+            return '<span title="' + MONTHS[i] + ': ' + moneyGasto(v || 0) + '" style="background:' + bg + '"></span>';
+        }).join('');
+    }
+
+    function emptyMonthCells() {
+        return MONTHS.map(function () {
+            return '<span style="background:rgba(10,10,10,.08)"></span>';
+        }).join('');
+    }
+
+    function textoImporteReal(importe, unidades) {
+        var txt = moneyDosDecimales(importe);
+        if (txt !== '—') return txt;
+        var u = Number(unidades) || 0;
+        if (u) return qtyLabel(u) + ' uds';
+        return '—';
+    }
+
+    function productosDeAnalisis(rows) {
+        var out = [];
+        (rows || []).forEach(function (c) {
+            cuentasEnriquecidas(c).forEach(function (cta) {
+                var monthsVenta = MONTHS.map(function (_, i) { return round2(importeMesVentaVista(cta, i)); });
+                var gasto = round2(monthsVenta.reduce(function (a, v) { return a + v; }, 0));
+                // Igual que la columna Proy. de «Detalle por producto y mes»: suma de importeMesProyVista, sin recortar centavos.
+                var ppto = importeProyeccionVista(cta);
+                var monthsProy = MONTHS.map(function (_, i) {
+                    var m = importeMesProyVista(cta, i);
+                    return m == null ? 0 : (Number(m) || 0);
+                });
+                var filled = (cta.ppto || []).filter(mesLleno).length;
+                var listo = !!cta.listo;
+                var capturadas = listo ? 12 : filled;
+                out.push({
+                    centro: c,
+                    empresa: c.empresa || '',
+                    clienteCodigo: c.codigo || '',
+                    clienteNombre: c.nombre || c.codigo || '',
+                    departamento: c.departamento || '',
+                    usuario: c.usuario || '',
+                    usuarios: c.usuarios || [],
+                    estado: c.estado,
+                    productoCodigo: cta.codigo || '',
+                    productoNombre: cta.nombre || cta.codigo || '',
+                    gasto: gasto,
+                    ppto: ppto,
+                    unidadesVenta: Number(cta.totG) || 0,
+                    unidadesProy: cta.unidadesAnio != null ? Number(cta.unidadesAnio) || 0 : unidadesAnuales(cta.ppto),
+                    monthsVenta: monthsVenta,
+                    monthsProy: monthsProy,
+                    yoY: deltaPct(ppto, gasto),
+                    over: gasto > 0 && ppto > gasto * 1.1,
+                    capturadas: capturadas,
+                    avance: listo ? 100 : pct(filled, 12)
+                });
+            });
+        });
+        out.sort(function (a, b) {
+            var byEmp = String(a.empresa).localeCompare(String(b.empresa), 'es');
+            if (byEmp) return byEmp;
+            var byCli = String(a.clienteNombre).localeCompare(String(b.clienteNombre), 'es');
+            if (byCli) return byCli;
+            return String(a.productoNombre).localeCompare(String(b.productoNombre), 'es');
+        });
+        return out;
+    }
+
+    function fillAnalisisChartProducto(productRows) {
+        var sel = document.getElementById('an-chart-producto');
+        if (!sel) return '';
+        var prev = sel.value;
+        var seen = {};
+        var items = [];
+        (productRows || []).forEach(function (p) {
+            var code = String(p.productoCodigo || '');
+            if (!code || seen[code]) return;
+            seen[code] = true;
+            var name = p.productoNombre && p.productoNombre !== code
+                ? (p.productoNombre + ' — ' + code)
+                : (code || '—');
+            items.push({ codigo: code, nombre: name });
+        });
+        items.sort(function (a, b) {
+            return String(a.nombre).localeCompare(String(b.nombre), 'es');
+        });
+        fillSelectKeepEscaped(sel, items, '<option value="">Todos los productos</option>');
+        if (prev && seen[prev]) sel.value = prev;
+        else sel.value = '';
+        return sel.value;
+    }
+
+    function paintAnalisisChart(rows, productRows, gYear, pYear) {
+        var prod = fillAnalisisChartProducto(productRows);
+        var hint = document.getElementById('an-chart-hint');
+        var title = document.getElementById('an-chart-emp-title');
+        if (title) {
+            title.innerHTML = '<i class="fa-solid fa-chart-column"></i> Venta ' + gYear + ' vs proyección ' + pYear;
+        }
+        var labels = [];
+        var venta = [];
+        var proy = [];
+        if (prod) {
+            var chosen = (productRows || []).filter(function (p) {
+                return String(p.productoCodigo) === String(prod);
+            });
+            var name = (chosen[0] && (chosen[0].productoNombre || chosen[0].productoCodigo)) || prod;
+            var byCli = {};
+            chosen.forEach(function (p) {
+                var key = p.clienteNombre || p.clienteCodigo || '—';
+                byCli[key] = byCli[key] || { venta: 0, proy: 0 };
+                byCli[key].venta += Number(p.gasto) || 0;
+                byCli[key].proy += Number(p.ppto) || 0;
+            });
+            labels = Object.keys(byCli).sort(function (a, b) {
+                return String(a).localeCompare(String(b), 'es');
+            });
+            venta = labels.map(function (k) { return byCli[k].venta; });
+            proy = labels.map(function (k) { return byCli[k].proy; });
+            if (!labels.length) {
+                labels = [name];
+                venta = [0];
+                proy = [0];
+            }
+            if (hint) hint.textContent = 'Venta y proyección · ' + name;
+        } else {
+            var byChart = {};
+            var source = (productRows && productRows.length) ? productRows : null;
+            if (source) {
+                source.forEach(function (p) {
+                    var key = p.empresa || '—';
+                    byChart[key] = byChart[key] || { venta: 0, proy: 0 };
+                    byChart[key].venta += Number(p.gasto) || 0;
+                    byChart[key].proy += Number(p.ppto) || 0;
+                });
+            } else {
+                (rows || []).forEach(function (c) {
+                    var key = c.empresa || '—';
+                    byChart[key] = byChart[key] || { venta: 0, proy: 0 };
+                    byChart[key].venta += Number(c.gasto) || 0;
+                    byChart[key].proy += Number(c.ppto) || 0;
+                });
+            }
+            labels = Object.keys(byChart).sort(function (a, b) {
+                return String(a).localeCompare(String(b), 'es');
+            });
+            venta = labels.map(function (e) { return byChart[e].venta; });
+            proy = labels.map(function (e) { return byChart[e].proy; });
+            if (hint) {
+                hint.textContent = labels.length
+                    ? 'Venta y proyección por empresa'
+                    : 'Sin venta ni proyección con esos filtros';
+            }
+        }
+        drawBar('chart-empresas', labels, [
+            { label: 'Venta ' + gYear, data: venta, backgroundColor: '#0a0a0a' },
+            { label: 'Proyección ' + pYear, data: proy, backgroundColor: '#a1a1aa' }
+        ]);
+    }
+
     function renderAnalisis() {
-        var q = (val('an-q') || '').toLowerCase();
+        fillAnalisisFilters();
+        var q = normSearch(val('an-q') || '');
         var emp = val('an-empresa');
+        var cli = val('an-cliente');
         var user = val('an-user');
         var gYear = CC.state.anioGasto || 2026;
         var pYear = CC.state.anioPresupuesto || 2027;
         var empty = document.getElementById('an-empty');
         var work = document.getElementById('an-work');
-        var all = snapshotCentros();
-        if (empty) empty.hidden = !!all.length;
-        if (work) work.hidden = !all.length;
+        var all = CC._anAsigLoaded ? snapshotCentros() : [];
+        paintAnalisisLoading();
+        if (empty) empty.hidden = !CC._anAsigLoaded || !!all.length;
+        if (work) work.hidden = !CC._anAsigLoaded || !all.length;
 
         var rows = all.filter(function (c) {
             if (emp && c.empresa !== emp) return false;
+            if (cli && clienteFilterKey(c) !== cli) return false;
             if (user && (c.usuarios || []).indexOf(user) === -1 && c.usuario !== user) return false;
             return true;
         });
-        var tableRows = rows.filter(function (c) {
-            var blob = (c.codigo + ' ' + c.nombre + ' ' + (c.usuarios || []).join(' ') + ' ' + c.usuario + ' ' + c.empresa + ' ' + (c.departamento || '')).toLowerCase();
-            return !q || blob.indexOf(q) !== -1;
+        var productRows = productosDeAnalisis(rows);
+        if (!productRows.length && rows.length) {
+            productRows = rows.map(function (c) {
+                return {
+                    centro: c,
+                    empresa: c.empresa || '',
+                    clienteCodigo: c.codigo || '',
+                    clienteNombre: c.nombre || c.codigo || '',
+                    departamento: c.departamento || '',
+                    usuario: c.usuario || '',
+                    usuarios: c.usuarios || [],
+                    estado: c.estado,
+                    productoCodigo: '',
+                    productoNombre: 'Sin productos asignados',
+                    gasto: Number(c.gasto) || 0,
+                    ppto: Number(c.ppto) || 0,
+                    unidadesVenta: 0,
+                    unidadesProy: 0,
+                    yoY: c.yoY || 0,
+                    over: !!c.over,
+                    capturadas: c.capturadas || 0,
+                    avance: c.avance || 0
+                };
+            });
+        }
+        var tableRows = productRows.filter(function (p) {
+            if (!q) return true;
+            var blob = normSearch([
+                p.productoCodigo, p.productoNombre, p.clienteCodigo, p.clienteNombre,
+                p.empresa, p.departamento, p.usuario, (p.usuarios || []).join(' ')
+            ].join(' '));
+            return blob.indexOf(q) !== -1;
         });
 
         if (!rows.length) {
@@ -3547,39 +7493,37 @@
                 var av = Math.round(byEmp[e].av / byEmp[e].n);
                 var cls = av < 40 ? 'warn' : (av > 85 ? 'good' : '');
                 var on = emp === e ? ' is-on' : '';
-                return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' centros</span></div>' +
+                return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' clientes</span></div>' +
                     '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>' +
-                    '<div class="text-muted mt-1" style="font-size:.75rem">Gasto ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Ppto ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
+                    '<div class="text-muted mt-1" style="font-size:.75rem">Venta ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Proyecciones ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
             }).join('') || '<div class="cc-empty">Sin empresas</div>';
         }
 
         var tb = document.getElementById('an-tbody');
         if (tb) {
-            tb.innerHTML = tableRows.map(function (c) {
-                var cls = c.avance < 40 ? 'warn' : (c.over ? 'bad' : 'good');
-                var userLabel = (c.usuarios && c.usuarios.length > 1)
-                    ? c.usuario + ' +' + (c.usuarios.length - 1)
-                    : c.usuario;
-                return '<tr><td>' + escapeHtml(c.empresa || '—') + '</td>' +
-                    '<td><div class="fw-semibold">' + escapeHtml(c.codigo) + ' — ' + escapeHtml(c.nombre) + '</div><div class="text-muted" style="font-size:.75rem">' + escapeHtml(c.departamento || '') + '</div></td>' +
+            tb.innerHTML = tableRows.map(function (p) {
+                var cls = p.avance < 40 ? 'bad' : (p.avance < 80 ? 'warn' : 'good');
+                var userLabel = (p.usuarios && p.usuarios.length > 1)
+                    ? p.usuario + ' +' + (p.usuarios.length - 1)
+                    : p.usuario;
+                var cliSub = [p.empresa, p.departamento].filter(Boolean).join(' · ');
+                return '<tr><td>' + htmlNombreCodigo(p.productoNombre, p.productoCodigo) + '</td>' +
+                    '<td>' + htmlNombreCodigo(p.clienteNombre, p.clienteCodigo) +
+                        (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
                     '<td>' + userCell(userLabel) + '</td>' +
-                    '<td>' + renderBadge(c.estado) + '</td>' +
-                    '<td><div class="d-flex justify-content-between"><span>' + c.capturadas + '/' + c.cuentas + '</span><span>' + c.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(c.avance, 100) + '%"></span></div></td>' +
-                    '<td class="num">' + money(c.gasto) + '</td>' +
-                    '<td class="num">' + money(c.ppto) + '</td>' +
-                    '<td class="num ' + (c.yoY > 10 ? 'text-danger' : '') + '">' + (c.gasto ? ((c.yoY > 0 ? '+' : '') + c.yoY + '%') : '—') + '</td>' +
-                    '<td>' + (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
-                    '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
-            }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin coincidencias</div></td></tr>';
+                    '<td>' + renderBadge(p.estado) + '</td>' +
+                    '<td><div class="d-flex justify-content-between"><span>' + p.capturadas + '/12</span><span class="cc-semaforo-' + cls + '">' + p.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(p.avance, 100) + '%"></span></div></td>' +
+                    '<td class="num">' + textoImporteReal(p.gasto, p.unidadesVenta) + '</td>' +
+                    '<td class="num">' + moneyGasto(p.ppto) + '</td>' +
+                    '<td class="num ' + (p.yoY > 10 ? 'text-danger' : '') + '">' + (p.gasto ? ((p.yoY > 0 ? '+' : '') + p.yoY + '%') : '—') + '</td>' +
+                    '<td>' + (p.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
+                    '<td><a class="cc-btn" href="' + detalleHref(p.centro) + '">Ver</a></td></tr>';
+            }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin productos con esos filtros</div></td></tr>';
         }
 
-        var empKeys = Object.keys(byEmp);
-        drawBar('chart-empresas', empKeys, [
-            { label: 'Gasto ' + gYear, data: empKeys.map(function (e) { return byEmp[e].gasto; }), backgroundColor: '#0a0a0a' },
-            { label: 'Ppto ' + pYear, data: empKeys.map(function (e) { return byEmp[e].ppto; }), backgroundColor: '#a1a1aa' }
-        ]);
+        paintAnalisisChart(rows, productRows, gYear, pYear);
         drawDoughnut('chart-estados',
-            ['Abierto', 'En proceso', 'En revisión', 'Terminado'],
+            ['Abierto', 'Capturado', 'En revisión', 'Terminado'],
             [
                 rows.filter(function (c) { return normalizeEstado(c.estado) === 'abierto'; }).length,
                 rows.filter(function (c) { return normalizeEstado(c.estado) === 'en_proceso'; }).length,
@@ -3590,22 +7534,96 @@
 
         var heat = document.getElementById('an-heat');
         if (heat) {
-            var focus = rows.slice().sort(function (a, b) { return b.gasto - a.gasto; })[0];
-            if (focus) {
-                var monthG = focus.monthGasto || MONTHS.map(function () { return 0; });
-                var max = Math.max.apply(null, monthG.concat([1]));
-                heat.innerHTML = monthG.map(function (v, i) {
-                    var t = v / max;
-                    var bg = 'rgba(10,10,10,' + (0.12 + t * 0.88) + ')';
-                    return '<span title="' + MONTHS[i] + ': ' + money(v) + '" style="background:' + bg + '"></span>';
-                }).join('');
-                setText('an-heat-label', 'Gasto ' + gYear + ' · ' + focus.codigo + ' ' + focus.nombre);
+            var heatItems = [];
+            var heatSource = (productRows && productRows.length) ? productRows : null;
+            if (emp) {
+                var byProd = {};
+                if (heatSource) {
+                    heatSource.forEach(function (p) {
+                        if (String(p.empresa || '').toUpperCase() !== String(emp).toUpperCase()) return;
+                        var key = String(p.productoCodigo || p.productoNombre || '');
+                        if (!key) return;
+                        if (!byProd[key]) {
+                            byProd[key] = {
+                                label: (p.productoCodigo || '') + (p.productoNombre && p.productoNombre !== p.productoCodigo ? (' ' + p.productoNombre) : ''),
+                                months: MONTHS.map(function () { return 0; })
+                            };
+                        }
+                        (p.monthsVenta || []).forEach(function (v, i) {
+                            byProd[key].months[i] += Number(v) || 0;
+                        });
+                    });
+                } else {
+                    rows.forEach(function (c) {
+                        (c.productos || []).forEach(function (p) {
+                            var key = String(p.codigo || p.nombre || '');
+                            if (!key) return;
+                            if (!byProd[key]) {
+                                byProd[key] = {
+                                    label: (p.codigo || '') + (p.nombre && p.nombre !== p.codigo ? (' ' + p.nombre) : ''),
+                                    months: MONTHS.map(function () { return 0; })
+                                };
+                            }
+                            (p.months || []).forEach(function (v, i) {
+                                byProd[key].months[i] += v || 0;
+                            });
+                        });
+                    });
+                }
+                heatItems = Object.keys(byProd).map(function (k) {
+                    var item = byProd[k];
+                    var tot = item.months.reduce(function (a, v) { return a + (v || 0); }, 0);
+                    return { label: item.label, months: item.months, tot: tot, attr: '' };
+                }).sort(function (a, b) { return b.tot - a.tot; });
+                setText('an-heat-label', 'Venta ' + gYear + ' · por producto · ' + emp);
+                var heatInput = document.getElementById('an-heat-q');
+                if (heatInput) heatInput.placeholder = 'Buscar producto…';
             } else {
-                heat.innerHTML = MONTHS.map(function () {
-                    return '<span style="background:rgba(10,10,10,.08)"></span>';
-                }).join('');
-                setText('an-heat-label', 'Gasto ' + gYear);
+                var byEmpHeat = {};
+                if (heatSource) {
+                    heatSource.forEach(function (p) {
+                        var key = p.empresa || '—';
+                        byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
+                        (p.monthsVenta || []).forEach(function (v, i) {
+                            byEmpHeat[key][i] += Number(v) || 0;
+                        });
+                    });
+                } else {
+                    rows.forEach(function (c) {
+                        var key = c.empresa || '—';
+                        byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
+                        (c.monthGasto || []).forEach(function (v, i) {
+                            byEmpHeat[key][i] += v || 0;
+                        });
+                    });
+                }
+                heatItems = Object.keys(byEmpHeat).map(function (e) {
+                    var months = byEmpHeat[e];
+                    var tot = months.reduce(function (a, v) { return a + (v || 0); }, 0);
+                    return { label: e, months: months, tot: tot, attr: ' data-emp="' + escapeHtml(e) + '"' };
+                }).sort(function (a, b) { return b.tot - a.tot; });
+                setText('an-heat-label', 'Venta ' + gYear + ' · por empresa');
+                var heatInputAll = document.getElementById('an-heat-q');
+                if (heatInputAll) heatInputAll.placeholder = 'Buscar empresa o producto…';
             }
+
+            if (!heatItems.length) {
+                heat.innerHTML = '<div class="cc-heat-row"><div class="cc-heat-name">—</div><div class="cc-heat">' + emptyMonthCells() + '</div></div>';
+            } else {
+                var maxHeat = 1;
+                heatItems.forEach(function (item) {
+                    var local = Math.max.apply(null, (item.months || []).concat([0]));
+                    if (local > maxHeat) maxHeat = local;
+                });
+                heat.innerHTML = heatItems.map(function (item) {
+                    var click = item.attr ? ' is-click' : '';
+                    return '<div class="cc-heat-row' + click + '"' + item.attr + '>' +
+                        '<div class="cc-heat-name" title="' + escapeHtml(item.label) + '">' + escapeHtml(item.label) + '</div>' +
+                        '<div class="cc-heat">' + heatMonthCells(item.months, maxHeat) + '</div>' +
+                        '</div>';
+                }).join('');
+            }
+            applyHeatFilter();
         }
     }
 
@@ -3621,7 +7639,11 @@
                 plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
                 scales: {
                     x: { grid: { display: false } },
-                    y: { ticks: { callback: function (v) { return money(v); } }, grid: { color: '#f1f1f3' } }
+                    y: {
+                        beginAtZero: true,
+                        ticks: { callback: function (v) { return money(v); } },
+                        grid: { color: '#f1f1f3' }
+                    }
                 }
             }
         });
@@ -3691,8 +7713,12 @@
     function showModal(id) {
         var el = document.getElementById(id);
         if (el && window.bootstrap) bootstrap.Modal.getOrCreateInstance(el).show();
-        if (id === 'modalIndicadores') renderPeriodBanner();
+        if (id === 'modalIndicadores') {
+            renderPeriodBanner();
+            renderTcMesesEditor();
+        }
         if (id === 'modalDispersar') paintDispMontoLabel();
+        if (id === 'modalVentasPasadas') fillVentasPasadasYears();
         if (id === 'modalPeriodo') {
             var editing = CC.state.page === 'admin-ciclo';
             var title = document.getElementById('modal-ciclo-title');
@@ -3706,8 +7732,8 @@
                 : {
                     codigo: '',
                     nombre: '',
-                    anioReferencia: 2026,
-                    anio: 2027,
+                    anioReferencia: new Date().getFullYear(),
+                    anio: new Date().getFullYear() + 1,
                     inicio: '2026-10-01',
                     fin: '2026-10-31',
                     capturaHasta: '2026-10-31',
@@ -3715,6 +7741,7 @@
                     estado: 'abierto',
                     inflacion: 4,
                     tipoCambio: 20,
+                    tipoBudget: 'BUDGET',
                     observaciones: ''
                 };
             setVal('p-codigo', p.codigo);
@@ -3724,7 +7751,27 @@
             setVal('p-inicio', p.inicio); setVal('p-fin', p.fin);
             setVal('p-captura', p.capturaHasta); setVal('p-revision', p.revisionDesde);
             setVal('p-estado', normalizeCicloEstado(p.estado)); setVal('p-inflacion', p.inflacion); setVal('p-tc', p.tipoCambio);
+            setVal('p-tipo-budget', p.tipoBudget || 'BUDGET');
             setVal('p-obs', p.observaciones || '');
+            var tipoBudgetEl = document.getElementById('p-tipo-budget');
+            var tipoFijo = editing && !!normalizeTipoBudgetClient(p.tipoBudget);
+            if (tipoBudgetEl) {
+                tipoBudgetEl.disabled = tipoFijo;
+                tipoBudgetEl.title = tipoFijo
+                    ? 'El tipo queda fijo al crear el ciclo'
+                    : (editing
+                        ? 'Este ciclo aún no tenía tipo: elige Budget, Forecast o SIOP y guarda'
+                        : 'Budget: meses en blanco · Forecast: venta real + Budget · SIOP: precarga proyección del año (dato o 0), editable');
+            }
+            syncTipoBudgetModalUi();
+            if (editing) {
+                var tipoHint = document.getElementById('p-tipo-budget-hint');
+                if (tipoHint) {
+                    tipoHint.textContent = tipoFijo
+                        ? ('Fijo: ' + labelTipoBudget(p.tipoBudget) + ' (no se puede cambiar)')
+                        : 'Aún sin tipo: elige Budget / 3+9 / 6+6 / 9+3 / SIOP y guarda para fijarlo.';
+                }
+            }
         }
     }
     function hideModal(id) {
@@ -3742,24 +7789,817 @@
 
     CC.showModal = showModal;
 
-    function puede(clave) {
-        var p = (CC.state && CC.state.permisos) || {};
-        if (!Object.prototype.hasOwnProperty.call(p, clave)) return true;
-        return !!p[clave];
-    }
+    function initCostos() {
+        var url = CC.state.costosUrl || '/ProyeccionesVentas/api/costos';
+        var items = [];
+        var page = 1;
+        var lastPage = 1;
+        var total = 0;
+        var from = 0;
+        var to = 0;
+        var searchTimer = null;
+        var anioSel = document.getElementById('pv-costos-anio');
+        var empSel = document.getElementById('pv-costos-empresa');
+        var clienteEl = document.getElementById('pv-costos-cliente');
+        var itemEl = document.getElementById('pv-costos-itemcode');
+        var perPageEl = document.getElementById('pv-costos-per-page');
+        var tbody = document.getElementById('pv-costos-tbody');
+        var hint = document.getElementById('pv-costos-hint');
+        var pageInfo = document.getElementById('pv-costos-page-info');
+        var pageLabel = document.getElementById('pv-costos-page-label');
+        var prevBtn = document.getElementById('pv-costos-prev');
+        var nextBtn = document.getElementById('pv-costos-next');
+        if (!tbody) return;
 
-    function vistaControlPermitida(prefer) {
-        var wantVisor = prefer === 'visor';
-        if (wantVisor && !puede('visor')) wantVisor = false;
-        if (!wantVisor && !puede('captura') && puede('visor')) wantVisor = true;
-        return wantVisor ? 'visor' : 'captura';
+        function costosAnio() {
+            var fromSel = anioSel ? Number(anioSel.value) : 0;
+            if (fromSel >= 2000 && fromSel <= 2100) return fromSel;
+            return Number(CC.state.costosAnio || CC.state.anioPresupuesto) || 2027;
+        }
+
+        function paintAnioLabel(anio) {
+            var a = Number(anio) || costosAnio();
+            CC.state.costosAnio = a;
+            var anioLbl = document.getElementById('pv-costos-anio-label');
+            if (anioLbl) anioLbl.textContent = String(a);
+            if (anioSel && String(anioSel.value) !== String(a)) {
+                // se sincroniza en fillAnios
+            }
+        }
+
+        function fillAnios(list, selected) {
+            if (!anioSel) return;
+            var cur = Number(selected) || costosAnio();
+            var set = {};
+            (list || []).forEach(function (y) {
+                var n = Number(y);
+                if (n >= 2000 && n <= 2100) set[n] = true;
+            });
+            (CC.state.ciclos || []).forEach(function (c) {
+                var n = Number(c.anio || c.anioPresupuesto);
+                if (n >= 2000 && n <= 2100) set[n] = true;
+            });
+            set[cur] = true;
+            set[Number(CC.state.anioPresupuesto) || 2027] = true;
+            var years = Object.keys(set).map(Number).sort(function (a, b) { return b - a; });
+            anioSel.innerHTML = years.map(function (y) {
+                var tag = (y === Number(CC.state.anioPresupuesto)) ? ' · ciclo actual' : '';
+                return '<option value="' + y + '"' + (y === cur ? ' selected' : '') + '>Proy. ' + y + tag + '</option>';
+            }).join('');
+            anioSel.value = String(cur);
+            paintAnioLabel(cur);
+        }
+
+        function fillEmpresas() {
+            if (!empSel) return;
+            var cur = empSel.value || '';
+            var set = {};
+            (CC.state.empresasLocales || []).forEach(function (e) {
+                var code = String(e.codigo || e.id || e.nombre || '').toUpperCase();
+                if (code) set[code] = e.nombre || code;
+            });
+            ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'].forEach(function (k) {
+                if (!set[k]) set[k] = k;
+            });
+            items.forEach(function (it) {
+                if (it.empresa) set[String(it.empresa).toUpperCase()] = it.empresa;
+            });
+            var opts = '<option value="">Todas las empresas</option>';
+            Object.keys(set).sort().forEach(function (k) {
+                opts += '<option value="' + escapeHtml(k) + '"' + (k === cur ? ' selected' : '') + '>' +
+                    escapeHtml(set[k]) + '</option>';
+            });
+            empSel.innerHTML = opts;
+            if (cur) empSel.value = cur;
+        }
+
+        function updatePager() {
+            if (hint) {
+                hint.textContent = total + (total === 1 ? ' registro' : ' registros');
+            }
+            if (pageInfo) {
+                pageInfo.textContent = total
+                    ? ('Mostrando ' + from + '–' + to + ' de ' + total)
+                    : 'Sin resultados';
+            }
+            if (pageLabel) pageLabel.textContent = page + ' / ' + lastPage;
+            if (prevBtn) prevBtn.disabled = page <= 1;
+            if (nextBtn) nextBtn.disabled = page >= lastPage;
+        }
+
+        function render() {
+            var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+            updatePager();
+            if (!items.length) {
+                tbody.innerHTML = '<tr><td colspan="11"><div class="cc-empty">Sin productos para mostrar</div></td></tr>';
+                return;
+            }
+            tbody.innerHTML = items.map(function (it, idx) {
+                var mon = String(it.moneda || 'MXN').toUpperCase();
+                var costoTxt = (mon === 'USD' ? 'US$' : '$') +
+                    (Number(it.costo_unitario) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                var codigo = String(it.producto_codigo || '').trim();
+                var nombre = String(it.producto_nombre || '').trim();
+                if (nombre && nombre.toUpperCase() === codigo.toUpperCase()) nombre = '';
+                var mesesLabel = it.meses_label || '—';
+                return '<tr data-idx="' + idx + '">' +
+                    '<td>' + escapeHtml(it.empresa || '—') + '</td>' +
+                    '<td><code>' + escapeHtml(it.card_code || '—') + '</code></td>' +
+                    '<td>' + escapeHtml(it.card_name || '—') + '</td>' +
+                    '<td><code>' + escapeHtml(codigo || '—') + '</code></td>' +
+                    '<td>' + escapeHtml(nombre || '—') + '</td>' +
+                    '<td>' + escapeHtml(mesesLabel) + '</td>' +
+                    '<td class="num fw-semibold">' + escapeHtml(costoTxt) + '</td>' +
+                    '<td>' + escapeHtml(mon) + '</td>' +
+                    '<td>' + (it.tiene_maestro
+                        ? '<span class="cc-badge cc-badge-aceptado">Maestro</span>'
+                        : '<span class="cc-badge cc-badge-en_proceso">Sin maestro</span>') + '</td>' +
+                    '<td>' + escapeHtml(it.updated_at || '—') + '</td>' +
+                    '<td class="num"><div class="cc-actions-row">' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-hist-costo' +
+                    ' data-emp="' + escapeHtml(it.empresa) + '"' +
+                    ' data-cod="' + escapeHtml(codigo) + '"' +
+                    ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
+                    ' data-card="' + escapeHtml(it.card_code || '') + '"' +
+                    ' data-card-name="' + escapeHtml(it.card_name || '') + '"' +
+                    ' data-mes="0"' +
+                    ' title="Ver historial de cambios">' +
+                    '<i class="fa-solid fa-clock-rotate-left"></i></button>' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-sync-api-costo' +
+                    ' data-emp="' + escapeHtml(it.empresa) + '"' +
+                    ' data-cod="' + escapeHtml(codigo) + '"' +
+                    ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
+                    ' data-card="' + escapeHtml(it.card_code || '') + '"' +
+                    ' data-mes="' + escapeHtml(String(it.mes || lastMesConPrecio(it) || 0)) + '"' +
+                    ' title="Actualizar desde API el mes de referencia">' +
+                    '<i class="fa-solid fa-cloud-arrow-down"></i></button>' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
+                    ' title="Editar precios por mes">' +
+                    '<i class="fa-solid fa-calendar-days"></i></button>' +
+                    '</div></td>' +
+                    '</tr>';
+            }).join('');
+            tbody.querySelectorAll('[data-edit-meses-costo]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var i = Number(btn.getAttribute('data-idx'));
+                    openCostoMesesModal(items[i]);
+                });
+            });
+            tbody.querySelectorAll('[data-hist-costo]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    openHistorialPrecio(
+                        btn.getAttribute('data-emp') || '',
+                        btn.getAttribute('data-cod') || '',
+                        btn.getAttribute('data-nom') || '',
+                        btn.getAttribute('data-card') || '',
+                        btn.getAttribute('data-card-name') || '',
+                        btn.getAttribute('data-mes') || '0'
+                    );
+                });
+            });
+            tbody.querySelectorAll('[data-sync-api-costo]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    actualizarPrecioDesdeApi(btn);
+                });
+            });
+        }
+
+        function lastMesConPrecio(it) {
+            var arr = (it && it.precio_meses) || [];
+            for (var i = 11; i >= 0; i--) {
+                if (Number(arr[i]) > 0) return i + 1;
+            }
+            return 0;
+        }
+
+        function openCostoMesesModal(it) {
+            if (!it) return;
+            var MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+            var codigo = String(it.producto_codigo || '').trim();
+            var nombre = String(it.producto_nombre || '').trim();
+            if (nombre && nombre.toUpperCase() === codigo.toUpperCase()) nombre = '';
+            var base = Number(it.costo_unitario) || 0;
+            var mon = String(it.moneda || 'MXN').toUpperCase();
+            var meses = Array.isArray(it.precio_meses) ? it.precio_meses.slice(0, 12) : [];
+            while (meses.length < 12) meses.push(null);
+            CC._pcmPrevGlobal = base > 0 ? base : precioModaDeMeses(meses);
+
+            setVal('pcm-empresa', it.empresa || '');
+            setVal('pcm-codigo', codigo);
+            setVal('pcm-nombre', nombre || codigo);
+            setVal('pcm-card', it.card_code || '');
+            setVal('pcm-card-name', it.card_name || '');
+            setVal('pcm-base', base > 0 ? base.toFixed(2) : '');
+            setVal('pcm-moneda', mon);
+            setText('pcm-sub', (nombre || codigo) + ' · ' + codigo +
+                (it.card_code ? (' · ' + it.card_code) : '') +
+                (it.empresa ? (' · ' + it.empresa) : '') +
+                (' · proy. ' + costosAnio()));
+            var hint = document.getElementById('pcm-base-hint');
+            if (hint) {
+                hint.textContent = base > 0
+                    ? ('Global: ' + moneyTxt(base, mon) + ' · deja vacío un mes para no tocarlo al guardar')
+                    : 'Captura un global o valores por mes.';
+            }
+            var box = document.getElementById('pcm-months');
+            if (box) {
+                box.innerHTML = MESES.map(function (m, i) {
+                    var ov = Number(meses[i]);
+                    var custom = isFinite(ov) && ov > 0 && Math.abs(ov - base) > 0.005;
+                    var has = isFinite(ov) && ov > 0;
+                    return '<div class="cc-tc-month' + (custom ? ' is-custom' : '') + '">' +
+                        '<label for="pcm-m-' + i + '">' + m + '</label>' +
+                        '<input id="pcm-m-' + i + '" type="number" step="0.01" min="0" placeholder="' +
+                        (base > 0 ? base.toFixed(2) : '0') + '" value="' + (has ? ov.toFixed(2) : '') + '">' +
+                        '</div>';
+                }).join('');
+            }
+            highlightCostoMesesEditor();
+            showModal('modalPvCostoMeses');
+        }
+
+        function highlightCostoMesesEditor() {
+            var base = Number(val('pcm-base')) || 0;
+            for (var i = 0; i < 12; i++) {
+                var wrap = document.querySelector('#pcm-months .cc-tc-month:nth-child(' + (i + 1) + ')');
+                var el = document.getElementById('pcm-m-' + i);
+                if (!wrap || !el) continue;
+                var raw = String(el.value || '').trim();
+                var v = Number(raw);
+                var custom = raw !== '' && isFinite(v) && v > 0 && Math.abs(v - base) > 0.005;
+                wrap.classList.toggle('is-custom', custom || (raw !== '' && isFinite(v) && v > 0));
+            }
+        }
+
+        function readCostoMesesFromEditor() {
+            var out = [];
+            for (var i = 0; i < 12; i++) {
+                var el = document.getElementById('pcm-m-' + i);
+                var raw = el ? String(el.value || '').trim() : '';
+                var v = Number(raw);
+                out.push(raw !== '' && isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : null);
+            }
+            return out;
+        }
+
+        function saveCostoMesesModal() {
+            var emp = val('pcm-empresa');
+            var cod = val('pcm-codigo');
+            var nom = val('pcm-nombre');
+            var card = val('pcm-card');
+            var cardName = val('pcm-card-name');
+            var mon = val('pcm-moneda') || 'MXN';
+            var base = Number(val('pcm-base')) || 0;
+            var meses = readCostoMesesFromEditor();
+            if (!emp || !cod) {
+                toast('warning', 'Faltan datos', 'Empresa e ItemCode son obligatorios.');
+                return;
+            }
+            var jobs = [];
+            var base2 = base > 0 ? Math.round(base * 100) / 100 : 0;
+            var prevGlobal = Number(CC._pcmPrevGlobal) || 0;
+            var globalCambio = base2 > 0 && prevGlobal > 0 && Math.abs(base2 - prevGlobal) > 0.005;
+            for (var i = 0; i < 12; i++) {
+                var p = meses[i];
+                // Si cambió el global, los meses que tenían el global anterior pasan al nuevo
+                // (los que difieren, p.ej. Dic=7, se conservan).
+                if (globalCambio && p !== null && p > 0 && Math.abs(p - prevGlobal) < 0.005) {
+                    p = base2;
+                }
+                if (p === null || !(p > 0)) continue;
+                jobs.push({
+                    empresa: emp,
+                    producto_codigo: cod,
+                    producto_nombre: nom || cod,
+                    card_code: card,
+                    card_name: cardName,
+                    mes: i + 1,
+                    anio: costosAnio(),
+                    costo_unitario: Math.round(p * 100) / 100,
+                    moneda: mon
+                });
+            }
+            // Si no hay ningún mes capturado pero sí global, guarda los 12 con el global.
+            if (!jobs.length && base2 > 0) {
+                for (var j = 0; j < 12; j++) {
+                    jobs.push({
+                        empresa: emp,
+                        producto_codigo: cod,
+                        producto_nombre: nom || cod,
+                        card_code: card,
+                        card_name: cardName,
+                        mes: j + 1,
+                        anio: costosAnio(),
+                        costo_unitario: base2,
+                        moneda: mon
+                    });
+                }
+            }
+            // Fila global (mes=0): siempre el valor del campo Global.
+            var globalSave = base2 > 0 ? base2 : precioModaDeMeses(meses);
+            if (globalSave > 0) {
+                jobs.push({
+                    empresa: emp,
+                    producto_codigo: cod,
+                    producto_nombre: nom || cod,
+                    card_code: card,
+                    card_name: cardName,
+                    mes: 0,
+                    anio: costosAnio(),
+                    costo_unitario: Math.round(globalSave * 100) / 100,
+                    moneda: mon
+                });
+            }
+            if (!jobs.length) {
+                toast('warning', 'Sin precios', 'Captura al menos un mes o un precio global.');
+                return;
+            }
+            var saveBtn = document.getElementById('pcm-save');
+            if (saveBtn) saveBtn.disabled = true;
+            var chain = Promise.resolve();
+            var okCount = 0;
+            jobs.forEach(function (payload) {
+                chain = chain.then(function () {
+                    return fetch(url, {
+                        method: 'PUT',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify(payload)
+                    }).then(function (r) {
+                        return r.json().then(function (json) {
+                            if (!r.ok) throw new Error((json && json.message) || 'Error al guardar mes ' + payload.mes);
+                            okCount++;
+                            return json;
+                        });
+                    });
+                });
+            });
+            chain.then(function () {
+                toast('success', 'Precios guardados', okCount + ' mes' + (okCount === 1 ? '' : 'es') + ' actualizado(s).');
+                hideModal('modalPvCostoMeses');
+                load(page);
+            }).catch(function (err) {
+                toast('error', 'No se guardó', err && err.message ? err.message : 'Error');
+            }).then(function () {
+                if (saveBtn) saveBtn.disabled = false;
+            });
+        }
+
+        function bindCostoMesesUi() {
+            if (CC._costoMesesBound) return;
+            CC._costoMesesBound = true;
+            var applyAll = document.getElementById('pcm-apply-all');
+            if (applyAll) applyAll.addEventListener('click', function () {
+                var base = Number(val('pcm-base'));
+                if (!(base > 0)) {
+                    toast('warning', 'Precio global', 'Captura un precio global válido.');
+                    return;
+                }
+                for (var i = 0; i < 12; i++) {
+                    var el = document.getElementById('pcm-m-' + i);
+                    if (el) el.value = base.toFixed(2);
+                }
+                highlightCostoMesesEditor();
+            });
+            var reset = document.getElementById('pcm-reset');
+            if (reset) reset.addEventListener('click', function () {
+                for (var i = 0; i < 12; i++) {
+                    var el = document.getElementById('pcm-m-' + i);
+                    if (el) el.value = '';
+                }
+                highlightCostoMesesEditor();
+            });
+            var save = document.getElementById('pcm-save');
+            if (save) save.addEventListener('click', saveCostoMesesModal);
+            var monthsBox = document.getElementById('pcm-months');
+            if (monthsBox) {
+                monthsBox.addEventListener('input', function (ev) {
+                    if (ev.target && ev.target.id && ev.target.id.indexOf('pcm-m-') === 0) {
+                        highlightCostoMesesEditor();
+                    }
+                });
+                monthsBox.addEventListener('blur', function (ev) {
+                    if (ev.target && ev.target.id && ev.target.id.indexOf('pcm-m-') === 0) {
+                        var raw = String(ev.target.value || '').trim();
+                        var v = Number(raw);
+                        if (raw !== '' && isFinite(v) && v > 0) {
+                            ev.target.value = v.toFixed(2);
+                        }
+                    }
+                }, true);
+            }
+            var baseEl = document.getElementById('pcm-base');
+            if (baseEl) {
+                baseEl.addEventListener('input', highlightCostoMesesEditor);
+                baseEl.addEventListener('blur', function () {
+                    var v = Number(baseEl.value);
+                    if (isFinite(v) && v > 0) baseEl.value = v.toFixed(2);
+                });
+            }
+        }
+
+        bindCostoMesesUi();
+
+        function actualizarPrecioDesdeApi(btn) {
+            var emp = btn.getAttribute('data-emp') || '';
+            var cod = btn.getAttribute('data-cod') || '';
+            var card = btn.getAttribute('data-card') || '';
+            var mes = Number(btn.getAttribute('data-mes') || 0) || 0;
+            var nom = btn.getAttribute('data-nom') || cod;
+            if (!emp || !cod) {
+                toast('error', 'Datos incompletos', 'Falta empresa o ItemCode.');
+                return;
+            }
+            btn.disabled = true;
+            var payloadBase = {
+                empresa: emp,
+                card_code: card,
+                producto_codigo: cod,
+                mes: mes,
+                anio: CC.state.anioGasto || new Date().getFullYear(),
+                anio_proyeccion: costosAnio()
+            };
+            fetch(url + '/actualizar-desde-api', {
+                method: 'POST',
+                headers: apiJsonHeaders(),
+                body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: false }))
+            }).then(function (r) {
+                return r.json().then(function (json) {
+                    if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar la API');
+                    return json;
+                });
+            }).then(function (json) {
+                if (json.igual) {
+                    toast('info', 'Sin cambios', 'El precio local ya coincide con la API (' +
+                        moneyTxt(json.precio_api, json.moneda_api) + ').');
+                    return;
+                }
+                var msg = 'Producto: ' + (nom || cod) + '\n' +
+                    'ItemCode: ' + cod + (card ? (' · CardCode: ' + card) : '') +
+                    (mes ? (' · Mes: ' + mes) : '') + '\n\n' +
+                    'Local: ' + moneyTxt(json.precio_local, json.moneda_local) + '\n' +
+                    'API:   ' + moneyTxt(json.precio_api, json.moneda_api) + '\n\n' +
+                    '¿Actualizar solo el precio con el valor de la API?';
+                if (!window.confirm(msg)) return;
+
+                return fetch(url + '/actualizar-desde-api', {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: true }))
+                }).then(function (r) {
+                    return r.json().then(function (j2) {
+                        if (!r.ok) throw new Error((j2 && j2.message) || 'No se pudo actualizar');
+                        return j2;
+                    });
+                }).then(function (j2) {
+                    if (j2.actualizado) {
+                        toast('success', 'Precio actualizado',
+                            moneyTxt(j2.precio_anterior, j2.moneda_anterior) + ' → ' +
+                            moneyTxt(j2.precio_nuevo, j2.moneda_nueva));
+                        load(page);
+                    } else {
+                        toast('info', 'Sin cambios', j2.message || 'El precio ya era el mismo.');
+                    }
+                });
+            }).catch(function (err) {
+                toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+            }).then(function () {
+                btn.disabled = false;
+            });
+        }
+
+        function buildQuery(goPage) {
+            var params = [];
+            var emp = empSel ? String(empSel.value || '') : '';
+            var cliente = clienteEl ? String(clienteEl.value || '').trim() : '';
+            var itemcode = itemEl ? String(itemEl.value || '').trim() : '';
+            var perPage = perPageEl ? (Number(perPageEl.value) || 25) : 25;
+            if (emp) params.push('empresa=' + encodeURIComponent(emp));
+            if (cliente) params.push('cliente=' + encodeURIComponent(cliente));
+            if (itemcode) params.push('itemcode=' + encodeURIComponent(itemcode));
+            params.push('page=' + encodeURIComponent(String(goPage || page || 1)));
+            params.push('per_page=' + encodeURIComponent(String(perPage)));
+            params.push('anio=' + encodeURIComponent(String(costosAnio())));
+            return params.length ? ('?' + params.join('&')) : '';
+        }
+
+        function load(goPage) {
+            if (goPage) page = goPage;
+            if (hint) hint.textContent = 'Cargando…';
+            fetch(url + buildQuery(page), {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (json) {
+                    items = (json && json.items) || [];
+                    total = Number(json && json.total) || items.length;
+                    page = Number(json && json.page) || page || 1;
+                    lastPage = Number(json && json.last_page) || 1;
+                    from = Number(json && json.from) || 0;
+                    to = Number(json && json.to) || 0;
+                    fillAnios((json && json.anios) || [], (json && json.anio) || costosAnio());
+                    fillEmpresas();
+                    render();
+                })
+                .catch(function () {
+                    items = [];
+                    total = 0;
+                    from = 0;
+                    to = 0;
+                    lastPage = 1;
+                    tbody.innerHTML = '<tr><td colspan="11"><div class="cc-empty">No se pudieron cargar los precios</div></td></tr>';
+                    if (hint) hint.textContent = 'Error al cargar';
+                    updatePager();
+                });
+        }
+
+        function scheduleSearch() {
+            if (searchTimer) clearTimeout(searchTimer);
+            searchTimer = setTimeout(function () { load(1); }, 320);
+        }
+
+        function moneyTxt(valor, moneda) {
+            var mon = String(moneda || 'MXN').toUpperCase();
+            if (valor === null || valor === undefined || valor === '') return '—';
+            return (mon === 'USD' ? 'US$' : '$') +
+                Number(valor).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+        }
+
+        function openHistorialPrecio(emp, cod, nom, card, cardName, mes) {
+            var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+            var histTbody = document.getElementById('pv-hist-tbody');
+            var histHint = document.getElementById('pv-hist-hint');
+            var mesN = Number(mes) || 0;
+            var mesTxt = mesN >= 1 && mesN <= 12 ? (MESES[mesN] + ' (' + mesN + ')') : '—';
+            var clienteTxt = (card || '') + (cardName ? (' — ' + cardName) : '');
+            setText('pv-hist-prod-label', (emp || '—') + (clienteTxt ? (' · ' + clienteTxt) : ''));
+            setText('pv-hist-nombre', nom || cod || '—');
+            setText('pv-hist-itemcode', cod || '—');
+            setText('pv-hist-mes', mesTxt);
+            setText('pv-hist-cliente', clienteTxt || '—');
+            if (histTbody) {
+                histTbody.innerHTML = '<tr><td colspan="9"><div class="cc-empty">Cargando historial…</div></td></tr>';
+            }
+            if (histHint) histHint.textContent = 'Consultando movimientos del precio unitario…';
+            showModal('modalPvHistorialPrecio');
+            var histUrl = CC.state.costosHistorialUrl || (url + '/historial');
+            var qs = '?empresa=' + encodeURIComponent(emp) +
+                '&producto_codigo=' + encodeURIComponent(cod);
+            if (card) qs += '&card_code=' + encodeURIComponent(card);
+            if (mesN > 0) qs += '&mes=' + encodeURIComponent(String(mesN));
+            qs += '&anio=' + encodeURIComponent(String(costosAnio()));
+            fetch(histUrl + qs, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo cargar el historial');
+                        return json;
+                    });
+                })
+                .then(function (json) {
+                    var rows = (json && json.items) || [];
+                    var actual = json.precio_actual != null
+                        ? moneyTxt(json.precio_actual, json.moneda_actual)
+                        : '—';
+                    if (json.producto_nombre) setText('pv-hist-nombre', json.producto_nombre);
+                    if (json.producto_codigo) setText('pv-hist-itemcode', json.producto_codigo);
+                    if (json.mes_label) setText('pv-hist-mes', json.mes_label);
+                    var cli = (json.card_code || card || '');
+                    if (json.card_name || cardName) {
+                        cli += (cli ? ' — ' : '') + (json.card_name || cardName);
+                    }
+                    if (cli) setText('pv-hist-cliente', cli);
+                    setText('pv-hist-prod-label',
+                        (json.empresa || emp || '—') +
+                        (cli ? (' · ' + cli) : '')
+                    );
+                    if (histHint) {
+                        histHint.textContent = rows.length
+                            ? (rows.length + (rows.length === 1 ? ' movimiento' : ' movimientos') + ' · precio actual ' + actual)
+                            : ('Aún no hay cambios. El precio actual es ' + actual + '.');
+                    }
+                    if (!histTbody) return;
+                    if (!rows.length) {
+                        histTbody.innerHTML = '<tr><td colspan="9"><div class="cc-empty">Este producto todavía no tiene movimientos de precio.</div></td></tr>';
+                        return;
+                    }
+                    histTbody.innerHTML = rows.map(function (it) {
+                        var mon = String(it.moneda_nueva || 'MXN').toUpperCase();
+                        var delta = it.variacion;
+                        var cls = 'cc-hist-flat';
+                        var deltaTxt = 'Alta';
+                        if (delta !== null && delta !== undefined) {
+                            if (delta > 0) {
+                                cls = 'cc-hist-up';
+                                deltaTxt = '+' + moneyTxt(delta, mon);
+                            } else if (delta < 0) {
+                                cls = 'cc-hist-down';
+                                deltaTxt = moneyTxt(delta, mon);
+                            } else {
+                                deltaTxt = 'Sin cambio';
+                            }
+                            if (it.variacion_pct !== null && it.variacion_pct !== undefined && delta !== 0) {
+                                deltaTxt += ' (' + (it.variacion_pct > 0 ? '+' : '') +
+                                    Number(it.variacion_pct).toLocaleString('es-MX', { maximumFractionDigits: 2 }) + '%)';
+                            }
+                        }
+                        var mesRow = it.mes_label || '—';
+                        var codRow = it.producto_codigo || cod || '—';
+                        var nomRow = String(it.producto_nombre || '').trim();
+                        if (!nomRow || nomRow.toUpperCase() === String(codRow).toUpperCase()) {
+                            nomRow = json.producto_nombre || nom || codRow;
+                        }
+                        return '<tr>' +
+                            '<td>' + escapeHtml(it.fecha || '—') + '</td>' +
+                            '<td>' + escapeHtml(mesRow) + '</td>' +
+                            '<td><code>' + escapeHtml(codRow) + '</code></td>' +
+                            '<td>' + escapeHtml(nomRow) + '</td>' +
+                            '<td class="num">' + escapeHtml(moneyTxt(it.precio_anterior, it.moneda_anterior || mon)) + '</td>' +
+                            '<td class="num fw-semibold">' + escapeHtml(moneyTxt(it.precio_nuevo, mon)) + '</td>' +
+                            '<td class="num"><span class="' + cls + '">' + escapeHtml(deltaTxt) + '</span></td>' +
+                            '<td>' + escapeHtml(it.origen_label || it.origen || '—') + '</td>' +
+                            '<td>' + escapeHtml(it.usuario || 'Sistema') + '</td>' +
+                            '</tr>';
+                    }).join('');
+                })
+                .catch(function (err) {
+                    if (histHint) histHint.textContent = 'No se pudo cargar el historial.';
+                    if (histTbody) {
+                        histTbody.innerHTML = '<tr><td colspan="9"><div class="cc-empty">' +
+                            escapeHtml(err && err.message ? err.message : 'Error al cargar') +
+                            '</div></td></tr>';
+                    }
+                });
+        }
+
+        var saveBtn = document.getElementById('pv-costo-guardar');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', function () {
+                var payload = {
+                    empresa: val('pv-costo-empresa'),
+                    producto_codigo: val('pv-costo-codigo'),
+                    producto_nombre: val('pv-costo-nombre'),
+                    card_code: val('pv-costo-card'),
+                    card_name: val('pv-costo-card-name'),
+                    mes: Number(val('pv-costo-mes')) || 0,
+                    anio: costosAnio(),
+                    costo_unitario: Number(val('pv-costo-valor')) || 0,
+                    moneda: val('pv-costo-moneda') || 'MXN'
+                };
+                if (!payload.empresa || !payload.producto_codigo) {
+                    toast('warning', 'Faltan datos', 'Empresa y producto son obligatorios.');
+                    return;
+                }
+                saveBtn.disabled = true;
+                fetch(url, {
+                    method: 'PUT',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify(payload)
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo guardar');
+                        return json;
+                    });
+                }).then(function (json) {
+                    toast('success', 'Precio guardado', json.message || 'Actualizado en maestro local.');
+                    var modal = document.getElementById('modalPvCosto');
+                    if (modal && window.bootstrap && bootstrap.Modal) {
+                        var inst = bootstrap.Modal.getInstance(modal);
+                        if (inst) inst.hide();
+                    }
+                    load();
+                }).catch(function (err) {
+                    toast('error', 'No se guardó', err && err.message ? err.message : 'Error');
+                }).then(function () {
+                    saveBtn.disabled = false;
+                });
+            });
+        }
+
+        if (anioSel) anioSel.addEventListener('change', function () {
+            paintAnioLabel(costosAnio());
+            load(1);
+        });
+        if (empSel) empSel.addEventListener('change', function () { load(1); });
+        if (clienteEl) clienteEl.addEventListener('input', scheduleSearch);
+        if (itemEl) itemEl.addEventListener('input', scheduleSearch);
+        if (perPageEl) perPageEl.addEventListener('change', function () { load(1); });
+        if (prevBtn) prevBtn.addEventListener('click', function () { if (page > 1) load(page - 1); });
+        if (nextBtn) nextBtn.addEventListener('click', function () { if (page < lastPage) load(page + 1); });
+        var reload = document.getElementById('pv-costos-reload');
+        if (reload) reload.addEventListener('click', function () { load(page); });
+        var importBtn = document.getElementById('pv-costos-import-api');
+        if (importBtn) {
+            importBtn.addEventListener('click', function () {
+                if (!window.confirm('¿Cargar precios mensuales desde la API (todas las empresas)?\nSe importan CardCode, ItemCode, Mes y Precio desde /precios-mensuales (año venta ' + (CC.state.anioGasto || '') + ') y se guardan en el maestro de proyección ' + costosAnio() + '.')) {
+                    return;
+                }
+                importBtn.disabled = true;
+                if (hint) hint.textContent = 'Importando precios desde API…';
+                fetch(url + '/importar-api', {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify({
+                        empresa: '',
+                        todas_empresas: true,
+                        anio: CC.state.anioGasto || 2026,
+                        anio_proyeccion: costosAnio(),
+                        solo_vacios: false
+                    })
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo importar');
+                        return json;
+                    });
+                }).then(function (json) {
+                    toast('success', 'Importación lista', json.message || 'Precios cargados.');
+                    load();
+                }).catch(function (err) {
+                    toast('error', 'No se importó', err && err.message ? err.message : 'Error');
+                    if (hint) hint.textContent = 'Error al importar';
+                }).then(function () {
+                    importBtn.disabled = false;
+                });
+            });
+        }
+
+        var excelBtn = document.getElementById('pv-costos-excel');
+        if (excelBtn) {
+            excelBtn.addEventListener('click', function () {
+                showModal('modalPvPreciosExcel');
+            });
+        }
+        var dlBtn = document.getElementById('pv-precios-descargar');
+        if (dlBtn) {
+            dlBtn.addEventListener('click', function () {
+                var plantillaUrl = CC.state.costosPlantillaUrl || (url + '/plantilla');
+                var emp = empSel ? String(empSel.value || '') : '';
+                var qs = '?anio=' + encodeURIComponent(String(costosAnio()));
+                if (emp) qs += '&empresa=' + encodeURIComponent(emp);
+                window.location.href = plantillaUrl + qs;
+            });
+        }
+        var upBtn = document.getElementById('pv-precios-subir');
+        var fileEl = document.getElementById('pv-precios-archivo');
+        var excelHint = document.getElementById('pv-precios-excel-hint');
+        if (upBtn && fileEl) {
+            upBtn.addEventListener('click', function () {
+                var file = fileEl.files && fileEl.files[0];
+                if (!file) {
+                    toast('warning', 'Falta archivo', 'Selecciona el Excel editado.');
+                    return;
+                }
+                var importUrl = CC.state.costosImportExcelUrl || (url + '/importar-excel');
+                var fd = new FormData();
+                fd.append('archivo', file);
+                fd.append('anio', String(costosAnio()));
+                upBtn.disabled = true;
+                if (excelHint) excelHint.textContent = 'Subiendo y actualizando…';
+                fetch(importUrl, {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': csrfToken()
+                    },
+                    body: fd
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo importar');
+                        return json;
+                    });
+                }).then(function (json) {
+                    var extra = '';
+                    if (json.errores && json.errores.length) {
+                        extra = ' · ' + json.errores.length + ' fila(s) con aviso';
+                    }
+                    toast('success', 'Excel aplicado', (json.message || 'Precios actualizados.') + extra);
+                    fileEl.value = '';
+                    if (excelHint) {
+                        excelHint.textContent = 'Se actualiza por Empresa + ItemCode y se propaga a ciclos abiertos.';
+                    }
+                    var modal = document.getElementById('modalPvPreciosExcel');
+                    if (modal && window.bootstrap && bootstrap.Modal) {
+                        var inst = bootstrap.Modal.getInstance(modal);
+                        if (inst) inst.hide();
+                    }
+                    load();
+                }).catch(function (err) {
+                    toast('error', 'No se importó', err && err.message ? err.message : 'Error');
+                    if (excelHint) excelHint.textContent = 'Error al importar. Revisa columnas Empresa, ItemCode y Precio.';
+                }).then(function () {
+                    upBtn.disabled = false;
+                });
+            });
+        }
+
+        fillAnios([], costosAnio());
+        load();
     }
 
     CC.boot = function (boot) {
         CC.state.page = boot.page;
-        CC.state.permisos = boot.permisos || {};
         CC.state.anioGasto = boot.anioGasto || 2026;
         CC.state.anioPresupuesto = boot.anioPresupuesto || 2027;
+        CC.state.costosAnio = boot.anioPresupuesto || 2027;
         CC.state.usuarios = boot.usuarios || [];
         CC.state.centroInicial = boot.centroInicial || '';
         CC.state.empresaInicial = boot.empresaInicial || '';
@@ -3767,7 +8607,17 @@
         CC.state.vistaInicial = boot.vistaInicial || '';
         CC.state.detalleUrl = boot.detalleUrl || '/Ventas/Captura/detalle';
         CC.state.gastoUrl = boot.gastoUrl || '/ProyeccionesVentas/api/gasto-real';
+        CC.state.listasPreciosUrl = boot.listasPreciosUrl || '/ProyeccionesVentas/api/listas-precios';
+        CC.state.costosUrl = boot.costosUrl || '/ProyeccionesVentas/api/costos';
+        CC.state.costosPlantillaUrl = boot.costosPlantillaUrl || '/ProyeccionesVentas/api/costos/plantilla';
+        CC.state.costosImportExcelUrl = boot.costosImportExcelUrl || '/ProyeccionesVentas/api/costos/importar-excel';
+        CC.state.costosHistorialUrl = boot.costosHistorialUrl || '/ProyeccionesVentas/api/costos/historial';
+        CC.state.empresasLocales = boot.empresasLocales || [];
+        CC.state.unidadesMedida = boot.unidadesMedida || {};
         CC.state.gastoCache = {};
+        CC.state.gastoMeta = {};
+        CC.state.gastoLookup = {};
+        CC.state.preciosCache = {};
         CC.state.cicloCodigo = boot.cicloCodigo || boot.cicloInicial || '';
         CC.state.usuarioActual = boot.usuarioActual || '';
         CC.state.ciclos = loadCiclos(boot.periodoDefault, boot.ciclos);
@@ -3781,9 +8631,7 @@
             || CC.state.ciclos[0]
             || boot.periodoDefault
             || {};
-        CC.state.period = Object.assign({}, boot.periodoDefault || {}, actual);
-        if (CC.state.period.anioReferencia) CC.state.anioGasto = CC.state.period.anioReferencia;
-        if (CC.state.period.anio) CC.state.anioPresupuesto = CC.state.period.anio;
+        applyPeriodFromCiclo(actual, CC.state.cicloCodigo || actual.codigo);
         CC.state.overlays = {};
         CC.state.budgets = {};
         CC.state.completados = {};
@@ -3795,6 +8643,8 @@
             flag.textContent = CC.state.sapOk && (boot.centros || []).length ? 'Catálogo SAP' : (boot.sapMensaje ? 'Catálogo local' : 'Catálogo de trabajo');
             flag.className = 'cc-sap-flag' + (CC.state.sapOk && (boot.centros || []).length ? '' : ' off');
         }
+        bindTcMesesUi();
+        bindPrecioMesesUi();
         if (CC.state.page === 'admin') CC.initCiclos();
         if (CC.state.page === 'admin-ciclo' || CC.state.page === 'asignacion') {
             renderPeriodBanner();
@@ -3810,6 +8660,7 @@
         if (CC.state.page === 'control') CC.initControl();
         if (CC.state.page === 'detalle') CC.initDetalle();
         if (CC.state.page === 'analisis') CC.initAnalisis();
+        if (CC.state.page === 'costos') initCostos();
         if (CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis') refreshSap(boot.catalogoUrl);
     };
 

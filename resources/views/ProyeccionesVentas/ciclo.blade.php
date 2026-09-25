@@ -8,7 +8,7 @@
 <div class="cc-page" id="cc-app">
     <div class="cc-header">
         <div>
-            <div class="cc-kicker">Ciclo <span id="period-codigo">{{ $bootstrap['cicloCodigo'] ?? '' }}</span> · asignaciones</div>
+            <div class="cc-kicker">Ciclo <span id="period-codigo">{{ $bootstrap['cicloCodigo'] ?? '' }}</span> · clientes y permisos</div>
             <h1 class="cc-title" id="period-nombre">Ciclo</h1>
             <p class="cc-sub">Revisa las asignaciones del ciclo o crea una nueva: empresa SAP,
                  usuario, cliente, productos y permisos.</p>

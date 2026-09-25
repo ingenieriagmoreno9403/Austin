@@ -67,18 +67,19 @@
         color: var(--muted);
     }
     .home-logo-wrap {
-        width: 86px;
-        height: 86px;
-        border-radius: 14px;
-        background: #121212;
         display: flex;
         align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
+        justify-content: flex-end;
+        flex: 0 1 auto;
+        min-width: 0;
+        background: transparent;
     }
     .home-logo {
-        width: 62px;
-        height: auto;
+        height: 84px;
+        width: auto;
+        max-width: min(520px, 46vw);
+        object-fit: contain;
+        display: block;
     }
 
     .home-block {
@@ -192,16 +193,188 @@
         line-height: 1.5;
     }
 
+    .home-lines {
+        margin-top: 1rem;
+        padding: 0.35rem 0 0.5rem;
+    }
+    .home-lines-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1rem 1.35rem 0.35rem;
+    }
+    .home-lines-head h2 { margin: 0; }
+    .home-lines-empty { padding: 0.4rem 1.35rem 1rem; }
+    .home-lines-list {
+        list-style: none;
+        margin: 0;
+        padding: 0.35rem 0.6rem 0.4rem;
+    }
+    .home-line {
+        display: grid;
+        grid-template-columns: 92px minmax(180px, 1.4fr) minmax(180px, 0.9fr) minmax(190px, 1fr);
+        gap: 0.85rem 1.1rem;
+        align-items: center;
+        text-decoration: none;
+        color: var(--ink);
+        padding: 0.85rem 0.75rem;
+        border-bottom: 1px solid var(--line);
+    }
+    .home-lines-list li:last-child .home-line { border-bottom: none; }
+    .home-line:hover { background: var(--soft); }
+    .home-kind {
+        justify-self: start;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 0.28rem 0.55rem;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--soft);
+        color: var(--muted);
+    }
+    .home-kind.is-gasto {
+        background: #1a1a1a;
+        color: #fff;
+        border-color: #1a1a1a;
+    }
+    .home-kind.is-venta {
+        background: #fff;
+        color: #1a1a1a;
+        border-color: #c8c8c8;
+    }
+    .home-line-name strong {
+        display: block;
+        font-size: 0.95rem;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+        line-height: 1.25;
+    }
+    .home-line-name em,
+    .home-line-date em,
+    .home-line-progress em {
+        display: block;
+        margin-top: 0.12rem;
+        font-style: normal;
+        font-size: 0.75rem;
+        color: var(--muted);
+    }
+    .home-line-date strong {
+        display: block;
+        font-size: 0.86rem;
+        font-weight: 650;
+    }
+    .home-line-date .is-soon { color: var(--red); }
+    .home-line-progress { min-width: 0; }
+    .home-meter {
+        display: grid;
+        grid-template-columns: 3.1rem minmax(72px, 1fr);
+        align-items: center;
+        gap: 0.6rem;
+    }
+    .home-meter strong {
+        font-size: 0.95rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        line-height: 1;
+    }
+    .home-line-progress > em {
+        margin-top: 0.28rem;
+    }
+    .home-bar {
+        display: block;
+        height: 12px;
+        border-radius: 999px;
+        background: #e7e7e7;
+        border: 1px solid #dedede;
+        overflow: hidden;
+    }
+    .home-bar i {
+        display: block;
+        height: 100%;
+        min-width: 0;
+        border-radius: inherit;
+        background: #dc2626;
+    }
+    .home-line-progress.is-stop .home-meter strong { color: #dc2626; }
+    .home-line-progress.is-stop .home-bar i { background: #dc2626; }
+    .home-line-progress.is-warn .home-meter strong { color: #d97706; }
+    .home-line-progress.is-warn .home-bar i { background: #d97706; }
+    .home-line-progress.is-go .home-meter strong { color: #16a34a; }
+    .home-line-progress.is-go .home-bar i { background: #16a34a; }
+    .home-lines-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        padding: 0.9rem 1.15rem 1.05rem;
+        border-top: 1px solid var(--line);
+    }
+    .home-lines-group {
+        display: inline-flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.4rem 0.45rem 0.4rem 0.55rem;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: var(--soft);
+    }
+    .home-lines-group span {
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding-right: 0.25rem;
+        color: #1a1a1a;
+    }
+    .home-lines-group a {
+        text-decoration: none;
+        font-size: 0.8rem;
+        font-weight: 650;
+        padding: 0.38rem 0.75rem;
+        border-radius: 999px;
+        border: 1px solid #1a1a1a;
+        background: #1a1a1a;
+        color: #fff;
+    }
+    .home-lines-group a:hover {
+        background: #fff;
+        color: #1a1a1a;
+    }
+    .home-lines-group.is-gasto {
+        background: #f3f3f3;
+        border-color: #e0e0e0;
+    }
+    .home-lines-group.is-venta {
+        background: #fff;
+        border-color: #d4d4d4;
+    }
+    .home-lines-group.is-venta a {
+        background: #fff;
+        color: #1a1a1a;
+        border-color: #bdbdbd;
+    }
+    .home-lines-group.is-venta a:hover {
+        background: #1a1a1a;
+        border-color: #1a1a1a;
+        color: #fff;
+    }
+
     .home-cal {
         display: grid;
-        grid-template-columns: 1.45fr 0.9fr;
+        grid-template-columns: minmax(0, 1.35fr) minmax(260px, 340px);
         gap: 0;
         margin-top: 1rem;
         overflow: hidden;
+        align-items: stretch;
     }
-    .home-cal > div:first-child {
-        padding: 1.25rem 1.4rem 1.35rem;
+    .home-cal-main {
+        padding: 1.25rem 1.35rem 1.35rem;
         border-right: 1px solid var(--line);
+        min-width: 0;
     }
     .home-cal-head {
         display: flex;
@@ -233,8 +406,32 @@
         grid-template-columns: repeat(7, 1fr);
         gap: 0.3rem;
     }
+    .home-cal-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem 1rem;
+        margin-top: 0.85rem;
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: var(--muted);
+    }
+    .home-cal-legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+    }
+    .home-cal-legend i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        display: block;
+    }
+    .home-cal-legend .is-ok { background: #16a34a; }
+    .home-cal-legend .is-warn { background: #d97706; }
+    .home-cal-legend .is-late { background: var(--red); }
+
     .home-cal-day {
-        aspect-ratio: 1;
+        height: 46px;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -242,10 +439,11 @@
         border: 1px solid transparent;
         background: var(--soft);
         border-radius: 10px;
-        font-size: 0.86rem;
+        font-size: 0.84rem;
         font-weight: 600;
         color: var(--ink);
         cursor: pointer;
+        padding: 0;
     }
     .home-cal-day.is-empty {
         visibility: hidden;
@@ -276,8 +474,11 @@
     .home-cal-day.is-selected.is-late .dot { background: #fff; }
 
     .home-cal-side {
-        padding: 1.25rem 1.35rem 1.35rem;
+        padding: 1.25rem 1.2rem 1.35rem;
         background: var(--soft);
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
     }
     .home-cal-side h3 {
         margin: 0 0 0.3rem;
@@ -296,6 +497,8 @@
         display: flex;
         flex-direction: column;
         gap: 0.5rem;
+        max-height: 360px;
+        overflow: auto;
     }
     .home-cal-list li {
         font-size: 0.84rem;
@@ -347,13 +550,22 @@
 
     @media (max-width: 860px) {
         .home-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .home-line {
+            grid-template-columns: 92px minmax(0, 1fr);
+            grid-template-areas: "kind name" "date progress";
+        }
+        .home-kind { grid-area: kind; }
+        .home-line-name { grid-area: name; }
+        .home-line-date { grid-area: date; }
+        .home-line-progress { grid-area: progress; }
         .home-cal { grid-template-columns: 1fr; }
-        .home-cal > div:first-child { border-right: none; border-bottom: 1px solid var(--line); }
+        .home-cal-main { border-right: none; border-bottom: 1px solid var(--line); }
+        .home-logo { height: 64px; }
     }
     @media (max-width: 520px) {
         .home-metrics { grid-template-columns: 1fr 1fr; }
-        .home-logo-wrap { width: 68px; height: 68px; }
-        .home-logo { width: 48px; }
+        .home-top { align-items: flex-start; }
+        .home-logo { height: 56px; max-width: 100%; }
     }
 </style>
 
@@ -376,8 +588,6 @@
     $nombreCorto = auth()->user()->name ? explode(' ', auth()->user()->name)[0] : '';
     $cc = $resumenCentros ?? [];
     $pv = $resumenPv ?? [];
-    $ccAcceso = $ccAcceso ?? [];
-    $pvAcceso = $pvAcceso ?? [];
     $mm = $datosMantenimientoMaquinas ?? [];
 @endphp
 
@@ -389,139 +599,85 @@
             <p class="home-meta">{{ $saludo }} · {{ now()->format('h:i') }} {{ $formato == 'am' ? 'AM' : 'PM' }} · {{ now()->format('d/m/Y') }}</p>
         </div>
         <div class="home-logo-wrap">
-            <img class="home-logo" src="{{ asset('Images/AUSTIN_POWDER.png') }}" alt="Austin Powder">
+            <img class="home-logo" src="{{ asset('Images/logo_horizontal.png') }}" alt="Austin Powder">
         </div>
     </header>
 
+    @php
+        $filasAsignadas = collect($cc['asignados'] ?? [])->concat($pv['asignados'] ?? [])->values();
+    @endphp
     @if(auth()->user()->tipo != 'alumno' && auth()->user()->tipo != 'empresa')
-    @if(!empty($ccAcceso['ver']))
-    <section class="home-block home-panel" aria-label="Centros de costos">
-        <div class="home-row">
-            <h2>{{ $cc['nombre'] ?? 'Centros de costos' }}</h2>
-            <span class="home-status {{ !empty($cc['enVentana']) ? 'is-on' : '' }}">{{ $cc['estadoLabel'] ?? 'Sin ciclo' }}</span>
+    <section class="home-lines home-panel" aria-label="Asignaciones">
+        <div class="home-lines-head">
+            <h2>Ciclos</h2>
+            <p class="home-note">{{ $filasAsignadas->count() }} {{ $filasAsignadas->count() === 1 ? 'ciclo' : 'ciclos' }}</p>
         </div>
-
-        <dl class="home-metrics">
-            <div>
-                <dt>Gasto ref.</dt>
-                <dd>{{ $cc['anioRef'] ?? 2026 }}</dd>
+        @if($filasAsignadas->isEmpty())
+        <p class="home-note home-lines-empty">No tienes ciclos de gastos ni de ventas.</p>
+        @else
+        <ul class="home-lines-list">
+            @foreach($filasAsignadas as $item)
+            <li>
+                <a class="home-line" href="{{ $item['url'] }}">
+                    <span class="home-kind is-{{ $item['tipo'] }}">{{ $item['tipoLabel'] }}</span>
+                    <span class="home-line-name">
+                        <strong>{{ $item['nombre'] }}</strong>
+                        <em>{{ $item['detalle'] ?? '' }}</em>
+                    </span>
+                    <span class="home-line-date">
+                        <strong>
+                            @if(!empty($item['capturaDesde']) && !empty($item['capturaHasta']))
+                                {{ $item['capturaDesde'] }} – {{ $item['capturaHasta'] }}
+                            @elseif(!empty($item['capturaHasta']))
+                                Hasta {{ $item['capturaHasta'] }}
+                            @else
+                                Sin fecha de captura
+                            @endif
+                        </strong>
+                        <em class="{{ ($item['diasRestantes'] !== null && $item['diasRestantes'] >= 0 && $item['diasRestantes'] <= 7) ? 'is-soon' : '' }}">
+                            @if($item['diasRestantes'] === null)
+                                Captura
+                            @elseif($item['diasRestantes'] < 0)
+                                Captura cerrada
+                            @elseif($item['diasRestantes'] === 0)
+                                La captura cierra hoy
+                            @else
+                                {{ $item['diasRestantes'] }} {{ $item['diasRestantes'] === 1 ? 'día' : 'días' }} para capturar
+                            @endif
+                        </em>
+                    </span>
+                    <span class="home-line-progress {{ (float) $item['progreso'] >= 80 ? 'is-go' : ((float) $item['progreso'] >= 40 ? 'is-warn' : 'is-stop') }}">
+                        <span class="home-meter">
+                            <strong>{{ rtrim(rtrim(number_format((float) $item['progreso'], 1, '.', ''), '0'), '.') }}%</strong>
+                            <span class="home-bar" role="progressbar" aria-valuenow="{{ (float) $item['progreso'] }}" aria-valuemin="0" aria-valuemax="100">
+                                <i style="width: {{ min(100, (float) $item['progreso']) }}%"></i>
+                            </span>
+                        </span>
+                        <em>{{ $item['capturadas'] }} de {{ $item['cuentas'] ?? $item['productos'] ?? 0 }} {{ $item['unidad'] }}</em>
+                    </span>
+                </a>
+            </li>
+            @endforeach
+        </ul>
+        @endif
+        <div class="home-lines-nav">
+            <div class="home-lines-group is-gasto">
+                <span>Gastos</span>
+                <a href="{{ route('centros.control') }}">Captura</a>
+                <a href="{{ route('centros.control', ['vista' => 'visor']) }}">Visor</a>
+                <a href="{{ route('centros.analisis') }}">Análisis</a>
             </div>
-            <div>
-                <dt>Presupuesto</dt>
-                <dd>{{ $cc['anioPpto'] ?? 2027 }}</dd>
+            <div class="home-lines-group is-venta">
+                <span>Ventas</span>
+                <a href="{{ route('pv.control') }}">Captura</a>
+                <a href="{{ route('pv.control', ['vista' => 'visor']) }}">Visor</a>
+                <a href="{{ route('pv.analisis') }}">Análisis</a>
             </div>
-            <div>
-                <dt>Centros</dt>
-                <dd>{{ number_format($cc['centros'] ?? 0) }}</dd>
-            </div>
-            <div>
-                <dt>Cuentas</dt>
-                <dd>{{ number_format($cc['cuentas'] ?? 0) }}</dd>
-            </div>
-            <div>
-                <dt>Responsables</dt>
-                <dd>{{ number_format($cc['usuarios'] ?? 0) }}</dd>
-            </div>
-        </dl>
-
-        <nav class="home-nav">
-            @if(!empty($ccAcceso['captura']))
-            <a href="{{ route('centros.control') }}">Captura</a>
-            @endif
-            @if(!empty($ccAcceso['visor']))
-            <a href="{{ route('centros.control', ['vista' => 'visor']) }}">Visor</a>
-            @endif
-            @if(!empty($ccAcceso['analisis']))
-            <a href="{{ route('centros.analisis') }}">Análisis</a>
-            @endif
-            @if(!empty($ccAcceso['admin']))
-            <a href="{{ route('centros.admin') }}">Budgets</a>
-            @endif
-        </nav>
-
-        <p class="home-note">
-            @if(($cc['misCentros'] ?? 0) > 0)
-                {{ $cc['misCentros'] }} {{ $cc['misCentros'] === 1 ? 'centro asignado' : 'centros asignados' }}
-            @else
-                Sin centros asignados
-            @endif
-            @if(!empty($cc['capturaHasta']))
-                · captura hasta {{ $cc['capturaHasta'] }}
-                @if($cc['diasRestantes'] !== null)
-                    · {{ $cc['diasRestantes'] }} {{ $cc['diasRestantes'] === 1 ? 'día' : 'días' }}
-                @endif
-            @endif
-            @if(($cc['empresas'] ?? 0) > 0)
-                · {{ $cc['empresas'] }} {{ $cc['empresas'] === 1 ? 'empresa' : 'empresas' }}
-            @endif
-        </p>
-    </section>
-    @endif
-
-    @if(!empty($pvAcceso['ver']))
-    <section class="home-block home-panel" aria-label="Proyecciones de ventas">
-        <div class="home-row">
-            <h2>{{ $pv['nombre'] ?? 'Proyecciones de ventas' }}</h2>
-            <span class="home-status {{ !empty($pv['enVentana']) ? 'is-on' : '' }}">{{ $pv['estadoLabel'] ?? 'Sin ciclo' }}</span>
         </div>
-
-        <dl class="home-metrics">
-            <div>
-                <dt>Venta ref.</dt>
-                <dd>{{ $pv['anioRef'] ?? 2026 }}</dd>
-            </div>
-            <div>
-                <dt>Proyección</dt>
-                <dd>{{ $pv['anioPpto'] ?? 2027 }}</dd>
-            </div>
-            <div>
-                <dt>Clientes</dt>
-                <dd>{{ number_format($pv['clientes'] ?? 0) }}</dd>
-            </div>
-            <div>
-                <dt>Productos</dt>
-                <dd>{{ number_format($pv['productos'] ?? 0) }}</dd>
-            </div>
-            <div>
-                <dt>Responsables</dt>
-                <dd>{{ number_format($pv['usuarios'] ?? 0) }}</dd>
-            </div>
-        </dl>
-
-        <nav class="home-nav">
-            @if(!empty($pvAcceso['captura']))
-            <a href="{{ route('pv.control') }}">Captura</a>
-            @endif
-            @if(!empty($pvAcceso['visor']))
-            <a href="{{ route('pv.control', ['vista' => 'visor']) }}">Visor</a>
-            @endif
-            @if(!empty($pvAcceso['analisis']))
-            <a href="{{ route('pv.analisis') }}">Análisis</a>
-            @endif
-            @if(!empty($pvAcceso['admin']))
-            <a href="{{ route('pv.admin') }}">Asignaciones</a>
-            @endif
-        </nav>
-
-        <p class="home-note">
-            @if(($pv['misClientes'] ?? 0) > 0)
-                {{ $pv['misClientes'] }} {{ $pv['misClientes'] === 1 ? 'cliente asignado' : 'clientes asignados' }}
-            @else
-                Sin clientes asignados
-            @endif
-            @if(!empty($pv['capturaHasta']))
-                · captura hasta {{ $pv['capturaHasta'] }}
-                @if($pv['diasRestantes'] !== null)
-                    · {{ $pv['diasRestantes'] }} {{ $pv['diasRestantes'] === 1 ? 'día' : 'días' }}
-                @endif
-            @endif
-            @if(($pv['empresas'] ?? 0) > 0)
-                · {{ $pv['empresas'] }} {{ $pv['empresas'] === 1 ? 'empresa' : 'empresas' }}
-            @endif
-        </p>
     </section>
-    @endif
-        <div>
+
+    <section class="home-cal home-panel" aria-label="Mantenimiento">
+        <div class="home-cal-main">
             <div class="home-cal-head">
                 <h2>Mantenimiento</h2>
                 <span class="home-cal-month" id="calendarMantenimientoMesTitulo"></span>
@@ -530,6 +686,11 @@
                 <span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span><span>Do</span>
             </div>
             <div class="home-cal-grid" id="calendarGridMantenimiento"></div>
+            <div class="home-cal-legend">
+                <span><i class="is-ok"></i> Realizado</span>
+                <span><i class="is-warn"></i> Pendiente</span>
+                <span><i class="is-late"></i> Vencido</span>
+            </div>
         </div>
         <aside class="home-cal-side">
             <h3 id="calendarMantenimientoFechaLabel">Hoy</h3>
