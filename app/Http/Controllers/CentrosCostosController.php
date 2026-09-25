@@ -1941,13 +1941,19 @@ class CentrosCostosController extends Controller
         $mensaje = null;
         $maxPages = $todas ? 40 : 1;
         $perPage = 200;
+        $empresaApi = strtoupper(trim($empresa));
 
         for ($page = 1; $page <= $maxPages; $page++) {
-            $filtros = ['per_page' => $perPage, 'page' => $page];
+            // Endpoint global: trae FormatCode (número de cuenta). El /{db}/cuentas solo trae CUENTA=_SYS… (consecutivo).
+            $filtros = [
+                'per_page' => $perPage,
+                'page' => $page,
+                'Empresa' => $empresaApi,
+            ];
             if ($groupMask !== '') {
                 $filtros['GroupMask'] = $groupMask;
             }
-            $res = $api->index('cuentas', $filtros, $empresa);
+            $res = $api->cuentasGlobal($filtros);
             if (empty($res['ok'])) {
                 if ($page === 1) {
                     $mensaje = $res['message'] ?? 'Sin conexión a catálogo SAP';
@@ -2403,12 +2409,18 @@ class CentrosCostosController extends Controller
             if (! is_array($row)) {
                 continue;
             }
-            $format = trim((string) ($row['FormatCode'] ?? $row['CUENTA'] ?? $row['Cuenta'] ?? ''));
-            $acct = trim((string) ($row['AcctCode'] ?? $row['codigo'] ?? ''));
-            if ($format !== '' && stripos($format, 'SYS') === false) {
+            // Preferir FormatCode (número de cuenta contable). CUENTA/_SYS… es el consecutivo interno SAP.
+            $format = trim((string) ($row['FormatCode'] ?? ''));
+            $cuentaSys = trim((string) ($row['CUENTA'] ?? $row['Cuenta'] ?? $row['AcctCode'] ?? $row['codigo'] ?? ''));
+            if ($format !== '') {
                 $codigo = $format;
+            } elseif ($cuentaSys !== '' && stripos($cuentaSys, 'SYS') === false) {
+                $codigo = $cuentaSys;
+            } elseif (array_key_exists('FormatCode', $row) && $format === '') {
+                // Endpoint global sin FormatCode → encabezado / sin número de cuenta; omitir.
+                continue;
             } else {
-                $codigo = $this->codigoCuentaVisible($format !== '' ? $format : $acct);
+                $codigo = $this->codigoCuentaVisible($cuentaSys);
             }
             $nombre = (string) ($row['AcctName'] ?? $row['NOMBRE'] ?? $row['nombre'] ?? '');
             if ($codigo === '' && $nombre === '') {
@@ -2417,7 +2429,7 @@ class CentrosCostosController extends Controller
             $out[] = [
                 'codigo' => $codigo,
                 'nombre' => $nombre,
-                'empresa' => (string) ($row['Empresa'] ?? $row['empresa'] ?? ''),
+                'empresa' => (string) ($row['Empresa'] ?? $row['EMPRESA'] ?? $row['empresa'] ?? ''),
                 'grupo' => (string) ($row['GroupName'] ?? $row['agrupacion'] ?? $row['grupo'] ?? ''),
                 'grupo_id' => (string) ($row['GroupMask'] ?? $row['grupo_id'] ?? ''),
             ];

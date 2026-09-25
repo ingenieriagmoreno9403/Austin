@@ -25,7 +25,7 @@
             <h3><i class="fa-solid fa-tags"></i> Maestro de precios</h3>
             <span class="text-muted" style="font-size:.8rem" id="pv-costos-hint">Cargando…</span>
         </div>
-        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto;">
+        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto auto;">
             <select id="pv-costos-anio" class="cc-select" title="Año de proyección del maestro">
                 <option value="{{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}">Proy. {{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}</option>
             </select>
@@ -45,8 +45,11 @@
             <button type="button" class="cc-btn" id="pv-costos-excel" title="Descargar o subir plantilla Excel (Formato Precios)">
                 <i class="fa-solid fa-file-excel"></i> Plantilla Excel
             </button>
-            <button type="button" class="cc-btn cc-btn-ink" id="pv-costos-import-api" title="Carga precios-mensuales SAP (Empresa, CardCode, ItemCode, Mes, Precio) a tu BD local">
+            <button type="button" class="cc-btn cc-btn-ink" id="pv-costos-import-api" title="Actualiza solo precios mensuales (Ene–Dic) desde /precios-mensuales; no toca el precio global">
                 <i class="fa-solid fa-cloud-arrow-down"></i> Cargar desde API
+            </button>
+            <button type="button" class="cc-btn" id="pv-costos-import-lista" title="Actualiza solo el precio global (mes=0) desde la lista de precios SAP del cliente">
+                <i class="fa-solid fa-tags"></i> Lista de precios
             </button>
         </div>
         <div class="cc-table-wrap">

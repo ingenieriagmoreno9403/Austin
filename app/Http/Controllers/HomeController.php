@@ -24,8 +24,6 @@ use App\Models\PvAsignacionProducto;
 use App\Models\PvCiclo;
 use App\Models\PvPresupuesto;
 use App\Models\GestionAlumnosVisitaProspeccion;
-use App\Models\Mantenimiento;
-use App\Models\ProgramacionMantenimiento;
 
 class HomeController extends Controller
 {
@@ -103,7 +101,6 @@ class HomeController extends Controller
                     ->all();
             }
 
-            $datosMantenimientoMaquinas = $this->obtenerDatosCalendarioMantenimiento();
             $resumenCentros = $this->obtenerResumenCentrosHome();
             $resumenPv = $this->obtenerResumenPvHome();
 
@@ -121,7 +118,6 @@ class HomeController extends Controller
                     'ordenesAceptadas',
                     'ordenesEnviadas',
                     'visitasEmpresasCalendario',
-                    'datosMantenimientoMaquinas',
                     'resumenCentros',
                     'resumenPv'
                 ));
@@ -1226,167 +1222,6 @@ class HomeController extends Controller
 
             return $empty;
         }
-    }
-
-    /**
-     * Resumen de mantenimientos preventivos semanales para el dashboard.
-     *
-     * @return array<string, mixed>
-     */
-    private function obtenerDatosCalendarioMantenimiento(): array
-    {
-        $defaults = [
-            'mantenimientosCalendario' => [],
-            'mantenimientoSemanalRealizados' => [],
-            'mantenimientoSemanalPendientes' => [],
-            'cumplimientoSemanal' => 0,
-            'graficaCumplimiento' => ['labels' => [], 'valores' => []],
-            'totalSemanal' => 0,
-            'realizadosSemana' => 0,
-            'pendientesSemana' => 0,
-        ];
-
-        if (!Schema::hasTable('tbl_programacion_mantenimiento') || !Schema::hasTable('tbl_mantenimientos')) {
-            return $defaults;
-        }
-
-        $inicioMes = Carbon::now()->startOfMonth();
-        $finMes = Carbon::now()->endOfMonth();
-        $inicioSemana = Carbon::now()->startOfWeek(Carbon::MONDAY)->startOfDay();
-        $finSemana = Carbon::now()->endOfWeek(Carbon::SUNDAY)->endOfDay();
-
-        $programaciones = ProgramacionMantenimiento::with(['maquina:id,codigo,nombre'])
-            ->where('activo', 1)
-            ->where('frecuencia', 'SEMANAL')
-            ->get();
-
-        $nombreMaquina = function ($maquina, int $id): string {
-            if (!$maquina) {
-                return 'Máquina #' . $id;
-            }
-
-            $etiqueta = trim(($maquina->codigo ? $maquina->codigo . ' — ' : '') . ($maquina->nombre ?: ''));
-
-            return $etiqueta !== '' ? $etiqueta : 'Máquina #' . $id;
-        };
-
-        $realizados = [];
-        $pendientes = [];
-
-        foreach ($programaciones as $programacion) {
-            $ultima = $programacion->ultima_ejecucion
-                ? Carbon::parse($programacion->ultima_ejecucion)->startOfDay()
-                : null;
-
-            $item = [
-                'programacion_id' => $programacion->id,
-                'maquina_id' => $programacion->maquina_id,
-                'maquina' => $nombreMaquina($programacion->maquina, (int) $programacion->maquina_id),
-                'actividad' => $programacion->actividad,
-                'proxima_ejecucion' => optional($programacion->proxima_ejecucion)->toDateString(),
-                'ultima_ejecucion' => $ultima?->toDateString(),
-            ];
-
-            if ($ultima && $ultima->gte($inicioSemana) && $ultima->lte($finSemana)) {
-                $item['estatus'] = 'REALIZADO';
-                $realizados[] = $item;
-            } else {
-                $proxima = $programacion->proxima_ejecucion
-                    ? Carbon::parse($programacion->proxima_ejecucion)->startOfDay()
-                    : null;
-                $item['estatus'] = ($proxima && $proxima->lt(Carbon::today())) ? 'VENCIDO' : 'PENDIENTE';
-                $pendientes[] = $item;
-            }
-        }
-
-        $totalSemanal = $programaciones->count();
-        $realizadosSemana = count($realizados);
-        $pendientesSemana = count($pendientes);
-        $cumplimientoSemanal = $totalSemanal > 0
-            ? round(($realizadosSemana / $totalSemanal) * 100, 1)
-            : 0;
-
-        $eventos = collect();
-
-        Mantenimiento::with(['maquina:id,codigo,nombre'])
-            ->where('tipo', 'PREVENTIVO')
-            ->whereBetween('fecha_programada', [$inicioMes->toDateString(), $finMes->toDateString()])
-            ->orderBy('fecha_programada')
-            ->get()
-            ->each(function ($mantenimiento) use ($eventos, $nombreMaquina) {
-                $estatus = match ($mantenimiento->estatus) {
-                    'FINALIZADO' => 'REALIZADO',
-                    'CANCELADO' => 'CANCELADO',
-                    default => 'PENDIENTE',
-                };
-
-                $eventos->push([
-                    'fecha' => $mantenimiento->fecha_programada->toDateString(),
-                    'maquina' => $nombreMaquina($mantenimiento->maquina, (int) $mantenimiento->maquina_id),
-                    'maquina_id' => $mantenimiento->maquina_id,
-                    'actividad' => \Illuminate\Support\Str::limit((string) $mantenimiento->descripcion, 100),
-                    'estatus' => $estatus,
-                    'tipo' => 'preventivo',
-                ]);
-            });
-
-        foreach ($programaciones as $programacion) {
-            if (!$programacion->proxima_ejecucion) {
-                continue;
-            }
-
-            $fecha = Carbon::parse($programacion->proxima_ejecucion)->startOfDay();
-            if ($fecha->lt($inicioMes) || $fecha->gt($finMes)) {
-                continue;
-            }
-
-            $ultima = $programacion->ultima_ejecucion
-                ? Carbon::parse($programacion->ultima_ejecucion)->startOfDay()
-                : null;
-
-            if ($ultima && $ultima->gte($inicioSemana)) {
-                continue;
-            }
-
-            $eventos->push([
-                'fecha' => $fecha->toDateString(),
-                'maquina' => $nombreMaquina($programacion->maquina, (int) $programacion->maquina_id),
-                'maquina_id' => $programacion->maquina_id,
-                'actividad' => $programacion->actividad,
-                'estatus' => $fecha->lt(Carbon::today()) ? 'VENCIDO' : 'PENDIENTE',
-                'tipo' => 'programado',
-            ]);
-        }
-
-        $labels = [];
-        $valores = [];
-        for ($i = 5; $i >= 0; $i--) {
-            $wStart = Carbon::now()->subWeeks($i)->startOfWeek(Carbon::MONDAY)->startOfDay();
-            $wEnd = Carbon::now()->subWeeks($i)->endOfWeek(Carbon::SUNDAY)->endOfDay();
-            $labels[] = $wStart->format('d/m') . ' – ' . $wEnd->format('d/m');
-
-            $hechos = $programaciones->filter(function ($programacion) use ($wStart, $wEnd) {
-                if (!$programacion->ultima_ejecucion) {
-                    return false;
-                }
-                $ultima = Carbon::parse($programacion->ultima_ejecucion)->startOfDay();
-
-                return $ultima->gte($wStart) && $ultima->lte($wEnd);
-            })->count();
-
-            $valores[] = $totalSemanal > 0 ? round(($hechos / $totalSemanal) * 100, 1) : 0;
-        }
-
-        return [
-            'mantenimientosCalendario' => $eventos->values()->all(),
-            'mantenimientoSemanalRealizados' => $realizados,
-            'mantenimientoSemanalPendientes' => $pendientes,
-            'cumplimientoSemanal' => $cumplimientoSemanal,
-            'graficaCumplimiento' => ['labels' => $labels, 'valores' => $valores],
-            'totalSemanal' => $totalSemanal,
-            'realizadosSemana' => $realizadosSemana,
-            'pendientesSemana' => $pendientesSemana,
-        ];
     }
 
 }

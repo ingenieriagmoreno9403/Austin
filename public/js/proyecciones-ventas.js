@@ -1724,6 +1724,7 @@
             var gen = CC._capturaLoadGen;
             CC._seedDoneFor = {};
             CC._siopStrippedFor = '';
+            CC._siopSeedStamp = '';
             CC._budgetsBaseLoaded = false;
             CC._capturaReady = false;
             CC.state.overlays = {};
@@ -1887,7 +1888,7 @@
         return (other[0] && other[0].codigo) || '';
     }
 
-    /** En SIOP, la fila de arriba compara contra el proyecto anterior; si no hay, la venta real. */
+    /** En SIOP, la fila de arriba compara contra el Budget base; si no hay dato, la venta real. */
     function pastQtyMes(cta, monthIdx) {
         if (esSiopTipo()) {
             var c = control.centro;
@@ -1903,9 +1904,29 @@
     function pastQtyCaption() {
         if (esSiopTipo()) {
             var code = CC.state.cicloBaseCodigo || '';
-            return code ? ('proy. ' + code) : 'proy. anterior';
+            if (code && siopBaseTieneDatosCliente()) {
+                return 'proy. ' + code;
+            }
+            if (code) {
+                return 'proy. ' + code + ' / venta ' + (CC.state.anioGasto || '');
+            }
+            return 'venta ' + (CC.state.anioGasto || '');
         }
         return 'venta ' + (CC.state.anioGasto || '');
+    }
+
+    /** ¿El Budget/base trae al menos una fila del cliente abierto? */
+    function siopBaseTieneDatosCliente() {
+        var c = control.centro;
+        var map = CC.state.budgetsBase || {};
+        if (!c || !Object.keys(map).length) return false;
+        var emp = String(c.empresa || '').toUpperCase();
+        var cc = String(c.codigo || '').trim();
+        return Object.keys(map).some(function (k) {
+            var parts = String(k).split('|');
+            if (parts.length < 2) return false;
+            return String(parts[0]).toUpperCase() === emp && String(parts[1]).trim() === cc;
+        });
     }
 
     function loadBudgetsBaseForSeed(gen, cicloEsperado) {
@@ -1976,6 +1997,7 @@
         var anioLbl = document.getElementById('pv-costos-anio-label');
         if (anioLbl && CC.state.anioPresupuesto) anioLbl.textContent = String(CC.state.anioPresupuesto);
         persistPeriod();
+        syncBudgetTools();
         return next;
     }
 
@@ -2082,7 +2104,8 @@
             return '<strong>Forecast 9+3:</strong> los 9 primeros meses (ene–sep) se cargan con la venta real del año en curso y quedan fijos. Los 3 restantes se cargan del Budget y se pueden modificar.';
         }
         if (t === 'SIOP') {
-            return '<strong>SIOP:</strong> se precarga el Budget del mismo año (proyección ' + (CC.state.anioPresupuesto || '') + '): meses con dato se copian, sin dato quedan en 0. Todos editables. Arriba ves la referencia para comparar.';
+            return '<strong>SIOP:</strong> se precarga el Budget del mismo año (proyección ' + (CC.state.anioPresupuesto || '') + '). '
+                + 'Si un mes no tiene Budget, se usa la venta real. Sin dato = 0. Todos editables.';
         }
         return 'Selecciona el tipo de forecast o SIOP.';
     }
@@ -2096,7 +2119,7 @@
             if (esBudgetTipo(tipo)) {
                 hint.textContent = 'Budget: los 12 meses quedan en blanco para capturar la proyección.';
             } else if (esSiopTipo(tipo)) {
-                hint.textContent = 'SIOP: se precarga la proyección ' + (CC.state.anioPresupuesto || '') + ' (dato o 0) · todos editables · arriba ves la referencia.';
+                hint.textContent = 'SIOP: Budget ' + (CC.state.anioPresupuesto || '') + ' + venta real si falta · sin dato = 0 · todos editables.';
             } else {
                 hint.textContent = 'Forecast: venta real fija en los primeros meses · el resto viene del Budget (editable).';
             }
@@ -2145,18 +2168,45 @@
         return n;
     }
 
-    /** SIOP: re-precargar si está en ceros pero la proyección base sí tiene datos. */
-    function siopDebeReseedDesdeBase(existing, baseRow) {
-        var baseN = monthsPositiveCount(baseRow);
-        if (baseN <= 0) return false;
+    /**
+     * Fuente de precarga SIOP por mes: Budget/base si tiene dato; si no, venta real.
+     * Así no quedan en 0 meses que sí tienen referencia visible arriba.
+     */
+    function siopFuenteMes(cta, baseRow, monthIdx) {
+        if (baseRow && mesLleno(baseRow[monthIdx])) {
+            return Number(baseRow[monthIdx]) || 0;
+        }
+        var g = Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
+        return g > 0 ? g : 0;
+    }
+
+    function siopFuenteMonths(cta, baseRow) {
+        var out = [];
+        for (var i = 0; i < 12; i++) {
+            out.push(siopFuenteMes(cta, baseRow, i));
+        }
+        return out;
+    }
+
+    /** SIOP: re-precargar si faltan meses que sí trae la base o la venta real. */
+    function siopDebeReseedDesdeBase(existing, baseRow, cta) {
+        var fuente = siopFuenteMonths(cta, baseRow);
+        var fuenteN = monthsPositiveCount(fuente);
+        if (fuenteN <= 0) return false;
         if (!existing) return true;
-        return monthsPositiveCount(existing) <= 0;
+        if (monthsPositiveCount(existing) <= 0) return true;
+        for (var i = 0; i < 12; i++) {
+            var f = Number(fuente[i]) || 0;
+            if (f <= 0) continue;
+            var e = existing[i];
+            if (!mesLleno(e) || Number(e) === 0) return true;
+        }
+        return false;
     }
 
     /**
-     * SIOP: precarga la proyección del mismo año (Budget / Forecast base).
-     * Meses con dato → ese valor; sin dato → 0. Todos editables.
-     * Si SIOP ya está en ceros y la base tiene datos, vuelve a precargar.
+     * SIOP: precarga Budget del mismo año; si un mes no tiene dato en Budget, usa venta real.
+     * Meses ya capturados (>0) no se pisan. Ceros se rellenan si la fuente tiene dato.
      */
     function seedSiopDesdeProyeccionBase(c, cicloSeed, loadGen) {
         var ctas = control._allCtas || [];
@@ -2165,22 +2215,26 @@
         ctas.forEach(function (cta) {
             var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
             var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
-            var needs = siopDebeReseedDesdeBase(existing, baseRow)
+            var needs = siopDebeReseedDesdeBase(existing, baseRow, cta)
                 || budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing);
             if (!needs) return;
-            if (!baseRow && !budgetNecesitaSeed(c.empresa, c.codigo, cta.codigo, existing)) return;
 
             var months = [];
+            var changed = false;
             for (var i = 0; i < 12; i++) {
-                if (baseRow && Number(baseRow[i]) > 0) {
-                    months.push(toStoreQty(Number(baseRow[i]) || 0));
-                } else if (baseRow && mesLleno(baseRow[i])) {
-                    months.push(toStoreQty(Number(baseRow[i]) || 0));
+                var fuente = siopFuenteMes(cta, baseRow, i);
+                var cur = existing && mesLleno(existing[i]) ? Number(existing[i]) || 0 : null;
+                if (cur === null) {
+                    months.push(toStoreQty(fuente));
+                    changed = true;
+                } else if (cur === 0 && fuente > 0) {
+                    months.push(toStoreQty(fuente));
+                    changed = true;
                 } else {
-                    months.push(0);
+                    months.push(toStoreQty(cur));
                 }
             }
-            // Si la base no aportó nada positivo y ya había fila, no pisar.
+            if (!changed) return;
             if (monthsPositiveCount(months) <= 0 && existing && monthsPositiveCount(existing) > 0) {
                 return;
             }
@@ -2195,9 +2249,13 @@
         if (seeded && loadGen === (CC._capturaLoadGen || 0)
             && String(cicloActualCodigo() || '').toUpperCase() === String(cicloSeed).toUpperCase()) {
             control._allCtas = cuentasEnriquecidas(c);
+            var desde = CC.state.cicloBaseCodigo || ('proyección ' + (CC.state.anioPresupuesto || ''));
+            if (!siopBaseTieneDatosCliente()) {
+                desde += ' + venta ' + (CC.state.anioGasto || '');
+            }
             toast('success', 'SIOP', 'Se precargaron ' + seeded +
                 ' producto' + (seeded === 1 ? '' : 's') +
-                ' desde ' + (CC.state.cicloBaseCodigo || 'proyección ' + (CC.state.anioPresupuesto || '')) +
+                ' desde ' + desde +
                 ' (sin dato = 0). Todos los meses editables.');
             drawMatrixTable();
             updateControlProgress();
@@ -3571,8 +3629,14 @@
         return scoreTemporadaCaptura(codigo) >= 2;
     }
 
+    function ciclosAbiertosDeMisAsignaciones() {
+        return ciclosDeMisAsignaciones().filter(function (c) {
+            return normalizeCicloEstado(c.estado) === 'abierto';
+        });
+    }
+
     function cicloControlPreferido() {
-        var mine = ciclosDeMisAsignaciones();
+        var mine = ciclosAbiertosDeMisAsignaciones();
         var ini = CC.state.cicloInicial || '';
         if (ini && mine.filter(function (c) { return c.codigo === ini; }).length) return ini;
         var ranked = mine.slice().sort(function (a, b) {
@@ -3589,10 +3653,27 @@
     }
 
     function setCapturaEnabled(on) {
-        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-copy-year', 'ctl-refresh-venta', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q', 'ctl-add-btn'].forEach(function (id) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-load-budget', 'ctl-copy-year', 'ctl-refresh-venta', 'ctl-clear-year', 'ctl-apply-infl', 'ctl-btn-dispersar', 'ctl-completar', 'ctl-ajuste-pct', 'ctl-prod-q', 'ctl-add-btn'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.disabled = !on;
         });
+        syncBudgetTools();
+    }
+
+    /** Meses fijos de budget: Oct, Nov, Dic. */
+    function mesesUltimos3Budget() {
+        return [10, 11, 12];
+    }
+
+    function syncBudgetTools() {
+        var btn = document.getElementById('ctl-load-budget');
+        if (!btn) return;
+        var show = esBudgetTipo();
+        btn.hidden = !show;
+        if (!show) return;
+        btn.title = 'Cargar ventas-budget de Oct–Nov–Dic al cliente abierto (solo tipo Budget)';
+        var txt = btn.querySelector('[data-budget-label]');
+        if (txt) txt.textContent = 'Budget Oct–Nov–Dic';
     }
 
     function lookupMaestroLocal(empresa, cliente, codigo) {
@@ -3657,8 +3738,9 @@
             var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
             var masterPrecio = (master && Number(master.costo)) || 0;
             var masterMes = (master && Number(master.mes)) || 0;
-            // Preferir precio local global (moda / mes=0) sobre lista SAP.
-            var precioLista = masterPrecio > 0 ? masterPrecio : (Number(lista.precio) || 0);
+            // Precio de proyección: preferir maestro local (moda / mes=0) sobre lista SAP.
+            var precioListaSap = Number(lista.precio) || 0;
+            var precioLista = masterPrecio > 0 ? masterPrecio : precioListaSap;
             var precioMoneda = '';
             if (masterPrecio > 0 && master && master.moneda) {
                 precioMoneda = String(master.moneda).toUpperCase();
@@ -3675,6 +3757,8 @@
                 listo: mesesTodosLlenos(ppto) || cuentaMarcada(c.empresa, c.codigo, cta.codigo),
                 costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
                 precioLista: precioLista,
+                precioListaSap: precioListaSap,
+                precioListaSapMoneda: String(lista.moneda || '').toUpperCase() || '',
                 precioMoneda: precioMoneda,
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
                 precioMaestroMeses: precioMaestroMeses,
@@ -3683,7 +3767,9 @@
                 unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
                 listaPrecioNombre: masterPrecio > 0
                     ? 'Maestro local · global'
-                    : (lista.lista || '')
+                    : (lista.lista || ''),
+                listaPrecioNombreSap: String(lista.lista || '').trim(),
+                listaPrecioNoSap: String(lista.no_lista || '').trim()
             });
             enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
             if (!enriched.unidadNombre && enriched.unidad) {
@@ -4041,10 +4127,11 @@
     function renderCicloPicks() {
         var el = document.getElementById('ctl-ciclo');
         if (!el) return;
-        var ciclos = ciclosDeMisAsignaciones();
+        var ciclos = ciclosAbiertosDeMisAsignaciones();
         var cur = String(el.value || '').trim();
         var selected = cur;
-        if (!selected) {
+        var curOpen = ciclos.some(function (c) { return String(c.codigo) === cur; });
+        if (!selected || !curOpen) {
             selected = cicloControlPreferido() || '';
         } else if (!CC._cicloUserPicked) {
             // Mantener el valor ya puesto en el combo; no forzar otro ciclo al re-render.
@@ -4055,7 +4142,7 @@
             var label = (c.codigo ? (c.codigo + ' — ') : '') + (c.nombre || c.codigo);
             if (season) label += ' · temporada';
             return '<option value="' + escapeHtml(c.codigo) + '">' + escapeHtml(label) + '</option>';
-        }).join('') || '<option value="">Sin ciclos</option>';
+        }).join('') || '<option value="">Sin ciclos abiertos</option>';
         if (selected) el.value = selected;
         if (el.value) CC.state.cicloCodigo = el.value;
     }
@@ -4090,6 +4177,7 @@
             renderCicloPicks();
             renderControlNav();
             syncImportTools();
+            syncBudgetTools();
             loadControlCentro();
         }
         if (cicloChanged) {
@@ -4239,6 +4327,7 @@
         renderCicloPicks();
         renderMisCentros();
         syncImportTools();
+        syncBudgetTools();
         loadOverlaysForCycle().then(function () {
             renderControlNav();
             loadControlCentro();
@@ -4636,13 +4725,13 @@
         var over = document.getElementById('ctl-legend-over');
         if (legend) legend.hidden = false;
         if (esSiopTipo()) {
-            var src = CC.state.cicloBaseCodigo || 'proyecto anterior';
+            var src = pastQtyCaption();
             if (ok) ok.textContent = 'Mayor o igual a ' + src;
             if (over) over.textContent = 'Menor a ' + src;
             return;
         }
         var anio = CC.state.anioGasto || '';
-        if (ok) ok.textContent = 'Mayor o igual a venta' + (anio ? (' ' + anio) : ' pasada');
+        if (ok) ok.textContent = 'Mayor o igual a venta real';
         if (over) over.textContent = 'Menor a venta' + (anio ? (' ' + anio) : ' pasada');
     }
 
@@ -4914,14 +5003,51 @@
         });
     }
 
-    /** Precio de referencia: global de Precios de productos (moda / mes=0), no el último mes. */
+    /**
+     * Precio de lista SAP del cliente (OCRD.ListNum → OPLN / ITM1).
+     * No usa maestro local ni promedio de venta.
+     */
+    function precioListaSapInfo(cta) {
+        var unidad = String((cta && cta.unidad) || '').trim();
+        var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
+        var precio = Number(cta && cta.precioListaSap) || 0;
+        var mon = String((cta && cta.precioListaSapMoneda) || (cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var listaNom = String((cta && cta.listaPrecioNombreSap) || '').trim();
+        var noLista = String((cta && cta.listaPrecioNoSap) || '').trim();
+
+        // Lookup directo si aún no viene enriquecido.
+        if (!(precio > 0) && cta && cta.codigo) {
+            var c = control.centro;
+            var lista = (c ? listaPrecioDeCentro(c, cta.codigo) : null) || lookupPrecioLista(cta.codigo) || {};
+            precio = Number(lista.precio) || 0;
+            if (lista.moneda) mon = String(lista.moneda).toUpperCase() || mon;
+            if (lista.lista) listaNom = String(lista.lista).trim();
+            if (lista.no_lista) noLista = String(lista.no_lista).trim();
+            if (!unidad && lista.unidad) unidad = String(lista.unidad).trim();
+            if (!unidadNombre && lista.unidad_nombre) unidadNombre = String(lista.unidad_nombre).trim();
+        }
+
+        var title = 'Precio de lista SAP (ITM1 · lista del cliente)';
+        if (listaNom || noLista) {
+            title += ' · ' + (noLista ? ('#' + noLista + (listaNom ? ' ' : '')) : '') + listaNom;
+        }
+        return {
+            precio: precio,
+            moneda: mon,
+            unidad: unidad,
+            unidadNombre: unidadNombre,
+            decimals: 2,
+            title: title
+        };
+    }
+
+    /** Precio de referencia legado: maestro local o promedio de venta pasada. */
     function precioVentaAnioRef(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
         var mon = String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
         var anio = CC.state.anioGasto || '';
 
-        // 1) Global ya enriquecido en la cuenta (costosMaster → moda / mes=0).
         var local = Number(cta && cta.precioLista) || 0;
         if (local > 0 && (cta.listaPrecioNombre || '').indexOf('Maestro local') === 0) {
             return {
@@ -4934,7 +5060,6 @@
             };
         }
 
-        // 2) Lookup directo al maestro (por si precioLista vino de lista SAP).
         var c = control.centro;
         if (c && cta && cta.codigo) {
             var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
@@ -4948,7 +5073,6 @@
                     title: 'Precio global · Precios de productos' + (anio ? (' · proy. ' + anio) : '')
                 };
             }
-            // 3) Moda de meses del maestro si aún no hay fila global.
             var maestro = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
             var moda = precioModaDeMeses((maestro && maestro.meses) || []);
             if (moda > 0) {
@@ -4970,9 +5094,9 @@
         return info;
     }
 
-    /** @deprecated Preferir precioVentaAnioRef en Captura (vista de ventas). */
+    /** @deprecated Preferir precioListaSapInfo en Captura (columna Precio de lista). */
     function costoPiezaVentaAnio(cta) {
-        return precioVentaAnioRef(cta);
+        return precioListaSapInfo(cta);
     }
 
     /** Precio unitario promedio de la venta del año de referencia (ponderado por unidades). */
@@ -5131,21 +5255,22 @@
         var udsVentaAnio = sum((cta.gasto || []).slice(0, 12));
         var udsSem = unidadesSemestreAnterior(cta);
         var udsAnio = cta.unidadesAnio != null ? cta.unidadesAnio : unidadesAnuales(cta.ppto);
-        var precioVenta = precioVentaAnioRef(cta);
+        var precioLista = precioListaSapInfo(cta);
         var uomLabel = unidadDe(cta);
         var cells = '';
         for (var i = 0; i < 12; i++) {
             var shown = formatInputQty(cta.ppto[i]);
-            var pastQty = Number((cta.gasto && cta.gasto[i]) || 0);
+            var pastQty = pastQtyMes(cta, i);
             var lockedMes = mesBloqueadoBudget(i);
             var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
             var pMes = precioUnitarioMes(cta, i);
             var pCustom = precioMesEsDistinto(cta, i);
             var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            var pastCap = pastQtyCaption();
             cells += '<td class="' + pCls + '">' +
                 '<div class="cc-matrix-month">' +
                     '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
-                        escapeHtml('Venta ' + anioPast + ' · ' + MONTHS[i] + (uomLabel ? ' · ' + uomLabel : '') +
+                        escapeHtml(pastCap + ' · ' + MONTHS[i] + (uomLabel ? ' · ' + uomLabel : '') +
                             (pastQty ? ' · ' + qtyLabel(pastQty) + ' uds' : '')) + '">' +
                         (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
                     '</div>' +
@@ -5153,7 +5278,9 @@
                     ((control.locked || lockedMes) ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' +
                     ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
                     escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
-                        ' · proyección (unidades) · venta ' + anioPast + ': ' + (pastQty ? qtyLabel(pastQty) : '0') +
+                        ' · este cuadro = proyección (unidades): ' + (shown !== '' && shown != null ? qtyLabel(shown) : '0') +
+                        (uomLabel ? ' ' + uomLabel : '') +
+                        ' · ' + pastCap + ' (arriba): ' + (pastQty ? qtyLabel(pastQty) : '0') +
                         (uomLabel ? ' ' + uomLabel : '')) + '">' +
                     (pMes > 0
                         ? ('<div class="cc-month-price-tag' + (pCustom ? ' is-custom' : '') + '" title="' +
@@ -5173,9 +5300,9 @@
                 '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
             '</td>' +
             '<td class="num cc-price-cell" data-precio-venta title="' +
-                escapeHtml(precioVenta.title || ('Precio unitario promedio de la venta ' + anioPast)) + '">' +
-                (precioVenta.precio
-                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(precioVenta.precio, precioVenta.moneda, null, 2)) + '</div>' +
+                escapeHtml(precioLista.title || 'Precio de lista SAP del cliente') + '">' +
+                (precioLista.precio
+                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(precioLista.precio, precioLista.moneda, null, 2)) + '</div>' +
                         (uomLabel ? '<div class="cc-price-uom" title="' + escapeHtml(cta.unidad || '') + '">' + escapeHtml(uomLabel) + '</div>' : ''))
                     : '<span class="cc-price-empty">—</span>') +
             '</td>' +
@@ -5274,7 +5401,7 @@
         var anioPast = CC.state.anioGasto || '';
         var cur = isUsdView() ? 'USD' : 'MXN';
         var head = '<tr><th class="sticky-col">Producto</th>' +
-            '<th class="num">Precio<span class="cc-th-past">proyección anterior ' + escapeHtml(String(anioPast || '')) + '</span></th>' +
+            '<th class="num">Precio de lista<span class="cc-th-past">SAP · cliente</span></th>' +
             '<th class="num">Uds. venta<span class="cc-th-past">' + escapeHtml(String(anioPast || '')) + '</span></th>' +
             '<th class="num">Total uds<span class="cc-th-past">proy. 12 meses</span></th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. local</span></th>' +
@@ -5801,6 +5928,108 @@
     }
 
     function bindCapturaQuick() {
+        var loadBudget = document.getElementById('ctl-load-budget');
+        if (loadBudget) loadBudget.addEventListener('click', function () {
+            var c = control.centro;
+            if (!esBudgetTipo()) {
+                toast('info', 'Solo Budget', 'Este botón solo aplica en ciclos tipo Budget.');
+                return;
+            }
+            if (!c || control.locked) {
+                toast('warning', 'Cliente', 'Elige un cliente primero.');
+                return;
+            }
+            var list = targetCtasForTools();
+            if (!list.length) {
+                toast('warning', 'Sin productos', 'Agrega productos al cliente para cargar el budget.');
+                return;
+            }
+            var meses = mesesUltimos3Budget();
+            var names = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+            var label = meses.map(function (m) { return names[m] || m; }).join(', ');
+            var go = function () {
+                loadBudget.disabled = true;
+                var urlBudget = CC.state.ventasBudgetUrl || '/ProyeccionesVentas/api/captura/ventas-budget';
+                var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
+                    '&cliente=' + encodeURIComponent(c.codigo || '') +
+                    '&meses=' + encodeURIComponent(meses.join(','));
+                if (window.Swal) {
+                    Swal.fire({
+                        title: 'Consultando ventas-budget…',
+                        text: label,
+                        allowOutsideClick: false,
+                        didOpen: function () { Swal.showLoading(); }
+                    });
+                }
+                fetch(urlBudget + qs, {
+                    headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok || (json && json.ok === false)) {
+                            throw new Error((json && (json.message || json.mensaje)) || 'No se pudo consultar ventas-budget');
+                        }
+                        return json;
+                    });
+                }).then(function (json) {
+                    var map = (json && json.por_articulo) || {};
+                    var applied = 0;
+                    var skipped = 0;
+                    list.forEach(function (cta) {
+                        var hit = map[cta.codigo]
+                            || map[String(cta.codigo || '').toUpperCase()]
+                            || map[codigoCuentaKey(cta.codigo)]
+                            || null;
+                        if (!hit || !hit.meses) {
+                            skipped++;
+                            return;
+                        }
+                        var cur = pptoDe(c.empresa, c.codigo, cta, cta.gasto).slice();
+                        var changed = false;
+                        meses.forEach(function (mesNum) {
+                            var idx = mesNum - 1;
+                            if (idx < 0 || idx > 11) return;
+                            var qty = hit.meses[idx];
+                            if (qty === null || qty === undefined || qty === '') return;
+                            var n = Number(qty);
+                            if (!isFinite(n) || n < 0) return;
+                            cur[idx] = toStoreQty(n);
+                            changed = true;
+                        });
+                        if (!changed) {
+                            skipped++;
+                            return;
+                        }
+                        persistBudget(c.empresa, c.codigo, cta.codigo, cur);
+                        applied++;
+                    });
+                    refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                    if (window.Swal) Swal.close();
+                    toast(applied ? 'success' : 'info', 'Budget ' + label,
+                        applied
+                            ? ('Se cargaron ' + applied + ' producto(s) desde ventas-budget' + (skipped ? (' · ' + skipped + ' sin dato') : '') + '.')
+                            : (json.message || 'Ningún producto del cliente coincide con ventas-budget.'));
+                }).catch(function (err) {
+                    if (window.Swal) Swal.close();
+                    toast('error', 'ventas-budget', err && err.message ? err.message : 'Error');
+                }).then(function () {
+                    loadBudget.disabled = false;
+                });
+            };
+            if (window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: '¿Cargar budget ' + label + '?',
+                    html: 'Se consultará <b>ventas-budget</b> de <b>' + escapeHtml(c.empresa || '') + ' / ' + escapeHtml(c.codigo || '') +
+                        '</b> y se escribirán solo los meses <b>' + escapeHtml(label) + '</b> en los productos del cliente. El resto de meses no se toca.',
+                    showCancelButton: true,
+                    confirmButtonText: 'Cargar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) go(); });
+                return;
+            }
+            if (window.confirm('¿Cargar ventas-budget (' + label + ') a este cliente?')) go();
+        });
         var copy = document.getElementById('ctl-copy-year');
         if (copy) copy.addEventListener('click', function () {
             var c = control.centro;
@@ -6700,6 +6929,7 @@
                 }).then(function (res) {
                     btnImportar.disabled = false;
                     syncImportTools();
+                    syncBudgetTools();
                     var j = res.json || {};
                     if (!res.ok) {
                         if (window.Swal) {
@@ -6750,6 +6980,7 @@
                 }).catch(function (err) {
                     btnImportar.disabled = false;
                     syncImportTools();
+                    syncBudgetTools();
                     if (window.Swal) {
                         Swal.fire({
                             icon: 'error',
@@ -8488,22 +8719,72 @@
         if (reload) reload.addEventListener('click', function () { load(page); });
         var importBtn = document.getElementById('pv-costos-import-api');
         if (importBtn) {
-            importBtn.addEventListener('click', function () {
-                if (!window.confirm('¿Cargar precios mensuales desde la API (todas las empresas)?\nSe importan CardCode, ItemCode, Mes y Precio desde /precios-mensuales (año venta ' + (CC.state.anioGasto || '') + ') y se guardan en el maestro de proyección ' + costosAnio() + '.')) {
-                    return;
+            function mesNombresCortos(meses) {
+                var names = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+                return (meses || []).map(function (m) {
+                    var i = Number(m) - 1;
+                    return (i >= 0 && i < 12) ? names[i] : String(m);
+                }).join(', ');
+            }
+            function payloadImportApi(preview) {
+                var emp = empSel ? String(empSel.value || '') : '';
+                return {
+                    empresa: emp,
+                    todas_empresas: !emp,
+                    anio: CC.state.anioGasto || 2026,
+                    anio_proyeccion: costosAnio(),
+                    solo_vacios: false,
+                    preview: !!preview
+                };
+            }
+            function htmlListaAfectados(json) {
+                var list = (json && json.afectados) || [];
+                var total = Number((json && json.afectados_total) || list.length) || 0;
+                var anioProy = (json && json.anio_proyeccion) || costosAnio();
+                var anioApi = (json && json.anio) || (CC.state.anioGasto || '');
+                var html = '<div style="text-align:left;font-size:.88rem">' +
+                    '<p style="margin:0 0 .6rem">Se actualizarán solo los <b>precios por mes (Ene–Dic)</b> de productos que ya están en tu maestro de la <b>proyección ' + escapeHtml(String(anioProy)) +
+                    '</b> (API venta ' + escapeHtml(String(anioApi)) + '). El <b>precio global no se modifica</b>.</p>' +
+                    '<p style="margin:0 0 .75rem"><b>' + total + '</b> producto(s) de tu tabla' +
+                    (json.precios_filas ? (' · ' + json.precios_filas + ' fila(s) mensuales') : '') +
+                    (json.omitidos_no_en_maestro ? (' · <span style="color:#b45309">' + json.omitidos_no_en_maestro + ' de la API omitidos (no están en tu tabla)</span>') : '') +
+                    '</p>';
+                if (!list.length) {
+                    html += '<p class="text-muted" style="margin:0">Ningún producto de tu maestro coincide con la API.</p></div>';
+                    return html;
                 }
+                html += '<div style="max-height:260px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:.5rem .65rem;background:#fafafa">';
+                html += '<table style="width:100%;border-collapse:collapse;font-size:.78rem"><thead><tr>' +
+                    '<th style="text-align:left;padding:.25rem">Empresa</th>' +
+                    '<th style="text-align:left;padding:.25rem">Cliente</th>' +
+                    '<th style="text-align:left;padding:.25rem">Producto</th>' +
+                    '<th style="text-align:left;padding:.25rem">Meses</th>' +
+                    '</tr></thead><tbody>';
+                list.forEach(function (p) {
+                    var cliente = (p.card_code || '') + (p.cliente ? (' · ' + p.cliente) : '');
+                    var prod = (p.item_code || '') + (p.producto && p.producto !== p.item_code ? (' · ' + p.producto) : '');
+                    var badge = p.es_nuevo ? ' <span style="color:#047857;font-weight:600">nuevo</span>' : '';
+                    html += '<tr style="border-top:1px solid #eee">' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(p.empresa || '') + badge + '</td>' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(cliente) + '</td>' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(prod) + '</td>' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(mesNombresCortos(p.meses) || '—') + '</td>' +
+                        '</tr>';
+                });
+                html += '</tbody></table>';
+                if (total > list.length) {
+                    html += '<div class="text-muted" style="margin-top:.45rem;font-size:.75rem">… y ' + (total - list.length) + ' más</div>';
+                }
+                html += '</div></div>';
+                return html;
+            }
+            function ejecutarImportApi() {
                 importBtn.disabled = true;
                 if (hint) hint.textContent = 'Importando precios desde API…';
-                fetch(url + '/importar-api', {
+                return fetch(url + '/importar-api', {
                     method: 'POST',
                     headers: apiJsonHeaders(),
-                    body: JSON.stringify({
-                        empresa: '',
-                        todas_empresas: true,
-                        anio: CC.state.anioGasto || 2026,
-                        anio_proyeccion: costosAnio(),
-                        solo_vacios: false
-                    })
+                    body: JSON.stringify(payloadImportApi(false))
                 }).then(function (r) {
                     return r.json().then(function (json) {
                         if (!r.ok) throw new Error((json && json.message) || 'No se pudo importar');
@@ -8517,6 +8798,199 @@
                     if (hint) hint.textContent = 'Error al importar';
                 }).then(function () {
                     importBtn.disabled = false;
+                });
+            }
+            importBtn.addEventListener('click', function () {
+                importBtn.disabled = true;
+                if (hint) hint.textContent = 'Consultando productos a actualizar…';
+                fetch(url + '/importar-api', {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify(payloadImportApi(true))
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar la API');
+                        return json;
+                    });
+                }).then(function (json) {
+                    importBtn.disabled = false;
+                    if (hint) hint.textContent = '';
+                    var total = Number(json.afectados_total || (json.afectados && json.afectados.length) || 0) || 0;
+                    if (!total) {
+                        if (window.Swal) {
+                            Swal.fire({
+                                icon: 'info',
+                                title: 'Sin cambios',
+                                text: json.message || 'No hay precios en la API para esta proyección.',
+                                confirmButtonColor: '#0a0a0a'
+                            });
+                        } else {
+                            window.alert(json.message || 'No hay precios para aplicar.');
+                        }
+                        return;
+                    }
+                    var html = htmlListaAfectados(json);
+                    if (window.Swal) {
+                        return Swal.fire({
+                            icon: 'question',
+                            title: '¿Actualizar precios?',
+                            html: html,
+                            width: '42rem',
+                            showCancelButton: true,
+                            focusCancel: true,
+                            confirmButtonText: 'Sí, actualizar ' + total + ' producto(s)',
+                            cancelButtonText: 'Cancelar',
+                            confirmButtonColor: '#0a0a0a',
+                            cancelButtonColor: '#6b7280'
+                        }).then(function (res) {
+                            if (res && res.isConfirmed) ejecutarImportApi();
+                        });
+                    }
+                    if (window.confirm((json.message || '') + '\n\n¿Deseas continuar?')) {
+                        ejecutarImportApi();
+                    }
+                }).catch(function (err) {
+                    importBtn.disabled = false;
+                    toast('error', 'No se consultó', err && err.message ? err.message : 'Error');
+                    if (hint) hint.textContent = 'Error al consultar API';
+                });
+            });
+        }
+
+        var listaBtn = document.getElementById('pv-costos-import-lista');
+        if (listaBtn) {
+            var listaUrl = CC.state.costosImportListaUrl || (url + '/importar-lista-precios');
+            function payloadLista(preview) {
+                var emp = empSel ? String(empSel.value || '') : '';
+                return {
+                    empresa: emp,
+                    todas_empresas: !emp,
+                    anio_proyeccion: costosAnio(),
+                    preview: !!preview
+                };
+            }
+            function htmlListaGlobal(json) {
+                var list = (json && json.afectados) || [];
+                var total = Number((json && json.afectados_total) || list.length) || 0;
+                var anioProy = (json && json.anio_proyeccion) || costosAnio();
+                var html = '<div style="text-align:left;font-size:.88rem">' +
+                    '<p style="margin:0 0 .6rem">Se actualizará solo el <b>precio global</b> (mes = 0) desde la <b>lista de precios SAP</b> ' +
+                    'de cada cliente, en la proyección <b>' + escapeHtml(String(anioProy)) + '</b>. ' +
+                    'Los precios por mes no se tocan. Solo productos de tu maestro.</p>' +
+                    '<p style="margin:0 0 .75rem"><b>' + total + '</b> producto(s)' +
+                    (json.omitidos_sin_lista ? (' · <span style="color:#b45309">' + json.omitidos_sin_lista + ' sin precio en lista</span>') : '') +
+                    '</p>';
+                if (!list.length) {
+                    html += '<p class="text-muted" style="margin:0">Ningún producto coincide con la lista de precios.</p></div>';
+                    return html;
+                }
+                html += '<div style="max-height:260px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:.5rem .65rem;background:#fafafa">';
+                html += '<table style="width:100%;border-collapse:collapse;font-size:.78rem"><thead><tr>' +
+                    '<th style="text-align:left;padding:.25rem">Empresa</th>' +
+                    '<th style="text-align:left;padding:.25rem">Cliente</th>' +
+                    '<th style="text-align:left;padding:.25rem">Producto</th>' +
+                    '<th style="text-align:right;padding:.25rem">Antes</th>' +
+                    '<th style="text-align:right;padding:.25rem">Lista</th>' +
+                    '</tr></thead><tbody>';
+                list.forEach(function (p) {
+                    var cliente = (p.card_code || '') + (p.cliente ? (' · ' + p.cliente) : '');
+                    var prod = (p.item_code || '') + (p.producto && p.producto !== p.item_code ? (' · ' + p.producto) : '');
+                    var mon = String(p.moneda || 'MXN').toUpperCase();
+                    var fmt = function (n) {
+                        var v = Number(n) || 0;
+                        return (mon === 'USD' ? 'US$' : '$') + v.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    };
+                    html += '<tr style="border-top:1px solid #eee">' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(p.empresa || '') + '</td>' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(cliente) + '</td>' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(prod) +
+                        (p.lista ? ('<div class="text-muted" style="font-size:.7rem">' + escapeHtml((p.no_lista ? ('#' + p.no_lista + ' ') : '') + p.lista) + '</div>') : '') +
+                        '</td>' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top;text-align:right">' + escapeHtml(fmt(p.precio_anterior)) + '</td>' +
+                        '<td style="padding:.3rem .25rem;vertical-align:top;text-align:right;font-weight:600">' + escapeHtml(fmt(p.precio)) + '</td>' +
+                        '</tr>';
+                });
+                html += '</tbody></table>';
+                if (total > list.length) {
+                    html += '<div class="text-muted" style="margin-top:.45rem;font-size:.75rem">… y ' + (total - list.length) + ' más</div>';
+                }
+                html += '</div></div>';
+                return html;
+            }
+            function ejecutarLista() {
+                listaBtn.disabled = true;
+                if (hint) hint.textContent = 'Actualizando precio global desde lista…';
+                return fetch(listaUrl, {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify(payloadLista(false))
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo actualizar');
+                        return json;
+                    });
+                }).then(function (json) {
+                    toast('success', 'Lista de precios', json.message || 'Precio global actualizado.');
+                    load();
+                }).catch(function (err) {
+                    toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+                    if (hint) hint.textContent = 'Error al actualizar desde lista';
+                }).then(function () {
+                    listaBtn.disabled = false;
+                });
+            }
+            listaBtn.addEventListener('click', function () {
+                listaBtn.disabled = true;
+                if (hint) hint.textContent = 'Consultando listas de precios…';
+                fetch(listaUrl, {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify(payloadLista(true))
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar listas');
+                        return json;
+                    });
+                }).then(function (json) {
+                    listaBtn.disabled = false;
+                    if (hint) hint.textContent = '';
+                    var total = Number(json.afectados_total || (json.afectados && json.afectados.length) || 0) || 0;
+                    if (!total) {
+                        if (window.Swal) {
+                            Swal.fire({
+                                icon: 'info',
+                                title: 'Sin cambios',
+                                text: json.message || 'Ningún producto de tu maestro tiene precio en lista.',
+                                confirmButtonColor: '#0a0a0a'
+                            });
+                        } else {
+                            window.alert(json.message || 'Sin coincidencias.');
+                        }
+                        return;
+                    }
+                    if (window.Swal) {
+                        return Swal.fire({
+                            icon: 'question',
+                            title: '¿Actualizar precio global?',
+                            html: htmlListaGlobal(json),
+                            width: '46rem',
+                            showCancelButton: true,
+                            focusCancel: true,
+                            confirmButtonText: 'Sí, actualizar ' + total + ' producto(s)',
+                            cancelButtonText: 'Cancelar',
+                            confirmButtonColor: '#0a0a0a',
+                            cancelButtonColor: '#6b7280'
+                        }).then(function (res) {
+                            if (res && res.isConfirmed) ejecutarLista();
+                        });
+                    }
+                    if (window.confirm((json.message || '') + '\n\n¿Deseas continuar?')) {
+                        ejecutarLista();
+                    }
+                }).catch(function (err) {
+                    listaBtn.disabled = false;
+                    toast('error', 'No se consultó', err && err.message ? err.message : 'Error');
+                    if (hint) hint.textContent = 'Error al consultar listas';
                 });
             });
         }
@@ -8608,9 +9082,11 @@
         CC.state.detalleUrl = boot.detalleUrl || '/Ventas/Captura/detalle';
         CC.state.gastoUrl = boot.gastoUrl || '/ProyeccionesVentas/api/gasto-real';
         CC.state.listasPreciosUrl = boot.listasPreciosUrl || '/ProyeccionesVentas/api/listas-precios';
+        CC.state.ventasBudgetUrl = boot.ventasBudgetUrl || '/ProyeccionesVentas/api/captura/ventas-budget';
         CC.state.costosUrl = boot.costosUrl || '/ProyeccionesVentas/api/costos';
         CC.state.costosPlantillaUrl = boot.costosPlantillaUrl || '/ProyeccionesVentas/api/costos/plantilla';
         CC.state.costosImportExcelUrl = boot.costosImportExcelUrl || '/ProyeccionesVentas/api/costos/importar-excel';
+        CC.state.costosImportListaUrl = boot.costosImportListaUrl || '/ProyeccionesVentas/api/costos/importar-lista-precios';
         CC.state.costosHistorialUrl = boot.costosHistorialUrl || '/ProyeccionesVentas/api/costos/historial';
         CC.state.empresasLocales = boot.empresasLocales || [];
         CC.state.unidadesMedida = boot.unidadesMedida || {};
