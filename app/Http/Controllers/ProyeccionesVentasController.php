@@ -3798,7 +3798,23 @@ class ProyeccionesVentasController extends Controller
             ], 422);
         }
 
+        $itemsRaw = $request->get('items', $request->get('articulos', ''));
+        $soloArticulos = [];
+        if (is_array($itemsRaw)) {
+            $soloArticulos = $itemsRaw;
+        } else {
+            $soloArticulos = preg_split('/\s*,\s*/', trim((string) $itemsRaw), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        }
+        $soloArticulos = array_values(array_unique(array_filter(array_map(static function ($v) {
+            return trim((string) $v);
+        }, $soloArticulos))));
+
         $cacheKey = 'pv.listaPreciosventa.' . $empresa . '.' . $cc;
+        if ($soloArticulos) {
+            $norm = array_map(static fn ($v) => strtoupper($v), $soloArticulos);
+            sort($norm);
+            $cacheKey .= '.' . substr(sha1(implode('|', $norm)), 0, 16);
+        }
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok'])) {
             return response()->json($cached);
@@ -3810,7 +3826,7 @@ class ProyeccionesVentasController extends Controller
         }
 
         try {
-            $payload = $this->cargarListasPreciosCliente($empresa, $cc, $year);
+            $payload = $this->cargarListasPreciosCliente($empresa, $cc, $year, $soloArticulos);
             if (! empty($payload['ok'])) {
                 Cache::put($cacheKey, $payload, 900);
             }
@@ -4800,45 +4816,25 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * @return array{ok: bool, empresa: string, cliente: string, por_articulo: array<string, array<string, mixed>>, mensaje: string|null}
+     * @param  array<int, string>  $soloArticulos  Si viene, consulta por CodigoArticulo (evita paginar 15k+ filas).
+     * @return array{ok: bool, empresa: string, cliente: string, por_articulo: array<string, array<string, mixed>>, mensaje: string|null, origen?: string}
      */
-    protected function cargarListasPreciosCliente(string $empresa, string $cc, int $year = 0): array
+    protected function cargarListasPreciosCliente(string $empresa, string $cc, int $year = 0, array $soloArticulos = []): array
     {
         $api = app(AutinApiClient::class);
         $porArticulo = [];
         $ok = false;
         $mensaje = null;
-        $perPage = 500;
-        $maxPages = 60;
         $ccNorm = trim($cc);
+        $soloArticulos = array_values(array_unique(array_filter(array_map(static function ($v) {
+            return trim((string) $v);
+        }, $soloArticulos))));
 
-        for ($page = 1; $page <= $maxPages; $page++) {
-            $res = $api->listaPreciosVenta([
-                'Empresa' => strtoupper($empresa),
-                'CodigoCliente' => $ccNorm,
-                'per_page' => $perPage,
-                'page' => $page,
-            ]);
-
-            if (empty($res['ok'])) {
-                if ($page === 1) {
-                    $mensaje = $res['message'] ?? 'Sin conexión a listaPreciosventa';
-                }
-                break;
-            }
-
-            $ok = true;
-            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
-            $rows = $body['data'] ?? [];
-            if (! is_array($rows) || ! $rows) {
-                break;
-            }
-
+        $ingestRows = function (array $rows, ?string $requireItem = null) use (&$porArticulo, $ccNorm): void {
             foreach ($rows as $row) {
                 if (! is_array($row)) {
                     continue;
                 }
-                // listaPreciosventa filtra por prefijo; casar CodigoCliente exacto.
                 $rowCard = trim((string) (
                     $row['CodigoCliente']
                     ?? $row['CardCode']
@@ -4855,6 +4851,9 @@ class ProyeccionesVentasController extends Controller
                     ?? ''
                 ));
                 if ($codigo === '') {
+                    continue;
+                }
+                if ($requireItem !== null && $requireItem !== '' && strcasecmp($codigo, $requireItem) !== 0) {
                     continue;
                 }
                 $precio = $this->numeroVenta($row, ['Precio', 'Price', 'UnitPrice', 'PriceBefDi']);
@@ -4890,14 +4889,71 @@ class ProyeccionesVentasController extends Controller
                     $porArticulo[$k] = $entry;
                 }
             }
+        };
 
-            $pag = $this->paginacionDe($body);
-            $lastPage = (int) ($pag['last_page'] ?? 0);
-            if ($lastPage > 0 && $page >= $lastPage) {
-                break;
+        if ($soloArticulos) {
+            // Captura / asignación: 1 request por producto asignado (CodigoArticulo).
+            foreach ($soloArticulos as $itemCode) {
+                try {
+                    $res = $api->listaPreciosVenta([
+                        'Empresa' => strtoupper($empresa),
+                        'CodigoCliente' => $ccNorm,
+                        'CodigoArticulo' => $itemCode,
+                        'per_page' => 100,
+                        'page' => 1,
+                    ]);
+                } catch (Throwable $e) {
+                    if ($mensaje === null) {
+                        $mensaje = $e->getMessage();
+                    }
+                    continue;
+                }
+                if (empty($res['ok'])) {
+                    if ($mensaje === null) {
+                        $mensaje = $res['message'] ?? 'Sin conexión a listaPreciosventa';
+                    }
+                    continue;
+                }
+                $ok = true;
+                $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+                $ingestRows($rows, $itemCode);
             }
-            if ($lastPage < 1 && count($rows) < $perPage) {
-                break;
+        } else {
+            $perPage = 500;
+            $maxPages = 60;
+            for ($page = 1; $page <= $maxPages; $page++) {
+                $res = $api->listaPreciosVenta([
+                    'Empresa' => strtoupper($empresa),
+                    'CodigoCliente' => $ccNorm,
+                    'per_page' => $perPage,
+                    'page' => $page,
+                ]);
+
+                if (empty($res['ok'])) {
+                    if ($page === 1) {
+                        $mensaje = $res['message'] ?? 'Sin conexión a listaPreciosventa';
+                    }
+                    break;
+                }
+
+                $ok = true;
+                $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                $rows = $body['data'] ?? [];
+                if (! is_array($rows) || ! $rows) {
+                    break;
+                }
+
+                $ingestRows($rows, null);
+
+                $pag = $this->paginacionDe($body);
+                $lastPage = (int) ($pag['last_page'] ?? 0);
+                if ($lastPage > 0 && $page >= $lastPage) {
+                    break;
+                }
+                if ($lastPage < 1 && count($rows) < $perPage) {
+                    break;
+                }
             }
         }
 
@@ -6230,7 +6286,17 @@ class ProyeccionesVentasController extends Controller
 
         $porArticulo = [];
         try {
-            $listas = $this->cargarListasPreciosCliente($empresa, $card);
+            $itemsAsig = [];
+            foreach ($cuentas as $cta0) {
+                if (! is_array($cta0)) {
+                    continue;
+                }
+                $cod0 = trim((string) ($cta0['codigo'] ?? $cta0['cuenta_codigo'] ?? ''));
+                if ($cod0 !== '') {
+                    $itemsAsig[] = $cod0;
+                }
+            }
+            $listas = $this->cargarListasPreciosCliente($empresa, $card, 0, $itemsAsig);
             $porArticulo = is_array($listas['por_articulo'] ?? null) ? $listas['por_articulo'] : [];
         } catch (Throwable $e) {
             $porArticulo = [];

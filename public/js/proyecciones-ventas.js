@@ -1006,23 +1006,28 @@
         if (!c || !CC.state.listasPreciosUrl) return;
         var key = preciosCacheKey(c);
         control._preciosReq = key;
-        if (CC.state.preciosCache && CC.state.preciosCache[key]) {
-            control._preciosMap = CC.state.preciosCache[key];
-            if (control.centro) {
-                control._allCtas = cuentasEnriquecidas(control.centro);
-                renderControlTable();
-            }
-            return;
-        }
+        // No reutilizar caché de sesión incompleta: siempre pedir los productos del cliente.
+        if (CC.state.preciosCache) delete CC.state.preciosCache[key];
         // Si ya hay maestro local de precios, no bloquear la UI con SAP (fallback en segundo plano).
         var hasMaster = CC.state.costosMaster && Object.keys(CC.state.costosMaster).length > 0;
         control._preciosMap = {};
         if (!hasMaster) {
             showApiWait('Consultando listas de precios…');
         }
-        fetch(CC.state.listasPreciosUrl + '?empresa=' + encodeURIComponent(c.empresa || '') +
+        var items = [];
+        try {
+            (cuentasDeCentro(c) || []).forEach(function (cta) {
+                var cod = String((cta && cta.codigo) || '').trim();
+                if (cod && items.indexOf(cod) === -1) items.push(cod);
+            });
+        } catch (e) { /* ignore */ }
+        var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
             '&cliente=' + encodeURIComponent(c.codigo || '') +
-            '&year=' + encodeURIComponent(CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear()), {
+            '&year=' + encodeURIComponent(CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear());
+        if (items.length) {
+            qs += '&items=' + encodeURIComponent(items.join(','));
+        }
+        fetch(CC.state.listasPreciosUrl + qs, {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
             if (control._preciosReq !== key) return;
@@ -7412,9 +7417,20 @@
                     }
                     var pKey = preciosCacheKey(centro);
                     if (CC.state.listasPreciosUrl && !(CC.state.preciosCache && Object.prototype.hasOwnProperty.call(CC.state.preciosCache, pKey))) {
-                        jobs.push(fetch(CC.state.listasPreciosUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                        var itemCodes = [];
+                        try {
+                            (cuentasDeCentro(centro) || []).forEach(function (cta) {
+                                var cod = String((cta && cta.codigo) || '').trim();
+                                if (cod && itemCodes.indexOf(cod) === -1) itemCodes.push(cod);
+                            });
+                        } catch (eItems) { /* ignore */ }
+                        var preciosQs = '?empresa=' + encodeURIComponent(centro.empresa || '') +
                             '&cliente=' + encodeURIComponent(centro.codigo || '') +
-                            '&year=' + encodeURIComponent(year), {
+                            '&year=' + encodeURIComponent(year);
+                        if (itemCodes.length) {
+                            preciosQs += '&items=' + encodeURIComponent(itemCodes.join(','));
+                        }
+                        jobs.push(fetch(CC.state.listasPreciosUrl + preciosQs, {
                             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
                         }).then(function (res) { return res.json(); }).then(function (json) {
                             if (gen !== CC._anGastoGen) return;
