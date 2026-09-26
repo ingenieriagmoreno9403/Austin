@@ -354,6 +354,18 @@ class AutinApiClient
     }
 
     /**
+     * Lista de precios de venta (OCRD + OPLN + ITM1 + OITM).
+     * Filtros: Empresa, CodigoCliente, CodigoArticulo, NoLista, Moneda, per_page, page.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, status: int, body: array|null, message: string|null}
+     */
+    public function listaPreciosVenta(array $filters = []): array
+    {
+        return $this->request('GET', 'listaPreciosventa', $filters);
+    }
+
+    /**
      * Precios mensuales por empresa / cliente / artículo.
      * Filtros: year, Empresa, CardCode, Mes, ItemCode, per_page, page.
      * Campos: Empresa, CardCode, CardName, ItemCode, Mes, Precio.
