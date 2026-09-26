@@ -519,8 +519,9 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Consulta /precios-mensuales para una fila (Empresa+CardCode+ItemCode+Mes).
-     * Si confirmar=false solo compara; si confirmar=true actualiza solo precio (y moneda API).
+     * Consulta /listaPreciosventa (Empresa+CodigoCliente+CodigoArticulo)
+     * y actualiza solo el precio global (mes=0). No toca meses 1–12.
+     * Si confirmar=false solo compara; si confirmar=true escribe el global.
      */
     public function actualizarCostoDesdeApi(Request $request): JsonResponse
     {
@@ -541,13 +542,16 @@ class ProyeccionesVentasController extends Controller
         $empresa = strtoupper(trim($data['empresa']));
         $card = trim((string) ($data['card_code'] ?? ''));
         $item = trim($data['producto_codigo']);
-        $mes = (int) ($data['mes'] ?? 0);
-        if ($mes < 0 || $mes > 12) {
-            $mes = 0;
-        }
-        $anioApi = (int) ($data['anio'] ?? date('Y'));
+        // Siempre precio global (mes=0); el mes del request se ignora.
+        $mes = 0;
         $anioProy = $this->anioProyeccionCostos((int) ($data['anio_proyeccion'] ?? 0));
         $confirmar = (bool) ($data['confirmar'] ?? false);
+
+        if ($card === '') {
+            return response()->json([
+                'message' => 'Falta CardCode (CodigoCliente) para consultar listaPreciosventa.',
+            ], 422);
+        }
 
         $lookup = [
             'empresa' => $empresa,
@@ -560,56 +564,54 @@ class ProyeccionesVentasController extends Controller
             $lookup['card_code'] = $card;
         }
         if (Schema::hasColumn('tbl_pv_productos_costo', 'mes')) {
-            $lookup['mes'] = $mes;
+            $lookup['mes'] = 0;
         }
 
         $local = PvProductoCosto::query()->where($lookup)->first();
         $precioLocal = $local ? (float) $local->costo_unitario : null;
         $monedaLocal = $local ? strtoupper((string) ($local->moneda ?: 'MXN')) : null;
 
-        $filters = [
-            'year' => $anioApi,
-            'Empresa' => $empresa,
-            'ItemCode' => $item,
-            'per_page' => 50,
-            'page' => 1,
-        ];
-        if ($card !== '') {
-            $filters['CardCode'] = $card;
-        }
-        if ($mes > 0) {
-            $filters['Mes'] = $mes;
-        }
-
         try {
             $api = app(AutinApiClient::class);
-            $res = $api->preciosMensuales($filters);
+            $res = $api->listaPreciosVenta([
+                'Empresa' => $empresa,
+                'CodigoCliente' => $card,
+                'CodigoArticulo' => $item,
+                'per_page' => 100,
+                'page' => 1,
+            ]);
         } catch (Throwable $e) {
             return response()->json(['message' => 'Error al consultar API: '.$e->getMessage()], 422);
         }
         if (empty($res['ok'])) {
             return response()->json([
-                'message' => $res['message'] ?? 'Sin conexión a precios-mensuales',
+                'message' => $res['message'] ?? 'Sin conexión a listaPreciosventa',
             ], 422);
         }
 
         $body = is_array($res['body'] ?? null) ? $res['body'] : [];
         $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+        // La API filtra por prefijo; hay que casar CardCode + ItemCode exactos.
         $hit = null;
         foreach ($rows as $apiRow) {
             if (! is_array($apiRow)) {
                 continue;
             }
-            $apiItem = trim((string) ($apiRow['ItemCode'] ?? ''));
-            $apiCard = trim((string) ($apiRow['CardCode'] ?? ''));
-            $apiMes = (int) ($apiRow['Mes'] ?? 0);
+            $apiItem = trim((string) (
+                $apiRow['CodigoArticulo']
+                ?? $apiRow['ItemCode']
+                ?? $apiRow['Itemcode']
+                ?? ''
+            ));
+            $apiCard = trim((string) (
+                $apiRow['CodigoCliente']
+                ?? $apiRow['CardCode']
+                ?? ''
+            ));
             if (strcasecmp($apiItem, $item) !== 0) {
                 continue;
             }
-            if ($card !== '' && strcasecmp($apiCard, $card) !== 0) {
-                continue;
-            }
-            if ($mes > 0 && $apiMes !== $mes) {
+            if (strcasecmp($apiCard, $card) !== 0) {
                 continue;
             }
             $hit = $apiRow;
@@ -619,24 +621,34 @@ class ProyeccionesVentasController extends Controller
         if (! $hit) {
             return response()->json([
                 'ok' => false,
-                'message' => 'No se encontró ese producto en la API (Empresa + CardCode + ItemCode + Mes).',
+                'message' => 'No se encontró ese producto en listaPreciosventa (Empresa + CodigoCliente + CodigoArticulo).',
                 'empresa' => $empresa,
                 'card_code' => $card,
                 'producto_codigo' => $item,
-                'mes' => $mes > 0 ? $mes : null,
+                'mes' => 0,
                 'precio_local' => $precioLocal,
                 'moneda_local' => $monedaLocal,
             ], 404);
         }
 
         $precioApi = round($this->numeroVenta($hit, ['Precio', 'Price', 'precio']), 4);
+        if ($precioApi <= 0) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'La API devolvió un precio inválido (≤ 0) para ese producto.',
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'producto_codigo' => $item,
+            ], 422);
+        }
         $monedaApi = strtoupper(trim((string) (
             $hit['Moneda'] ?? $hit['Currency'] ?? $hit['DocCur'] ?? ''
         )));
         if (! in_array($monedaApi, ['MXN', 'USD'], true)) {
             $monedaApi = $monedaLocal ?: 'MXN';
         }
-        $cardNameApi = trim((string) ($hit['CardName'] ?? ''));
+        $cardNameApi = trim((string) ($hit['Cliente'] ?? $hit['CardName'] ?? ''));
+        $nombreApi = trim((string) ($hit['Descripcion'] ?? $hit['ItemName'] ?? ''));
 
         $mismoPrecio = $precioLocal !== null && abs($precioLocal - $precioApi) < 0.0001;
         $mismaMoneda = $monedaLocal !== null && $monedaLocal === $monedaApi;
@@ -650,14 +662,15 @@ class ProyeccionesVentasController extends Controller
                 'empresa' => $empresa,
                 'card_code' => $card,
                 'producto_codigo' => $item,
-                'mes' => $mes > 0 ? $mes : ((int) ($hit['Mes'] ?? 0) ?: null),
+                'mes' => 0,
                 'precio_local' => $precioLocal,
                 'moneda_local' => $monedaLocal,
                 'precio_api' => $precioApi,
                 'moneda_api' => $monedaApi,
+                'origen' => 'listaPreciosventa',
                 'message' => $igual
-                    ? 'El precio local ya coincide con la API.'
-                    : 'El precio de la API es distinto al local.',
+                    ? 'El precio global local ya coincide con la API.'
+                    : 'El precio global de la API es distinto al local.',
             ]);
         }
 
@@ -666,7 +679,7 @@ class ProyeccionesVentasController extends Controller
                 'ok' => true,
                 'actualizado' => false,
                 'igual' => true,
-                'message' => 'No hubo cambios: el precio ya era el mismo.',
+                'message' => 'No hubo cambios: el precio global ya era el mismo.',
                 'precio_local' => $precioLocal,
                 'precio_api' => $precioApi,
                 'moneda_api' => $monedaApi,
@@ -684,18 +697,21 @@ class ProyeccionesVentasController extends Controller
                 $local->card_code = $card;
             }
             if (Schema::hasColumn('tbl_pv_productos_costo', 'mes')) {
-                $local->mes = $mes;
+                $local->mes = 0;
             }
-            $local->producto_nombre = $item;
+            $local->producto_nombre = $nombreApi !== '' ? mb_substr($nombreApi, 0, 180) : $item;
             $local->moneda = $monedaApi;
         }
 
         $precioAnterior = $local->exists ? (float) $local->costo_unitario : null;
         $monedaAnterior = $local->exists ? (string) ($local->moneda ?: 'MXN') : null;
 
-        // Solo precio (+ moneda de la API). No toca nombre ni otros campos salvo card_name vacío.
+        // Solo precio global (+ moneda). No toca meses 1–12.
         $local->costo_unitario = $precioApi;
         $local->moneda = $monedaApi;
+        if (Schema::hasColumn('tbl_pv_productos_costo', 'mes')) {
+            $local->mes = 0;
+        }
         if ($this->hasAnioCostos() && ! $local->anio) {
             $local->anio = $anioProy;
         }
@@ -703,6 +719,9 @@ class ProyeccionesVentasController extends Controller
             && $cardNameApi !== ''
             && trim((string) ($local->card_name ?? '')) === '') {
             $local->card_name = mb_substr($cardNameApi, 0, 180);
+        }
+        if ($nombreApi !== '' && trim((string) ($local->producto_nombre ?? '')) === '') {
+            $local->producto_nombre = mb_substr($nombreApi, 0, 180);
         }
         $local->updated_by = optional($request->user())->id;
         $local->save();
@@ -715,31 +734,275 @@ class ProyeccionesVentasController extends Controller
             $monedaAnterior,
             $precioApi,
             $monedaApi,
-            'api',
+            'lista_precios',
             $local->updated_by,
             $card,
             (string) ($local->card_name ?? ''),
-            $mes,
+            0,
             $anioProy
         );
+
+        $propagadas = $this->propagarCostoACiclosAbiertos($empresa, $item, $precioApi);
 
         return response()->json([
             'ok' => true,
             'actualizado' => true,
-            'message' => 'Precio actualizado desde la API.',
+            'message' => 'Precio global actualizado desde listaPreciosventa.'
+                .($propagadas ? (' · '.$propagadas.' proyección(es) abiertas') : ''),
             'precio_anterior' => $precioAnterior,
             'moneda_anterior' => $monedaAnterior,
             'precio_nuevo' => $precioApi,
             'moneda_nueva' => $monedaApi,
+            'origen' => 'listaPreciosventa',
             'item' => [
                 'empresa' => $empresa,
                 'card_code' => (string) ($local->card_code ?? $card),
                 'producto_codigo' => $item,
-                'mes' => ((int) ($local->mes ?? 0)) > 0 ? (int) $local->mes : null,
+                'mes' => 0,
                 'costo_unitario' => (float) $local->costo_unitario,
                 'moneda' => strtoupper((string) ($local->moneda ?: 'MXN')),
                 'updated_at' => $local->updated_at ? $local->updated_at->format('Y-m-d H:i') : null,
             ],
+        ]);
+    }
+
+    /**
+     * Trae meses 1–12 de un producto desde AutinApi /precios-mensuales.
+     * No toca el precio global (mes=0).
+     */
+    public function actualizarMesesDesdeApi(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_pv_productos_costo')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
+        }
+
+        $data = $request->validate([
+            'empresa' => 'required|string|max:40',
+            'card_code' => 'nullable|string|max:40',
+            'producto_codigo' => 'required|string|max:80',
+            'producto_nombre' => 'nullable|string|max:180',
+            'anio' => 'nullable|integer|min:2000|max:2100',
+            'anio_proyeccion' => 'nullable|integer|min:2000|max:2100',
+            'confirmar' => 'nullable|boolean',
+        ]);
+
+        $empresa = strtoupper(trim($data['empresa']));
+        $card = trim((string) ($data['card_code'] ?? ''));
+        $item = trim($data['producto_codigo']);
+        $nombreReq = trim((string) ($data['producto_nombre'] ?? ''));
+        $anioApi = (int) ($data['anio'] ?? date('Y'));
+        $anioProy = $this->anioProyeccionCostos((int) ($data['anio_proyeccion'] ?? 0));
+        $confirmar = (bool) ($data['confirmar'] ?? false);
+
+        if ($card === '') {
+            return response()->json([
+                'message' => 'Falta CardCode para consultar precios-mensuales.',
+            ], 422);
+        }
+
+        $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
+        $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
+        $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasAnio = $this->hasAnioCostos();
+        if (! $hasMes) {
+            return response()->json(['message' => 'La tabla de costos no tiene columna mes.'], 422);
+        }
+
+        $mesesApi = array_fill(0, 12, null);
+        $monedasApi = array_fill(0, 12, null);
+        $cardNameApi = '';
+        $nombreApi = '';
+        $page = 1;
+        $lastPage = 1;
+        $maxPages = 20;
+
+        try {
+            $api = app(AutinApiClient::class);
+            do {
+                $res = $api->preciosMensuales([
+                    'year' => $anioApi,
+                    'Empresa' => $empresa,
+                    'CardCode' => $card,
+                    'ItemCode' => $item,
+                    'per_page' => 500,
+                    'page' => $page,
+                ]);
+                if (empty($res['ok'])) {
+                    return response()->json([
+                        'message' => $res['message'] ?? 'Sin conexión a precios-mensuales',
+                    ], 422);
+                }
+                $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+                $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
+                $lastPage = max(1, (int) ($meta['last_page'] ?? 1));
+
+                foreach ($rows as $apiRow) {
+                    if (! is_array($apiRow)) {
+                        continue;
+                    }
+                    $apiItem = trim((string) ($apiRow['ItemCode'] ?? ''));
+                    $apiCard = trim((string) ($apiRow['CardCode'] ?? ''));
+                    if (strcasecmp($apiItem, $item) !== 0) {
+                        continue;
+                    }
+                    if (strcasecmp($apiCard, $card) !== 0) {
+                        continue;
+                    }
+                    $mes = (int) ($apiRow['Mes'] ?? 0);
+                    if ($mes < 1 || $mes > 12) {
+                        continue;
+                    }
+                    $precio = round($this->numeroVenta($apiRow, ['Precio', 'Price', 'precio']), 4);
+                    if ($precio <= 0) {
+                        continue;
+                    }
+                    $idx = $mes - 1;
+                    // Primer hit del mes gana.
+                    if ($mesesApi[$idx] === null) {
+                        $mesesApi[$idx] = $precio;
+                        $mon = strtoupper(trim((string) (
+                            $apiRow['Moneda'] ?? $apiRow['Currency'] ?? $apiRow['DocCur'] ?? ''
+                        )));
+                        $monedasApi[$idx] = in_array($mon, ['MXN', 'USD'], true) ? $mon : null;
+                    }
+                    if ($cardNameApi === '') {
+                        $cardNameApi = trim((string) ($apiRow['CardName'] ?? ''));
+                    }
+                    if ($nombreApi === '') {
+                        $nombreApi = trim((string) (
+                            $apiRow['ItemName'] ?? $apiRow['Dscription'] ?? $apiRow['Descripcion'] ?? ''
+                        ));
+                    }
+                }
+                $page++;
+            } while ($page <= $lastPage && $page <= $maxPages);
+        } catch (Throwable $e) {
+            return response()->json(['message' => 'Error al consultar API: '.$e->getMessage()], 422);
+        }
+
+        $mesesLlenos = [];
+        $precioMesesOut = [];
+        for ($i = 0; $i < 12; $i++) {
+            if ($mesesApi[$i] !== null && $mesesApi[$i] > 0) {
+                $mesesLlenos[] = $i + 1;
+                $precioMesesOut[$i] = $mesesApi[$i];
+            } else {
+                $precioMesesOut[$i] = null;
+            }
+        }
+
+        if (! $mesesLlenos) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'No hay precios mensuales en la API para ese producto (Empresa + CardCode + ItemCode · año '.$anioApi.').',
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'producto_codigo' => $item,
+                'anio' => $anioApi,
+                'meses' => [],
+                'precio_meses' => $precioMesesOut,
+            ], 404);
+        }
+
+        $mesesNom = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+        $mesesLabel = implode(', ', array_map(static function ($m) use ($mesesNom) {
+            return $mesesNom[$m] ?? (string) $m;
+        }, $mesesLlenos));
+
+        if (! $confirmar) {
+            return response()->json([
+                'ok' => true,
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'producto_codigo' => $item,
+                'anio' => $anioApi,
+                'anio_proyeccion' => $anioProy,
+                'meses' => $mesesLlenos,
+                'meses_label' => $mesesLabel,
+                'precio_meses' => $precioMesesOut,
+                'origen' => 'precios-mensuales',
+                'message' => 'Se encontraron '.count($mesesLlenos).' mes(es) en la API ('.$mesesLabel.').',
+            ]);
+        }
+
+        $userId = optional($request->user())->id;
+        $nombre = $nombreApi !== '' ? $nombreApi : ($nombreReq !== '' ? $nombreReq : $item);
+        $guardados = 0;
+
+        foreach ($mesesLlenos as $mes) {
+            $idx = $mes - 1;
+            $precio = (float) $mesesApi[$idx];
+            $moneda = $monedasApi[$idx] ?: 'MXN';
+
+            $lookup = [
+                'empresa' => $empresa,
+                'producto_codigo' => $item,
+                'mes' => $mes,
+            ];
+            if ($hasAnio) {
+                $lookup['anio'] = $anioProy;
+            }
+            if ($hasCard) {
+                $lookup['card_code'] = $card;
+            }
+
+            $row = PvProductoCosto::query()->firstOrNew($lookup);
+            $precioAnterior = $row->exists ? (float) $row->costo_unitario : null;
+            $monedaAnterior = $row->exists ? (string) ($row->moneda ?: 'MXN') : null;
+
+            if ($hasAnio) {
+                $row->anio = $anioProy;
+            }
+            if ($hasCard) {
+                $row->card_code = $card;
+            }
+            if ($hasCardName && $cardNameApi !== '') {
+                $row->card_name = mb_substr($cardNameApi, 0, 180);
+            }
+            $row->mes = $mes;
+            if ($nombre !== '' && strcasecmp($nombre, $item) !== 0) {
+                $row->producto_nombre = mb_substr($nombre, 0, 180);
+            } elseif (! $row->producto_nombre) {
+                $row->producto_nombre = $item;
+            }
+            $row->costo_unitario = $precio;
+            $row->moneda = $moneda;
+            $row->updated_by = $userId;
+            $row->save();
+
+            $this->registrarHistorialPrecio(
+                $empresa,
+                $item,
+                (string) $row->producto_nombre,
+                $precioAnterior,
+                $monedaAnterior,
+                $precio,
+                $moneda,
+                'api',
+                $userId,
+                $card,
+                $cardNameApi,
+                $mes,
+                $anioProy
+            );
+            $guardados++;
+        }
+
+        return response()->json([
+            'ok' => true,
+            'actualizado' => true,
+            'message' => 'Se actualizaron '.$guardados.' mes(es) desde precios-mensuales ('.$mesesLabel.'). El precio global no se modificó.',
+            'empresa' => $empresa,
+            'card_code' => $card,
+            'producto_codigo' => $item,
+            'anio' => $anioApi,
+            'anio_proyeccion' => $anioProy,
+            'meses' => $mesesLlenos,
+            'meses_label' => $mesesLabel,
+            'precio_meses' => $precioMesesOut,
+            'guardados' => $guardados,
+            'origen' => 'precios-mensuales',
         ]);
     }
 

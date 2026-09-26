@@ -8161,9 +8161,16 @@
                     ' data-cod="' + escapeHtml(codigo) + '"' +
                     ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
                     ' data-card="' + escapeHtml(it.card_code || '') + '"' +
-                    ' data-mes="' + escapeHtml(String(it.mes || lastMesConPrecio(it) || 0)) + '"' +
-                    ' title="Actualizar desde API el mes de referencia">' +
+                    ' data-mes="0"' +
+                    ' title="Actualizar precio global desde listaPreciosventa">' +
                     '<i class="fa-solid fa-cloud-arrow-down"></i></button>' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-sync-meses-api-costo' +
+                    ' data-emp="' + escapeHtml(it.empresa) + '"' +
+                    ' data-cod="' + escapeHtml(codigo) + '"' +
+                    ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
+                    ' data-card="' + escapeHtml(it.card_code || '') + '"' +
+                    ' title="Traer precios por mes (Ene–Dic) desde precios-mensuales">' +
+                    '<i class="fa-solid fa-calendar-plus"></i></button>' +
                     '<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
                     ' title="Editar precios por mes">' +
                     '<i class="fa-solid fa-calendar-days"></i></button>' +
@@ -8191,6 +8198,11 @@
             tbody.querySelectorAll('[data-sync-api-costo]').forEach(function (btn) {
                 btn.addEventListener('click', function () {
                     actualizarPrecioDesdeApi(btn);
+                });
+            });
+            tbody.querySelectorAll('[data-sync-meses-api-costo]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    actualizarMesesDesdeApi(btn);
                 });
             });
         }
@@ -8434,10 +8446,13 @@
             var emp = btn.getAttribute('data-emp') || '';
             var cod = btn.getAttribute('data-cod') || '';
             var card = btn.getAttribute('data-card') || '';
-            var mes = Number(btn.getAttribute('data-mes') || 0) || 0;
             var nom = btn.getAttribute('data-nom') || cod;
             if (!emp || !cod) {
                 toast('error', 'Datos incompletos', 'Falta empresa o ItemCode.');
+                return;
+            }
+            if (!card) {
+                toast('error', 'Sin CardCode', 'Se necesita CodigoCliente para consultar listaPreciosventa.');
                 return;
             }
             btn.disabled = true;
@@ -8445,7 +8460,7 @@
                 empresa: emp,
                 card_code: card,
                 producto_codigo: cod,
-                mes: mes,
+                mes: 0,
                 anio: CC.state.anioGasto || new Date().getFullYear(),
                 anio_proyeccion: costosAnio()
             };
@@ -8460,16 +8475,15 @@
                 });
             }).then(function (json) {
                 if (json.igual) {
-                    toast('info', 'Sin cambios', 'El precio local ya coincide con la API (' +
+                    toast('info', 'Sin cambios', 'El precio global ya coincide con la API (' +
                         moneyTxt(json.precio_api, json.moneda_api) + ').');
                     return;
                 }
                 var msg = 'Producto: ' + (nom || cod) + '\n' +
-                    'ItemCode: ' + cod + (card ? (' · CardCode: ' + card) : '') +
-                    (mes ? (' · Mes: ' + mes) : '') + '\n\n' +
-                    'Local: ' + moneyTxt(json.precio_local, json.moneda_local) + '\n' +
-                    'API:   ' + moneyTxt(json.precio_api, json.moneda_api) + '\n\n' +
-                    '¿Actualizar solo el precio con el valor de la API?';
+                    'ItemCode: ' + cod + ' · CardCode: ' + card + '\n\n' +
+                    'Precio global local: ' + moneyTxt(json.precio_local, json.moneda_local) + '\n' +
+                    'API (listaPreciosventa): ' + moneyTxt(json.precio_api, json.moneda_api) + '\n\n' +
+                    '¿Actualizar solo el precio global con el valor de la API?';
                 if (!window.confirm(msg)) return;
 
                 return fetch(url + '/actualizar-desde-api', {
@@ -8483,13 +8497,74 @@
                     });
                 }).then(function (j2) {
                     if (j2.actualizado) {
-                        toast('success', 'Precio actualizado',
+                        toast('success', 'Precio global actualizado',
                             moneyTxt(j2.precio_anterior, j2.moneda_anterior) + ' → ' +
                             moneyTxt(j2.precio_nuevo, j2.moneda_nueva));
                         load(page);
                     } else {
                         toast('info', 'Sin cambios', j2.message || 'El precio ya era el mismo.');
                     }
+                });
+            }).catch(function (err) {
+                toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+            }).then(function () {
+                btn.disabled = false;
+            });
+        }
+
+        function actualizarMesesDesdeApi(btn) {
+            var emp = btn.getAttribute('data-emp') || '';
+            var cod = btn.getAttribute('data-cod') || '';
+            var card = btn.getAttribute('data-card') || '';
+            var nom = btn.getAttribute('data-nom') || cod;
+            if (!emp || !cod) {
+                toast('error', 'Datos incompletos', 'Falta empresa o ItemCode.');
+                return;
+            }
+            if (!card) {
+                toast('error', 'Sin CardCode', 'Se necesita CardCode para consultar precios-mensuales.');
+                return;
+            }
+            btn.disabled = true;
+            var payloadBase = {
+                empresa: emp,
+                card_code: card,
+                producto_codigo: cod,
+                producto_nombre: nom,
+                anio: CC.state.anioGasto || new Date().getFullYear(),
+                anio_proyeccion: costosAnio()
+            };
+            fetch(url + '/actualizar-meses-desde-api', {
+                method: 'POST',
+                headers: apiJsonHeaders(),
+                body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: false }))
+            }).then(function (r) {
+                return r.json().then(function (json) {
+                    if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar la API');
+                    return json;
+                });
+            }).then(function (json) {
+                var mesesLbl = json.meses_label || ((json.meses || []).join(', ')) || '—';
+                var msg = 'Producto: ' + (nom || cod) + '\n' +
+                    'ItemCode: ' + cod + ' · CardCode: ' + card + '\n' +
+                    'Año API: ' + (json.anio || payloadBase.anio) + '\n\n' +
+                    'Meses encontrados: ' + mesesLbl + '\n\n' +
+                    '¿Actualizar solo los precios por mes? El precio global no se modifica.';
+                if (!window.confirm(msg)) return;
+
+                return fetch(url + '/actualizar-meses-desde-api', {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: true }))
+                }).then(function (r) {
+                    return r.json().then(function (j2) {
+                        if (!r.ok) throw new Error((j2 && j2.message) || 'No se pudo actualizar');
+                        return j2;
+                    });
+                }).then(function (j2) {
+                    toast('success', 'Meses actualizados', j2.message ||
+                        ((j2.guardados || 0) + ' mes(es) desde precios-mensuales'));
+                    load(page);
                 });
             }).catch(function (err) {
                 toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
