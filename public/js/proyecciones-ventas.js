@@ -478,6 +478,11 @@
         return vis.replace(/\D+/g, '') || vis;
     }
 
+    /** ItemCode SAP (tiene letras): no usar alias solo-dígitos (REPE-3PE MT → "3"). */
+    function esItemCodeSap(codigo) {
+        return /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(String(codigo || ''));
+    }
+
     function nombreCuentaKey(nombre) {
         var s = String(nombre || '');
         try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch (e) {}
@@ -567,12 +572,18 @@
 
     function gastoMensualDe(codigo, nombre, mapOpt, nombresOpt) {
         var map = mapOpt || control._gastoMap || {};
-        var hit = map[String(codigo)] || map[codigoCuentaKey(codigo)];
+        var cod = String(codigo || '').trim();
+        var hit = map[cod] || map[cod.toUpperCase()];
+        // Alias numérico solo para cuentas contables, no ItemCode (evita REPE-3PE MT → "3").
+        if ((!hit || hit.length !== 12) && cod && !esItemCodeSap(cod)) {
+            hit = map[codigoCuentaKey(cod)];
+        }
         var nk = nombreCuentaKey(nombre);
         if ((!hit || hit.length !== 12) && nk) {
             hit = map['n:' + nk] || map['nc:' + nk.replace(/\s+/g, '')];
         }
-        if ((!hit || hit.length !== 12) && nk) {
+        // Match difuso por nombre: solo cuentas; en artículos exige nombre exacto (arriba).
+        if ((!hit || hit.length !== 12) && nk && !esItemCodeSap(cod)) {
             var list = nombresOpt || control._gastoNombres || [];
             for (var i = 0; i < list.length; i++) {
                 if (nombresGastoCompatibles(nk, list[i].key)) {
@@ -583,6 +594,29 @@
         }
         if (hit && hit.length === 12) return hit.slice();
         return zeros12();
+    }
+
+    function extraMensualDe(codigo, nombre, extrasOpt, nombresOpt) {
+        var extras = extrasOpt || control._gastoExtras || {};
+        var cod = String(codigo || '').trim();
+        var hit = extras[cod] || extras[cod.toUpperCase()];
+        if (!hit && cod && !esItemCodeSap(cod)) {
+            hit = extras[codigoCuentaKey(cod)];
+        }
+        var nk = nombreCuentaKey(nombre);
+        if (!hit && nk) {
+            hit = extras['n:' + nk] || extras['nc:' + nk.replace(/\s+/g, '')];
+        }
+        if (!hit && nk && !esItemCodeSap(cod)) {
+            var list = nombresOpt || control._gastoNombres || [];
+            for (var i = 0; i < list.length; i++) {
+                if (nombresGastoCompatibles(nk, list[i].key) && list[i].extra) {
+                    hit = list[i].extra;
+                    break;
+                }
+            }
+        }
+        return hit || extraFromRow(null);
     }
 
     function extraFromRow(row) {
@@ -611,10 +645,15 @@
             var gasto = row.gasto || row;
             if (!gasto || gasto.length !== 12) return;
             var extra = extraFromRow(row);
+            var codRef = String(row.codigo || key || '').trim();
             put(key, gasto, extra);
             if (row.codigo) put(String(row.codigo), gasto, extra);
-            put(codigoCuentaKey(key), gasto, extra);
-            if (row.codigo) put(codigoCuentaKey(row.codigo), gasto, extra);
+            if (codRef) put(codRef.toUpperCase(), gasto, extra);
+            // Alias solo-dígitos únicamente para cuentas (no ItemCode con letras).
+            if (codRef && !esItemCodeSap(codRef)) {
+                put(codigoCuentaKey(key), gasto, extra);
+                if (row.codigo) put(codigoCuentaKey(row.codigo), gasto, extra);
+            }
             var nk = nombreCuentaKey(row.nombre || '');
             if (nk) {
                 put('n:' + nk, gasto, extra);
@@ -715,25 +754,6 @@
 
     function extrasLookupDeCentro(c) {
         return packedLookupDeCentro(c).extras || {};
-    }
-
-    function extraMensualDe(codigo, nombre, extrasOpt, nombresOpt) {
-        var extras = extrasOpt || control._gastoExtras || {};
-        var hit = extras[String(codigo)] || extras[codigoCuentaKey(codigo)];
-        var nk = nombreCuentaKey(nombre);
-        if (!hit && nk) {
-            hit = extras['n:' + nk] || extras['nc:' + nk.replace(/\s+/g, '')];
-        }
-        if (!hit && nk) {
-            var list = nombresOpt || control._gastoNombres || [];
-            for (var i = 0; i < list.length; i++) {
-                if (nombresGastoCompatibles(nk, list[i].key)) {
-                    hit = list[i].extra;
-                    break;
-                }
-            }
-        }
-        return extraFromRow(hit);
     }
 
     function applyGastoMap(porCuenta, meta) {

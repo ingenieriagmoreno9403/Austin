@@ -2555,7 +2555,7 @@ class ProyeccionesVentasController extends Controller
             if ($codigo === '') {
                 continue;
             }
-            $key = $this->codigoCuentaKey($codigo);
+            $key = $codigo;
             $qty = abs($this->cantidadVenta($row));
             $importe = abs($this->importeVenta($row, ['LineTotal', 'linetotal', 'GTotal']));
             $importeUsd = abs($this->importeVenta($row, ['LineTotalUSD', 'LineTotalUsd', 'LineTotalFC', 'TotalFrgn']));
@@ -4739,7 +4739,8 @@ class ProyeccionesVentasController extends Controller
             $costoInv = $this->costoInventarioVenta($row);
             $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
             $unidad = $this->elegirUnidadDesdeVenta($row);
-            $key = $this->codigoCuentaKey($codigo);
+            // Clave = ItemCode exacto (no solo dígitos: REPE-3PE MT ≠ "3").
+            $key = $codigo;
             if (! isset($porCuenta[$key])) {
                 $porCuenta[$key] = [
                     'codigo' => $codigo,
