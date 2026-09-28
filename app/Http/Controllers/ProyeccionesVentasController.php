@@ -6340,62 +6340,68 @@ class ProyeccionesVentasController extends Controller
                 $nombre = (string) ($nombresLocales[$item] ?? $item);
             }
 
-            $q = PvProductoCosto::query()
-                ->whereRaw('UPPER(empresa) = ?', [$empresa])
-                ->where('producto_codigo', $item);
+            // Upsert por clave única (anio|empresa|card|producto|mes=0): evita 1062
+            // y actualiza el precio global de ese cliente/producto si ya existe.
+            $lookup = [
+                'empresa' => $empresa,
+                'producto_codigo' => $item,
+            ];
             if ($hasAnio) {
-                $q->where('anio', $anio);
+                $lookup['anio'] = $anio;
             }
             if ($hasCard) {
-                $q->where('card_code', $card);
+                $lookup['card_code'] = $card;
             }
-            $existentes = $q->get(['id', 'costo_unitario', 'mes']);
+            if ($hasMes) {
+                $lookup['mes'] = 0;
+            }
 
-            $yaExiste = false;
-            foreach ($existentes as $ex) {
-                // Mismo cliente + producto (+ costo similar) → no duplicar.
-                if ($precio <= 0 || abs((float) $ex->costo_unitario - $precio) < 0.0001) {
-                    $yaExiste = true;
-                    break;
-                }
-                // Ya hay filas mensuales de precios-mensuales para este cliente/producto.
-                if ($hasMes && (int) ($ex->mes ?? 0) > 0) {
-                    $yaExiste = true;
-                    break;
-                }
-            }
-            if ($yaExiste) {
+            $row = PvProductoCosto::query()->firstOrNew($lookup);
+            $esNuevo = ! $row->exists;
+            $precioAnterior = $esNuevo ? null : (float) $row->costo_unitario;
+            $monedaAnterior = $esNuevo ? null : (string) ($row->moneda ?: 'MXN');
+            $precioFinal = round(max(0, $precio), 4);
+
+            // No pisar un costo existente con 0 si la lista no trajo precio.
+            if (! $esNuevo && $precioFinal <= 0) {
                 continue;
             }
 
-            $payload = [
-                'empresa' => $empresa,
-                'producto_codigo' => $item,
-                'producto_nombre' => mb_substr($nombre !== '' ? $nombre : $item, 0, 180),
-                'costo_unitario' => round(max(0, $precio), 4),
-                'moneda' => $moneda,
-                'updated_by' => $userId,
-            ];
-            if ($hasAnio) {
-                $payload['anio'] = $anio;
-            }
-            if ($hasCard) {
-                $payload['card_code'] = $card;
-            }
-            if ($hasCardName) {
-                $payload['card_name'] = mb_substr($cardName, 0, 180);
-            }
-            if ($hasMes) {
-                $payload['mes'] = 0;
+            if (! $esNuevo
+                && abs((float) $row->costo_unitario - $precioFinal) < 0.0001
+                && strtoupper((string) ($row->moneda ?: 'MXN')) === $moneda
+            ) {
+                if ($hasCardName && $cardName !== '' && trim((string) ($row->card_name ?? '')) === '') {
+                    $row->card_name = mb_substr($cardName, 0, 180);
+                    $row->save();
+                }
+                continue;
             }
 
-            $row = PvProductoCosto::query()->create($payload);
+            $row->producto_nombre = mb_substr($nombre !== '' ? $nombre : $item, 0, 180);
+            if ($hasAnio) {
+                $row->anio = $anio;
+            }
+            if ($hasCard) {
+                $row->card_code = $card;
+            }
+            if ($hasCardName && $cardName !== '') {
+                $row->card_name = mb_substr($cardName, 0, 180);
+            }
+            if ($hasMes) {
+                $row->mes = 0;
+            }
+            $row->costo_unitario = $precioFinal;
+            $row->moneda = $moneda;
+            $row->updated_by = $userId;
+            $row->save();
+
             $this->registrarHistorialPrecio(
                 $empresa,
                 $item,
                 (string) $row->producto_nombre,
-                null,
-                null,
+                $precioAnterior,
+                $monedaAnterior,
                 (float) $row->costo_unitario,
                 (string) $row->moneda,
                 'asignacion',
