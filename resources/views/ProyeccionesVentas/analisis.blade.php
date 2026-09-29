@@ -50,8 +50,8 @@
 
     <div id="an-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
-            <i class="fa-solid fa-chart-line"></i>
-            No hay clientes asignados en este ciclo. Asigna usuarios y productos en Proyecciones de ventas.
+            <i class="fa-solid fa-chart-line" id="an-empty-icon"></i>
+            <div id="an-empty-msg">No hay clientes asignados en este ciclo. Asigna usuarios y productos en Proyecciones de ventas.</div>
         </div>
     </div>
 

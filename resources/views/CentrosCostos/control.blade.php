@@ -15,15 +15,9 @@
         <img class="cc-header-logo" src="{{ asset('Images/logo_horizontal.png') }}" alt="Austin Powder">
     </div>
 
+    @include('CentrosCostos.partials.nav', ['ccNavOmitAdmin' => true])
+
     <div class="cc-toolbar">
-        <nav class="cc-subnav" id="ctl-vistas" aria-label="Vistas de captura">
-            <button type="button" class="is-active" data-vista="captura">
-                <i class="fa-solid fa-pen-to-square me-1"></i> Captura de Gastos
-            </button>
-            <button type="button" data-vista="visor">
-                <i class="fa-solid fa-table me-1"></i> Visor de centros
-            </button>
-        </nav>
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
             <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
