@@ -12,6 +12,8 @@ use App\Models\PvCiclo;
 use App\Models\PvPresupuesto;
 use App\Models\PvProductoCosto;
 use App\Models\PvProductoCostoHistorial;
+use App\Models\PvClienteCatalogo;
+use App\Models\PvProductoClienteCatalogo;
 use App\Models\PvVentaRealSnapshot;
 use App\Models\PvTipoPermiso;
 use App\Models\PvUsuarioPermiso;
@@ -3372,6 +3374,94 @@ class ProyeccionesVentasController extends Controller
         }
     }
 
+    /**
+     * Clientes ligeros solo para /Ventas/Asignaciones/.../asignar.
+     * No descarga todas las líneas de venta: catálogo local + búsqueda SAP filtrada por empresa.
+     */
+    public function clientesAsignacion(Request $request): JsonResponse
+    {
+        $empresa = strtolower(trim((string) $request->get('empresa', '')));
+        $year = (int) $request->get('year', date('Y'));
+        $q = trim((string) $request->get('q', $request->get('buscar', '')));
+        $force = $request->boolean('force');
+        $empresasOk = ['austin', 'imsa', 'pitic', 'sydney'];
+        if (! in_array($empresa, $empresasOk, true)) {
+            return response()->json(['ok' => false, 'centros' => [], 'mensaje' => 'Empresa inválida'], 422);
+        }
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(90);
+        }
+
+        try {
+            $map = $this->clientesLocalesAsignacion($empresa, $q);
+            $fuente = 'local';
+            $mensaje = null;
+
+            if ($q !== '' && mb_strlen($q) >= 2) {
+                $sap = $this->buscarClientesSapAsignacion($empresa, $year, $q);
+                if (! empty($sap['clientes'])) {
+                    $this->guardarClientesCatalogo($empresa, $year, $sap['clientes'], 'sap_busca');
+                    foreach ($sap['clientes'] as $row) {
+                        $key = strtoupper((string) ($row['codigo'] ?? ''));
+                        if ($key === '') {
+                            continue;
+                        }
+                        $map[$key] = $row;
+                    }
+                    $fuente = 'sap_busca';
+                } elseif (! empty($sap['mensaje']) && $map === []) {
+                    $mensaje = $sap['mensaje'];
+                }
+            } elseif ($force || count($map) < 5) {
+                $sap = $this->sembrarClientesSapAsignacion($empresa, $year);
+                if (! empty($sap['clientes'])) {
+                    $this->guardarClientesCatalogo($empresa, $year, $sap['clientes'], 'sap_semilla');
+                    foreach ($sap['clientes'] as $row) {
+                        $key = strtoupper((string) ($row['codigo'] ?? ''));
+                        if ($key === '') {
+                            continue;
+                        }
+                        if (! isset($map[$key])) {
+                            $map[$key] = $row;
+                        }
+                    }
+                    $fuente = count($map) > count($sap['clientes']) ? 'local+sap' : 'sap_semilla';
+                    $mensaje = $sap['mensaje'];
+                } elseif ($map === [] && ! empty($sap['mensaje'])) {
+                    $mensaje = $sap['mensaje'];
+                }
+            }
+
+            $clientes = array_values($map);
+            usort($clientes, function ($a, $b) {
+                return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
+                    ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
+            });
+
+            if ($clientes && $mensaje === null && $fuente !== 'sap_busca') {
+                $mensaje = 'Escribe código o nombre para buscar más clientes en SAP de esta empresa.';
+            }
+            if (! $clientes && $mensaje === null) {
+                $mensaje = $q !== ''
+                    ? 'Sin coincidencias. Prueba otro código o nombre.'
+                    : 'Sin clientes locales. Escribe en el buscador para traer clientes de SAP.';
+            }
+
+            return response()->json([
+                'ok' => $clientes !== [] || $fuente === 'local',
+                'centros' => $clientes,
+                'mensaje' => $mensaje,
+                'fuente' => $fuente,
+                'empresa' => $empresa,
+            ]);
+        } catch (Throwable $e) {
+            return response()->json(['ok' => false, 'centros' => [], 'mensaje' => $e->getMessage()], 200);
+        }
+    }
+
     public function cuentasSap(Request $request): JsonResponse
     {
         $empresa = strtolower((string) $request->get('empresa', 'austin'));
@@ -3390,6 +3480,97 @@ class ProyeccionesVentasController extends Controller
                 'cuentas' => $cargadas['productos'],
                 'agrupaciones' => [],
                 'mensaje' => $cargadas['mensaje'],
+            ]);
+        } catch (Throwable $e) {
+            return response()->json(['ok' => false, 'cuentas' => [], 'agrupaciones' => [], 'mensaje' => $e->getMessage()], 200);
+        }
+    }
+
+    /**
+     * Productos ligeros solo para /Ventas/Asignaciones/.../asignar.
+     * Filtra por empresa + cliente; catálogo local + SAP con CardCode (sin bajar todo el año).
+     */
+    public function productosAsignacion(Request $request): JsonResponse
+    {
+        $empresa = strtolower(trim((string) $request->get('empresa', '')));
+        $cliente = trim((string) $request->get('cliente', $request->get('cc', '')));
+        $year = (int) $request->get('year', date('Y'));
+        $q = trim((string) $request->get('q', $request->get('buscar', '')));
+        $todas = $request->boolean('todas');
+        $force = $request->boolean('force');
+        $empresasOk = ['austin', 'imsa', 'pitic', 'sydney'];
+        if (! in_array($empresa, $empresasOk, true)) {
+            return response()->json(['ok' => false, 'cuentas' => [], 'mensaje' => 'Empresa inválida'], 422);
+        }
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+        if (! $todas && $cliente === '') {
+            return response()->json([
+                'ok' => true,
+                'cuentas' => [],
+                'agrupaciones' => [],
+                'mensaje' => 'Elige un cliente para ver sus productos.',
+            ]);
+        }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(90);
+        }
+
+        try {
+            $map = $this->productosLocalesAsignacion($empresa, $todas ? '' : $cliente, $q);
+            $fuente = 'local';
+            $mensaje = null;
+
+            $needsSap = $force
+                || ($q !== '' && mb_strlen($q) >= 2)
+                || count($map) < 3;
+
+            if ($needsSap && ! $todas) {
+                $sap = $this->cargarProductosSapAsignacion($empresa, $cliente, $year, $q);
+                if (! empty($sap['productos'])) {
+                    $this->guardarProductosCatalogo($empresa, $cliente, $year, $sap['productos'], $q !== '' ? 'sap_busca' : 'sap');
+                    foreach ($sap['productos'] as $row) {
+                        $key = strtoupper((string) ($row['codigo'] ?? ''));
+                        if ($key === '') {
+                            continue;
+                        }
+                        $map[$key] = $row;
+                    }
+                    $fuente = 'sap';
+                    $mensaje = $sap['mensaje'];
+                } elseif ($map === [] && ! empty($sap['mensaje'])) {
+                    $mensaje = $sap['mensaje'];
+                }
+            } elseif ($needsSap && $todas) {
+                if ($map === []) {
+                    $mensaje = 'Para ver todos los productos usa el buscador, o desactiva “Ver todos” y elige un cliente.';
+                } else {
+                    $mensaje = 'Catálogo local de la empresa. Usa el buscador para afinar.';
+                }
+            }
+
+            $productos = array_values($map);
+            usort($productos, function ($a, $b) {
+                return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
+                    ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
+            });
+
+            if ($productos && $mensaje === null && $fuente === 'local') {
+                $mensaje = 'Catálogo local. Si falta alguno, escribe en el buscador de productos.';
+            }
+            if (! $productos && $mensaje === null) {
+                $mensaje = $q !== ''
+                    ? 'Sin productos para “'.$q.'”.'
+                    : 'Sin productos para este cliente en '.$year.'.';
+            }
+
+            return response()->json([
+                'ok' => $productos !== [] || $fuente === 'local',
+                'cuentas' => $productos,
+                'agrupaciones' => [],
+                'mensaje' => $mensaje,
+                'fuente' => $fuente,
             ]);
         } catch (Throwable $e) {
             return response()->json(['ok' => false, 'cuentas' => [], 'agrupaciones' => [], 'mensaje' => $e->getMessage()], 200);
@@ -5627,6 +5808,277 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * Productos ya conocidos en BD para asignación (sin SAP).
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    protected function productosLocalesAsignacion(string $empresa, string $cliente = '', string $q = ''): array
+    {
+        $empresa = strtolower(trim($empresa));
+        $cliente = trim($cliente);
+        $q = trim($q);
+        $map = [];
+
+        $push = function (string $codigo, string $nombre, string $grupo = '', float $costo = 0.0) use (&$map, $empresa, $q) {
+            $codigo = trim($codigo);
+            if ($codigo === '') {
+                return;
+            }
+            $nombre = trim($nombre) !== '' ? trim($nombre) : $codigo;
+            if ($q !== '') {
+                $hay = mb_strtoupper($codigo.' '.$nombre.' '.$grupo);
+                if (mb_strpos($hay, mb_strtoupper($q)) === false) {
+                    return;
+                }
+            }
+            $key = strtoupper($codigo);
+            if (! isset($map[$key])) {
+                $map[$key] = [
+                    'codigo' => $codigo,
+                    'nombre' => $nombre,
+                    'empresa' => $empresa,
+                    'grupo' => $grupo,
+                    'grupo_id' => $grupo,
+                    'costo' => $costo,
+                ];
+            } elseif ($costo > 0 && (float) ($map[$key]['costo'] ?? 0) <= 0) {
+                $map[$key]['costo'] = $costo;
+            }
+        };
+
+        if (Schema::hasTable('tbl_pv_producto_cliente_catalogo')) {
+            $query = PvProductoClienteCatalogo::query()->where('empresa', $empresa);
+            if ($cliente !== '') {
+                $query->whereRaw('UPPER(cliente_codigo) = ?', [strtoupper($cliente)]);
+            }
+            foreach ($query->orderBy('nombre')->limit(5000)->get() as $row) {
+                $push((string) $row->codigo, (string) ($row->nombre ?? ''), (string) ($row->grupo ?? ''), (float) ($row->costo ?? 0));
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_productos_costo') && Schema::hasColumn('tbl_pv_productos_costo', 'producto_codigo')) {
+            $query = DB::table('tbl_pv_productos_costo')->where('empresa', $empresa);
+            if ($cliente !== '' && Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
+                $query->whereRaw('UPPER(card_code) = ?', [strtoupper($cliente)]);
+            }
+            $sel = ['producto_codigo'];
+            if (Schema::hasColumn('tbl_pv_productos_costo', 'producto_nombre')) {
+                $sel[] = 'producto_nombre';
+            }
+            if (Schema::hasColumn('tbl_pv_productos_costo', 'linea')) {
+                $sel[] = 'linea';
+            }
+            if (Schema::hasColumn('tbl_pv_productos_costo', 'precio')) {
+                $sel[] = 'precio';
+            } elseif (Schema::hasColumn('tbl_pv_productos_costo', 'costo')) {
+                $sel[] = 'costo';
+            }
+            foreach ($query->select($sel)->distinct()->limit(5000)->get() as $row) {
+                $nom = (string) ($row->producto_nombre ?? '');
+                $grp = (string) ($row->linea ?? '');
+                $cost = (float) ($row->precio ?? $row->costo ?? 0);
+                $push((string) ($row->producto_codigo ?? ''), $nom, $grp, $cost);
+            }
+        }
+
+        if ($cliente !== '' && Schema::hasTable('tbl_pv_asignaciones') && Schema::hasTable('tbl_pv_asignacion_cuentas')) {
+            $asigIds = DB::table('tbl_pv_asignaciones')
+                ->where('empresa', $empresa)
+                ->where(function ($w) use ($cliente) {
+                    if (Schema::hasColumn('tbl_pv_asignaciones', 'cliente_codigo')) {
+                        $w->whereRaw('UPPER(cliente_codigo) = ?', [strtoupper($cliente)]);
+                    } else {
+                        $w->whereRaw('UPPER(centro_codigo) = ?', [strtoupper($cliente)]);
+                    }
+                })
+                ->pluck('id');
+            if ($asigIds->isNotEmpty()) {
+                $ctaCodigo = Schema::hasColumn('tbl_pv_asignacion_cuentas', 'cuenta_codigo') ? 'cuenta_codigo' : 'producto_codigo';
+                $ctaNombre = Schema::hasColumn('tbl_pv_asignacion_cuentas', 'cuenta_nombre') ? 'cuenta_nombre' : 'producto_nombre';
+                $rows = DB::table('tbl_pv_asignacion_cuentas')
+                    ->whereIn('asignacion_id', $asigIds)
+                    ->limit(3000)
+                    ->get();
+                foreach ($rows as $row) {
+                    $push(
+                        (string) ($row->{$ctaCodigo} ?? $row->cuenta_codigo ?? $row->producto_codigo ?? ''),
+                        (string) ($row->{$ctaNombre} ?? $row->cuenta_nombre ?? $row->producto_nombre ?? ''),
+                        (string) ($row->grupo ?? ''),
+                        (float) ($row->costo ?? 0)
+                    );
+                }
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * SAP filtrado por CardCode (y opcional ItemName/ItemCode). Una empresa, pocas páginas.
+     *
+     * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarProductosSapAsignacion(string $empresa, string $cliente, int $year, string $q = ''): array
+    {
+        $empresa = strtolower(trim($empresa));
+        $cliente = trim($cliente);
+        $q = trim($q);
+        $cacheKey = 'pv.asig.prod.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente).'|'.mb_strtoupper($q));
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['productos'])) {
+            return $cached;
+        }
+
+        $api = app(AutinApiClient::class);
+        $map = [];
+        $ok = false;
+        $mensaje = null;
+        $years = [$year];
+        if ($year > 2000) {
+            $years[] = $year - 1;
+        }
+
+        foreach ($years as $y) {
+            $filters = [
+                'year' => $y,
+                'Empresa' => strtoupper($empresa),
+                'CardCode' => $cliente,
+            ];
+            if ($q !== '' && mb_strlen($q) >= 2) {
+                if (preg_match('/^[A-Za-z0-9._\-]{2,40}$/', $q)) {
+                    $filters['ItemCode'] = $q;
+                } else {
+                    $filters['ItemName'] = $q;
+                }
+            }
+
+            // per_page 100 + tope 8 páginas ≈ cubre clientes grandes sin 504.
+            $pack = $api->ventasTodasPaginas($filters, 8, 5, 100);
+            if (empty($pack['ok'])) {
+                if (! $ok) {
+                    $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
+                }
+                continue;
+            }
+            $ok = true;
+            foreach ($pack['rows'] as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+                if ($item === '') {
+                    continue;
+                }
+                $itemName = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? $row['Itemname'] ?? ''));
+                $linea = trim((string) ($row['U_LINEA_QV'] ?? $row['Linea'] ?? $row['linea'] ?? ''));
+                $key = strtoupper($item);
+                $costo = $this->costoVenta($row);
+                if (! isset($map[$key])) {
+                    $map[$key] = [
+                        'codigo' => $item,
+                        'nombre' => $itemName !== '' ? $itemName : $item,
+                        'empresa' => $empresa,
+                        'grupo' => $linea,
+                        'grupo_id' => $linea,
+                        'costo' => $costo,
+                    ];
+                } elseif ($costo > 0) {
+                    $map[$key]['costo'] = $costo;
+                }
+            }
+            if ($map !== []) {
+                if ($y !== $year) {
+                    $mensaje = 'Mostrando productos con venta en '.$y.' (aún no hay en '.$year.').';
+                }
+                break;
+            }
+        }
+
+        // IMSA: si vacío, probar BACHIMBA una sola vez.
+        if ($map === [] && $empresa === 'imsa') {
+            $pack = $api->ventasTodasPaginas([
+                'year' => $year,
+                'Empresa' => 'BACHIMBA',
+                'CardCode' => $cliente,
+            ], 6, 4, 100);
+            if (! empty($pack['ok'])) {
+                $ok = true;
+                foreach ($pack['rows'] as $row) {
+                    if (! is_array($row)) {
+                        continue;
+                    }
+                    $item = trim((string) ($row['ItemCode'] ?? ''));
+                    if ($item === '') {
+                        continue;
+                    }
+                    $key = strtoupper($item);
+                    $map[$key] = [
+                        'codigo' => $item,
+                        'nombre' => trim((string) ($row['ItemName'] ?? $item)),
+                        'empresa' => $empresa,
+                        'grupo' => trim((string) ($row['U_LINEA_QV'] ?? '')),
+                        'grupo_id' => trim((string) ($row['U_LINEA_QV'] ?? '')),
+                        'costo' => $this->costoVenta($row),
+                    ];
+                }
+            }
+        }
+
+        $productos = array_values($map);
+        usort($productos, function ($a, $b) {
+            return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
+                ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
+        });
+
+        $payload = [
+            'ok' => $ok,
+            'productos' => $productos,
+            'mensaje' => $ok
+                ? ($mensaje ?: ($productos ? null : 'Este cliente no tiene productos en ventas '.$year))
+                : $mensaje,
+        ];
+        if ($ok && $productos) {
+            Cache::put($cacheKey, $payload, 1800);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $productos
+     */
+    protected function guardarProductosCatalogo(string $empresa, string $cliente, int $year, array $productos, string $origen = 'sap'): void
+    {
+        if (! Schema::hasTable('tbl_pv_producto_cliente_catalogo') || $productos === [] || trim($cliente) === '') {
+            return;
+        }
+        $empresa = strtolower(trim($empresa));
+        $cliente = trim($cliente);
+        $now = now();
+        foreach ($productos as $row) {
+            $codigo = trim((string) ($row['codigo'] ?? ''));
+            if ($codigo === '') {
+                continue;
+            }
+            PvProductoClienteCatalogo::query()->updateOrCreate(
+                [
+                    'empresa' => $empresa,
+                    'cliente_codigo' => $cliente,
+                    'codigo' => $codigo,
+                ],
+                [
+                    'nombre' => trim((string) ($row['nombre'] ?? $codigo)),
+                    'grupo' => trim((string) ($row['grupo'] ?? '')),
+                    'costo' => (float) ($row['costo'] ?? 0),
+                    'anio' => $year,
+                    'origen' => $origen,
+                    'synced_at' => $now,
+                ]
+            );
+        }
+    }
+
+    /**
      * @return array{ok: bool, cuentas: array<int, array<string, mixed>>, agrupaciones: array<int, array<string, mixed>>, mensaje: string|null}
      */
     protected function cargarCuentasEmpresa(string $empresa, bool $todas = false, string $groupMask = '', string $cliente = '', int $year = 0): array
@@ -5642,6 +6094,308 @@ class ProyeccionesVentasController extends Controller
             'agrupaciones' => [],
             'mensaje' => $pack['mensaje'],
         ];
+    }
+
+    /**
+     * Catálogo local (BD) + tablas PV ya conocidas. Solo codigo/nombre.
+     *
+     * @return array<string, array{codigo: string, nombre: string, empresa: string, activo: bool, departamento: string}>
+     */
+    protected function clientesLocalesAsignacion(string $empresa, string $q = ''): array
+    {
+        $empresa = strtolower(trim($empresa));
+        $q = trim($q);
+        $map = [];
+
+        $push = function (string $codigo, string $nombre) use (&$map, $empresa, $q) {
+            $codigo = trim($codigo);
+            if ($codigo === '') {
+                return;
+            }
+            $nombre = trim($nombre) !== '' ? trim($nombre) : $codigo;
+            if ($q !== '') {
+                $hay = mb_strtoupper($codigo.' '.$nombre);
+                if (mb_strpos($hay, mb_strtoupper($q)) === false) {
+                    return;
+                }
+            }
+            $key = strtoupper($codigo);
+            if (! isset($map[$key]) || ($map[$key]['nombre'] === $map[$key]['codigo'] && $nombre !== $codigo)) {
+                $map[$key] = [
+                    'codigo' => $codigo,
+                    'nombre' => $nombre,
+                    'empresa' => $empresa,
+                    'activo' => true,
+                    'departamento' => '',
+                ];
+            }
+        };
+
+        if (Schema::hasTable('tbl_pv_cliente_catalogo')) {
+            $rows = PvClienteCatalogo::query()
+                ->where('empresa', $empresa)
+                ->orderBy('nombre')
+                ->limit(5000)
+                ->get(['codigo', 'nombre']);
+            foreach ($rows as $row) {
+                $push((string) $row->codigo, (string) ($row->nombre ?? ''));
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_asignaciones')) {
+            $colCodigo = Schema::hasColumn('tbl_pv_asignaciones', 'cliente_codigo') ? 'cliente_codigo' : 'centro_codigo';
+            $colNombre = Schema::hasColumn('tbl_pv_asignaciones', 'centro_nombre') ? 'centro_nombre' : null;
+            $sel = [$colCodigo];
+            if ($colNombre) {
+                $sel[] = $colNombre;
+            }
+            $rows = DB::table('tbl_pv_asignaciones')
+                ->where('empresa', $empresa)
+                ->select($sel)
+                ->distinct()
+                ->limit(3000)
+                ->get();
+            foreach ($rows as $row) {
+                $push((string) ($row->{$colCodigo} ?? ''), (string) ($colNombre ? ($row->{$colNombre} ?? '') : ''));
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_captura_clientes')) {
+            $cols = ['cliente_codigo'];
+            if (Schema::hasColumn('tbl_pv_captura_clientes', 'cliente_nombre')) {
+                $cols[] = 'cliente_nombre';
+            } elseif (Schema::hasColumn('tbl_pv_captura_clientes', 'centro_nombre')) {
+                $cols[] = 'centro_nombre';
+            }
+            $rows = DB::table('tbl_pv_captura_clientes')
+                ->where('empresa', $empresa)
+                ->select($cols)
+                ->distinct()
+                ->limit(3000)
+                ->get();
+            foreach ($rows as $row) {
+                $nom = (string) ($row->cliente_nombre ?? $row->centro_nombre ?? '');
+                $push((string) ($row->cliente_codigo ?? ''), $nom);
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_productos_costo') && Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
+            $rows = DB::table('tbl_pv_productos_costo')
+                ->where('empresa', $empresa)
+                ->where('card_code', '!=', '')
+                ->select('card_code', 'card_name')
+                ->distinct()
+                ->limit(5000)
+                ->get();
+            foreach ($rows as $row) {
+                $push((string) ($row->card_code ?? ''), (string) ($row->card_name ?? ''));
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+            $rows = PvVentaRealSnapshot::query()
+                ->where('empresa', $empresa)
+                ->select('cliente_codigo')
+                ->distinct()
+                ->limit(3000)
+                ->get();
+            foreach ($rows as $row) {
+                $push((string) $row->cliente_codigo, (string) $row->cliente_codigo);
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * Semilla rápida: 1 página /ventas por empresa-filtro (solo CardCode/CardName).
+     *
+     * @return array{ok: bool, clientes: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function sembrarClientesSapAsignacion(string $empresa, int $year): array
+    {
+        $cacheKey = 'pv.asig.cli.seed.'.$empresa.'.'.$year;
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['clientes'])) {
+            return $cached;
+        }
+
+        $api = app(AutinApiClient::class);
+        $map = [];
+        $ok = false;
+        $mensaje = null;
+
+        foreach ([strtoupper($empresa)] as $empFiltro) {
+            $res = $api->ventas([
+                'year' => $year,
+                'Empresa' => $empFiltro,
+                'per_page' => 80,
+                'page' => 1,
+            ]);
+            if (empty($res['ok'])) {
+                if (! $ok) {
+                    $mensaje = $res['message'] ?? 'Sin conexión a ventas SAP';
+                }
+                continue;
+            }
+            $ok = true;
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+            $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+            foreach ($this->extraerClientesDeFilasVentas($rows, $empresa) as $key => $row) {
+                $map[$key] = $row;
+            }
+        }
+
+        $clientes = array_values($map);
+        usort($clientes, function ($a, $b) {
+            return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
+                ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
+        });
+
+        $payload = [
+            'ok' => $ok,
+            'clientes' => $clientes,
+            'mensaje' => $ok
+                ? 'Muestra reciente de SAP. Escribe en el buscador para localizar cualquier cliente de la empresa.'
+                : $mensaje,
+        ];
+        if ($ok && $clientes) {
+            Cache::put($cacheKey, $payload, 900);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Búsqueda SAP filtrada (CardCode o CardName) — no recorre todo el año.
+     *
+     * @return array{ok: bool, clientes: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function buscarClientesSapAsignacion(string $empresa, int $year, string $q): array
+    {
+        $q = trim($q);
+        if (mb_strlen($q) < 2) {
+            return ['ok' => true, 'clientes' => [], 'mensaje' => null];
+        }
+
+        $cacheKey = 'pv.asig.cli.q.'.$empresa.'.'.$year.'.'.md5(mb_strtoupper($q));
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && array_key_exists('clientes', $cached)) {
+            return $cached;
+        }
+
+        $api = app(AutinApiClient::class);
+        $map = [];
+        $ok = false;
+        $mensaje = null;
+        $pareceCodigo = (bool) preg_match('/^[A-Za-z0-9._\-]{2,40}$/', $q);
+
+        foreach ($this->empresasFiltroVentas($empresa) as $empFiltro) {
+            $intentos = [];
+            if ($pareceCodigo) {
+                $intentos[] = ['CardCode' => $q];
+            }
+            $intentos[] = ['CardName' => $q];
+
+            foreach ($intentos as $extra) {
+                $res = $api->ventas(array_merge([
+                    'year' => $year,
+                    'Empresa' => $empFiltro,
+                    'per_page' => 80,
+                    'page' => 1,
+                ], $extra));
+                if (empty($res['ok'])) {
+                    if (! $ok) {
+                        $mensaje = $res['message'] ?? 'Sin conexión a ventas SAP';
+                    }
+                    continue;
+                }
+                $ok = true;
+                $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+                foreach ($this->extraerClientesDeFilasVentas($rows, $empresa) as $key => $row) {
+                    $map[$key] = $row;
+                }
+            }
+        }
+
+        $clientes = array_values($map);
+        usort($clientes, function ($a, $b) {
+            return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
+                ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
+        });
+
+        $payload = [
+            'ok' => $ok,
+            'clientes' => $clientes,
+            'mensaje' => $ok
+                ? ($clientes ? null : 'SAP no devolvió clientes para “'.$q.'”')
+                : $mensaje,
+        ];
+        Cache::put($cacheKey, $payload, 600);
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     * @return array<string, array{codigo: string, nombre: string, empresa: string, activo: bool, departamento: string}>
+     */
+    protected function extraerClientesDeFilasVentas(array $rows, string $empresa): array
+    {
+        $map = [];
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
+            if ($card === '') {
+                continue;
+            }
+            $name = trim((string) ($row['CardName'] ?? $row['Cardname'] ?? ''));
+            $key = strtoupper($card);
+            if (! isset($map[$key])) {
+                $map[$key] = [
+                    'codigo' => $card,
+                    'nombre' => $name !== '' ? $name : $card,
+                    'empresa' => $empresa,
+                    'activo' => true,
+                    'departamento' => '',
+                ];
+            } elseif (($map[$key]['nombre'] === $map[$key]['codigo']) && $name !== '') {
+                $map[$key]['nombre'] = $name;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $clientes
+     */
+    protected function guardarClientesCatalogo(string $empresa, int $year, array $clientes, string $origen = 'sap'): void
+    {
+        if (! Schema::hasTable('tbl_pv_cliente_catalogo') || $clientes === []) {
+            return;
+        }
+        $empresa = strtolower(trim($empresa));
+        $now = now();
+        foreach ($clientes as $row) {
+            $codigo = trim((string) ($row['codigo'] ?? ''));
+            if ($codigo === '') {
+                continue;
+            }
+            $nombre = trim((string) ($row['nombre'] ?? ''));
+            PvClienteCatalogo::query()->updateOrCreate(
+                ['empresa' => $empresa, 'codigo' => $codigo],
+                [
+                    'nombre' => $nombre !== '' ? $nombre : $codigo,
+                    'anio' => $year,
+                    'origen' => $origen,
+                    'synced_at' => $now,
+                ]
+            );
+        }
     }
 
     /**
@@ -5696,10 +6450,11 @@ class ProyeccionesVentasController extends Controller
         $mensaje = null;
 
         foreach ($empresasFiltro as $empFiltro) {
+            // per_page 80 evita 504 de AutinApi; tope bajo para no colgar el request.
             $pack = $api->ventasTodasPaginas([
                 'year' => $year,
                 'Empresa' => $empFiltro,
-            ], 30, 6);
+            ], 8, 4, 80);
             if (empty($pack['ok'])) {
                 if (! $ok) {
                     $mensaje = $pack['message'] ?? 'Sin clientes SAP';
@@ -5707,27 +6462,8 @@ class ProyeccionesVentasController extends Controller
                 continue;
             }
             $ok = true;
-            foreach ($pack['rows'] as $row) {
-                if (! is_array($row)) {
-                    continue;
-                }
-                $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
-                if ($card === '') {
-                    continue;
-                }
-                $name = trim((string) ($row['CardName'] ?? $row['Cardname'] ?? ''));
-                $key = strtoupper($card);
-                if (! isset($map[$key])) {
-                    $map[$key] = [
-                        'codigo' => $card,
-                        'nombre' => $name !== '' ? $name : $card,
-                        'empresa' => $empresa,
-                        'activo' => true,
-                        'departamento' => '',
-                    ];
-                } elseif (($map[$key]['nombre'] === $map[$key]['codigo']) && $name !== '') {
-                    $map[$key]['nombre'] = $name;
-                }
+            foreach ($this->extraerClientesDeFilasVentas($pack['rows'], $empresa) as $key => $row) {
+                $map[$key] = $row;
             }
         }
 
@@ -5744,6 +6480,7 @@ class ProyeccionesVentasController extends Controller
         ];
         if ($ok && $clientes) {
             Cache::put($cacheKey, $payload, 1800);
+            $this->guardarClientesCatalogo($empresa, $year, $clientes, 'sap');
         }
 
         return $payload;

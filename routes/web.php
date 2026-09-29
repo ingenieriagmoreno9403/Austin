@@ -1249,6 +1249,8 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::delete('/ProyeccionesVentas/api/ciclos/{ciclo}', [ProyeccionesVentasController::class, 'destroyCiclo'])->name('pv.api.ciclos.destroy');
     Route::get('/ProyeccionesVentas/api/empresas', [ProyeccionesVentasController::class, 'empresasSap'])->name('pv.api.empresas');
     Route::get('/ProyeccionesVentas/api/centros', [ProyeccionesVentasController::class, 'centrosSap'])->name('pv.api.centros');
+    Route::get('/ProyeccionesVentas/api/asignacion/clientes', [ProyeccionesVentasController::class, 'clientesAsignacion'])->name('pv.api.asignacion.clientes');
+    Route::get('/ProyeccionesVentas/api/asignacion/productos', [ProyeccionesVentasController::class, 'productosAsignacion'])->name('pv.api.asignacion.productos');
     Route::get('/ProyeccionesVentas/api/cuentas', [ProyeccionesVentasController::class, 'cuentasSap'])->name('pv.api.cuentas');
     Route::get('/ProyeccionesVentas/api/mis-asignaciones', [ProyeccionesVentasController::class, 'misAsignaciones'])->name('pv.api.mis');
     Route::get('/Ventas/Captura', [ProyeccionesVentasController::class, 'control'])->name('pv.control');

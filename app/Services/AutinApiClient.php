@@ -449,14 +449,16 @@ class AutinApiClient
     }
 
     /**
-     * Recorre todas las páginas de /ventas (tope 500 por página en AutinApi).
+     * Recorre páginas de /ventas.
+     * per_page alto (p. ej. 500) suele provocar 504 en AutinApi; por defecto 80.
      *
      * @param  array<string, mixed>  $filters
      * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>}
      */
-    public function ventasTodasPaginas(array $filters, int $maxPages = 30, int $concurrency = 6): array
+    public function ventasTodasPaginas(array $filters, int $maxPages = 30, int $concurrency = 6, int $perPage = 80): array
     {
-        $filters['per_page'] = 500;
+        $perPage = max(20, min(120, $perPage));
+        $filters['per_page'] = $perPage;
         $first = $this->ventas(array_merge($filters, ['page' => 1]));
         if (empty($first['ok'])) {
             return [
