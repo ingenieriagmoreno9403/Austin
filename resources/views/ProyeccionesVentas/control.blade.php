@@ -177,9 +177,6 @@
                         </div>
                         <div class="cc-matrix-toolbar">
                             <div class="cc-captura-quick cc-captura-quick-inline">
-                                <button type="button" class="cc-btn cc-btn-ink" id="ctl-load-budget" hidden title="Cargar ventas-budget de Oct–Nov–Dic a la proyección">
-                                    <i class="fa-solid fa-calendar-week"></i> <span data-budget-label>Budget Oct–Nov–Dic</span>
-                                </button>
                                 <button type="button" class="cc-btn" id="ctl-copy-year">
                                     <i class="fa-solid fa-clone"></i> Copiar {{ $bootstrap['anioGasto'] }}
                                 </button>
