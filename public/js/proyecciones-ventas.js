@@ -367,6 +367,36 @@
         return out;
     }
 
+    function productosDesdeBudgetsDeCentro(c) {
+        var emp = String((c && c.empresa) || '').toUpperCase().trim();
+        var cc = String((c && c.codigo) || '').trim();
+        if (!emp || !cc) return [];
+        var prefix = (emp + '|' + cc + '|').toUpperCase();
+        var seen = {};
+        var out = [];
+        function addKey(k) {
+            var key = String(k || '');
+            if (key.toUpperCase().indexOf(prefix) !== 0) return;
+            var parts = key.split('|');
+            if (parts.length < 3) return;
+            var codigo = String(parts.slice(2).join('|') || '').trim();
+            if (!codigo || seen[codigo] || seen[codigo.toUpperCase()]) return;
+            seen[codigo] = true;
+            seen[codigo.toUpperCase()] = true;
+            out.push({
+                codigo: codigo,
+                nombre: codigo,
+                grupo: 'Proyección',
+                gasto: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                empresa: c.empresa
+            });
+        }
+        Object.keys(CC.state.budgets || {}).forEach(addKey);
+        Object.keys(CC.state.budgetKeysFromServer || {}).forEach(addKey);
+        Object.keys(CC.state.completados || {}).forEach(addKey);
+        return out;
+    }
+
     function mergeCuentasAnalisis(c, base) {
         var seen = {};
         (base || []).forEach(function (cta) {
@@ -376,7 +406,14 @@
         var extra = productosVentaRealDeCentro(c).filter(function (cta) {
             return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
         });
-        return (base || []).concat(extra);
+        extra.forEach(function (cta) {
+            seen[String(cta.codigo)] = true;
+            seen[codigoCuentaKey(cta.codigo)] = true;
+        });
+        var fromBudget = productosDesdeBudgetsDeCentro(c).filter(function (cta) {
+            return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
+        });
+        return (base || []).concat(extra).concat(fromBudget);
     }
 
     function cuentasDeCentro(c) {
@@ -7156,7 +7193,7 @@
     }
 
     function clienteFilterKey(c) {
-        return String(c.empresa || '') + '|' + String(c.codigo || '');
+        return String((c && c.empresa) || '').toUpperCase().trim() + '|' + String((c && c.codigo) || '').trim();
     }
 
     function fillSelectKeepEscaped(el, items, extra) {
@@ -7478,6 +7515,7 @@
 
         function hydrateGastoBatch(json) {
             var map = (json && json.por_cliente) || {};
+            var missing = [];
             needGasto.forEach(function (c) {
                 var emp = String(c.empresa || '').toUpperCase();
                 var cc = String(c.codigo || '').trim();
@@ -7504,10 +7542,81 @@
                     CC.state.gastoLookup = CC.state.gastoLookup || {};
                     CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(hit.por_cuenta);
                 } else {
-                    CC._anGastoTried = CC._anGastoTried || {};
-                    CC._anGastoTried[cacheKey] = true;
+                    missing.push(c);
                 }
             });
+            return missing;
+        }
+
+        function fetchGastoIndividual(centrosMissing, done) {
+            if (gen !== CC._anGastoGen) return;
+            if (!centrosMissing.length) {
+                done();
+                return;
+            }
+            CC._anGastoTotal = centrosMissing.length;
+            CC._anGastoLeft = centrosMissing.length;
+            CC._anGastoRunning = true;
+            paintAnalisisLoading();
+            var pending = centrosMissing.slice();
+            var inflight = 0;
+            var max = 4;
+            function kickOne() {
+                if (gen !== CC._anGastoGen) return;
+                if (!pending.length && !inflight) {
+                    done();
+                    return;
+                }
+                while (inflight < max && pending.length) {
+                    var c = pending.shift();
+                    inflight += 1;
+                    (function (centro) {
+                        var cacheKey = gastoCacheKey(centro);
+                        var finished = false;
+                        function doneOne() {
+                            if (finished) return;
+                            finished = true;
+                            if (gen !== CC._anGastoGen) return;
+                            inflight -= 1;
+                            CC._anGastoLeft = Math.max(0, (CC._anGastoLeft || 0) - 1);
+                            paintAnalisisLoading();
+                            if (!pending.length && !inflight) done();
+                            else kickOne();
+                        }
+                        var timer = setTimeout(doneOne, 25000);
+                        fetch((CC.state.gastoUrl || '/ProyeccionesVentas/api/gasto-real') +
+                            '?empresa=' + encodeURIComponent(centro.empresa || '') +
+                            '&cc=' + encodeURIComponent(centro.codigo || '') +
+                            '&year=' + encodeURIComponent(year), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            if (gen !== CC._anGastoGen) return;
+                            var por = (json && json.por_cuenta) || {};
+                            if (por && Object.keys(por).length) {
+                                rememberGastoCache(cacheKey, por, {
+                                    fuente: (json && json.fuente) || (json && json.ok ? 'api' : 'error'),
+                                    synced_at: (json && json.synced_at) || null,
+                                    year: (json && json.year) || year,
+                                    mensaje: (json && json.mensaje) || null
+                                });
+                                CC.state.gastoLookup = CC.state.gastoLookup || {};
+                                CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
+                            } else {
+                                CC._anGastoTried = CC._anGastoTried || {};
+                                CC._anGastoTried[cacheKey] = true;
+                            }
+                        }).catch(function () {
+                            if (gen !== CC._anGastoGen) return;
+                            CC._anGastoTried = CC._anGastoTried || {};
+                            CC._anGastoTried[cacheKey] = true;
+                        }).then(function () {
+                            clearTimeout(timer);
+                            doneOne();
+                        });
+                    })(c);
+                }
+            }
+            kickOne();
         }
 
         function queuePreciosBackground() {
@@ -7623,67 +7732,15 @@
             });
         }).then(function (json) {
             if (gen !== CC._anGastoGen) return;
-            hydrateGastoBatch(json);
+            var missing = hydrateGastoBatch(json) || [];
+            if (missing.length) {
+                fetchGastoIndividual(missing, afterGasto);
+                return;
+            }
             afterGasto();
         }).catch(function () {
             if (gen !== CC._anGastoGen) return;
-            var pending = needGasto.slice();
-            var inflight = 0;
-            var max = 4;
-            function kickOne() {
-                if (gen !== CC._anGastoGen) return;
-                if (!pending.length && !inflight) {
-                    afterGasto();
-                    return;
-                }
-                while (inflight < max && pending.length) {
-                    var c = pending.shift();
-                    inflight += 1;
-                    (function (centro) {
-                        var cacheKey = gastoCacheKey(centro);
-                        var finished = false;
-                        function doneOne() {
-                            if (finished) return;
-                            finished = true;
-                            if (gen !== CC._anGastoGen) return;
-                            inflight -= 1;
-                            if (!pending.length && !inflight) afterGasto();
-                            else kickOne();
-                        }
-                        var timer = setTimeout(doneOne, 25000);
-                        fetch((CC.state.gastoUrl || '/ProyeccionesVentas/api/gasto-real') +
-                            '?empresa=' + encodeURIComponent(centro.empresa || '') +
-                            '&cc=' + encodeURIComponent(centro.codigo || '') +
-                            '&year=' + encodeURIComponent(year), {
-                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                        }).then(function (res) { return res.json(); }).then(function (json) {
-                            if (gen !== CC._anGastoGen) return;
-                            var por = (json && json.por_cuenta) || {};
-                            if (por && Object.keys(por).length) {
-                                rememberGastoCache(cacheKey, por, {
-                                    fuente: (json && json.fuente) || (json && json.ok ? 'api' : 'error'),
-                                    synced_at: (json && json.synced_at) || null,
-                                    year: (json && json.year) || year,
-                                    mensaje: (json && json.mensaje) || null
-                                });
-                                CC.state.gastoLookup = CC.state.gastoLookup || {};
-                                CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
-                            } else {
-                                CC._anGastoTried = CC._anGastoTried || {};
-                                CC._anGastoTried[cacheKey] = true;
-                            }
-                        }).catch(function () {
-                            if (gen !== CC._anGastoGen) return;
-                            CC._anGastoTried = CC._anGastoTried || {};
-                            CC._anGastoTried[cacheKey] = true;
-                        }).then(function () {
-                            clearTimeout(timer);
-                            doneOne();
-                        });
-                    })(c);
-                }
-            }
-            kickOne();
+            fetchGastoIndividual(needGasto.slice(), afterGasto);
         });
     }
 
