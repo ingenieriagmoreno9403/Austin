@@ -266,24 +266,45 @@ class RegisterController extends Controller
             return redirect()->route('registro')->with('warning', 'No se encontró el usuario seleccionado.');
         }
 
-        $name = trim((string) $request->get('name'));
-        $email = trim((string) $request->get('email'));
-        $pass = trim((string) $request->get('contrasena', ''));
-        $repass = trim((string) $request->get('recontrasena', ''));
+        $campos = collect($request->get('campos', []))
+            ->map(fn ($campo) => strtolower(trim((string) $campo)))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+        $camposPermitidos = ['nombre', 'correo', 'contrasena'];
+        $campos = array_values(array_intersect($campos, $camposPermitidos));
 
-        if (mb_strlen($name) < 3 || mb_strlen($name) > 100) {
-            return redirect()->route('registro')->with('warning', 'El nombre debe tener entre 3 y 100 caracteres.');
+        if (empty($campos)) {
+            return redirect()->route('registro')->with('warning', 'Elige qué quieres editar: nombre, correo o contraseña.');
         }
 
-        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || mb_strlen($email) > 100) {
-            return redirect()->route('registro')->with('warning', 'Captura un correo válido.');
+        $cambios = [];
+
+        if (in_array('nombre', $campos, true)) {
+            $name = trim((string) $request->get('name'));
+            if (mb_strlen($name) < 3 || mb_strlen($name) > 100) {
+                return redirect()->route('registro')->with('warning', 'El nombre debe tener entre 3 y 100 caracteres.');
+            }
+            $user->name = $name;
+            $cambios[] = 'nombre';
         }
 
-        if (User::where('email', $email)->where('id', '<>', $user->id)->exists()) {
-            return redirect()->route('registro')->with('warning', 'Ese correo ya está registrado en otro usuario.');
+        if (in_array('correo', $campos, true)) {
+            $email = trim((string) $request->get('email'));
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || mb_strlen($email) > 100) {
+                return redirect()->route('registro')->with('warning', 'Captura un correo válido.');
+            }
+            if (User::where('email', $email)->where('id', '<>', $user->id)->exists()) {
+                return redirect()->route('registro')->with('warning', 'Ese correo ya está registrado en otro usuario.');
+            }
+            $user->email = $email;
+            $cambios[] = 'correo';
         }
 
-        if ($pass !== '' || $repass !== '') {
+        if (in_array('contrasena', $campos, true)) {
+            $pass = trim((string) $request->get('contrasena', ''));
+            $repass = trim((string) $request->get('recontrasena', ''));
             if ($pass !== $repass) {
                 return redirect()->route('registro')->with('warning_msg', 'Las contraseñas no coinciden. Verifica e inténtalo de nuevo.');
             }
@@ -291,15 +312,17 @@ class RegisterController extends Controller
                 return redirect()->route('registro')->with('warning', 'La contraseña debe tener al menos 8 caracteres.');
             }
             $user->password = bcrypt($pass);
+            $cambios[] = 'contraseña';
         }
 
-        $user->name = $name;
-        $user->email = $email;
         $user->updated_at = Carbon::now()->format('Y-m-d');
         $user->updated_by = auth()->user()->name;
 
         if ($user->save()) {
-            return redirect()->route('registro')->with('success_msg_large', 'Se actualizó la información de ' . $user->name);
+            return redirect()->route('registro')->with(
+                'success_msg_large',
+                'Se actualizó ' . implode(', ', $cambios) . ' de ' . $user->name
+            );
         }
 
         return redirect()->route('registro')->with('error_msg_large', 'No se pudo actualizar la información del usuario.');

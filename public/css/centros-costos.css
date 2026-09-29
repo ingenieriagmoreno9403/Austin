@@ -400,6 +400,52 @@
     text-transform: none;
     color: var(--cc-ink);
 }
+.cc-filter-field .select2-container {
+    width: 100% !important;
+}
+.cc-filter-field .select2-container .select2-selection--single {
+    border: 1px solid var(--cc-line);
+    border-radius: 10px;
+    min-height: 38px;
+    padding: 0.22rem 0.55rem;
+    background: #fff;
+    display: flex;
+    align-items: center;
+}
+.cc-filter-field .select2-container--default .select2-selection--single .select2-selection__rendered,
+.cc-filter-field .select2-container--bootstrap-5 .select2-selection--single .select2-selection__rendered {
+    font-size: 0.86rem;
+    font-weight: 550;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--cc-ink);
+    line-height: 1.3;
+    padding: 0;
+}
+.cc-filter-field .select2-container--default .select2-selection--single .select2-selection__arrow {
+    height: 36px;
+    right: 6px;
+}
+.cc-filter-field .select2-container--default.select2-container--focus .select2-selection--single,
+.cc-filter-field .select2-container--default.select2-container--open .select2-selection--single,
+.cc-filter-field .select2-container--bootstrap-5.select2-container--focus .select2-selection,
+.cc-filter-field .select2-container--bootstrap-5.select2-container--open .select2-selection {
+    border-color: #a1a1aa;
+    box-shadow: 0 0 0 3px rgba(10,10,10,.08);
+}
+.select2-container--default .select2-dropdown.cc-select-search-drop,
+.select2-container--bootstrap-5 .select2-dropdown.cc-select-search-drop {
+    border: 1px solid var(--cc-line);
+    border-radius: 10px;
+    overflow: hidden;
+}
+.select2-container--default .cc-select-search-drop .select2-search--dropdown .select2-search__field,
+.select2-container--bootstrap-5 .cc-select-search-drop .select2-search--dropdown .select2-search__field {
+    border: 1px solid var(--cc-line);
+    border-radius: 8px;
+    padding: 0.4rem 0.55rem;
+    font-size: 0.86rem;
+}
 .cc-filter-field {
     display: flex;
     flex-direction: column;
@@ -4114,6 +4160,103 @@ body.cc-api-waiting {
 .cc-loading-inline-copy span {
     font-size: 0.8rem;
     color: #71717a;
+}
+.cc-dots {
+    --cc-dot: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 16px;
+    vertical-align: middle;
+}
+.cc-dots > span {
+    display: block !important;
+    width: var(--cc-dot);
+    height: var(--cc-dot);
+    margin: 0 !important;
+    border-radius: 50%;
+    background: #d4d4d8;
+    flex: 0 0 auto;
+    font-size: 0;
+    line-height: 0;
+    transform: scale(.52);
+    will-change: transform, background-color;
+    animation: cc-dots-wave 1.05s ease-in-out infinite !important;
+}
+.cc-dots > span:nth-child(1) { animation-delay: 0s; }
+.cc-dots > span:nth-child(2) { animation-delay: .09s; }
+.cc-dots > span:nth-child(3) { animation-delay: .18s; }
+.cc-dots > span:nth-child(4) { animation-delay: .27s; }
+.cc-dots > span:nth-child(5) { animation-delay: .36s; }
+.cc-dots > span:nth-child(6) { animation-delay: .45s; }
+.cc-dots > span:nth-child(7) { animation-delay: .54s; }
+.cc-dots.is-sm {
+    --cc-dot: 6px;
+    gap: 3px;
+    height: 12px;
+}
+.cc-dots.is-lg {
+    --cc-dot: 12px;
+    gap: 7px;
+    height: 26px;
+}
+.cc-kpi .value .cc-dots {
+    --cc-dot: 10px;
+    gap: 6px;
+    height: 22px;
+    margin-top: 0.15rem;
+}
+.cc-heat .cc-dots,
+.cc-an-emp .cc-dots,
+.cc-table .cc-dots {
+    margin: 0 2px;
+}
+.cc-busy {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 220px;
+    padding: 2.4rem 1rem;
+}
+.cc-an-stage {
+    position: relative;
+    min-height: 240px;
+}
+.cc-busy-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #fff;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+.cc-page.is-an-busy .cc-busy-overlay {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+.cc-page.is-an-busy #an-empty,
+.cc-page.is-an-busy #an-work {
+    visibility: hidden;
+}
+@keyframes cc-dots-wave {
+    0%, 100% {
+        transform: scale(.48);
+        background: #e4e4e7;
+    }
+    38% {
+        transform: scale(1.08);
+        background: #111;
+    }
+    58% {
+        transform: scale(.78);
+        background: #71717a;
+    }
 }
 @keyframes cc-spin {
     to { transform: rotate(360deg); }

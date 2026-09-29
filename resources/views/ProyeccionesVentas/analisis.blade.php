@@ -24,33 +24,31 @@
     <div class="cc-panel">
         <div class="cc-filters cc-filters-asig">
             <label class="cc-filter-field" for="an-empresa">Empresa
-                <select id="an-empresa" class="cc-select">
+                <select id="an-empresa" class="cc-select cc-select-search">
                     <option value="">Seleccionar</option>
                     <option value="*">Todas</option>
                 </select>
             </label>
             <label class="cc-filter-field" for="an-cliente">Cliente
-                <select id="an-cliente" class="cc-select">
+                <select id="an-cliente" class="cc-select cc-select-search">
                     <option value="">Seleccionar</option>
                 </select>
             </label>
             <label class="cc-filter-field" for="an-user">Usuario
-                <select id="an-user" class="cc-select">
+                <select id="an-user" class="cc-select cc-select-search">
                     <option value="">Seleccionar</option>
                 </select>
             </label>
         </div>
     </div>
 
-    <div id="an-loading" class="cc-panel" hidden>
-        <div class="cc-loading-inline">
-            <div class="cc-api-wait-spinner is-sm" aria-hidden="true"></div>
-            <div class="cc-loading-inline-copy">
-                <strong>Cargando análisis</strong>
-                <span id="an-loading-msg">Preparando clientes, ventas y proyecciones…</span>
-            </div>
+    <div class="cc-an-stage">
+    <div id="an-busy" class="cc-busy-overlay" aria-hidden="true">
+        <div class="cc-busy">
+            <span class="cc-dots is-lg" role="status" aria-label="Cargando">
+                <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </span>
         </div>
-        <div class="cc-api-wait-bar" aria-hidden="true"><span></span></div>
     </div>
 
     <div id="an-empty" class="cc-panel">
@@ -140,6 +138,7 @@
                 <tfoot id="an-tfoot"></tfoot>
             </table>
         </div>
+    </div>
     </div>
     </div>
 </div>

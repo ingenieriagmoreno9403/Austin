@@ -358,7 +358,7 @@
                 <h5 class="text-secondary mb-1">
                     <i class="fa-solid fa-user-pen me-2"></i>Editar usuario
                 </h5>
-                <p class="text-muted fs-8 mb-0">Como superusuario de la empresa puedes cambiar el nombre, el correo y la contraseña de los usuarios de tu empresa.</p>
+                <p class="text-muted fs-8 mb-0">Elige el usuario y marca qué quieres cambiar: nombre, correo o contraseña.</p>
             </div>
 
             <div class="card-body">
@@ -392,25 +392,50 @@
                             </small>
                             <div class="invalid-feedback">Selecciona un usuario.</div>
                         </div>
+                        <div class="col-12">
+                            <label class="form-label d-block">¿Qué quieres editar?</label>
+                            <div class="registro-tipo-options registro-edit-campos">
+                                <label class="registro-tipo-option" for="editCampoNombre">
+                                    <input class="form-check-input" type="checkbox" name="campos[]" id="editCampoNombre"
+                                        value="nombre" onchange="toggleCamposEditar()">
+                                    <span><i class="fa-solid fa-user"></i> Nombre</span>
+                                </label>
+                                <label class="registro-tipo-option" for="editCampoCorreo">
+                                    <input class="form-check-input" type="checkbox" name="campos[]" id="editCampoCorreo"
+                                        value="correo" onchange="toggleCamposEditar()">
+                                    <span><i class="fa-solid fa-envelope"></i> Correo</span>
+                                </label>
+                                <label class="registro-tipo-option" for="editCampoPassword">
+                                    <input class="form-check-input" type="checkbox" name="campos[]" id="editCampoPassword"
+                                        value="contrasena" onchange="toggleCamposEditar()">
+                                    <span><i class="fa-solid fa-key"></i> Contraseña</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row g-3 mb-3" id="editCampoNombreWrap" style="display:none;">
                         <div class="col-md-6">
                             <label class="form-label">Nombre</label>
-                            <input type="text" id="edit_name" name="name" class="form-control"
-                                minlength="3" maxlength="100" placeholder="Nombre de usuario..." required>
+                            <input type="text" id="edit_name" name="name" class="form-control js-keep-case"
+                                minlength="3" maxlength="100" placeholder="Nombre de usuario..." disabled
+                                autocapitalize="off" autocomplete="username" style="text-transform: none;">
                             <div class="invalid-feedback">El nombre debe tener al menos 3 caracteres.</div>
                         </div>
+                    </div>
+                    <div class="row g-3 mb-3" id="editCampoCorreoWrap" style="display:none;">
                         <div class="col-md-6">
                             <label class="form-label">Correo</label>
                             <input type="email" id="edit_email" name="email" class="form-control"
-                                maxlength="100" placeholder="user@example.com" required>
+                                maxlength="100" placeholder="user@example.com" disabled>
                             <div class="invalid-feedback">Captura un correo válido.</div>
                         </div>
                     </div>
-                    <div class="row g-3 mb-3">
+                    <div class="row g-3 mb-3" id="editCampoPasswordWrap" style="display:none;">
                         <div class="col-md-6">
                             <label class="form-label" for="txtPasswordEdit">Contraseña</label>
                             <div class="input-group">
                                 <input type="password" id="txtPasswordEdit" name="contrasena" class="form-control"
-                                    placeholder="Nueva contraseña (opcional)..." minlength="8">
+                                    placeholder="Nueva contraseña..." minlength="8" disabled>
                                 <div class="input-group-append">
                                     <a class="btn__password fs-6" type="button" onclick="mostrarPasswordEdit()"
                                         style="margin-top: 4px;margin-left:5px;color:#a6a6a6;">
@@ -418,15 +443,13 @@
                                     </a>
                                 </div>
                             </div>
-                            <small class="registro-search-help">
-                                <i class="fa-solid fa-circle-info me-1"></i>Déjala vacía si no quieres cambiarla.
-                            </small>
+                            <div class="invalid-feedback">Mínimo 8 caracteres.</div>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label" for="inputPasswordEdit">Confirmar contraseña</label>
                             <div class="input-group">
                                 <input type="password" id="inputPasswordEdit" name="recontrasena" class="form-control"
-                                    placeholder="Confirme la contraseña..." minlength="8">
+                                    placeholder="Confirme la contraseña..." minlength="8" disabled>
                                 <div class="input-group-append">
                                     <a class="btn__password fs-6" type="button" onclick="showPasswordEdit()"
                                         style="margin-top: 4px;margin-left:5px;color:#a6a6a6;">
@@ -434,12 +457,13 @@
                                     </a>
                                 </div>
                             </div>
+                            <div class="invalid-feedback">Mínimo 8 caracteres.</div>
                         </div>
                     </div>
                 </form>
                 <div class="registro-action-bar">
                     <div class="text-muted fs-8">
-                        <i class="fa-solid fa-circle-info me-1"></i>Al elegir un usuario se cargan su nombre y correo actuales.
+                        <i class="fa-solid fa-circle-info me-1"></i>Marca uno o más campos. Solo se actualiza lo que elijas.
                     </div>
                     <div>
                         <button type="button" onclick="validarEditarUsuario()" class="fs-6 btn btn-baseColor">
@@ -452,6 +476,7 @@
     </div>
     @endif
 
+    @if (empty($esMasterEmpresa))
     <div class="row justify-content-center mb-4">
         <div class="card border-0 shadow p-3 mt-2 bg-body rounded-5 registro-card">
             <div class="card-header text-start bg-body border-0 pb-0">
@@ -462,7 +487,6 @@
             </div>
 
             <div class="card-body">
-                @if (empty($esMasterEmpresa))
                 <form method="POST" action="{{ route('asignarEmpresaUser') }}" class="g-3 needs-validation form modern-form"
                     id="frmAsignarEmpresa" novalidate>
                     @csrf
@@ -518,14 +542,10 @@
                         </button>
                     </div>
                 </div>
-                @else
-                    <div class="alert alert-info border-0 rounded-4 mb-0">
-                        <i class="fa-solid fa-lock me-2"></i>Solo el administrador del sistema puede asignar empresas a usuarios.
-                    </div>
-                @endif
             </div>
         </div>
     </div>
+    @endif
 
     <div class="row justify-content-center mb-4">
         <div class="card border-0 shadow p-3 mt-2 bg-body rounded-5 registro-card">
@@ -976,16 +996,26 @@
         const form = document.getElementById('frmEditar');
         if (!form) return false;
 
-        const pass = document.getElementById('txtPasswordEdit').value.trim();
-        const repass = document.getElementById('inputPasswordEdit').value.trim();
+        const editaNombre = document.getElementById('editCampoNombre').checked;
+        const editaCorreo = document.getElementById('editCampoCorreo').checked;
+        const editaPassword = document.getElementById('editCampoPassword').checked;
 
-        if ((pass !== '' || repass !== '') && !validarParPasswords(pass, repass, 'txtPasswordEdit', 'inputPasswordEdit')) {
+        if (!editaNombre && !editaCorreo && !editaPassword) {
+            swalAlerta('warning', 'Elige qué editar', 'Marca nombre, correo o contraseña.');
             return false;
+        }
+
+        if (editaPassword) {
+            const pass = document.getElementById('txtPasswordEdit').value.trim();
+            const repass = document.getElementById('inputPasswordEdit').value.trim();
+            if (!validarParPasswords(pass, repass, 'txtPasswordEdit', 'inputPasswordEdit')) {
+                return false;
+            }
         }
 
         form.classList.add('was-validated');
         if (!form.checkValidity()) {
-            swalAlerta('warning', 'Campos incompletos', 'Selecciona el usuario y captura nombre y correo.');
+            swalAlerta('warning', 'Campos incompletos', 'Completa los campos que marcaste para editar.');
             return false;
         }
 
@@ -1095,6 +1125,44 @@
         nameInput.value = option.dataset.name || '';
         emailInput.value = option.dataset.email || '';
     }
+
+    function toggleCamposEditar() {
+        const editaNombre = document.getElementById('editCampoNombre');
+        const editaCorreo = document.getElementById('editCampoCorreo');
+        const editaPassword = document.getElementById('editCampoPassword');
+        if (!editaNombre || !editaCorreo || !editaPassword) return;
+
+        const nameInput = document.getElementById('edit_name');
+        const emailInput = document.getElementById('edit_email');
+        const passInput = document.getElementById('txtPasswordEdit');
+        const repassInput = document.getElementById('inputPasswordEdit');
+
+        editaNombre.closest('.registro-tipo-option').classList.toggle('is-selected', editaNombre.checked);
+        editaCorreo.closest('.registro-tipo-option').classList.toggle('is-selected', editaCorreo.checked);
+        editaPassword.closest('.registro-tipo-option').classList.toggle('is-selected', editaPassword.checked);
+
+        document.getElementById('editCampoNombreWrap').style.display = editaNombre.checked ? '' : 'none';
+        document.getElementById('editCampoCorreoWrap').style.display = editaCorreo.checked ? '' : 'none';
+        document.getElementById('editCampoPasswordWrap').style.display = editaPassword.checked ? '' : 'none';
+
+        nameInput.disabled = !editaNombre.checked;
+        nameInput.required = editaNombre.checked;
+        emailInput.disabled = !editaCorreo.checked;
+        emailInput.required = editaCorreo.checked;
+        passInput.disabled = !editaPassword.checked;
+        passInput.required = editaPassword.checked;
+        repassInput.disabled = !editaPassword.checked;
+        repassInput.required = editaPassword.checked;
+
+        if (editaNombre.checked || editaCorreo.checked) {
+            cargarDatosUsuarioEditar();
+        }
+
+        if (!editaPassword.checked) {
+            passInput.value = '';
+            repassInput.value = '';
+        }
+    }
 </script>
 @endsection
 
@@ -1126,6 +1194,7 @@
 
     $(document).ready(function() {
         inicializarBuscadoresRegistro();
+        toggleCamposEditar();
 
         $('#iduser_editar').on('change', function() {
             cargarDatosUsuarioEditar();

@@ -443,7 +443,7 @@
     <script>
         $(function() {
             $('input[type=text]').keyup(function() {
-                if ($(this).closest('.acciones-config-page').length) {
+                if ($(this).closest('.acciones-config-page').length || $(this).hasClass('js-keep-case')) {
                     return;
                 }
                 this.value = this.value.toLocaleUpperCase();

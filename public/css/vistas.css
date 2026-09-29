@@ -1063,6 +1063,11 @@
     gap: 0.5rem;
 }
 
+.registro-edit-campos {
+    flex-direction: row;
+    flex-wrap: wrap;
+}
+
 .registro-tipo-option {
     display: flex;
     align-items: center;
