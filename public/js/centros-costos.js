@@ -634,23 +634,9 @@
             markGastoReady(c);
             return;
         }
-        var actual = currentCta();
-        var firstKey = codigoCuentaKey((actual && actual.codigo) || '');
-        var first = [];
-        var rest = [];
-        pend.forEach(function (cta) {
-            if (firstKey && codigoCuentaKey(cta.codigo) === firstKey) first.push(cta);
-            else rest.push(cta);
+        fetchGastoCuentas(c, pend, function () {
+            if (control._gastoReq === key) markGastoReady(c);
         });
-        var waves = [];
-        if (first.length) waves.push(first);
-        if (rest.length) waves.push(rest);
-        var left = waves.length;
-        function doneWave() {
-            left -= 1;
-            if (left <= 0 && control._gastoReq === key) markGastoReady(c);
-        }
-        waves.forEach(function (wave) { fetchGastoCuentas(c, wave, doneWave); });
     }
 
     function markGastoReady(c) {
@@ -4181,50 +4167,34 @@
                 var cuentas = cuentasAsignadasCentro(centro);
                 inflight += 1;
                 (function (c, key, firmaCentro, lista) {
-                    var chunks = [];
-                    for (var i = 0; i < lista.length; i += 4) chunks.push(lista.slice(i, i + 4));
-                    var merged = {};
                     var done = false;
-                    function guardar() {
+                    function guardar(por) {
                         if (done || gen !== CC._anGastoGen) return;
                         done = true;
+                        clearTimeout(timer);
                         CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[key] = merged;
+                        CC.state.gastoCache[key] = por || {};
                         CC.state.gastoLookup = CC.state.gastoLookup || {};
-                        CC.state.gastoLookup[key] = mapFromPorCuenta(merged).map;
+                        CC.state.gastoLookup[key] = mapFromPorCuenta(por || {}).map;
                         CC.state.gastoReady = CC.state.gastoReady || {};
                         CC.state.gastoReady[key] = firmaCentro;
                         finishOne();
                     }
-                    function run(n) {
-                        if (done || gen !== CC._anGastoGen) return;
-                        if (n >= chunks.length) {
-                            guardar();
-                            return;
-                        }
-                        var params = new URLSearchParams();
-                        params.set('empresa', c.empresa || '');
-                        params.set('cc', c.codigo || '');
-                        params.set('year', String(year));
-                        chunks[n].forEach(function (cta) {
-                            if (cta && cta.codigo) params.append('cuentas[]', cta.codigo);
-                        });
-                        var step = false;
-                        function next() {
-                            if (step || done) return;
-                            step = true;
-                            clearTimeout(timer);
-                            run(n + 1);
-                        }
-                        var timer = setTimeout(next, 25000);
-                        fetch(CC.state.gastoUrl + '?' + params.toString(), {
-                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                        }).then(function (res) { return res.json(); }).then(function (json) {
-                            if (gen !== CC._anGastoGen || done) return;
-                            Object.assign(merged, (json && json.por_cuenta) || {});
-                        }).catch(function () { /* el centro sigue con lo que ya llegó */ }).then(next);
-                    }
-                    run(0);
+                    var params = new URLSearchParams();
+                    params.set('empresa', c.empresa || '');
+                    params.set('cc', c.codigo || '');
+                    params.set('year', String(year));
+                    lista.forEach(function (cta) {
+                        if (cta && cta.codigo) params.append('cuentas[]', cta.codigo);
+                    });
+                    var timer = setTimeout(function () { guardar({}); }, 25000);
+                    fetch(CC.state.gastoUrl + '?' + params.toString(), {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(function (res) { return res.json(); }).then(function (json) {
+                        guardar((json && json.por_cuenta) || {});
+                    }).catch(function () {
+                        guardar({});
+                    });
                 })(centro, cacheKey, firma, cuentas);
             }
         }

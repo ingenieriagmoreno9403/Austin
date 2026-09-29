@@ -1827,7 +1827,7 @@
                     : 'Cargando clientes de la empresa…';
             }
             var year = anioRef();
-            var key = String(cfg.empresa || '').toLowerCase() + '|' + year;
+            var key = String(cfg.empresa || '').toLowerCase() + '|' + year + '|' + qRemote.toLowerCase();
             var req = ++centrosReq;
             var apply = function (rows, mensaje) {
                 if (req !== centrosReq) return;
@@ -1848,20 +1848,24 @@
                 apply(cacheCentros[key].rows, cacheCentros[key].mensaje);
                 return;
             }
-            getJSONRetry('/ProyeccionesVentas/api/centros?empresa=' + encodeURIComponent(cfg.empresa) + '&year=' + encodeURIComponent(year)).then(function (json) {
-                if (req !== centrosReq) return;
             var url = '/ProyeccionesVentas/api/asignacion/clientes?empresa=' + encodeURIComponent(cfg.empresa)
                 + '&year=' + encodeURIComponent(year);
             if (qRemote.length >= 2) {
                 url += '&q=' + encodeURIComponent(qRemote);
             }
-            getJSON(url).then(function (json) {
+            getJSONRetry(url).then(function (json) {
+                if (req !== centrosReq) return;
                 var rows = json.centros || [];
                 if (esDemasiadosIntentos(json.mensaje) && !rows.length) {
                     apply([], 'El catálogo está ocupado. Vuelve a elegir la empresa en un momento.');
                     return;
                 }
-                if (json.ok && rows.length) cacheCentros[key] = rows;
+                if (json.ok && rows.length) {
+                    cacheCentros[key] = { rows: rows, mensaje: json.mensaje || null };
+                    if (qRemote.length < 2) {
+                        cacheCentros[String(cfg.empresa || '').toLowerCase() + '|' + year + '|'] = cacheCentros[key];
+                    }
+                }
                 apply(rows, json.mensaje);
             }).catch(function () {
                 apply([], 'No se pudieron cargar los clientes');

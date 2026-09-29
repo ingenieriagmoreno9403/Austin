@@ -772,7 +772,7 @@ class CentrosCostosController extends Controller
         $cuentas = array_values(array_unique($cuentas));
         sort($cuentas);
 
-        $cacheKey = 'cc.gasto-real.v10.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
+        $cacheKey = 'cc.gasto-real.v11.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['por_cuenta'])) {
             return response()->json($cached);
@@ -1425,107 +1425,113 @@ class CentrosCostosController extends Controller
      */
     protected function cargarGastoRealCentro(string $empresa, string $cc, int $year, array $cuentas = []): array
     {
-        $api = app(AutinApiClient::class);
         $porCuenta = [];
         $ok = false;
         $mensaje = null;
-        $base = [
-            'Empresa' => $empresa,
-            'year' => $year,
-            'fecha_desde' => $year . '-01-01',
-            'fecha_hasta' => $year . '-12-31',
-        ];
-
-        $consultas = [];
+        $pedido = [];
         foreach ($cuentas as $cuenta) {
-            $cuenta = trim($cuenta);
-            if ($cuenta !== '') {
-                $consultas[$this->codigoCuentaKey($cuenta)] = $cuenta;
+            $cuenta = trim((string) $cuenta);
+            $ck = $this->codigoCuentaKey($cuenta);
+            if ($ck !== '') {
+                $pedido[$ck] = $cuenta;
             }
         }
-        $consultas = array_values($consultas);
-        $failed = [];
 
-        if ($consultas) {
-            $cachedCuentas = [];
-            $faltan = [];
-            foreach ($consultas as $cuenta) {
-                $ck = $this->codigoCuentaKey($cuenta);
-                $ctaCache = 'cc.gasto-cta.v5.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($ck);
-                $hit = Cache::get($ctaCache);
-                if (is_array($hit) && isset($hit['gasto']) && is_array($hit['gasto'])) {
-                    $porCuenta[$ck] = [
-                        'codigo' => $hit['codigo'] ?? $cuenta,
-                        'nombre' => $hit['nombre'] ?? '',
-                        'gasto' => $hit['gasto'],
-                    ];
-                    $cachedCuentas[$ck] = true;
-                } else {
-                    $faltan[] = $cuenta;
-                }
-            }
-            $failed = [];
-            if ($faltan) {
-                $pedido = [];
-                foreach ($faltan as $cuenta) {
-                    $pedido[] = $this->codigoCuentaKey($cuenta);
-                }
-                $res = $api->gastoRealPorCuentas($empresa, $year, $pedido, 3, 8, $cc);
-                foreach ($res['failed'] ?? [] as $codigo) {
-                    $failed[$this->codigoCuentaKey((string) $codigo)] = true;
-                }
-                if (empty($res['ok'])) {
-                    if (! $cachedCuentas) {
-                        $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
-                    }
-                } else {
-                    $ok = true;
-                    $mensaje = null;
-                    foreach ($res['rows'] as $row) {
-                        if (is_array($row)) {
-                            $this->acumularGastoRealFila($porCuenta, $row, $empresa, $year, $faltan, $cc);
-                        }
-                    }
-                    foreach ($faltan as $cuenta) {
-                        $ck = $this->codigoCuentaKey($cuenta);
-                        if (isset($failed[$ck])) {
-                            continue;
-                        }
-                        if (! isset($porCuenta[$ck])) {
-                            $porCuenta[$ck] = [
-                                'codigo' => $cuenta,
-                                'nombre' => '',
-                                'gasto' => array_fill(0, 12, 0.0),
-                            ];
-                        }
-                        Cache::put('cc.gasto-cta.v5.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($ck), $porCuenta[$ck], 1800);
-                    }
-                }
-            }
-            if ($cachedCuentas) {
-                $ok = true;
-            }
-        } elseif ($cc !== '') {
-            $res = $api->gastoRealTodasPaginas(array_merge($base, ['CC' => $cc, 'GroupMask' => '6']), 8, 6);
-            if (empty($res['ok'])) {
-                $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
+        if ($cc !== '') {
+            $indice = $this->indiceGastoPorCentro($empresa, $cc, $year);
+            if (empty($indice['ok'])) {
+                $mensaje = $indice['mensaje'] ?? 'Sin conexión a gasto real SAP';
             } else {
                 $ok = true;
-                foreach ($res['rows'] as $row) {
-                    if (is_array($row)) {
-                        $this->acumularGastoRealFila($porCuenta, $row, $empresa, $year, [], $cc);
+                $todo = $indice['por_cuenta'];
+                if ($pedido) {
+                    foreach ($pedido as $ck => $cuenta) {
+                        $hit = $this->gastoDesdeIndice($todo, $ck);
+                        $porCuenta[$ck] = $hit ?: [
+                            'codigo' => $cuenta,
+                            'nombre' => '',
+                            'gasto' => array_fill(0, 12, 0.0),
+                        ];
                     }
+                } else {
+                    $porCuenta = $todo;
                 }
             }
         }
 
         return [
             'ok' => $ok,
-            'completo' => $consultas !== [] && $failed === [] && count($porCuenta) >= count($consultas),
+            'completo' => $ok && ($pedido === [] || count($porCuenta) >= count($pedido)),
             'year' => $year,
             'por_cuenta' => $porCuenta ?: (object) [],
             'mensaje' => $mensaje,
         ];
+    }
+
+    /**
+     * Una sola consulta a gasto-real, igual que en /Sistemas/AutinApi:
+     * Empresa + centro + año + GroupMask 6. El resultado queda indexado por número de cuenta.
+     *
+     * @return array{ok: bool, por_cuenta: array<string, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function indiceGastoPorCentro(string $empresa, string $cc, int $year): array
+    {
+        $cacheKey = 'cc.gasto-indice.v1.' . $empresa . '.' . $cc . '.' . $year;
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached)) {
+            return ['ok' => true, 'por_cuenta' => $cached, 'mensaje' => null];
+        }
+
+        $api = app(AutinApiClient::class);
+        $res = $api->gastoRealTodasPaginas([
+            'Empresa' => $empresa,
+            'CC' => $cc,
+            'year' => $year,
+            'fecha_desde' => $year . '-01-01',
+            'fecha_hasta' => $year . '-12-31',
+            'GroupMask' => '6',
+        ], 4, 6);
+
+        if (empty($res['ok'])) {
+            return [
+                'ok' => false,
+                'por_cuenta' => [],
+                'mensaje' => $res['message'] ?? 'Sin conexión a gasto real SAP',
+            ];
+        }
+
+        $por = [];
+        foreach ($res['rows'] as $row) {
+            if (is_array($row)) {
+                $this->acumularGastoRealFila($por, $row, $empresa, $year, [], $cc);
+            }
+        }
+        foreach (array_keys($por) as $key) {
+            $alt = ltrim((string) $key, '0');
+            if ($alt !== '' && $alt !== (string) $key && ! isset($por[$alt])) {
+                $por[$alt] = $por[$key];
+            }
+        }
+        Cache::put($cacheKey, $por, 1800);
+
+        return ['ok' => true, 'por_cuenta' => $por, 'mensaje' => null];
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $por
+     * @return array<string, mixed>|null
+     */
+    protected function gastoDesdeIndice(array $por, string $ck): ?array
+    {
+        if (isset($por[$ck])) {
+            return $por[$ck];
+        }
+        $alt = ltrim($ck, '0');
+        if ($alt !== '' && isset($por[$alt])) {
+            return $por[$alt];
+        }
+
+        return null;
     }
 
     /**
