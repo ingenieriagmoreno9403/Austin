@@ -62,6 +62,11 @@
     line-height: 1.15;
 }
 
+.cc-title-kind {
+    font-weight: 800;
+    letter-spacing: 0.04em;
+}
+
 .cc-sub {
     color: var(--cc-muted);
     margin: 0.3rem 0 0;
@@ -376,7 +381,25 @@
 .cc-filters-asig {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.cc-filters-asig:has(.cc-filter-q) {
+    grid-template-columns: minmax(180px, 1.45fr) repeat(3, minmax(0, 1fr));
+    align-items: end;
+}
 .cc-filters-asig .cc-pick-search { margin-bottom: 0; }
+.cc-filters-asig .cc-filter-q .cc-input {
+    letter-spacing: 0;
+    text-transform: none;
+    font-weight: 500;
+    font-size: 0.86rem;
+    color: var(--cc-ink);
+}
+.cc-filters-asig .cc-filter-field .cc-select {
+    font-size: 0.86rem;
+    font-weight: 550;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--cc-ink);
+}
 .cc-filter-field {
     display: flex;
     flex-direction: column;

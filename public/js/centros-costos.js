@@ -3106,7 +3106,7 @@
         var sub = document.getElementById('cc-page-sub');
         if (!c) {
             setText('cc-page-kicker', 'Detalle del centro');
-            setText('cc-page-title', 'Centro de costos');
+            setText('cc-page-title', 'GASTOS');
             if (sub) { sub.hidden = false; setText('cc-page-sub', 'Elige un centro desde el visor.'); }
             if (facts) facts.hidden = true;
             return;
@@ -3117,7 +3117,7 @@
         var barCls = stt.pendientes ? 'warn' : 'good';
         setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
         var title = document.getElementById('cc-page-title');
-        if (title) title.innerHTML = escapeHtml(c.nombre || c.codigo || 'Centro de costos');
+        if (title) title.innerHTML = '<span class="cc-title-kind">GASTOS</span> · ' + escapeHtml(c.nombre || c.codigo || 'Centro de costos');
         if (sub) sub.hidden = true;
         if (facts) {
             facts.hidden = false;

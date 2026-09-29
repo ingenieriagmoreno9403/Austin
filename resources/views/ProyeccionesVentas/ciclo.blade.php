@@ -83,18 +83,27 @@
             </div>
         </div>
         <div class="cc-filters cc-filters-asig">
-            <div class="cc-pick-search">
-                <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-building"></i></span>
-                <input id="asig-q-empresa" class="cc-input" type="search" placeholder="Buscar por empresa…" aria-label="Buscar por empresa">
-            </div>
-            <div class="cc-pick-search">
-                <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-user"></i></span>
-                <input id="asig-q-usuario" class="cc-input" type="search" placeholder="Buscar por usuario…" aria-label="Buscar por usuario">
-            </div>
-            <div class="cc-pick-search">
-                <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-sitemap"></i></span>
-                <input id="asig-q-centro" class="cc-input" type="search" placeholder="Buscar por cliente…" aria-label="Buscar por cliente">
-            </div>
+            <label class="cc-filter-field cc-filter-q" for="asig-q">Buscar
+                <div class="cc-pick-search">
+                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+                    <input id="asig-q" class="cc-input" type="search" placeholder="Buscar coincidencias…" aria-label="Buscar coincidencias" autocomplete="off">
+                </div>
+            </label>
+            <label class="cc-filter-field" for="asig-q-empresa">Empresa
+                <select id="asig-q-empresa" class="cc-select" aria-label="Filtrar por empresa">
+                    <option value="">Todas las empresas</option>
+                </select>
+            </label>
+            <label class="cc-filter-field" for="asig-q-usuario">Usuario
+                <select id="asig-q-usuario" class="cc-select" aria-label="Filtrar por usuario">
+                    <option value="">Todos los usuarios</option>
+                </select>
+            </label>
+            <label class="cc-filter-field" for="asig-q-centro">Cliente
+                <select id="asig-q-centro" class="cc-select" aria-label="Filtrar por cliente">
+                    <option value="">Todos los clientes</option>
+                </select>
+            </label>
         </div>
         <div class="cc-table-wrap">
             <table class="cc-table">

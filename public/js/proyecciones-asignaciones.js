@@ -12,6 +12,34 @@
             });
     }
 
+    function espera(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    function esDemasiadosIntentos(msg) {
+        return /too many attempts/i.test(String(msg || ''));
+    }
+
+    function getJSONRetry(url, times) {
+        times = times || 0;
+        return getJSON(url).then(function (json) {
+            var msg = json && (json.mensaje || json.message);
+            if (esDemasiadosIntentos(msg) && times < 2) {
+                return espera(800 * (times + 1)).then(function () {
+                    return getJSONRetry(url, times + 1);
+                });
+            }
+            return json;
+        }).catch(function (err) {
+            if (times < 2) {
+                return espera(800 * (times + 1)).then(function () {
+                    return getJSONRetry(url, times + 1);
+                });
+            }
+            throw err;
+        });
+    }
+
     var SIN_CENTRO_CODIGO = 'SIN_CC';
     var SIN_CENTRO_NOMBRE = 'Sin cliente';
 
@@ -245,10 +273,12 @@
         var ciclo = CCAsig.ciclo;
         getJSON('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones').then(function (json) {
             CCAsig._rows = json.asignaciones || [];
+            fillFiltrosTabla();
             renderTablaFiltrada();
             renderAsigKpis();
         }).catch(function () {
             CCAsig._rows = [];
+            fillFiltrosTabla();
             renderTablaFiltrada();
             renderAsigKpis();
         });
@@ -256,20 +286,124 @@
 
     function filtroVal(id) {
         var el = document.getElementById(id);
-        return el ? String(el.value || '').toLowerCase().trim() : '';
+        return el ? String(el.value || '').trim() : '';
     }
 
     function bindFiltrosTabla() {
         if (CCAsig._filtrosBound) return;
         CCAsig._filtrosBound = true;
+        var qEl = document.getElementById('asig-q');
+        if (qEl) qEl.addEventListener('input', renderTablaFiltrada);
         ['asig-q-empresa', 'asig-q-usuario', 'asig-q-centro'].forEach(function (id) {
             var el = document.getElementById(id);
-            if (el) el.addEventListener('input', renderTablaFiltrada);
+            if (!el) return;
+            el.addEventListener('change', function () {
+                fillFiltrosTabla();
+                renderTablaFiltrada();
+            });
         });
     }
 
-    function matchFiltro(haystack, q) {
-        return matchQuery(haystack, q);
+    function userOptionKey(p) {
+        if (p && p.user_id != null && String(p.user_id) !== '') return 'id:' + String(p.user_id);
+        var nom = String((p && p.usuario) || '').trim().toLowerCase();
+        if (nom) return 'nom:' + nom;
+        var mail = String((p && p.email) || '').trim().toLowerCase();
+        return mail ? 'mail:' + mail : '';
+    }
+
+    function userOptionLabel(p) {
+        return String((p && (p.usuario || p.email)) || '—');
+    }
+
+    function centroFiltroKey(r) {
+        return String(r.empresa || '').toLowerCase() + '|' + String(r.centro_codigo || '');
+    }
+
+    function personasDeFila(r) {
+        return [r].concat(extrasDe(r));
+    }
+
+    function filaTieneUsuario(r, key) {
+        if (!key) return true;
+        return personasDeFila(r).some(function (p) { return userOptionKey(p) === key; });
+    }
+
+    function opcionSigue(items, value) {
+        if (!value) return '';
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].value === value) return value;
+        }
+        return '';
+    }
+
+    function fillSelectFiltro(el, items, extra, value) {
+        if (!el) return;
+        var html = extra || '';
+        items.forEach(function (it) {
+            html += '<option value="' + escapeHtml(it.value) + '">' + escapeHtml(it.label) + '</option>';
+        });
+        el.innerHTML = html;
+        el.value = value || '';
+    }
+
+    function fillFiltrosTabla() {
+        var empEl = document.getElementById('asig-q-empresa');
+        var userEl = document.getElementById('asig-q-usuario');
+        var ccEl = document.getElementById('asig-q-centro');
+        if (!empEl && !userEl && !ccEl) return;
+
+        var all = filasCaptura();
+        var emp = empEl ? empEl.value : '';
+        var user = userEl ? userEl.value : '';
+        var cc = ccEl ? ccEl.value : '';
+
+        var emps = [];
+        var seenEmp = {};
+        all.forEach(function (r) {
+            var raw = String(r.empresa || '').trim();
+            var key = raw.toLowerCase();
+            if (!key || seenEmp[key]) return;
+            seenEmp[key] = true;
+            emps.push({ value: key, label: raw.toUpperCase() });
+        });
+        emps.sort(function (a, b) { return a.label.localeCompare(b.label, 'es'); });
+        emp = opcionSigue(emps, emp);
+
+        var scoped = all.filter(function (r) {
+            return !emp || String(r.empresa || '').toLowerCase() === emp;
+        });
+        if (cc && !scoped.some(function (r) { return centroFiltroKey(r) === cc; })) cc = '';
+
+        var users = [];
+        var seenUser = {};
+        scoped.filter(function (r) { return !cc || centroFiltroKey(r) === cc; }).forEach(function (r) {
+            personasDeFila(r).forEach(function (p) {
+                var key = userOptionKey(p);
+                if (!key || seenUser[key]) return;
+                seenUser[key] = true;
+                users.push({ value: key, label: userOptionLabel(p) });
+            });
+        });
+        users.sort(function (a, b) { return a.label.localeCompare(b.label, 'es'); });
+        user = opcionSigue(users, user);
+
+        var centros = [];
+        var seenCc = {};
+        scoped.filter(function (r) { return filaTieneUsuario(r, user); }).forEach(function (r) {
+            var key = centroFiltroKey(r);
+            if (!r.centro_codigo || seenCc[key]) return;
+            seenCc[key] = true;
+            var label = etiquetaCentro(r.centro_codigo, r.centro_nombre);
+            if (!emp && r.empresa) label = String(r.empresa).toUpperCase() + ' · ' + label;
+            centros.push({ value: key, label: label });
+        });
+        centros.sort(function (a, b) { return a.label.localeCompare(b.label, 'es'); });
+        cc = opcionSigue(centros, cc);
+
+        fillSelectFiltro(empEl, emps, '<option value="">Todas las empresas</option>', emp);
+        fillSelectFiltro(userEl, users, '<option value="">Todos los usuarios</option>', user);
+        fillSelectFiltro(ccEl, centros, '<option value="">Todos los clientes</option>', cc);
     }
 
     function isPrincipal(r) {
@@ -375,18 +509,40 @@
         });
     }
 
+    function textoFila(r) {
+        var personas = personasDeFila(r).map(function (p) {
+            var perms = (p.permisos || []).map(permNombre).join(' ');
+            return (p.usuario || '') + ' ' + (p.email || '') + ' ' + perms;
+        }).join(' ');
+        var cuentas = (r.cuentas || []).map(function (c) {
+            if (!c) return '';
+            if (typeof c === 'string') return c;
+            return (c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || '');
+        }).join(' ');
+        return [
+            r.empresa,
+            r.centro_codigo,
+            r.centro_nombre,
+            etiquetaCentro(r.centro_codigo, r.centro_nombre),
+            personas,
+            cuentas
+        ].join(' ');
+    }
+
     function renderTablaFiltrada() {
         var all = filasCaptura();
+        var q = filtroVal('asig-q');
         var qEmp = filtroVal('asig-q-empresa');
         var qUser = filtroVal('asig-q-usuario');
         var qCc = filtroVal('asig-q-centro');
         var rows = all.filter(function (r) {
-            var extras = extrasDe(r).map(function (x) { return (x.usuario || '') + ' ' + (x.email || ''); }).join(' ');
-            return matchFiltro(r.empresa, qEmp)
-                && matchFiltro((r.usuario || '') + ' ' + (r.email || '') + ' ' + extras, qUser)
-                && matchFiltro((r.centro_codigo || '') + ' ' + (r.centro_nombre || '') + ' ' + etiquetaCentro(r.centro_codigo, r.centro_nombre), qCc);
+            if (q && !matchQuery(textoFila(r), q)) return false;
+            if (qEmp && String(r.empresa || '').toLowerCase() !== qEmp.toLowerCase()) return false;
+            if (qUser && !filaTieneUsuario(r, qUser)) return false;
+            if (qCc && centroFiltroKey(r) !== qCc) return false;
+            return true;
         });
-        renderTabla(rows, CCAsig.ciclo, all.length, qEmp || qUser || qCc);
+        renderTabla(rows, CCAsig.ciclo, all.length, q || qEmp || qUser || qCc);
     }
 
     function renderTabla(rows, ciclo, total, filtrando) {
@@ -400,7 +556,7 @@
         if (!tb) return;
         if (!rows.length) {
             var empty = filtrando
-                ? 'No hay asignaciones que coincidan con la búsqueda.'
+                ? 'No hay asignaciones que coincidan con el filtro.'
                 : 'Aún no hay asignaciones. Usa Nueva asignación para crear la primera.';
             tb.innerHTML = '<tr><td colspan="6"><div class="cc-empty">' + empty + '</div></td></tr>';
             return;
@@ -1164,6 +1320,9 @@
         var ctaGrupo = '';
         var lastFlashKey = '';
         var currentUserId = 0;
+        var centrosReq = 0;
+        var ctaReq = 0;
+        var saveBusy = false;
 
         function normCode(s) {
             return String(s || '').replace(/\s+/g, '').toLowerCase();
@@ -1355,7 +1514,7 @@
                 var badge = card.querySelector('[data-asig-n]');
                 card.classList.toggle('has-asig', n > 0);
                 if (badge) {
-                    badge.textContent = n ? (n + (n === 1 ? ' centro' : ' centros')) : 'Sin asignar';
+                    badge.textContent = n ? (n + (n === 1 ? ' cliente' : ' clientes')) : 'Sin asignar';
                     badge.className = 'cc-badge ' + (n ? 'cc-badge-ink' : 'cc-badge-solo_revision');
                 }
                 var label = card.querySelector('.cc-card-pick');
@@ -1385,9 +1544,9 @@
                 var pickLabel = on ? 'Seleccionada' : (n ? 'Ya asignada' : 'Seleccionar');
                 return '<article class="cc-ciclo-card is-pickable' + (on ? ' is-on' : '') + (n ? ' has-asig' : '') + '" data-emp="' + escapeHtml(e.codigo) + '" data-nombre="' + escapeHtml(e.nombre) + '" role="button" tabindex="0">' +
                     '<div class="top"><div><div class="code">SAP</div><h3>' + escapeHtml(e.nombre) + '</h3></div>' +
-                    '<span class="cc-badge ' + badgeCls + '" data-asig-n>' + (n ? (n + (n === 1 ? ' centro' : ' centros')) : 'Sin asignar') + '</span></div>' +
+                    '<span class="cc-badge ' + badgeCls + '" data-asig-n>' + (n ? (n + (n === 1 ? ' cliente' : ' clientes')) : 'Sin asignar') + '</span></div>' +
                     '<div class="cc-ciclo-obs">Clientes y productos de ' + escapeHtml(e.nombre) + ' vía AutinApi.</div>' +
-                    '<div class="actions"><span class="text-muted" style="font-size:.75rem">' + (n ? 'Ya tiene centros en resultados' : 'Clic en cualquier parte') + '</span>' +
+                    '<div class="actions"><span class="text-muted" style="font-size:.75rem">' + (n ? 'Ya tiene clientes en resultados' : 'Clic en cualquier parte') + '</span>' +
                     '<span class="cc-btn ' + pickCls + ' cc-card-pick">' + pickLabel + '</span></div></article>';
             }).join('');
             grid.querySelectorAll('.cc-ciclo-card[data-emp]').forEach(function (card) {
@@ -1423,13 +1582,13 @@
             }
             box.hidden = false;
             if (!saved.length) {
-                tb.innerHTML = '<tr><td colspan="5"><div class="cc-empty">Aún no hay clientes en la tabla. Elige empresa, cliente y productos y pulsa Agregar a resultados.</div></td></tr>';
+                tb.innerHTML = '<tr><td colspan="5"><div class="cc-empty">Aún no hay clientes en la tabla. Elige empresa, cliente y productos y pulsa Asignar. Se registran al pulsar Guardar.</div></td></tr>';
                 if (meta) meta.textContent = '';
                 return;
             }
             var empSet = {};
             saved.forEach(function (a) { empSet[String(a.empresa || '').toLowerCase()] = true; });
-            if (meta) meta.textContent = Object.keys(empSet).length + ' empresas · ' + saved.length + ' centros';
+            if (meta) meta.textContent = Object.keys(empSet).length + ' empresas · ' + saved.length + (saved.length === 1 ? ' cliente' : ' clientes');
             var rows = saved.slice();
             tb.innerHTML = rows.map(function (a) {
                 var key = rowKey(a.empresa, a.centro_codigo);
@@ -1568,7 +1727,9 @@
             if (meta) meta.textContent = 'Cargando clientes SAP…';
             var year = anioRef();
             var key = String(cfg.empresa || '').toLowerCase() + '|' + year;
+            var req = ++centrosReq;
             var apply = function (rows, mensaje) {
+                if (req !== centrosReq) return;
                 centros = rows || [];
                 syncCentroSelect(centros);
                 fillCentros(ccQ ? ccQ.value : '');
@@ -1586,8 +1747,13 @@
                 apply(cacheCentros[key], null);
                 return;
             }
-            getJSON('/ProyeccionesVentas/api/centros?empresa=' + encodeURIComponent(cfg.empresa) + '&year=' + encodeURIComponent(year)).then(function (json) {
+            getJSONRetry('/ProyeccionesVentas/api/centros?empresa=' + encodeURIComponent(cfg.empresa) + '&year=' + encodeURIComponent(year)).then(function (json) {
+                if (req !== centrosReq) return;
                 var rows = json.centros || [];
+                if (esDemasiadosIntentos(json.mensaje) && !rows.length) {
+                    apply([], 'El catálogo está ocupado. Vuelve a elegir la empresa en un momento.');
+                    return;
+                }
                 if (json.ok && rows.length) cacheCentros[key] = rows;
                 apply(rows, json.mensaje);
             }).catch(function () {
@@ -1808,11 +1974,13 @@
             }
             var year = anioRef();
             var todas = catalogoCompleto();
+            var req = ++ctaReq;
             box.innerHTML = '<div class="cc-empty">' + (todas
                 ? 'Cargando todos los productos de la empresa…'
-                : 'Cargando productos de OINV + ORIN…') + '</div>';
+                : 'Cargando productos…') + '</div>';
             var key = String(cfg.empresa || '').toLowerCase() + '|' + year + '|' + (todas ? 'ALL' : cliente.toUpperCase());
             var apply = function (rows, groups, mensaje) {
+                if (req !== ctaReq) return;
                 cuentas = mergeSelectedIntoCuentas(rows || []);
                 if (groups && groups.length) agrupaciones = groups;
                 fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
@@ -1837,8 +2005,13 @@
             url += todas
                 ? '&todas=1'
                 : ('&cliente=' + encodeURIComponent(cliente) + '&cc=' + encodeURIComponent(cliente));
-            getJSON(url).then(function (json) {
+            getJSONRetry(url).then(function (json) {
+                if (req !== ctaReq) return;
                 var rows = json.cuentas || [];
+                if (esDemasiadosIntentos(json.mensaje || json.message) && !rows.length) {
+                    apply([], [], 'El catálogo está ocupado. Vuelve a elegir el cliente en un momento.');
+                    return;
+                }
                 if (json.ok && rows.length) cacheCuentas[key] = rows;
                 apply(rows, json.agrupaciones || [], json.mensaje);
             }).catch(function () {
@@ -2062,10 +2235,38 @@
             markEmpresaCard(cfg.empresa);
             resetDetalleParcial();
             fillCentros(ccQ ? ccQ.value : '');
-            var box = document.getElementById('asig-resultados');
-            if (box) box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
 
-            fetch(cfg.storeUrl, {
+        function filasPendientes() {
+            return saved.filter(function (a) { return a.pending; });
+        }
+
+        function payloadDeFila(a) {
+            return {
+                empresa: a.empresa,
+                user_id: a.user_id || userId(),
+                centro_codigo: a.centro_codigo,
+                centro_nombre: a.centro_nombre || '',
+                cuentas: (a.cuentas || []).slice(),
+                permisos: (a.permisos || []).slice()
+            };
+        }
+
+        function setGuardando(on) {
+            [btnFinGuardar, btnFinSeguir].forEach(function (btn) {
+                if (!btn) return;
+                btn.disabled = !!on;
+            });
+            if (btnFinGuardar) {
+                btnFinGuardar.innerHTML = on
+                    ? '<i class="fa-solid fa-spinner fa-spin"></i> Guardando…'
+                    : '<i class="fa-solid fa-check"></i> Guardar';
+            }
+        }
+
+        function postFila(row) {
+            var payload = payloadDeFila(row);
+            return fetch(cfg.storeUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -2077,31 +2278,119 @@
             }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); })
                 .then(function (res) {
                     if (!res.ok) {
-                        if (window.Swal) Swal.fire({ icon: 'error', title: 'No se guardó en servidor', text: (res.json && res.json.message) || 'La fila ya está en resultados; vuelve a agregar si hace falta.' });
-                        return;
+                        return { ok: false, message: (res.json && res.json.message) || 'No se pudo guardar un cliente.' };
                     }
-                    var savedRow = (res.json && res.json.asignacion) ? res.json.asignacion : local;
+                    var savedRow = (res.json && res.json.asignacion) ? res.json.asignacion : payload;
                     savedRow.pending = false;
+                    if (!savedRow.centro_codigo) savedRow.centro_codigo = payload.centro_codigo;
+                    if (!savedRow.empresa) savedRow.empresa = payload.empresa;
                     upsertSaved(savedRow);
+                    return { ok: true, maestros: Number(res.json && res.json.maestro_creados) || 0 };
+                });
+        }
+
+        function guardarPendientes(alTerminar) {
+            var cola = filasPendientes();
+            if (!cola.length) {
+                if (alTerminar) {
+                    alTerminar(true);
+                    return;
+                }
+                if (window.Swal) {
+                    Swal.fire({
+                        icon: 'info',
+                        title: saved.length ? 'Nada nuevo' : 'Nada que guardar',
+                        text: saved.length
+                            ? 'Esos clientes ya están registrados.'
+                            : 'Agrega al menos un cliente a la tabla.'
+                    });
+                }
+                return;
+            }
+            if (saveBusy) return;
+            saveBusy = true;
+            setGuardando(true);
+            var i = 0;
+            var maestros = 0;
+            var fallos = 0;
+            var aviso = '';
+            function paso() {
+                if (i >= cola.length) {
+                    saveBusy = false;
+                    setGuardando(false);
                     renderResumen();
                     renderEmpresaCards();
                     markEmpresaCard(cfg.empresa);
                     fillCentros(ccQ ? ccQ.value : '');
-                    var nMaestro = Number(res.json && res.json.maestro_creados) || 0;
-                    if (nMaestro > 0 && window.Swal) {
+                    if (fallos) {
+                        if (window.Swal) {
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'No se guardó todo',
+                                text: aviso || 'Algunos clientes siguen en la tabla sin registrar. Vuelve a pulsar Guardar.'
+                            });
+                        }
+                        if (alTerminar) alTerminar(false);
+                        return;
+                    }
+                    var n = cola.length;
+                    var texto = n + (n === 1 ? ' cliente registrado.' : ' clientes registrados.');
+                    if (maestros > 0) {
+                        texto += ' ' + maestros + (maestros === 1
+                            ? ' producto nuevo en el maestro de precios.'
+                            : ' productos nuevos en el maestro de precios.');
+                    }
+                    if (window.Swal) {
                         Swal.fire({
                             icon: 'success',
-                            title: 'Asignación guardada',
-                            text: nMaestro + (nMaestro === 1
-                                ? ' producto nuevo en el maestro de precios.'
-                                : ' productos nuevos en el maestro de precios.'),
-                            timer: 1600,
-                            showConfirmButton: false
+                            title: 'Asignaciones guardadas',
+                            text: texto,
+                            position: 'center',
+                            width: '36rem',
+                            confirmButtonText: 'Listo',
+                            showConfirmButton: true,
+                            didOpen: function (popup) {
+                                var title = popup.querySelector('.swal2-title');
+                                var body = popup.querySelector('.swal2-html-container');
+                                var icon = popup.querySelector('.swal2-icon');
+                                if (title) {
+                                    title.style.fontSize = '2.15rem';
+                                    title.style.fontWeight = '700';
+                                }
+                                if (body) {
+                                    body.style.fontSize = '1.25rem';
+                                    body.style.lineHeight = '1.45';
+                                }
+                                if (icon) {
+                                    icon.style.transform = 'scale(1.35)';
+                                    icon.style.margin = '1.75rem auto 1rem';
+                                }
+                            }
+                        }).then(function () {
+                            if (alTerminar) alTerminar(true);
                         });
+                    } else if (alTerminar) {
+                        alTerminar(true);
                     }
+                    return;
+                }
+                postFila(cola[i]).then(function (res) {
+                    if (!res.ok) {
+                        fallos += 1;
+                        if (!aviso) aviso = res.message || '';
+                    } else {
+                        maestros += res.maestros || 0;
+                    }
+                    i += 1;
+                    paso();
                 }).catch(function () {
-                    if (window.Swal) Swal.fire({ icon: 'error', title: 'No se guardó en servidor', text: 'La fila ya está en la tabla de resultados.' });
+                    fallos += 1;
+                    if (!aviso) aviso = 'No se pudo guardar un cliente.';
+                    i += 1;
+                    paso();
                 });
+            }
+            paso();
         }
 
         if (btnSave) btnSave.addEventListener('click', function (ev) {
@@ -2112,42 +2401,23 @@
         var btnFinGuardar = document.getElementById('asig-fin-guardar');
         if (btnFinGuardar) btnFinGuardar.addEventListener('click', function (ev) {
             ev.preventDefault();
-            if (!saved.length) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Nada que guardar', text: 'Asigna al menos un centro a la tabla de resultados.' });
-                return;
-            }
-            if (window.Swal) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Asignaciones guardadas',
-                    text: saved.length + (saved.length === 1 ? ' centro asignado.' : ' centros asignados.'),
-                    timer: 1400,
-                    showConfirmButton: false
-                });
-            }
+            guardarPendientes(null);
         });
 
         var btnFinSeguir = document.getElementById('asig-fin-seguir');
         if (btnFinSeguir) btnFinSeguir.addEventListener('click', function (ev) {
             ev.preventDefault();
             if (!saved.length) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Nada que guardar', text: 'Asigna al menos un centro a la tabla de resultados.' });
+                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Nada que guardar', text: 'Agrega al menos un cliente a la tabla.' });
                 return;
             }
             var goCiclo = function () {
                 window.location.href = cfg.cicloUrl || ('/Ventas/Asignaciones/' + encodeURIComponent(cfg.ciclo));
             };
-            if (window.Swal) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Asignaciones guardadas',
-                    text: saved.length + (saved.length === 1 ? ' centro asignado.' : ' centros asignados.'),
-                    timer: 1400,
-                    showConfirmButton: false
-                }).then(goCiclo);
-            } else {
+            guardarPendientes(function (ok) {
+                if (!ok) return;
                 goCiclo();
-            }
+            });
         });
 
         if (userQ) userQ.addEventListener('input', function () { fillUsers(userQ.value); });

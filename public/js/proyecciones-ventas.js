@@ -6258,7 +6258,7 @@
         var sub = document.getElementById('cc-page-sub');
         if (!c) {
             setText('cc-page-kicker', 'Detalle del cliente');
-            setText('cc-page-title', 'Cliente');
+            setText('cc-page-title', 'VENTAS');
             if (sub) { sub.hidden = false; setText('cc-page-sub', 'Elige un cliente desde el visor.'); }
             if (facts) facts.hidden = true;
             return;
@@ -6268,7 +6268,7 @@
         var barCls = semaforoAvance(stt.avance);
         setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
         var title = document.getElementById('cc-page-title');
-        if (title) title.innerHTML = escapeHtml(c.nombre || c.codigo || 'Cliente');
+        if (title) title.innerHTML = '<span class="cc-title-kind">VENTAS</span> · ' + escapeHtml(c.nombre || c.codigo || 'Cliente');
         if (sub) sub.hidden = true;
         if (facts) {
             facts.hidden = false;

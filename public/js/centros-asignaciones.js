@@ -226,32 +226,156 @@
         var ciclo = CCAsig.ciclo;
         getJSON('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones').then(function (json) {
             CCAsig._rows = json.asignaciones || [];
+            fillFiltrosTabla();
             renderTablaFiltrada();
             renderAsigKpis();
         }).catch(function () {
             CCAsig._rows = [];
+            fillFiltrosTabla();
             renderTablaFiltrada();
             renderAsigKpis();
+        });
+    }
+
+    function foldText(s) {
+        return String(s || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function matchQuery(haystack, q) {
+        var query = foldText(q);
+        if (!query) return true;
+        var hay = foldText(haystack);
+        return query.split(' ').every(function (tok) {
+            return tok === '' || hay.indexOf(tok) !== -1;
         });
     }
 
     function filtroVal(id) {
         var el = document.getElementById(id);
-        return el ? String(el.value || '').toLowerCase().trim() : '';
+        return el ? String(el.value || '').trim() : '';
     }
 
     function bindFiltrosTabla() {
         if (CCAsig._filtrosBound) return;
         CCAsig._filtrosBound = true;
+        var qEl = document.getElementById('asig-q');
+        if (qEl) qEl.addEventListener('input', renderTablaFiltrada);
         ['asig-q-empresa', 'asig-q-usuario', 'asig-q-centro'].forEach(function (id) {
             var el = document.getElementById(id);
-            if (el) el.addEventListener('input', renderTablaFiltrada);
+            if (!el) return;
+            el.addEventListener('change', function () {
+                fillFiltrosTabla();
+                renderTablaFiltrada();
+            });
         });
     }
 
-    function matchFiltro(haystack, q) {
-        if (!q) return true;
-        return String(haystack || '').toLowerCase().indexOf(q) !== -1;
+    function userOptionKey(p) {
+        if (p && p.user_id != null && String(p.user_id) !== '') return 'id:' + String(p.user_id);
+        var nom = String((p && p.usuario) || '').trim().toLowerCase();
+        if (nom) return 'nom:' + nom;
+        var mail = String((p && p.email) || '').trim().toLowerCase();
+        return mail ? 'mail:' + mail : '';
+    }
+
+    function userOptionLabel(p) {
+        return String((p && (p.usuario || p.email)) || '—');
+    }
+
+    function centroFiltroKey(r) {
+        return String(r.empresa || '').toLowerCase() + '|' + String(r.centro_codigo || '');
+    }
+
+    function personasDeFila(r) {
+        return [r].concat(extrasDe(r));
+    }
+
+    function filaTieneUsuario(r, key) {
+        if (!key) return true;
+        return personasDeFila(r).some(function (p) { return userOptionKey(p) === key; });
+    }
+
+    function opcionSigue(items, value) {
+        if (!value) return '';
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].value === value) return value;
+        }
+        return '';
+    }
+
+    function fillSelectFiltro(el, items, extra, value) {
+        if (!el) return;
+        var html = extra || '';
+        items.forEach(function (it) {
+            html += '<option value="' + escapeHtml(it.value) + '">' + escapeHtml(it.label) + '</option>';
+        });
+        el.innerHTML = html;
+        el.value = value || '';
+    }
+
+    function fillFiltrosTabla() {
+        var empEl = document.getElementById('asig-q-empresa');
+        var userEl = document.getElementById('asig-q-usuario');
+        var ccEl = document.getElementById('asig-q-centro');
+        if (!empEl && !userEl && !ccEl) return;
+
+        var all = filasCaptura();
+        var emp = empEl ? empEl.value : '';
+        var user = userEl ? userEl.value : '';
+        var cc = ccEl ? ccEl.value : '';
+
+        var emps = [];
+        var seenEmp = {};
+        all.forEach(function (r) {
+            var raw = String(r.empresa || '').trim();
+            var key = raw.toLowerCase();
+            if (!key || seenEmp[key]) return;
+            seenEmp[key] = true;
+            emps.push({ value: key, label: raw.toUpperCase() });
+        });
+        emps.sort(function (a, b) { return a.label.localeCompare(b.label, 'es'); });
+        emp = opcionSigue(emps, emp);
+
+        var scoped = all.filter(function (r) {
+            return !emp || String(r.empresa || '').toLowerCase() === emp;
+        });
+        if (cc && !scoped.some(function (r) { return centroFiltroKey(r) === cc; })) cc = '';
+
+        var users = [];
+        var seenUser = {};
+        scoped.filter(function (r) { return !cc || centroFiltroKey(r) === cc; }).forEach(function (r) {
+            personasDeFila(r).forEach(function (p) {
+                var key = userOptionKey(p);
+                if (!key || seenUser[key]) return;
+                seenUser[key] = true;
+                users.push({ value: key, label: userOptionLabel(p) });
+            });
+        });
+        users.sort(function (a, b) { return a.label.localeCompare(b.label, 'es'); });
+        user = opcionSigue(users, user);
+
+        var centros = [];
+        var seenCc = {};
+        scoped.filter(function (r) { return filaTieneUsuario(r, user); }).forEach(function (r) {
+            var key = centroFiltroKey(r);
+            if (!r.centro_codigo || seenCc[key]) return;
+            seenCc[key] = true;
+            var label = etiquetaCentro(r.centro_codigo, r.centro_nombre);
+            if (!emp && r.empresa) label = String(r.empresa).toUpperCase() + ' · ' + label;
+            centros.push({ value: key, label: label });
+        });
+        centros.sort(function (a, b) { return a.label.localeCompare(b.label, 'es'); });
+        cc = opcionSigue(centros, cc);
+
+        fillSelectFiltro(empEl, emps, '<option value="">Todas las empresas</option>', emp);
+        fillSelectFiltro(userEl, users, '<option value="">Todos los usuarios</option>', user);
+        fillSelectFiltro(ccEl, centros, '<option value="">Todos los centros</option>', cc);
     }
 
     function isPrincipal(r) {
@@ -357,18 +481,40 @@
         });
     }
 
+    function textoFila(r) {
+        var personas = personasDeFila(r).map(function (p) {
+            var perms = (p.permisos || []).map(permNombre).join(' ');
+            return (p.usuario || '') + ' ' + (p.email || '') + ' ' + perms;
+        }).join(' ');
+        var cuentas = (r.cuentas || []).map(function (c) {
+            if (!c) return '';
+            if (typeof c === 'string') return c;
+            return (c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || '');
+        }).join(' ');
+        return [
+            r.empresa,
+            r.centro_codigo,
+            r.centro_nombre,
+            etiquetaCentro(r.centro_codigo, r.centro_nombre),
+            personas,
+            cuentas
+        ].join(' ');
+    }
+
     function renderTablaFiltrada() {
         var all = filasCaptura();
+        var q = filtroVal('asig-q');
         var qEmp = filtroVal('asig-q-empresa');
         var qUser = filtroVal('asig-q-usuario');
         var qCc = filtroVal('asig-q-centro');
         var rows = all.filter(function (r) {
-            var extras = extrasDe(r).map(function (x) { return (x.usuario || '') + ' ' + (x.email || ''); }).join(' ');
-            return matchFiltro(r.empresa, qEmp)
-                && matchFiltro((r.usuario || '') + ' ' + (r.email || '') + ' ' + extras, qUser)
-                && matchFiltro((r.centro_codigo || '') + ' ' + (r.centro_nombre || '') + ' ' + etiquetaCentro(r.centro_codigo, r.centro_nombre), qCc);
+            if (q && !matchQuery(textoFila(r), q)) return false;
+            if (qEmp && String(r.empresa || '').toLowerCase() !== qEmp.toLowerCase()) return false;
+            if (qUser && !filaTieneUsuario(r, qUser)) return false;
+            if (qCc && centroFiltroKey(r) !== qCc) return false;
+            return true;
         });
-        renderTabla(rows, CCAsig.ciclo, all.length, qEmp || qUser || qCc);
+        renderTabla(rows, CCAsig.ciclo, all.length, q || qEmp || qUser || qCc);
     }
 
     function renderTabla(rows, ciclo, total, filtrando) {
@@ -382,7 +528,7 @@
         if (!tb) return;
         if (!rows.length) {
             var empty = filtrando
-                ? 'No hay asignaciones que coincidan con la búsqueda.'
+                ? 'No hay asignaciones que coincidan con el filtro.'
                 : 'Aún no hay asignaciones. Usa Nueva asignación para crear la primera.';
             tb.innerHTML = '<tr><td colspan="6"><div class="cc-empty">' + empty + '</div></td></tr>';
             return;

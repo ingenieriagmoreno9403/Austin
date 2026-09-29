@@ -9,7 +9,7 @@
     <div class="cc-header">
         <div>
             <div class="cc-kicker" id="cc-page-kicker">Detalle del cliente</div>
-            <h1 class="cc-title" id="cc-page-title">Cliente</h1>
+            <h1 class="cc-title" id="cc-page-title">VENTAS</h1>
         </div>
         <div class="cc-header-actions">
             <label class="cc-header-moneda-wrap">

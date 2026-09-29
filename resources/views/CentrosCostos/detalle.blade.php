@@ -9,7 +9,7 @@
     <div class="cc-header">
         <div>
             <div class="cc-kicker" id="cc-page-kicker">Detalle del centro</div>
-            <h1 class="cc-title" id="cc-page-title">Centro de costos</h1>
+            <h1 class="cc-title" id="cc-page-title">GASTOS</h1>
         </div>
         <div class="cc-header-actions">
             <label class="cc-header-moneda-wrap">

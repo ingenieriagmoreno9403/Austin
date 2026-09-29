@@ -366,6 +366,102 @@ class AutinApiClient
     }
 
     /**
+     * Varios artículos de listaPreciosventa en paralelo (tope bajo para no saturar AutinApi).
+     *
+     * @param  array<int, string>  $articulos
+     * @return array{ok: bool, message: string|null, por_item: array<string, array<int, array<string, mixed>>>}
+     */
+    public function listaPreciosPorArticulos(string $empresa, string $cliente, array $articulos, int $concurrency = 3): array
+    {
+        $articulos = array_values(array_unique(array_filter(array_map(static function ($v) {
+            return trim((string) $v);
+        }, $articulos))));
+        if (! $articulos) {
+            return ['ok' => true, 'message' => null, 'por_item' => []];
+        }
+
+        $url = $this->baseUrl.'/listaPreciosventa';
+        $requests = function () use ($url, $empresa, $cliente, $articulos) {
+            foreach ($articulos as $i => $item) {
+                $query = array_filter([
+                    'Empresa' => $empresa,
+                    'CodigoCliente' => $cliente,
+                    'CodigoArticulo' => $item,
+                    'per_page' => 100,
+                    'page' => 1,
+                ], static function ($value) {
+                    return $value !== null && $value !== '';
+                });
+                yield $i => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        };
+
+        $porItem = [];
+        $retry = [];
+        $anyOk = false;
+        $message = null;
+        $pool = new Pool($this->client, $requests(), [
+            'concurrency' => max(1, min(3, $concurrency)),
+            'fulfilled' => function ($response, $index) use (&$porItem, &$retry, &$anyOk, &$message, $articulos) {
+                $item = $articulos[$index] ?? '';
+                if ((int) $response->getStatusCode() === 429) {
+                    $retry[] = (int) $index;
+                    if ($message === null) {
+                        $message = 'Too Many Attempts.';
+                    }
+
+                    return;
+                }
+                if ((int) $response->getStatusCode() < 200 || (int) $response->getStatusCode() >= 300) {
+                    $retry[] = (int) $index;
+
+                    return;
+                }
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                $anyOk = true;
+                if ($item !== '') {
+                    $porItem[strtoupper($item)] = $data;
+                }
+            },
+            'rejected' => function ($reason, $index) use (&$retry) {
+                $retry[] = (int) $index;
+            },
+        ]);
+        $pool->promise()->wait();
+
+        if ($retry) {
+            usleep(800000);
+            foreach ($retry as $index) {
+                $item = $articulos[$index] ?? '';
+                if ($item === '') {
+                    continue;
+                }
+                $res = $this->listaPreciosVenta([
+                    'Empresa' => $empresa,
+                    'CodigoCliente' => $cliente,
+                    'CodigoArticulo' => $item,
+                    'per_page' => 100,
+                    'page' => 1,
+                ]);
+                if (! empty($res['ok'])) {
+                    $anyOk = true;
+                    $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                    $porItem[strtoupper($item)] = is_array($body['data'] ?? null) ? $body['data'] : [];
+                } elseif ($message === null) {
+                    $message = $res['message'] ?? null;
+                }
+            }
+        }
+
+        return [
+            'ok' => $anyOk,
+            'message' => $anyOk ? null : $message,
+            'por_item' => $porItem,
+        ];
+    }
+
+    /**
      * Precios mensuales por empresa / cliente / artículo.
      * Filtros: year, Empresa, CardCode, Mes, ItemCode, per_page, page.
      * Campos: Empresa, CardCode, CardName, ItemCode, Mes, Precio.
@@ -489,9 +585,15 @@ class AutinApiClient
         };
 
         $extra = [];
+        $retryPages = [];
         $pool = new Pool($this->client, $requests(), [
-            'concurrency' => max(1, $concurrency),
-            'fulfilled' => function ($response) use (&$extra) {
+            'concurrency' => max(1, min(3, $concurrency)),
+            'fulfilled' => function ($response, $page) use (&$extra, &$retryPages) {
+                if ((int) $response->getStatusCode() === 429) {
+                    $retryPages[] = (int) $page;
+
+                    return;
+                }
                 $json = json_decode((string) $response->getBody(), true);
                 $data = is_array($json['data'] ?? null) ? $json['data'] : [];
                 foreach ($data as $row) {
@@ -500,8 +602,28 @@ class AutinApiClient
                     }
                 }
             },
+            'rejected' => function ($reason, $page) use (&$retryPages) {
+                $retryPages[] = (int) $page;
+            },
         ]);
         $pool->promise()->wait();
+
+        if ($retryPages) {
+            usleep(800000);
+            foreach ($retryPages as $page) {
+                $again = $this->ventas(array_merge($filters, ['page' => $page]));
+                if (empty($again['ok'])) {
+                    continue;
+                }
+                $againBody = is_array($again['body'] ?? null) ? $again['body'] : [];
+                $data = is_array($againBody['data'] ?? null) ? $againBody['data'] : [];
+                foreach ($data as $row) {
+                    if (is_array($row)) {
+                        $extra[] = $row;
+                    }
+                }
+            }
+        }
 
         return ['ok' => true, 'message' => null, 'rows' => array_merge($rows, $extra)];
     }
@@ -567,7 +689,7 @@ class AutinApiClient
      * @param  array<string, mixed>  $query
      * @return array{ok: bool, status: int, body: array|null, message: string|null}
      */
-    protected function request(string $method, string $uri, array $query = []): array
+    protected function request(string $method, string $uri, array $query = [], bool $retried = false): array
     {
         $url = $this->baseUrl . '/' . ltrim($uri, '/');
 
@@ -593,6 +715,12 @@ class AutinApiClient
                     'body' => $body,
                     'message' => null,
                 ];
+            }
+
+            if ($status === 429 && ! $retried) {
+                usleep(700000);
+
+                return $this->request($method, $uri, $query, true);
             }
 
             $message = is_array($body)

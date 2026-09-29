@@ -140,7 +140,7 @@
             </div>
         </div>
         <div class="cc-apply-bar mb-2">
-            <span class="cc-apply-hint">Aplica el cliente y los productos a la tabla de abajo. El usuario y la empresa se quedan seleccionados.</span>
+            <span class="cc-apply-hint">Suma este cliente a la tabla de abajo. Puedes seguir con otro. Nada se registra hasta que pulses Guardar.</span>
             <button type="button" class="cc-btn cc-btn-ink cc-btn-lg" id="asig-guardar">
                 <i class="fa-solid fa-plus"></i> Asignar
             </button>
@@ -152,7 +152,7 @@
             <h3><i class="fa-solid fa-table"></i> Resultados de asignación</h3>
             <span class="text-muted" style="font-size:.8rem" id="asig-resumen-meta"></span>
         </div>
-        <p class="text-muted mb-3" style="font-size:.85rem">Lo que vas asignando a este usuario, por empresa y cliente.</p>
+        <p class="text-muted mb-3" style="font-size:.85rem">Lo que vas armando para este usuario. Pulsa Guardar al final para registrarlo.</p>
         <div class="cc-table-wrap">
             <table class="cc-table">
                 <thead>

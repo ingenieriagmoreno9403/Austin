@@ -40,6 +40,9 @@ class ProyeccionesVentasController extends Controller
     /** @var array<string, bool> */
     protected $pvUserPermCache = [];
 
+    /** @var array<string, array<string, mixed>> */
+    protected $pvIndiceVentasMemo = [];
+
     /** @var array<string, string> */
     protected $pvCicloEstadoCache = [];
 
@@ -4820,7 +4823,7 @@ class ProyeccionesVentasController extends Controller
      * @param  array<int, string>  $soloArticulos  Si viene, consulta por CodigoArticulo (evita paginar 15k+ filas).
      * @return array{ok: bool, empresa: string, cliente: string, por_articulo: array<string, array<string, mixed>>, mensaje: string|null, origen?: string}
      */
-    protected function cargarListasPreciosCliente(string $empresa, string $cc, int $year = 0, array $soloArticulos = []): array
+    protected function cargarListasPreciosCliente(string $empresa, string $cc, int $year = 0, array $soloArticulos = [], bool $enriquecerUnidades = true): array
     {
         $api = app(AutinApiClient::class);
         $porArticulo = [];
@@ -4893,32 +4896,37 @@ class ProyeccionesVentasController extends Controller
         };
 
         if ($soloArticulos) {
-            // Captura / asignación: 1 request por producto asignado (CodigoArticulo).
+            $pendientes = [];
             foreach ($soloArticulos as $itemCode) {
+                $ck = 'pv.precio.row.'.strtoupper($empresa).'.'.substr(sha1(strtoupper($ccNorm).'|'.strtoupper($itemCode)), 0, 20);
+                $hit = Cache::get($ck);
+                if (is_array($hit)) {
+                    $ingestRows($hit, $itemCode);
+                    $ok = true;
+                    continue;
+                }
+                $pendientes[$ck] = $itemCode;
+            }
+            if ($pendientes) {
                 try {
-                    $res = $api->listaPreciosVenta([
-                        'Empresa' => strtoupper($empresa),
-                        'CodigoCliente' => $ccNorm,
-                        'CodigoArticulo' => $itemCode,
-                        'per_page' => 100,
-                        'page' => 1,
-                    ]);
+                    $packPrecios = $api->listaPreciosPorArticulos(strtoupper($empresa), $ccNorm, array_values($pendientes), 3);
                 } catch (Throwable $e) {
-                    if ($mensaje === null) {
-                        $mensaje = $e->getMessage();
-                    }
-                    continue;
+                    $packPrecios = ['ok' => false, 'message' => $e->getMessage(), 'por_item' => []];
                 }
-                if (empty($res['ok'])) {
-                    if ($mensaje === null) {
-                        $mensaje = $res['message'] ?? 'Sin conexión a listaPreciosventa';
-                    }
-                    continue;
+                if (! empty($packPrecios['ok'])) {
+                    $ok = true;
+                } elseif ($mensaje === null) {
+                    $mensaje = $packPrecios['message'] ?? 'Sin conexión a listaPreciosventa';
                 }
-                $ok = true;
-                $body = is_array($res['body'] ?? null) ? $res['body'] : [];
-                $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
-                $ingestRows($rows, $itemCode);
+                $porItem = is_array($packPrecios['por_item'] ?? null) ? $packPrecios['por_item'] : [];
+                foreach ($pendientes as $ck => $itemCode) {
+                    $rows = $porItem[strtoupper($itemCode)] ?? [];
+                    if (! is_array($rows) || ! $rows) {
+                        continue;
+                    }
+                    Cache::put($ck, $rows, 900);
+                    $ingestRows($rows, $itemCode);
+                }
             }
         } else {
             $perPage = 500;
@@ -4958,7 +4966,7 @@ class ProyeccionesVentasController extends Controller
             }
         }
 
-        if ($ok && $porArticulo) {
+        if ($enriquecerUnidades && $ok && $porArticulo) {
             $this->enriquecerUnidadesDesdeVentas($api, $porArticulo, $empresa, $cc, $year);
         }
         $this->adjuntarNombresUnidad($porArticulo);
@@ -5378,7 +5386,7 @@ class ProyeccionesVentasController extends Controller
             $pack = $api->ventasTodasPaginas(array_merge([
                 'year' => $year,
                 'Empresa' => $empFiltro,
-            ], $extra), $maxPages, 6);
+            ], $extra), $maxPages, 3);
             if (empty($pack['ok'])) {
                 if (! $ok) {
                     $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
@@ -5418,16 +5426,32 @@ class ProyeccionesVentasController extends Controller
         }
 
         $requested = $year;
+        $resolved = Cache::get($this->claveAnioVentas($empresa, $requested));
+        if (is_numeric($resolved)) {
+            $pack = $this->cargarProductosClienteAnio($empresa, $cliente, (int) $resolved, $todas);
+            if (! empty($pack['ok'])) {
+                if ((int) $resolved !== $requested && ! empty($pack['productos'])) {
+                    $pack['mensaje'] = 'Mostrando productos con venta en '.$resolved.' (aún no hay en '.$requested.')';
+                }
+
+                return $pack;
+            }
+        }
+
         $last = null;
         for ($y = $year; $y >= $year - 3 && $y >= 2000; $y--) {
             $pack = $this->cargarProductosClienteAnio($empresa, $cliente, $y, $todas);
             $last = $pack;
             if (! empty($pack['productos'])) {
+                Cache::put($this->claveAnioVentas($empresa, $requested), $y, 1800);
                 if ($y !== $requested) {
                     $pack['mensaje'] = 'Mostrando productos con venta en '.$y.' (aún no hay en '.$requested.')';
                 }
 
                 return $pack;
+            }
+            if (empty($pack['ok'])) {
+                break;
             }
         }
 
@@ -5443,64 +5467,23 @@ class ProyeccionesVentasController extends Controller
      */
     protected function cargarProductosClienteAnio(string $empresa, string $cliente, int $year, bool $todas = false): array
     {
-        $cacheKey = $todas
-            ? 'pv.productos.'.$empresa.'.'.$year.'.ALL'
-            : 'pv.productos.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente));
-        $cached = Cache::get($cacheKey);
-        if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['productos'])) {
-            return $cached;
+        $idx = $this->indiceVentasEmpresa($empresa, $year);
+        $productos = $todas
+            ? ($idx['productos'] ?? [])
+            : ($idx['por_cliente'][strtoupper($cliente)] ?? []);
+        if (! is_array($productos)) {
+            $productos = [];
         }
 
-        $pack = $this->filasVentasEmpresa($empresa, $year, $todas ? [] : ['CardCode' => $cliente], $todas ? 80 : 30);
-        $map = [];
-        foreach ($pack['rows'] as $row) {
-            $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
-            if ($item === '') {
-                continue;
-            }
-            $itemName = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? $row['Itemname'] ?? ''));
-            $linea = trim((string) ($row['U_LINEA_QV'] ?? $row['Linea'] ?? $row['linea'] ?? ''));
-            $key = strtoupper($item);
-            if (! isset($map[$key])) {
-                $map[$key] = [
-                    'codigo' => $item,
-                    'nombre' => $itemName !== '' ? $itemName : $item,
-                    'empresa' => $empresa,
-                    'grupo' => $linea,
-                    'grupo_id' => $linea,
-                    'costo' => $this->costoVenta($row),
-                ];
-            } else {
-                $costo = $this->costoVenta($row);
-                if ($costo > 0) {
-                    $map[$key]['costo'] = $costo;
-                }
-                if ($map[$key]['nombre'] === $item && $itemName !== '') {
-                    $map[$key]['nombre'] = $itemName;
-                }
-            }
-        }
-
-        $productos = array_values($map);
-        usort($productos, function ($a, $b) {
-            return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
-                ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
-        });
-
-        $payload = [
-            'ok' => ! empty($pack['ok']),
-            'productos' => $productos,
-            'mensaje' => ! empty($pack['ok'])
+        return [
+            'ok' => ! empty($idx['ok']),
+            'productos' => array_values($productos),
+            'mensaje' => ! empty($idx['ok'])
                 ? ($productos ? null : ($todas
                     ? 'Esta empresa no tiene productos en ventas '.$year
                     : 'Este cliente no tiene productos en ventas '.$year))
-                : ($pack['mensaje'] ?? 'Sin productos SAP'),
+                : ($idx['mensaje'] ?? 'Sin productos SAP'),
         ];
-        if (! empty($payload['ok']) && $productos) {
-            Cache::put($cacheKey, $payload, 1800);
-        }
-
-        return $payload;
     }
 
     /**
@@ -5535,16 +5518,32 @@ class ProyeccionesVentasController extends Controller
         }
 
         $requested = $year;
+        $resolved = Cache::get($this->claveAnioVentas($empresa, $requested));
+        if (is_numeric($resolved)) {
+            $pack = $this->cargarClientesEmpresaAnio($empresa, (int) $resolved);
+            if (! empty($pack['ok'])) {
+                if ((int) $resolved !== $requested && ! empty($pack['clientes'])) {
+                    $pack['mensaje'] = 'Mostrando clientes con venta en '.$resolved.' (aún no hay en '.$requested.')';
+                }
+
+                return $pack;
+            }
+        }
+
         $last = null;
         for ($y = $year; $y >= $year - 3 && $y >= 2000; $y--) {
             $pack = $this->cargarClientesEmpresaAnio($empresa, $y);
             $last = $pack;
             if (! empty($pack['clientes'])) {
+                Cache::put($this->claveAnioVentas($empresa, $requested), $y, 1800);
                 if ($y !== $requested) {
                     $pack['mensaje'] = 'Mostrando clientes con venta en '.$y.' (aún no hay en '.$requested.')';
                 }
 
                 return $pack;
+            }
+            if (empty($pack['ok'])) {
+                break;
             }
         }
 
@@ -5560,70 +5559,132 @@ class ProyeccionesVentasController extends Controller
      */
     protected function cargarClientesEmpresaAnio(string $empresa, int $year): array
     {
-        $cacheKey = 'pv.clientes.'.$empresa.'.'.$year;
-        $cached = Cache::get($cacheKey);
-        if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['clientes'])) {
-            return $cached;
+        $idx = $this->indiceVentasEmpresa($empresa, $year);
+        $clientes = is_array($idx['clientes'] ?? null) ? $idx['clientes'] : [];
+
+        return [
+            'ok' => ! empty($idx['ok']),
+            'clientes' => $clientes,
+            'mensaje' => ! empty($idx['ok'])
+                ? ($clientes ? null : 'No hay clientes con venta en '.$year)
+                : ($idx['mensaje'] ?? 'Sin clientes SAP'),
+        ];
+    }
+
+    protected function claveAnioVentas(string $empresa, int $year): string
+    {
+        return 'pv.ventas.anio.'.strtolower(trim($empresa)).'.'.$year;
+    }
+
+    /**
+     * Una sola bajada de OINV + ORIN por empresa y año.
+     * Clientes y productos de cada cliente salen de ese índice, sin volver a paginar SAP.
+     *
+     * @return array{ok: bool, mensaje: string|null, clientes: array<int, array<string, mixed>>, productos: array<int, array<string, mixed>>, por_cliente: array<string, array<int, array<string, mixed>>>}
+     */
+    protected function indiceVentasEmpresa(string $empresa, int $year): array
+    {
+        $empresa = strtolower(trim($empresa));
+        $memoKey = $empresa.'|'.$year;
+        if (isset($this->pvIndiceVentasMemo[$memoKey]) && is_array($this->pvIndiceVentasMemo[$memoKey])) {
+            return $this->pvIndiceVentasMemo[$memoKey];
         }
 
-        $empresasFiltro = $this->empresasFiltroVentas($empresa);
-        $api = app(AutinApiClient::class);
-        $map = [];
-        $ok = false;
-        $mensaje = null;
+        $cacheKey = 'pv.ventas.idx.v1.'.$empresa.'.'.$year;
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && array_key_exists('clientes', $cached)) {
+            return $this->pvIndiceVentasMemo[$memoKey] = $cached;
+        }
 
-        foreach ($empresasFiltro as $empFiltro) {
-            $pack = $api->ventasTodasPaginas([
-                'year' => $year,
-                'Empresa' => $empFiltro,
-            ], 30, 6);
-            if (empty($pack['ok'])) {
-                if (! $ok) {
-                    $mensaje = $pack['message'] ?? 'Sin clientes SAP';
-                }
+        $pack = $this->filasVentasEmpresa($empresa, $year, [], 40);
+        $clientes = [];
+        $productos = [];
+        $porCliente = [];
+
+        foreach ($pack['rows'] as $row) {
+            if (! is_array($row)) {
                 continue;
             }
-            $ok = true;
-            foreach ($pack['rows'] as $row) {
-                if (! is_array($row)) {
-                    continue;
-                }
-                $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
-                if ($card === '') {
-                    continue;
-                }
+            $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
+            $cardKey = strtoupper($card);
+            if ($cardKey !== '') {
                 $name = trim((string) ($row['CardName'] ?? $row['Cardname'] ?? ''));
-                $key = strtoupper($card);
-                if (! isset($map[$key])) {
-                    $map[$key] = [
+                if (! isset($clientes[$cardKey])) {
+                    $clientes[$cardKey] = [
                         'codigo' => $card,
                         'nombre' => $name !== '' ? $name : $card,
                         'empresa' => $empresa,
                         'activo' => true,
                         'departamento' => '',
                     ];
-                } elseif (($map[$key]['nombre'] === $map[$key]['codigo']) && $name !== '') {
-                    $map[$key]['nombre'] = $name;
+                } elseif ($clientes[$cardKey]['nombre'] === $clientes[$cardKey]['codigo'] && $name !== '') {
+                    $clientes[$cardKey]['nombre'] = $name;
                 }
+            }
+
+            $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+            if ($item === '') {
+                continue;
+            }
+            $itemName = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? $row['Itemname'] ?? ''));
+            $linea = trim((string) ($row['U_LINEA_QV'] ?? $row['Linea'] ?? $row['linea'] ?? ''));
+            $itemKey = strtoupper($item);
+            if (! isset($productos[$itemKey])) {
+                $productos[$itemKey] = [
+                    'codigo' => $item,
+                    'nombre' => $itemName !== '' ? $itemName : $item,
+                    'empresa' => $empresa,
+                    'grupo' => $linea,
+                    'grupo_id' => $linea,
+                    'costo' => $this->costoVenta($row),
+                ];
+            } else {
+                $costo = $this->costoVenta($row);
+                if ($costo > 0) {
+                    $productos[$itemKey]['costo'] = $costo;
+                }
+                if ($productos[$itemKey]['nombre'] === $item && $itemName !== '') {
+                    $productos[$itemKey]['nombre'] = $itemName;
+                }
+            }
+            if ($cardKey !== '') {
+                $porCliente[$cardKey][$itemKey] = true;
             }
         }
 
-        $clientes = array_values($map);
-        usort($clientes, function ($a, $b) {
+        $cmp = function ($a, $b) {
             return strcasecmp((string) ($a['nombre'] ?? ''), (string) ($b['nombre'] ?? ''))
                 ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
-        });
+        };
+        $listaProductos = array_values($productos);
+        usort($listaProductos, $cmp);
+        $listaClientes = array_values($clientes);
+        usort($listaClientes, $cmp);
 
-        $payload = [
-            'ok' => $ok,
-            'clientes' => $clientes,
-            'mensaje' => $ok ? ($clientes ? null : 'No hay clientes con venta en '.$year) : $mensaje,
-        ];
-        if ($ok && $clientes) {
-            Cache::put($cacheKey, $payload, 1800);
+        $porOut = [];
+        foreach ($porCliente as $cardKey => $items) {
+            $list = [];
+            foreach (array_keys($items) as $itemKey) {
+                if (isset($productos[$itemKey])) {
+                    $list[] = $productos[$itemKey];
+                }
+            }
+            usort($list, $cmp);
+            $porOut[$cardKey] = $list;
         }
 
-        return $payload;
+        $payload = [
+            'ok' => ! empty($pack['ok']),
+            'mensaje' => $pack['mensaje'] ?? null,
+            'clientes' => $listaClientes,
+            'productos' => $listaProductos,
+            'por_cliente' => $porOut,
+        ];
+        if (! empty($payload['ok'])) {
+            Cache::put($cacheKey, $payload, ($listaClientes || $listaProductos) ? 1800 : 600);
+        }
+
+        return $this->pvIndiceVentasMemo[$memoKey] = $payload;
     }
 
     /**
@@ -6287,18 +6348,47 @@ class ProyeccionesVentasController extends Controller
 
         $porArticulo = [];
         try {
-            $itemsAsig = [];
+            $codigos = [];
             foreach ($cuentas as $cta0) {
                 if (! is_array($cta0)) {
                     continue;
                 }
                 $cod0 = trim((string) ($cta0['codigo'] ?? $cta0['cuenta_codigo'] ?? ''));
                 if ($cod0 !== '') {
-                    $itemsAsig[] = $cod0;
+                    $codigos[strtoupper($cod0)] = $cod0;
                 }
             }
-            $listas = $this->cargarListasPreciosCliente($empresa, $card, 0, $itemsAsig);
-            $porArticulo = is_array($listas['por_articulo'] ?? null) ? $listas['por_articulo'] : [];
+            $yaEnMaestro = [];
+            if ($codigos) {
+                $qExist = PvProductoCosto::query()
+                    ->where('empresa', $empresa)
+                    ->whereIn('producto_codigo', array_values($codigos));
+                if ($hasAnio) {
+                    $qExist->where('anio', $anio);
+                }
+                if ($hasCard) {
+                    $qExist->where('card_code', $card);
+                }
+                if ($hasMes) {
+                    $qExist->where('mes', 0);
+                }
+                foreach ($qExist->get(['producto_codigo', 'costo_unitario']) as $prev) {
+                    if ((float) $prev->costo_unitario > 0) {
+                        $yaEnMaestro[strtoupper(trim((string) $prev->producto_codigo))] = true;
+                    }
+                }
+            }
+            $itemsAsig = [];
+            foreach ($codigos as $cod0) {
+                if (! empty($yaEnMaestro[strtoupper($cod0)])) {
+                    continue;
+                }
+                $itemsAsig[] = $cod0;
+            }
+            if ($itemsAsig) {
+                $listas = $this->cargarListasPreciosCliente($empresa, $card, 0, $itemsAsig, false);
+                $porArticulo = is_array($listas['por_articulo'] ?? null) ? $listas['por_articulo'] : [];
+            }
         } catch (Throwable $e) {
             $porArticulo = [];
         }
@@ -6358,6 +6448,13 @@ class ProyeccionesVentasController extends Controller
 
             $row = PvProductoCosto::query()->firstOrNew($lookup);
             $esNuevo = ! $row->exists;
+            if (! $esNuevo && ! is_array($lista)) {
+                if ($hasCardName && $cardName !== '' && trim((string) ($row->card_name ?? '')) === '') {
+                    $row->card_name = mb_substr($cardName, 0, 180);
+                    $row->save();
+                }
+                continue;
+            }
             $precioAnterior = $esNuevo ? null : (float) $row->costo_unitario;
             $monedaAnterior = $esNuevo ? null : (string) ($row->moneda ?: 'MXN');
             $precioFinal = round(max(0, $precio), 4);
