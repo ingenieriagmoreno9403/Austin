@@ -769,8 +769,10 @@ class CentrosCostosController extends Controller
         if (! $cuentas) {
             $this->completarCuentasGastoDesdeAsignaciones($empresa, $cc, $cuentas);
         }
+        $cuentas = array_values(array_unique($cuentas));
+        sort($cuentas);
 
-        $cacheKey = 'cc.gasto-real.v9.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
+        $cacheKey = 'cc.gasto-real.v10.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['por_cuenta'])) {
             return response()->json($cached);
@@ -1449,7 +1451,7 @@ class CentrosCostosController extends Controller
             $faltan = [];
             foreach ($consultas as $cuenta) {
                 $ck = $this->codigoCuentaKey($cuenta);
-                $ctaCache = 'cc.gasto-cta.v4.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($ck);
+                $ctaCache = 'cc.gasto-cta.v5.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($ck);
                 $hit = Cache::get($ctaCache);
                 if (is_array($hit) && isset($hit['gasto']) && is_array($hit['gasto'])) {
                     $porCuenta[$ck] = [
@@ -1468,7 +1470,7 @@ class CentrosCostosController extends Controller
                 foreach ($faltan as $cuenta) {
                     $pedido[] = $this->codigoCuentaKey($cuenta);
                 }
-                $res = $api->gastoRealPorCuentas($empresa, $year, $pedido, 12, 3, $cc);
+                $res = $api->gastoRealPorCuentas($empresa, $year, $pedido, 3, 8, $cc);
                 foreach ($res['failed'] ?? [] as $codigo) {
                     $failed[$this->codigoCuentaKey((string) $codigo)] = true;
                 }
@@ -1496,10 +1498,7 @@ class CentrosCostosController extends Controller
                                 'gasto' => array_fill(0, 12, 0.0),
                             ];
                         }
-                        $suma = array_sum($porCuenta[$ck]['gasto']);
-                        if ($suma != 0.0) {
-                            Cache::put('cc.gasto-cta.v4.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($ck), $porCuenta[$ck], 1800);
-                        }
+                        Cache::put('cc.gasto-cta.v5.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($ck), $porCuenta[$ck], 1800);
                     }
                 }
             }

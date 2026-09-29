@@ -635,24 +635,22 @@
             return;
         }
         var actual = currentCta();
+        var firstKey = codigoCuentaKey((actual && actual.codigo) || '');
         var first = [];
-        if (actual && actual.codigo && !gastoDeCuentaCargado(actual)) first = [actual];
-        var firstKey = codigoCuentaKey((first[0] && first[0].codigo) || '');
-        var rest = pend.filter(function (cta) {
-            return codigoCuentaKey(cta.codigo) !== firstKey;
+        var rest = [];
+        pend.forEach(function (cta) {
+            if (firstKey && codigoCuentaKey(cta.codigo) === firstKey) first.push(cta);
+            else rest.push(cta);
         });
-        var chunks = [];
-        if (first.length) chunks.push(first);
-        for (var i = 0; i < rest.length; i += 4) chunks.push(rest.slice(i, i + 4));
-        function run(n) {
-            if (control._gastoReq !== key) return;
-            if (n >= chunks.length) {
-                markGastoReady(c);
-                return;
-            }
-            fetchGastoCuentas(c, chunks[n], function () { run(n + 1); });
+        var waves = [];
+        if (first.length) waves.push(first);
+        if (rest.length) waves.push(rest);
+        var left = waves.length;
+        function doneWave() {
+            left -= 1;
+            if (left <= 0 && control._gastoReq === key) markGastoReady(c);
         }
-        run(0);
+        waves.forEach(function (wave) { fetchGastoCuentas(c, wave, doneWave); });
     }
 
     function markGastoReady(c) {
@@ -701,7 +699,7 @@
     }
 
     function pumpVisorGastos() {
-        var max = 1;
+        var max = 2;
         function kick() {
             var pending = CC._visorGastoPending || [];
             while ((CC._visorGastoInflight || 0) < max && pending.length) {
@@ -711,37 +709,30 @@
                 CC._visorGastoInflight = (CC._visorGastoInflight || 0) + 1;
                 (function (c, key, y) {
                     var cuentas = cuentasAsignadasCentro(c);
-                    var chunks = [];
-                    for (var i = 0; i < cuentas.length; i += 4) chunks.push(cuentas.slice(i, i + 4));
-                    var merged = {};
-                    function run(n) {
-                        if (n >= chunks.length) {
-                            CC.state.gastoCache = CC.state.gastoCache || {};
-                            CC.state.gastoCache[key] = Object.assign({}, CC.state.gastoCache[key] || {}, merged);
-                            CC.state.gastoLookup = CC.state.gastoLookup || {};
-                            CC.state.gastoLookup[key] = mapFromPorCuenta(CC.state.gastoCache[key]).map;
-                            CC.state.gastoReady = CC.state.gastoReady || {};
-                            CC.state.gastoReady[key] = true;
-                            CC._visorGastoInflight -= 1;
-                            if (control.centro && control._gastoReq === key) applyGastoMap(CC.state.gastoCache[key] || {});
-                            else renderVisorTable();
-                            kick();
-                            return;
-                        }
-                        var params = new URLSearchParams();
-                        params.set('empresa', c.empresa || '');
-                        params.set('cc', c.codigo || '');
-                        params.set('year', String(y));
-                        chunks[n].forEach(function (cta) { params.append('cuentas[]', cta.codigo); });
-                        fetch(CC.state.gastoUrl + '?' + params.toString(), {
-                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                        }).then(function (res) { return res.json(); }).then(function (json) {
-                            Object.assign(merged, (json && json.por_cuenta) || {});
-                        }).catch(function () { /* la tanda se reintenta al abrir el centro */ }).then(function () {
-                            run(n + 1);
-                        });
-                    }
-                    run(0);
+                    var params = new URLSearchParams();
+                    params.set('empresa', c.empresa || '');
+                    params.set('cc', c.codigo || '');
+                    params.set('year', String(y));
+                    cuentas.forEach(function (cta) {
+                        if (cta && cta.codigo) params.append('cuentas[]', cta.codigo);
+                    });
+                    fetch(CC.state.gastoUrl + '?' + params.toString(), {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(function (res) { return res.json(); }).then(function (json) {
+                        var merged = (json && json.por_cuenta) || {};
+                        CC.state.gastoCache = CC.state.gastoCache || {};
+                        CC.state.gastoCache[key] = Object.assign({}, CC.state.gastoCache[key] || {}, merged);
+                        CC.state.gastoLookup = CC.state.gastoLookup || {};
+                        CC.state.gastoLookup[key] = mapFromPorCuenta(CC.state.gastoCache[key]).map;
+                        CC.state.gastoReady = CC.state.gastoReady || {};
+                        CC.state.gastoReady[key] = true;
+                        if (control.centro && control._gastoReq === key) applyGastoMap(CC.state.gastoCache[key] || {});
+                        else renderVisorTable();
+                    }).catch(function () { /* se vuelve a pedir al abrir el centro */ }).then(function () {
+                        CC._visorGastoInflight -= 1;
+                        if (!pending.length && !(CC._visorGastoInflight || 0)) CC._visorGastoPump = false;
+                        else kick();
+                    });
                 })(centro, cacheKey, year);
             }
             if (!pending.length && !(CC._visorGastoInflight || 0)) CC._visorGastoPump = false;

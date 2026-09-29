@@ -340,7 +340,6 @@ class AutinApiClient
         });
 
         if ($failed) {
-            usleep(800000);
             $retry = $failed;
             $runPool(function () use ($url, $base, $retry) {
                 foreach ($retry as $i => $cuenta) {
@@ -391,7 +390,6 @@ class AutinApiClient
         ]);
         $poolPages->promise()->wait();
         if ($pageFailed) {
-            usleep(800000);
             $retryPages = function () use ($pageReqs, $pageFailed) {
                 foreach ($pageReqs() as $key => $request) {
                     if (isset($pageFailed[$key])) {
