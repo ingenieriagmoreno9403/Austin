@@ -114,7 +114,7 @@
             </div>
         </div>
         <div class="cc-table-wrap">
-            <table class="cc-table">
+            <table class="cc-table cc-an-detalle">
                 <thead>
                     <tr>
                         <th>Producto</th>
@@ -130,6 +130,7 @@
                     </tr>
                 </thead>
                 <tbody id="an-tbody"></tbody>
+                <tfoot id="an-tfoot"></tfoot>
             </table>
         </div>
     </div>

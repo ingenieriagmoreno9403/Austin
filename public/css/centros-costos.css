@@ -644,6 +644,17 @@
     border-bottom: 1px solid #f1f1f3;
     vertical-align: middle;
 }
+.cc-an-detalle tfoot td {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    background: #f4f4f5;
+    font-weight: 700;
+    border-top: 1px solid var(--cc-line);
+    border-bottom: 0;
+    padding: 0.7rem 0.7rem;
+    white-space: nowrap;
+}
 .cc-table tbody tr:hover { background: #fafafa; }
 .cc-table tbody tr.cc-asig-group td {
     background: #f4f4f5;

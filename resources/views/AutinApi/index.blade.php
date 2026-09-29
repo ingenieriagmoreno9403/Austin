@@ -42,6 +42,30 @@
         padding: .2rem .55rem; font-size: .75rem; cursor: pointer;
     }
     .sap-copy:hover { background: #e2e8f0; }
+    .sap-search { position: relative; flex: 1 1 280px; min-width: 240px; max-width: 440px; }
+    .sap-search i {
+        position: absolute; left: .75rem; top: 50%; transform: translateY(-50%);
+        color: #94a3b8; pointer-events: none;
+    }
+    .sap-search input { padding-left: 2.15rem; }
+    mark.sap-hit { background: #fef08a; color: inherit; padding: 0 .12rem; border-radius: 3px; }
+    .sap-totals {
+        margin-top: .9rem; padding: .9rem 1rem; border-radius: 12px;
+        background: #f8fafc; border: 1px solid rgba(17, 24, 39, .08);
+    }
+    .sap-totals-grid { display: flex; flex-wrap: wrap; gap: .55rem; }
+    .sap-total-chip {
+        background: #fff; border: 1px solid rgba(17, 24, 39, .08);
+        border-radius: 10px; padding: .4rem .7rem; min-width: 9rem;
+    }
+    .sap-total-chip .k {
+        display: block; font-size: .68rem; font-weight: 700; letter-spacing: .03em;
+        text-transform: uppercase; color: #64748b;
+    }
+    .sap-total-chip .v {
+        display: block; font-weight: 700; color: #0f172a;
+        font-variant-numeric: tabular-nums;
+    }
 </style>
 
 <div class="container-fluid sap-wrap">
@@ -379,6 +403,10 @@
                 <h5 class="mb-0" id="sapTitle">Resultados</h5>
                 <div class="sap-meta" id="sapMeta">Selecciona alcance y catálogo, luego consulta.</div>
             </div>
+            <div class="sap-search">
+                <i class="fas fa-search"></i>
+                <input type="search" id="sapSearch" class="form-control form-control-sm" placeholder="Buscar coincidencias en los resultados" autocomplete="off" disabled>
+            </div>
             <div class="d-flex gap-2">
                 <button type="button" class="btn btn-sm btn-outline-primary" id="sapPrev" disabled>Anterior</button>
                 <button type="button" class="btn btn-sm btn-outline-primary" id="sapNext" disabled>Siguiente</button>
@@ -392,6 +420,7 @@
                 </tbody>
             </table>
         </div>
+        <div id="sapTotals" class="sap-totals" hidden></div>
     </div>
 </div>
 
@@ -406,6 +435,11 @@
     const resourcesGlobal = @json($globalResources);
 
     let currentPage = 1;
+    let loadedRows = [];
+    let loadedKeys = [];
+
+    const SUM_NAME = /(importe|monto|amount|debit|credit|qty|quantity|cantidad|precio|price|costo|cost|saldo|total|tax|iva|descuento|discount|peso)/i;
+    const SKIP_SUM = /(code|codigo|cuenta|fecha|date|year|anio|mask|empresa|nombre|name|desc|estatus|status|tipo|depto|prc|format|card|item|docnum|docentry|linenum|linea|^id$|_id$)/i;
 
     function isGastoReal() {
         return document.getElementById('sapScope').value === 'global'
@@ -548,9 +582,141 @@
         return { url: url + '?' + params.toString() };
     }
 
+    function escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function fold(value) {
+        return String(value || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
+    }
+
+    function highlight(value, query) {
+        const raw = value === null || value === undefined ? '' : String(value);
+        const safe = escapeHtml(raw);
+        const q = String(query || '').trim();
+        if (!q) return safe;
+        const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return safe.replace(new RegExp('(' + pattern + ')', 'ig'), '<mark class="sap-hit">$1</mark>');
+    }
+
+    function parseAmount(value) {
+        if (typeof value === 'number' && isFinite(value)) return value;
+        if (value === null || value === undefined) return null;
+        const raw = String(value).trim().replace(/[$\s]/g, '');
+        if (raw === '') return null;
+        const normalized = raw.replace(/,/g, '');
+        if (!/^-?\d+(\.\d+)?$/.test(normalized)) return null;
+        return parseFloat(normalized);
+    }
+
+    function formatAmount(value) {
+        return value.toLocaleString('es-MX', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function columnIsSummable(key, rows) {
+        if (SKIP_SUM.test(key) && !SUM_NAME.test(key)) return false;
+        if (/(code|codigo|^id$|_id$|fecha|date|year)/i.test(key)) return false;
+
+        let filled = 0;
+        let numeric = 0;
+        let withDecimal = 0;
+        rows.forEach(function (row) {
+            const value = row[key];
+            if (value === null || value === undefined || String(value).trim() === '') return;
+            filled += 1;
+            const amount = parseAmount(value);
+            if (amount === null) return;
+            numeric += 1;
+            if (String(value).indexOf('.') !== -1) withDecimal += 1;
+        });
+        if (!filled || numeric !== filled) return false;
+        if (SUM_NAME.test(key)) return true;
+        return withDecimal > 0;
+    }
+
+    function visibleRows() {
+        const query = fold(document.getElementById('sapSearch').value.trim());
+        if (!query) return loadedRows.slice();
+        return loadedRows.filter(function (row) {
+            return loadedKeys.some(function (key) {
+                return fold(row[key]).indexOf(query) !== -1;
+            });
+        });
+    }
+
+    function paintRows(rows, query) {
+        const tbody = document.getElementById('sapTbody');
+        if (!loadedRows.length) {
+            tbody.innerHTML = '<tr><td class="text-muted py-4">Sin resultados.</td></tr>';
+            return;
+        }
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td class="text-muted py-4" colspan="' + loadedKeys.length + '">Sin coincidencias para «' + escapeHtml(query) + '».</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(function (row) {
+            return '<tr>' + loadedKeys.map(function (key) {
+                return '<td>' + highlight(row[key], query) + '</td>';
+            }).join('') + '</tr>';
+        }).join('');
+    }
+
+    function paintTotals(rows) {
+        const box = document.getElementById('sapTotals');
+        const search = document.getElementById('sapSearch');
+        if (!loadedRows.length || !loadedKeys.length) {
+            box.hidden = true;
+            box.innerHTML = '';
+            search.disabled = true;
+            return;
+        }
+
+        search.disabled = false;
+        const summable = loadedKeys.filter(function (key) {
+            return columnIsSummable(key, loadedRows);
+        });
+        const query = search.value.trim();
+        const label = query
+            ? (rows.length + ' coincidencias de ' + loadedRows.length + ' en esta página')
+            : (loadedRows.length + ' registros en esta página');
+
+        if (!summable.length) {
+            box.hidden = false;
+            box.innerHTML = '<div class="sap-meta mb-0">' + label + ' · esta consulta no trae columnas numéricas para totalizar.</div>';
+            return;
+        }
+
+        const chips = summable.map(function (key) {
+            const total = rows.reduce(function (sum, row) {
+                const amount = parseAmount(row[key]);
+                return sum + (amount === null ? 0 : amount);
+            }, 0);
+            return '<div class="sap-total-chip"><span class="k">' + escapeHtml(key) + '</span><span class="v">' + formatAmount(total) + '</span></div>';
+        }).join('');
+
+        box.hidden = false;
+        box.innerHTML = '<div class="fw-semibold mb-2">Suma de totales · ' + label + '</div><div class="sap-totals-grid">' + chips + '</div>';
+    }
+
+    function applyResultView() {
+        const query = document.getElementById('sapSearch').value.trim();
+        const rows = visibleRows();
+        paintRows(rows, query);
+        paintTotals(rows);
+    }
+
     function renderTable(payload) {
         const thead = document.getElementById('sapThead');
-        const tbody = document.getElementById('sapTbody');
         const data = Array.isArray(payload.data) ? payload.data : [];
         const meta = payload.meta || {};
         const filters = payload.filters_applied || null;
@@ -575,21 +741,19 @@
         document.getElementById('sapPrev').disabled = !meta.current_page || meta.current_page <= 1;
         document.getElementById('sapNext').disabled = !meta.last_page || meta.current_page >= meta.last_page;
 
+        const search = document.getElementById('sapSearch');
+        search.value = '';
+        loadedRows = data;
+        loadedKeys = data.length ? Object.keys(data[0]) : [];
+
         if (!data.length) {
             thead.innerHTML = '';
-            tbody.innerHTML = '<tr><td class="text-muted py-4">Sin resultados.</td></tr>';
+            applyResultView();
             return;
         }
 
-        const keys = Object.keys(data[0]);
-        thead.innerHTML = keys.map(function (k) { return '<th>' + k + '</th>'; }).join('');
-        tbody.innerHTML = data.map(function (row) {
-            return '<tr>' + keys.map(function (k) {
-                const v = row[k];
-                const text = v === null || v === undefined ? '' : String(v);
-                return '<td>' + text.replace(/</g, '&lt;') + '</td>';
-            }).join('') + '</tr>';
-        }).join('');
+        thead.innerHTML = loadedKeys.map(function (k) { return '<th>' + escapeHtml(k) + '</th>'; }).join('');
+        applyResultView();
     }
 
     async function loadData() {
@@ -608,8 +772,14 @@
             }
             renderTable(json);
         } catch (err) {
+            loadedRows = [];
+            loadedKeys = [];
+            document.getElementById('sapSearch').value = '';
+            document.getElementById('sapSearch').disabled = true;
+            document.getElementById('sapTotals').hidden = true;
+            document.getElementById('sapTotals').innerHTML = '';
             document.getElementById('sapTbody').innerHTML =
-                '<tr><td class="text-danger py-4">' + (err.message || 'Error al consultar') + '</td></tr>';
+                '<tr><td class="text-danger py-4">' + escapeHtml(err.message || 'Error al consultar') + '</td></tr>';
             document.getElementById('sapThead').innerHTML = '';
             document.getElementById('sapMeta').textContent = 'Error';
         } finally {
@@ -617,6 +787,8 @@
             btn.innerHTML = '<i class="fas fa-search me-1"></i> Consultar';
         }
     }
+
+    document.getElementById('sapSearch').addEventListener('input', applyResultView);
 
     document.getElementById('sapFilterForm').addEventListener('submit', function (e) {
         e.preventDefault();

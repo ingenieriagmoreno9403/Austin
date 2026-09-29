@@ -8014,6 +8014,8 @@
             setText('an-kpi-poco', '—');
             setText('an-kpi-over', '—');
             setText('an-kpi-yoy', '—');
+            var tfWait = document.getElementById('an-tfoot');
+            if (tfWait) tfWait.innerHTML = '';
             return;
         }
         var productRows = productosDeAnalisis(rows);
@@ -8110,6 +8112,29 @@
                     '<td>' + (p.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
                     '<td><a class="cc-btn" href="' + detalleHref(p.centro) + '">Ver</a></td></tr>';
             }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin productos con esos filtros</div></td></tr>';
+        }
+
+        var tf = document.getElementById('an-tfoot');
+        if (tf) {
+            if (!tableRows.length) {
+                tf.innerHTML = '';
+            } else {
+                var sumGasto = 0;
+                var sumPpto = 0;
+                tableRows.forEach(function (p) {
+                    sumGasto += Number(p.gasto) || 0;
+                    sumPpto += Number(p.ppto) || 0;
+                });
+                var yoyTot = deltaPct(sumPpto, sumGasto);
+                var nProd = tableRows.length;
+                tf.innerHTML = '<tr>' +
+                    '<td colspan="5">Totales · ' + nProd + (nProd === 1 ? ' producto' : ' productos') + '</td>' +
+                    '<td class="num">' + moneyDosDecimales(sumGasto) + '</td>' +
+                    '<td class="num">' + moneyGasto(sumPpto) + '</td>' +
+                    '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—') + '</td>' +
+                    '<td colspan="2"></td>' +
+                    '</tr>';
+            }
         }
 
         paintAnalisisChart(rows, productRows, gYear, pYear);
