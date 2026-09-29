@@ -13,7 +13,13 @@
                     </div>
                     <div>
                         <h2 class="mb-0 text-marino fw-bold">Registro</h2>
-                        <p class="text-muted mb-0">Alta de usuarios y restablecimiento de contraseñas</p>
+                        <p class="text-muted mb-0">
+                            @if (!empty($esMasterEmpresa))
+                                Alta de usuarios y edición de nombre, correo y contraseña
+                            @else
+                                Alta de usuarios y restablecimiento de contraseñas
+                            @endif
+                        </p>
                     </div>
                 </div>
 
@@ -34,11 +40,19 @@
                         <h5 class="text-secondary mb-1">
                             <i class="fa-solid fa-user-plus me-2"></i>Registrar usuario
                         </h5>
-                        <p class="text-muted fs-8 mb-0">Selecciona el tipo, busca la persona relacionada y captura sus credenciales.</p>
+                        <p class="text-muted fs-8 mb-0">
+                            @if (!empty($esMasterEmpresa))
+                                Captura el nombre, el correo y la contraseña. El usuario queda en tu empresa.
+                            @else
+                                Selecciona el tipo, busca la persona relacionada y captura sus credenciales.
+                            @endif
+                        </p>
                     </div>
+                    @if (empty($esMasterEmpresa))
                     <span class="registro-card-badge">
                         <i class="fa-solid fa-magnifying-glass"></i> Buscadores activos
                     </span>
+                    @endif
                 </div>
             </div>
 
@@ -47,6 +61,7 @@
                     class="g-3 needs-validation form modern-form" enctype="multipart/form-data" id="frm" novalidate>
                     @csrf
                     <div class="registro-form-shell">
+                        <div class="@if (!empty($esMasterEmpresa)) d-none @endif">
                         <div class="registro-section-title">
                             <span class="registro-section-title__icon">
                                 <i class="fa-solid fa-address-card"></i>
@@ -230,6 +245,7 @@
                                 </div>
                             </div>
                         </div>
+                        </div>
 
                         <div class="registro-section-title">
                             <span class="registro-section-title__icon registro-section-title__icon--green">
@@ -334,6 +350,107 @@
             </div>
         </div>
     </div>
+
+    @if (!empty($esMasterEmpresa))
+    <div class="row justify-content-center mb-4">
+        <div class="card border-0 shadow p-3 mt-2 bg-body rounded-5 registro-card">
+            <div class="card-header text-start bg-body border-0 pb-0">
+                <h5 class="text-secondary mb-1">
+                    <i class="fa-solid fa-user-pen me-2"></i>Editar usuario
+                </h5>
+                <p class="text-muted fs-8 mb-0">Como superusuario de la empresa puedes cambiar el nombre, el correo y la contraseña de los usuarios de tu empresa.</p>
+            </div>
+
+            <div class="card-body">
+                <form method="POST" action="{{ route('editarUsuario') }}" class="g-3 needs-validation form modern-form"
+                    id="frmEditar" novalidate>
+                    @csrf
+                    <div class="row g-3 mb-3">
+                        <div class="col-12">
+                            <label class="form-label">Usuario</label>
+                            <select name="iduser" id="iduser_editar" class="form-select select2 registro-buscador" required
+                                data-placeholder="Buscar usuario de tu empresa...">
+                                <option value="">Seleccionar usuario... </option>
+                                @foreach ($usuariosEmpresa as $item)
+                                    <option value="{{ $item->id }}"
+                                        data-name="{{ $item->name }}"
+                                        data-email="{{ $item->email }}">
+                                        {{ $item->id }} - {{ $item->name }}
+                                        @if (!empty($item->email))
+                                            · {{ $item->email }}
+                                        @endif
+                                        @if ($item->estado_user == 'A')
+                                            (Activo)
+                                        @else
+                                            (Inactivo)
+                                        @endif
+                                    </option>
+                                @endforeach
+                            </select>
+                            <small class="registro-search-help">
+                                <i class="fa-solid fa-building me-1"></i>Solo aparecen usuarios de tu empresa.
+                            </small>
+                            <div class="invalid-feedback">Selecciona un usuario.</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Nombre</label>
+                            <input type="text" id="edit_name" name="name" class="form-control"
+                                minlength="3" maxlength="100" placeholder="Nombre de usuario..." required>
+                            <div class="invalid-feedback">El nombre debe tener al menos 3 caracteres.</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Correo</label>
+                            <input type="email" id="edit_email" name="email" class="form-control"
+                                maxlength="100" placeholder="user@example.com" required>
+                            <div class="invalid-feedback">Captura un correo válido.</div>
+                        </div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="txtPasswordEdit">Contraseña</label>
+                            <div class="input-group">
+                                <input type="password" id="txtPasswordEdit" name="contrasena" class="form-control"
+                                    placeholder="Nueva contraseña (opcional)..." minlength="8">
+                                <div class="input-group-append">
+                                    <a class="btn__password fs-6" type="button" onclick="mostrarPasswordEdit()"
+                                        style="margin-top: 4px;margin-left:5px;color:#a6a6a6;">
+                                        <span class="fa fa-eye-slash icon-edit"></span>
+                                    </a>
+                                </div>
+                            </div>
+                            <small class="registro-search-help">
+                                <i class="fa-solid fa-circle-info me-1"></i>Déjala vacía si no quieres cambiarla.
+                            </small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="inputPasswordEdit">Confirmar contraseña</label>
+                            <div class="input-group">
+                                <input type="password" id="inputPasswordEdit" name="recontrasena" class="form-control"
+                                    placeholder="Confirme la contraseña..." minlength="8">
+                                <div class="input-group-append">
+                                    <a class="btn__password fs-6" type="button" onclick="showPasswordEdit()"
+                                        style="margin-top: 4px;margin-left:5px;color:#a6a6a6;">
+                                        <span class="fa fa-eye-slash icon-edit2"></span>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+                <div class="registro-action-bar">
+                    <div class="text-muted fs-8">
+                        <i class="fa-solid fa-circle-info me-1"></i>Al elegir un usuario se cargan su nombre y correo actuales.
+                    </div>
+                    <div>
+                        <button type="button" onclick="validarEditarUsuario()" class="fs-6 btn btn-baseColor">
+                            <i class="fa-solid fa-floppy-disk"></i> Guardar cambios
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
 
     <div class="row justify-content-center mb-4">
         <div class="card border-0 shadow p-3 mt-2 bg-body rounded-5 registro-card">
@@ -855,6 +972,27 @@
         return true;
     }
 
+    function validarEditarUsuario() {
+        const form = document.getElementById('frmEditar');
+        if (!form) return false;
+
+        const pass = document.getElementById('txtPasswordEdit').value.trim();
+        const repass = document.getElementById('inputPasswordEdit').value.trim();
+
+        if ((pass !== '' || repass !== '') && !validarParPasswords(pass, repass, 'txtPasswordEdit', 'inputPasswordEdit')) {
+            return false;
+        }
+
+        form.classList.add('was-validated');
+        if (!form.checkValidity()) {
+            swalAlerta('warning', 'Campos incompletos', 'Selecciona el usuario y captura nombre y correo.');
+            return false;
+        }
+
+        form.submit();
+        return true;
+    }
+
     function validarAsignarEmpresa() {
         const form = document.getElementById('frmAsignarEmpresa');
         if (!form) return false;
@@ -932,6 +1070,31 @@
     function showPassword2() {
         toggleVisibilidadPassword('inputPassword2', '#frm2 .icon22');
     }
+
+    function mostrarPasswordEdit() {
+        toggleVisibilidadPassword('txtPasswordEdit', '#frmEditar .icon-edit');
+    }
+
+    function showPasswordEdit() {
+        toggleVisibilidadPassword('inputPasswordEdit', '#frmEditar .icon-edit2');
+    }
+
+    function cargarDatosUsuarioEditar() {
+        const select = document.getElementById('iduser_editar');
+        const nameInput = document.getElementById('edit_name');
+        const emailInput = document.getElementById('edit_email');
+        if (!select || !nameInput || !emailInput) return;
+
+        const option = select.options[select.selectedIndex];
+        if (!option || !option.value) {
+            nameInput.value = '';
+            emailInput.value = '';
+            return;
+        }
+
+        nameInput.value = option.dataset.name || '';
+        emailInput.value = option.dataset.email || '';
+    }
 </script>
 @endsection
 
@@ -963,6 +1126,10 @@
 
     $(document).ready(function() {
         inicializarBuscadoresRegistro();
+
+        $('#iduser_editar').on('change', function() {
+            cargarDatosUsuarioEditar();
+        });
 
         const formEmpresa = document.getElementById('formNuevaEmpresaRegistro');
         if (!formEmpresa) {

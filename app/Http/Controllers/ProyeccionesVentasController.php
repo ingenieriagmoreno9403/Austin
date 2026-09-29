@@ -3429,9 +3429,76 @@ class ProyeccionesVentasController extends Controller
             return response()->json(['message' => 'Falta ejecutar migraciones de asignaciones.'], 422);
         }
 
+        if (is_array($request->input('asignaciones'))) {
+            return $this->storeAsignacionesLote($request, $ciclo);
+        }
+
+        $data = $this->validarFilaAsignacion($request->all());
+        $this->assertUsuariosExisten([$data]);
+        $creadosMaestro = 0;
+        $asig = DB::transaction(function () use ($ciclo, $data, &$creadosMaestro) {
+            return $this->persistirFilaAsignacion($ciclo, $data, $creadosMaestro);
+        });
+        $asig->load(['usuario', 'cuentas', 'permisos.tipo']);
+
+        return response()->json([
+            'ok' => true,
+            'asignacion' => $this->asignacionPayload($asig),
+            'maestro_creados' => $creadosMaestro,
+        ]);
+    }
+
+    protected function storeAsignacionesLote(Request $request, string $ciclo): JsonResponse
+    {
         $data = $request->validate([
+            'asignaciones' => 'required|array|min:1|max:300',
+        ]);
+        $filas = [];
+        foreach ($data['asignaciones'] as $i => $fila) {
+            if (! is_array($fila)) {
+                return response()->json(['message' => 'La fila '.($i + 1).' no es válida.'], 422);
+            }
+            $filas[] = $this->validarFilaAsignacion($fila);
+        }
+        $this->assertUsuariosExisten($filas);
+
+        $creadosMaestro = 0;
+        $ids = [];
+        DB::transaction(function () use ($ciclo, $filas, &$creadosMaestro, &$ids) {
+            foreach ($filas as $fila) {
+                $asig = $this->persistirFilaAsignacion($ciclo, $fila, $creadosMaestro);
+                $ids[] = (int) $asig->id;
+            }
+        });
+
+        $cargadas = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
+            ->whereIn('id', $ids)
+            ->get()
+            ->keyBy('id');
+        $out = [];
+        foreach ($ids as $id) {
+            $row = $cargadas->get($id);
+            if ($row) {
+                $out[] = $this->asignacionPayload($row);
+            }
+        }
+
+        return response()->json([
+            'ok' => true,
+            'asignaciones' => $out,
+            'maestro_creados' => $creadosMaestro,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $fila
+     * @return array<string, mixed>
+     */
+    protected function validarFilaAsignacion(array $fila): array
+    {
+        return validator($fila, [
             'empresa' => 'required|string|max:40',
-            'user_id' => 'required|integer|exists:users,id',
+            'user_id' => 'required|integer|min:1',
             'centro_codigo' => 'required|string|max:40',
             'centro_nombre' => 'nullable|string|max:180',
             'cuentas' => 'array',
@@ -3443,8 +3510,37 @@ class ProyeccionesVentasController extends Controller
             'cuentas.*.moneda' => 'nullable|string|max:8',
             'permisos' => 'array',
             'permisos.*' => 'string',
-        ]);
+        ])->validate();
+    }
 
+    /**
+     * @param  array<int, array<string, mixed>>  $filas
+     */
+    protected function assertUsuariosExisten(array $filas): void
+    {
+        $ids = [];
+        foreach ($filas as $fila) {
+            $ids[(int) ($fila['user_id'] ?? 0)] = true;
+        }
+        unset($ids[0]);
+        if (! $ids) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'user_id' => 'El usuario no existe.',
+            ]);
+        }
+        $encontrados = User::query()->whereIn('id', array_keys($ids))->count();
+        if ($encontrados !== count($ids)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'user_id' => 'El usuario no existe.',
+            ]);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    protected function persistirFilaAsignacion(string $ciclo, array $data, int &$creadosMaestro): PvAsignacion
+    {
         $empresa = strtolower($data['empresa']);
         $asig = PvAsignacion::query()->firstOrNew([
             'ciclo_codigo' => $ciclo,
@@ -3464,17 +3560,15 @@ class ProyeccionesVentasController extends Controller
         }
         $asig->save();
 
-        $this->syncCuentas($asig, $data['cuentas'] ?? []);
+        $codigoCliente = strtoupper(preg_replace('/\s+/', '', (string) ($data['centro_codigo'] ?? '')));
+        $cuentas = $codigoCliente === 'EMPRESA'
+            ? []
+            : (is_array($data['cuentas'] ?? null) ? $data['cuentas'] : []);
+        $this->syncCuentas($asig, $cuentas);
         $this->syncPermisosClaves($asig, $data['permisos'] ?? ['capturar']);
-        $creadosMaestro = $this->asegurarMaestroDesdeAsignacion($asig, $data['cuentas'] ?? []);
+        $creadosMaestro += $this->asegurarMaestroDesdeAsignacion($asig, $cuentas);
 
-        $asig->load(['usuario', 'cuentas', 'permisos.tipo']);
-
-        return response()->json([
-            'ok' => true,
-            'asignacion' => $this->asignacionPayload($asig),
-            'maestro_creados' => $creadosMaestro,
-        ]);
+        return $asig;
     }
 
     public function updateAsignacion(Request $request, string $ciclo, int $id): JsonResponse
@@ -3504,11 +3598,15 @@ class ProyeccionesVentasController extends Controller
         ]);
 
         $creadosMaestro = 0;
-        DB::transaction(function () use ($asig, $data, &$creadosMaestro) {
+        $esEmpresa = strtoupper(preg_replace('/\s+/', '', (string) $asig->centro_codigo)) === 'EMPRESA';
+        DB::transaction(function () use ($asig, $data, $esEmpresa, &$creadosMaestro) {
             if (array_key_exists('cuentas', $data)) {
-                $this->syncCuentas($asig, $data['cuentas']);
-                $this->propagarCuentasAColaboradores($asig);
-                $creadosMaestro = $this->asegurarMaestroDesdeAsignacion($asig, $data['cuentas']);
+                $cuentas = $esEmpresa ? [] : $data['cuentas'];
+                $this->syncCuentas($asig, $cuentas);
+                if (! $esEmpresa) {
+                    $this->propagarCuentasAColaboradores($asig);
+                    $creadosMaestro = $this->asegurarMaestroDesdeAsignacion($asig, $cuentas);
+                }
             }
             if (array_key_exists('permisos', $data)) {
                 $this->syncPermisosClaves($asig, $data['permisos'] ?: ['revisar']);
@@ -3814,12 +3912,20 @@ class ProyeccionesVentasController extends Controller
         $empresas = array_values(array_unique(array_map(static function ($w) {
             return $w['empresa'];
         }, $wanted)));
+        $clientes = array_values(array_unique(array_map(static function ($w) {
+            return strtoupper($w['cc']);
+        }, $wanted)));
 
         $rows = PvVentaRealSnapshot::query()
             ->where('anio', $year)
             ->where(function ($q) use ($empresas) {
                 foreach ($empresas as $e) {
                     $q->orWhereRaw('UPPER(empresa) = ?', [$e]);
+                }
+            })
+            ->where(function ($q) use ($clientes) {
+                foreach (array_chunk($clientes, 200) as $chunk) {
+                    $q->orWhereIn(DB::raw('UPPER(cliente_codigo)'), $chunk);
                 }
             })
             ->get(['empresa', 'cliente_codigo', 'anio', 'por_cuenta', 'synced_at']);
@@ -6458,183 +6564,227 @@ class ProyeccionesVentasController extends Controller
         $empresa = strtoupper(trim((string) $asig->empresa));
         $card = trim((string) ($asig->cliente_codigo ?? $asig->centro_codigo ?? ''));
         $cardName = trim((string) ($asig->cliente_nombre ?? $asig->centro_nombre ?? ''));
-        if ($empresa === '' || $card === '' || strtoupper(str_replace(' ', '', $card)) === 'SIN_CC') {
+        $cardKey = strtoupper(str_replace(' ', '', $card));
+        if ($empresa === '' || $card === '' || in_array($cardKey, ['SIN_CC', 'EMPRESA'], true)) {
             return 0;
         }
 
         $anio = $this->anioProyeccionCostos(null, (string) ($asig->ciclo_codigo ?? ''));
-        $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
-        $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
-        $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
-        $hasAnio = $this->hasAnioCostos();
+        $flags = $this->flagsMaestroCosto();
+        $hasCard = $flags['card'];
+        $hasCardName = $flags['card_name'];
+        $hasMes = $flags['mes'];
+        $hasAnio = $flags['anio'];
         $userId = auth()->id();
+        $now = now();
 
-        $porArticulo = [];
-        try {
-            $codigos = [];
-            foreach ($cuentas as $cta0) {
-                if (! is_array($cta0)) {
-                    continue;
-                }
-                $cod0 = trim((string) ($cta0['codigo'] ?? $cta0['cuenta_codigo'] ?? ''));
-                if ($cod0 !== '') {
-                    $codigos[strtoupper($cod0)] = $cod0;
-                }
-            }
-            $yaEnMaestro = [];
-            if ($codigos) {
-                $qExist = PvProductoCosto::query()
-                    ->where('empresa', $empresa)
-                    ->whereIn('producto_codigo', array_values($codigos));
-                if ($hasAnio) {
-                    $qExist->where('anio', $anio);
-                }
-                if ($hasCard) {
-                    $qExist->where('card_code', $card);
-                }
-                if ($hasMes) {
-                    $qExist->where('mes', 0);
-                }
-                foreach ($qExist->get(['producto_codigo', 'costo_unitario']) as $prev) {
-                    if ((float) $prev->costo_unitario > 0) {
-                        $yaEnMaestro[strtoupper(trim((string) $prev->producto_codigo))] = true;
-                    }
-                }
-            }
-            $itemsAsig = [];
-            foreach ($codigos as $cod0) {
-                if (! empty($yaEnMaestro[strtoupper($cod0)])) {
-                    continue;
-                }
-                $itemsAsig[] = $cod0;
-            }
-            if ($itemsAsig) {
-                $listas = $this->cargarListasPreciosCliente($empresa, $card, 0, $itemsAsig, false);
-                $porArticulo = is_array($listas['por_articulo'] ?? null) ? $listas['por_articulo'] : [];
-            }
-        } catch (Throwable $e) {
-            $porArticulo = [];
-        }
-
-        $nombresLocales = $this->mapaNombresProductosLocal();
-        $creados = 0;
-
+        $desired = [];
         foreach ($cuentas as $cta) {
             if (! is_array($cta)) {
                 continue;
             }
             $item = trim((string) ($cta['codigo'] ?? $cta['cuenta_codigo'] ?? ''));
-            if ($item === '') {
+            $precio = round(max(0, (float) ($cta['precio'] ?? $cta['costo'] ?? 0)), 4);
+            if ($item === '' || $precio <= 0) {
                 continue;
             }
-            $nombre = trim((string) ($cta['nombre'] ?? $cta['cuenta_nombre'] ?? ''));
-            $lista = $porArticulo[$item]
-                ?? $porArticulo[strtoupper($item)]
-                ?? $porArticulo[$this->codigoCuentaKey($item)]
-                ?? null;
-
-            $precio = 0.0;
-            $moneda = 'MXN';
-            if (is_array($lista)) {
-                $precio = (float) ($lista['precio'] ?? 0);
-                $moneda = strtoupper(trim((string) ($lista['moneda'] ?? 'MXN'))) ?: 'MXN';
-                if ($nombre === '' || strcasecmp($nombre, $item) === 0) {
-                    $nombre = trim((string) ($lista['nombre'] ?? $nombre));
-                }
-            }
-            if ($precio <= 0) {
-                $precio = (float) ($cta['precio'] ?? $cta['costo'] ?? 0);
-                $moneda = strtoupper(trim((string) ($cta['moneda'] ?? $moneda))) ?: 'MXN';
-            }
+            $moneda = strtoupper(trim((string) ($cta['moneda'] ?? 'MXN'))) ?: 'MXN';
             if (! in_array($moneda, ['MXN', 'USD'], true)) {
                 $moneda = 'MXN';
             }
+            $nombre = trim((string) ($cta['nombre'] ?? $cta['cuenta_nombre'] ?? ''));
             if ($nombre === '' || strcasecmp($nombre, $item) === 0) {
-                $nombre = (string) ($nombresLocales[$item] ?? $item);
+                $nombre = $item;
+            }
+            $desired[strtoupper($item)] = [
+                'codigo' => $item,
+                'nombre' => mb_substr($nombre, 0, 180),
+                'precio' => $precio,
+                'moneda' => $moneda,
+            ];
+        }
+        if (! $desired) {
+            return 0;
+        }
+
+        $qExist = PvProductoCosto::query()
+            ->where('empresa', $empresa)
+            ->whereIn('producto_codigo', array_column($desired, 'codigo'));
+        if ($hasAnio) {
+            $qExist->where('anio', $anio);
+        }
+        if ($hasCard) {
+            $qExist->where('card_code', $card);
+        }
+        if ($hasMes) {
+            $qExist->where('mes', 0);
+        }
+        $existentes = [];
+        foreach ($qExist->get(['id', 'producto_codigo', 'costo_unitario', 'moneda', 'card_name']) as $prev) {
+            $existentes[strtoupper(trim((string) $prev->producto_codigo))] = $prev;
+        }
+
+        $inserts = [];
+        $historial = [];
+        $creados = 0;
+        foreach ($desired as $key => $d) {
+            $prev = $existentes[$key] ?? null;
+            if ($prev) {
+                $igual = abs((float) $prev->costo_unitario - $d['precio']) < 0.0001
+                    && strtoupper((string) ($prev->moneda ?: 'MXN')) === $d['moneda'];
+                if ($igual) {
+                    continue;
+                }
+                PvProductoCosto::query()->where('id', $prev->id)->update([
+                    'producto_nombre' => $d['nombre'],
+                    'costo_unitario' => $d['precio'],
+                    'moneda' => $d['moneda'],
+                    'updated_by' => $userId,
+                    'updated_at' => $now,
+                ]);
+                $historial[] = $this->filaHistorialPrecio(
+                    $empresa,
+                    $d['codigo'],
+                    $d['nombre'],
+                    (float) $prev->costo_unitario,
+                    (string) ($prev->moneda ?: 'MXN'),
+                    $d['precio'],
+                    $d['moneda'],
+                    $userId,
+                    $card,
+                    $cardName,
+                    $anio,
+                    $now
+                );
+                $creados++;
+                continue;
             }
 
-            // Upsert por clave única (anio|empresa|card|producto|mes=0): evita 1062
-            // y actualiza el precio global de ese cliente/producto si ya existe.
-            $lookup = [
+            $row = [
                 'empresa' => $empresa,
-                'producto_codigo' => $item,
+                'producto_codigo' => $d['codigo'],
+                'producto_nombre' => $d['nombre'],
+                'costo_unitario' => $d['precio'],
+                'moneda' => $d['moneda'],
+                'updated_by' => $userId,
+                'created_at' => $now,
+                'updated_at' => $now,
             ];
             if ($hasAnio) {
-                $lookup['anio'] = $anio;
+                $row['anio'] = $anio;
             }
             if ($hasCard) {
-                $lookup['card_code'] = $card;
-            }
-            if ($hasMes) {
-                $lookup['mes'] = 0;
-            }
-
-            $row = PvProductoCosto::query()->firstOrNew($lookup);
-            $esNuevo = ! $row->exists;
-            if (! $esNuevo && ! is_array($lista)) {
-                if ($hasCardName && $cardName !== '' && trim((string) ($row->card_name ?? '')) === '') {
-                    $row->card_name = mb_substr($cardName, 0, 180);
-                    $row->save();
-                }
-                continue;
-            }
-            $precioAnterior = $esNuevo ? null : (float) $row->costo_unitario;
-            $monedaAnterior = $esNuevo ? null : (string) ($row->moneda ?: 'MXN');
-            $precioFinal = round(max(0, $precio), 4);
-
-            // No pisar un costo existente con 0 si la lista no trajo precio.
-            if (! $esNuevo && $precioFinal <= 0) {
-                continue;
-            }
-
-            if (! $esNuevo
-                && abs((float) $row->costo_unitario - $precioFinal) < 0.0001
-                && strtoupper((string) ($row->moneda ?: 'MXN')) === $moneda
-            ) {
-                if ($hasCardName && $cardName !== '' && trim((string) ($row->card_name ?? '')) === '') {
-                    $row->card_name = mb_substr($cardName, 0, 180);
-                    $row->save();
-                }
-                continue;
-            }
-
-            $row->producto_nombre = mb_substr($nombre !== '' ? $nombre : $item, 0, 180);
-            if ($hasAnio) {
-                $row->anio = $anio;
-            }
-            if ($hasCard) {
-                $row->card_code = $card;
+                $row['card_code'] = $card;
             }
             if ($hasCardName && $cardName !== '') {
-                $row->card_name = mb_substr($cardName, 0, 180);
+                $row['card_name'] = mb_substr($cardName, 0, 180);
             }
             if ($hasMes) {
-                $row->mes = 0;
+                $row['mes'] = 0;
             }
-            $row->costo_unitario = $precioFinal;
-            $row->moneda = $moneda;
-            $row->updated_by = $userId;
-            $row->save();
-
-            $this->registrarHistorialPrecio(
+            $inserts[] = $row;
+            $historial[] = $this->filaHistorialPrecio(
                 $empresa,
-                $item,
-                (string) $row->producto_nombre,
-                $precioAnterior,
-                $monedaAnterior,
-                (float) $row->costo_unitario,
-                (string) $row->moneda,
-                'asignacion',
+                $d['codigo'],
+                $d['nombre'],
+                null,
+                null,
+                $d['precio'],
+                $d['moneda'],
                 $userId,
                 $card,
                 $cardName,
-                0,
-                $anio
+                $anio,
+                $now
             );
             $creados++;
         }
 
+        foreach (array_chunk($inserts, 200) as $chunk) {
+            DB::table('tbl_pv_productos_costo')->insert($chunk);
+        }
+        $historial = array_values(array_filter($historial));
+        if ($historial && Schema::hasTable('tbl_pv_productos_costo_historial')) {
+            foreach (array_chunk($historial, 200) as $chunk) {
+                DB::table('tbl_pv_productos_costo_historial')->insert($chunk);
+            }
+        }
+
         return $creados;
+    }
+
+    /**
+     * @return array{anio: bool, card: bool, card_name: bool, mes: bool}
+     */
+    protected function flagsMaestroCosto(): array
+    {
+        static $flags = null;
+        if ($flags === null) {
+            $flags = [
+                'anio' => $this->hasAnioCostos(),
+                'card' => Schema::hasColumn('tbl_pv_productos_costo', 'card_code'),
+                'card_name' => Schema::hasColumn('tbl_pv_productos_costo', 'card_name'),
+                'mes' => Schema::hasColumn('tbl_pv_productos_costo', 'mes'),
+            ];
+        }
+
+        return $flags;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    protected function filaHistorialPrecio(
+        string $empresa,
+        string $codigo,
+        string $nombre,
+        ?float $precioAnterior,
+        ?string $monedaAnterior,
+        float $precioNuevo,
+        string $monedaNueva,
+        $userId,
+        string $cardCode,
+        string $cardName,
+        int $anio,
+        $now
+    ): ?array {
+        if (! Schema::hasTable('tbl_pv_productos_costo_historial')) {
+            return null;
+        }
+        $precioNuevo = round($precioNuevo, 4);
+        $precioAnterior = $precioAnterior === null ? null : round($precioAnterior, 4);
+        $monedaNueva = strtoupper(trim($monedaNueva)) ?: 'MXN';
+        $monedaAnterior = $monedaAnterior !== null ? (strtoupper(trim($monedaAnterior)) ?: 'MXN') : null;
+        if ($precioAnterior !== null && $precioAnterior === $precioNuevo && $monedaAnterior === $monedaNueva) {
+            return null;
+        }
+
+        $payload = [
+            'empresa' => strtoupper(trim($empresa)),
+            'producto_codigo' => trim($codigo),
+            'producto_nombre' => mb_substr($nombre !== '' ? $nombre : $codigo, 0, 180),
+            'precio_anterior' => $precioAnterior,
+            'precio_nuevo' => $precioNuevo,
+            'moneda_anterior' => $monedaAnterior,
+            'moneda_nueva' => $monedaNueva,
+            'origen' => 'asignacion',
+            'created_by' => $userId,
+            'created_at' => $now,
+        ];
+        if (Schema::hasColumn('tbl_pv_productos_costo_historial', 'anio')) {
+            $payload['anio'] = $anio;
+        }
+        if (Schema::hasColumn('tbl_pv_productos_costo_historial', 'card_code')) {
+            $payload['card_code'] = trim($cardCode);
+        }
+        if (Schema::hasColumn('tbl_pv_productos_costo_historial', 'card_name')) {
+            $payload['card_name'] = trim($cardName) !== '' ? mb_substr(trim($cardName), 0, 180) : null;
+        }
+        if (Schema::hasColumn('tbl_pv_productos_costo_historial', 'mes')) {
+            $payload['mes'] = 0;
+        }
+
+        return $payload;
     }
 
     /**
@@ -6643,13 +6793,32 @@ class ProyeccionesVentasController extends Controller
     protected function syncCuentas(PvAsignacion $asig, array $cuentas): void
     {
         PvAsignacionProducto::query()->where('asignacion_id', $asig->id)->delete();
+        $now = now();
+        $rows = [];
+        $seen = [];
         foreach ($cuentas as $cta) {
-            PvAsignacionProducto::query()->create([
+            $codigo = trim((string) ($cta['codigo'] ?? $cta['cuenta_codigo'] ?? ''));
+            if ($codigo === '') {
+                continue;
+            }
+            $key = strtoupper($codigo);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $nombre = trim((string) ($cta['nombre'] ?? $cta['cuenta_nombre'] ?? ''));
+            $linea = trim((string) ($cta['agrupacion'] ?? $cta['linea'] ?? ''));
+            $rows[] = [
                 'asignacion_id' => $asig->id,
-                'producto_codigo' => $cta['codigo'] ?? $cta['cuenta_codigo'] ?? '',
-                'producto_nombre' => $cta['nombre'] ?? $cta['cuenta_nombre'] ?? null,
-                'linea' => $cta['agrupacion'] ?? null,
-            ]);
+                'producto_codigo' => mb_substr($codigo, 0, 80),
+                'producto_nombre' => $nombre !== '' ? mb_substr($nombre, 0, 180) : null,
+                'linea' => $linea !== '' ? mb_substr($linea, 0, 80) : null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+        foreach (array_chunk($rows, 200) as $chunk) {
+            DB::table('tbl_pv_asignacion_productos')->insert($chunk);
         }
     }
 
@@ -6664,15 +6833,48 @@ class ProyeccionesVentasController extends Controller
         }));
 
         PvAsignacionPermiso::query()->where('asignacion_id', $asig->id)->delete();
+        $tipos = $this->tiposPermisoPorClave();
+        $now = now();
+        $rows = [];
+        $vistos = [];
+        foreach ($clavesAsig as $clave) {
+            $permisoId = $tipos[$clave] ?? null;
+            if (! $permisoId || isset($vistos[$permisoId])) {
+                continue;
+            }
+            $vistos[$permisoId] = true;
+            $rows[] = [
+                'asignacion_id' => $asig->id,
+                'permiso_id' => $permisoId,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+        if ($rows) {
+            DB::table('tbl_pv_asignacion_permisos')->insert($rows);
+        }
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    protected function tiposPermisoPorClave(): array
+    {
+        static $map = null;
+        if ($map !== null) {
+            return $map;
+        }
+        $map = [];
         if (Schema::hasTable('tbl_pv_tipos_permiso')) {
-            $tipos = PvTipoPermiso::query()->whereIn('clave', $clavesAsig)->get();
-            foreach ($tipos as $tipo) {
-                PvAsignacionPermiso::query()->create([
-                    'asignacion_id' => $asig->id,
-                    'permiso_id' => $tipo->id,
-                ]);
+            foreach (PvTipoPermiso::query()->get(['id', 'clave']) as $tipo) {
+                $clave = (string) $tipo->clave;
+                if ($clave !== '') {
+                    $map[$clave] = (int) $tipo->id;
+                }
             }
         }
+
+        return $map;
     }
 
     protected function syncPermisoUsuario(string $ciclo, int $userId, string $clave, bool $enabled): void

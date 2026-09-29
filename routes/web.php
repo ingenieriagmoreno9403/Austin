@@ -332,6 +332,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
     Route::get('/Sistemas/Registro', 'App\Http\Controllers\Auth\RegisterController@Index')->name('registro');
     Route::post('/Registro/Crear', 'App\Http\Controllers\Auth\RegisterController@create')->name('createUser');
     Route::post('/Registro/Updatepass', 'App\Http\Controllers\Auth\RegisterController@updatepass')->name('updatepass');
+    Route::post('/Registro/Editar', 'App\Http\Controllers\Auth\RegisterController@editarUsuario')->name('editarUsuario');
     Route::post('/Registro/Inactivar', 'App\Http\Controllers\Auth\RegisterController@inactivar')->name('inactivarUser');
     Route::post('/Registro/Activar', 'App\Http\Controllers\Auth\RegisterController@activar')->name('activarUser');
     Route::post('/Registro/Empresa', 'App\Http\Controllers\Auth\RegisterController@asignarEmpresa')->name('asignarEmpresaUser');

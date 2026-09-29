@@ -42,9 +42,15 @@
 
     var SIN_CENTRO_CODIGO = 'SIN_CC';
     var SIN_CENTRO_NOMBRE = 'Sin cliente';
+    var EMPRESA_CODIGO = 'EMPRESA';
+    var EMPRESA_NOMBRE = 'Toda la empresa';
 
     function isSinCentro(codigo) {
         return String(codigo || '').replace(/\s+/g, '').toUpperCase() === SIN_CENTRO_CODIGO;
+    }
+
+    function isEmpresaCompleta(codigo) {
+        return String(codigo || '').replace(/\s+/g, '').toUpperCase() === EMPRESA_CODIGO;
     }
 
     function ctaPretty(codigo) {
@@ -60,6 +66,7 @@
     }
 
     function etiquetaCentro(codigo, nombre) {
+        if (isEmpresaCompleta(codigo)) return EMPRESA_NOMBRE;
         if (isSinCentro(codigo)) return SIN_CENTRO_NOMBRE;
         var code = String(codigo || '').trim();
         var nom = String(nombre || '').trim();
@@ -583,12 +590,15 @@
             var revHint = nRev
                 ? '<div class="text-muted" style="font-size:.72rem;margin-top:.25rem">' + nRev + (nRev === 1 ? ' revisor en Permisos' : ' revisores en Permisos') + '</div>'
                 : '';
+            var prodCell = isEmpresaCompleta(r.centro_codigo)
+                ? 'De los usuarios'
+                : String((r.cuentas || []).length);
             html.push('<tr data-id="' + r.id + '">' +
                 '<td><div class="fw-semibold">' + escapeHtml(r.usuario) + '</div>' +
                 '<div class="text-muted" style="font-size:.75rem">Captura</div></td>' +
                 '<td>' + String(r.empresa || '').toUpperCase() + '</td>' +
                 '<td>' + escapeHtml(etiquetaCentro(r.centro_codigo, r.centro_nombre)) + '</td>' +
-                '<td>' + (r.cuentas || []).length + '</td>' +
+                '<td>' + escapeHtml(prodCell) + '</td>' +
                 '<td>' + permBadges(r.permisos) + revHint + '</td>' +
                 '<td><div class="cc-row-actions">' +
                     '<button type="button" class="cc-icon-btn" data-act="ver" title="Ver"><i class="fa-solid fa-eye"></i></button>' +
@@ -709,9 +719,12 @@
         var extras = extrasDe(row);
         var title = document.getElementById('asig-ver-title');
         if (title) title.textContent = 'Ver · ' + etiquetaCentro(row.centro_codigo, row.centro_nombre);
-        var cuentas = (p.cuentas || row.cuentas || []).map(function (c) {
-            return '<li><span class="cc-cta-name">' + escapeHtml(c.nombre || '') + '</span> <span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></li>';
-        }).join('') || '<li class="text-muted">Sin productos</li>';
+        var listaCuentas = p.cuentas || row.cuentas || [];
+        var cuentas = isEmpresaCompleta(row.centro_codigo)
+            ? '<li class="text-muted">Los productos son los que ya tienen asignados los usuarios de esta empresa.</li>'
+            : (listaCuentas.map(function (c) {
+                return '<li><span class="cc-cta-name">' + escapeHtml(c.nombre || '') + '</span> <span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></li>';
+            }).join('') || '<li class="text-muted">Sin productos</li>');
         var extrasHtml = extras.length
             ? extras.map(function (x) {
                 return '<div class="cc-user" style="margin-bottom:.35rem">' +
@@ -733,6 +746,16 @@
     }
 
     function openEditar(row) {
+        if (isEmpresaCompleta(row.centro_codigo)) {
+            if (window.Swal) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Toda la empresa',
+                    text: 'Esta revisión usa los productos que ya tienen asignados los usuarios. No se guarda una lista aparte.'
+                });
+            }
+            return;
+        }
         hideThen('modalAsigVer', function () { openEditarNow(row); });
     }
 
@@ -1377,6 +1400,64 @@
             return (opt.getAttribute('data-nombre') || String(opt.text || '').split('·')[0]).trim();
         }
 
+        function permisosMarcados() {
+            var perms = [];
+            document.querySelectorAll('#asig-permisos input[name="permiso"]:checked').forEach(function (i) {
+                perms.push(i.value);
+            });
+            return perms;
+        }
+
+        function modoRevision() {
+            var perms = permisosMarcados();
+            return perms.indexOf('revisar') !== -1 && perms.indexOf('capturar') === -1;
+        }
+
+        function pasoWizard() {
+            if (!userId()) return 1;
+            if (!cfg.empresa) return 2;
+            if (modoRevision()) return 4;
+            if (centroSel && String(centroSel.value || '').trim()) return 4;
+            return 3;
+        }
+
+        function refrescarModo() {
+            var rev = modoRevision();
+            var permPanel = document.getElementById('asig-perm-panel');
+            if (permPanel) permPanel.classList.toggle('is-locked', !userId());
+            var step4 = document.getElementById('asig-step-4');
+            if (step4) {
+                step4.innerHTML = '<span>4</span> ' + (rev ? 'Cliente (opcional)' : 'Cliente y productos');
+            }
+            var hint = document.getElementById('asig-emp-hint');
+            if (hint) {
+                hint.textContent = !userId()
+                    ? 'Elige un usuario para habilitar las empresas.'
+                    : (rev
+                        ? 'Elige la empresa. Si asignas toda la empresa, los productos son los que ya tienen los usuarios. Si eliges clientes, los productos no son obligatorios.'
+                        : 'Elige la empresa. Luego el cliente. Puedes cambiar de empresa cuando quieras; lo guardado se acumula abajo.');
+            }
+            var banner = document.getElementById('asig-rev-banner');
+            if (banner) banner.hidden = !rev;
+            var apply = document.getElementById('asig-apply-hint');
+            if (apply) {
+                apply.textContent = rev
+                    ? 'Toda la empresa usa los productos ya asignados a los usuarios. Si eliges un cliente, los productos siguen siendo opcionales. Nada se registra hasta Guardar.'
+                    : 'Suma este cliente a la tabla. Puedes seguir con otro. Nada se registra hasta que pulses Guardar.';
+            }
+            var ctaTitle = document.getElementById('asig-cta-title');
+            if (ctaTitle) {
+                ctaTitle.innerHTML = '<i class="fa-solid fa-list"></i> ' + (rev ? 'Productos (opcionales)' : 'Productos con acceso');
+            }
+            var ccTitle = document.getElementById('asig-cc-title');
+            if (ccTitle && cfg.empresa) {
+                ccTitle.innerHTML = '<i class="fa-solid fa-sitemap"></i> 4. Cliente'
+                    + (rev ? ' (opcional)' : '')
+                    + ' (' + String(cfg.empresa).toUpperCase() + ')';
+            }
+            setStep(pasoWizard());
+        }
+
         function catalogoUsuarios() {
             if (cfg.usuarios && cfg.usuarios.length) {
                 return cfg.usuarios.map(function (u) {
@@ -1510,11 +1591,20 @@
                 var emp = String(card.getAttribute('data-emp') || '').toLowerCase();
                 var on = emp === needle && needle !== '';
                 card.classList.toggle('is-on', on);
-                var n = savedDeEmpresa(emp).length;
+                var rowsEmp = savedDeEmpresa(emp);
+                var n = rowsEmp.length;
+                var toda = rowsEmp.some(function (a) { return isEmpresaCompleta(a.centro_codigo); });
+                var nCli = rowsEmp.filter(function (a) { return !isEmpresaCompleta(a.centro_codigo); }).length;
                 var badge = card.querySelector('[data-asig-n]');
                 card.classList.toggle('has-asig', n > 0);
                 if (badge) {
-                    badge.textContent = n ? (n + (n === 1 ? ' cliente' : ' clientes')) : 'Sin asignar';
+                    badge.textContent = !n
+                        ? 'Sin asignar'
+                        : (toda && !nCli
+                            ? 'Toda la empresa'
+                            : (toda
+                                ? ('Empresa + ' + nCli + (nCli === 1 ? ' cliente' : ' clientes'))
+                                : (n + (n === 1 ? ' cliente' : ' clientes'))));
                     badge.className = 'cc-badge ' + (n ? 'cc-badge-ink' : 'cc-badge-solo_revision');
                 }
                 var label = card.querySelector('.cc-card-pick');
@@ -1582,7 +1672,7 @@
             }
             box.hidden = false;
             if (!saved.length) {
-                tb.innerHTML = '<tr><td colspan="5"><div class="cc-empty">Aún no hay clientes en la tabla. Elige empresa, cliente y productos y pulsa Asignar. Se registran al pulsar Guardar.</div></td></tr>';
+                tb.innerHTML = '<tr><td colspan="5"><div class="cc-empty">Aún no hay nada en la tabla. Con Capturar elige empresa, cliente y productos. Con Revisar basta la empresa, o clientes si quieres limitar. Se registra al pulsar Guardar.</div></td></tr>';
                 if (meta) meta.textContent = '';
                 return;
             }
@@ -1597,11 +1687,20 @@
                 if (a.pending) cls.push('is-pending');
                 else cls.push('is-done');
                 if (key === lastFlashKey) cls.push('is-new');
+                var cliTitulo = isEmpresaCompleta(a.centro_codigo)
+                    ? EMPRESA_NOMBRE
+                    : (isSinCentro(a.centro_codigo) ? SIN_CENTRO_NOMBRE : a.centro_codigo);
+                var cliSub = isEmpresaCompleta(a.centro_codigo)
+                    ? 'Revisión de la empresa'
+                    : (isSinCentro(a.centro_codigo) ? 'Productos sin cliente' : (a.centro_nombre || ''));
+                var prodTxt = isEmpresaCompleta(a.centro_codigo)
+                    ? 'Productos de los usuarios'
+                    : (nCtas ? (nCtas + (nCtas === 1 ? ' producto' : ' productos')) : 'Sin productos');
                 return '<tr class="' + cls.join(' ') + '" data-emp="' + escapeHtml(a.empresa) + '" data-key="' + escapeHtml(key) + '">' +
                     '<td><strong>' + escapeHtml(empresaNombre(a.empresa)) + '</strong></td>' +
-                    '<td><div class="fw-semibold">' + escapeHtml(isSinCentro(a.centro_codigo) ? SIN_CENTRO_NOMBRE : a.centro_codigo) + '</div>' +
-                    '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(isSinCentro(a.centro_codigo) ? 'Productos sin cliente' : (a.centro_nombre || '')) + '</div></td>' +
-                    '<td>' + nCtas + (nCtas === 1 ? ' producto' : ' productos') + '</td>' +
+                    '<td><div class="fw-semibold">' + escapeHtml(cliTitulo) + '</div>' +
+                    '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div></td>' +
+                    '<td>' + prodTxt + '</td>' +
                     '<td>' + permBadges(a.permisos) + '</td>' +
                     '<td><button type="button" class="cc-icon-btn" data-del="' + escapeHtml(a.id) + '" data-emp="' + escapeHtml(a.empresa) + '" data-cc="' + escapeHtml(a.centro_codigo) + '" title="Quitar"><i class="fa-solid fa-trash"></i></button></td>' +
                     '</tr>';
@@ -1659,14 +1758,14 @@
             var kicker = document.getElementById('asig-kicker');
             var title = document.getElementById('asig-cc-title');
             if (kicker) kicker.textContent = cfg.ciclo + ' · ' + userName() + ' · ' + nom;
-            if (title) title.innerHTML = '<i class="fa-solid fa-sitemap"></i> 3. Cliente (' + nom + ')';
+            if (title) title.innerHTML = '<i class="fa-solid fa-sitemap"></i> 4. Cliente (' + nom + ')';
             if (detBox) detBox.hidden = false;
             markEmpresaCard(cfg.empresa);
             renderResumen();
-            setStep(3);
             if (same && centros.length) {
                 fillCentros(ccQ ? ccQ.value : '');
                 loadGrupos();
+                refrescarModo();
                 return;
             }
             centros = [];
@@ -1690,16 +1789,12 @@
             fillGrupoUi('asig-cta-grupo', [], '', setCtaGrupo);
             loadCentros();
             loadGrupos();
+            refrescarModo();
         }
 
         function unlockEmpresas() {
             if (empBox) empBox.classList.toggle('is-locked', !userId());
-            var hint = document.getElementById('asig-emp-hint');
-            if (hint) {
-                hint.textContent = userId()
-                    ? 'Elige la empresa. Luego el cliente. Puedes cambiar de empresa cuando quieras; lo guardado se acumula abajo.'
-                    : 'Elige un usuario para habilitar las empresas.';
-            }
+            refrescarModo();
         }
 
         function loadEmpresas() {
@@ -1778,7 +1873,7 @@
             q = String(q || '');
             var current = String(centroSel.value || '');
             var rows = centros.filter(function (c) {
-                if (isSinCentro(c.codigo)) return false;
+                if (isSinCentro(c.codigo) || isEmpresaCompleta(c.codigo)) return false;
                 return matchQuery((c.codigo || '') + ' ' + (c.nombre || ''), q);
             });
             if (current) {
@@ -1823,6 +1918,23 @@
 
         function pickCentro(codigo, nombre) {
             if (!centroSel) return;
+            if (modoRevision() && codigo && String(centroSel.value || '') === String(codigo)) {
+                centroSel.value = '';
+                var listOff = document.getElementById('asig-cc-list');
+                if (listOff) {
+                    listOff.querySelectorAll('.cc-cc-item').forEach(function (btn) {
+                        btn.classList.remove('is-on');
+                        btn.setAttribute('aria-selected', 'false');
+                    });
+                }
+                ctaSelected = {};
+                if (ctaQ) { ctaQ.disabled = true; ctaQ.value = ''; }
+                var box = document.getElementById('asig-cta-list');
+                if (box) box.innerHTML = '<div class="cc-empty">Sin cliente: la revisión cubre toda la empresa.</div>';
+                updateCtaSelCount();
+                refrescarModo();
+                return;
+            }
             var exists = false;
             Array.prototype.forEach.call(centroSel.options, function (opt) {
                 if (opt.value === codigo) exists = true;
@@ -1844,10 +1956,10 @@
                 });
             }
             if (codigo) {
-                setStep(4);
                 if (ctaQ) ctaQ.disabled = false;
                 seedCtaSelected();
                 loadCuentas();
+                refrescarModo();
             }
         }
 
@@ -2034,8 +2146,6 @@
                 updateCtaSelCount();
                 return;
             }
-            var current = centroSel ? centroSel.value : '';
-            var prev = asignacionDeCentro(cfg.empresa, current);
             box.innerHTML = '<div class="cc-cta-group">' + rows.map(function (c) {
                         var checked = ctaSelected[normCode(c.codigo)] ? ' checked' : '';
                         var costo = Number(c.costo || c.precio || 0) || 0;
@@ -2048,22 +2158,12 @@
                             '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
                             '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                     }).join('') + '</div>';
-            syncPermisos(prev ? prev.permisos : null);
             var boxes = box.querySelectorAll('[data-cta]');
             var nOn = 0;
             boxes.forEach(function (i) { if (i.checked) nOn += 1; });
             var todas = document.getElementById('asig-cta-todas');
             if (todas) todas.checked = boxes.length > 0 && nOn === boxes.length;
             updateCtaSelCount();
-        }
-
-        function syncPermisos(perms) {
-            var set = {};
-            var list = (perms && perms.length) ? perms : ['capturar'];
-            list.forEach(function (p) { set[String(p)] = true; });
-            document.querySelectorAll('#asig-permisos input[name="permiso"]').forEach(function (i) {
-                i.checked = !!set[i.value];
-            });
         }
 
         function etiquetaGrupo(g) {
@@ -2096,7 +2196,7 @@
             fillMaskUi('asig-cta-mask', agrupaciones, cuentas, '', setCtaMask);
             fillGrupoUi('asig-cta-grupo', grupos, '', setCtaGrupo);
             updateCtaSelCount();
-            setStep(cfg.empresa ? 3 : (userId() ? 2 : 1));
+            refrescarModo();
         }
 
         function onUserChanged() {
@@ -2109,12 +2209,13 @@
                 renderEmpresaCards();
                 renderResumen();
                 setStep(1);
+                refrescarModo();
                 return;
             }
             if (kicker) kicker.textContent = cfg.empresa
                 ? (cfg.ciclo + ' · ' + userName() + ' · ' + String(cfg.empresa).toUpperCase())
                 : (cfg.ciclo + ' · ' + userName());
-            setStep(cfg.empresa ? 3 : 2);
+            refrescarModo();
             loadSaved().then(function () {
                 unlockEmpresas();
                 renderEmpresaCards();
@@ -2137,10 +2238,13 @@
         }
 
         if (centroSel) centroSel.addEventListener('change', function () {
-            if (!centroSel.value) return;
-            setStep(4);
+            if (!centroSel.value) {
+                refrescarModo();
+                return;
+            }
             if (ctaQ) ctaQ.disabled = false;
             loadCuentas();
+            refrescarModo();
         });
 
         if (ctaQ) ctaQ.addEventListener('input', function () {
@@ -2186,10 +2290,12 @@
             var opt = centroSel && centroSel.options[centroSel.selectedIndex];
             syncCtaSelectedFromDom();
             var ctas = Object.keys(ctaSelected).map(function (k) { return ctaSelected[k]; });
-            var perms = [];
-            document.querySelectorAll('#asig-permisos input[name="permiso"]:checked').forEach(function (i) {
-                perms.push(i.value);
-            });
+            var perms = permisosMarcados();
+            var revision = perms.indexOf('revisar') !== -1 && perms.indexOf('capturar') === -1;
+            if (!perms.length) {
+                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta un permiso', text: 'Marca Capturar o Revisar.' });
+                return null;
+            }
             var payload = {
                 empresa: cfg.empresa,
                 user_id: userId(),
@@ -2199,14 +2305,22 @@
                 permisos: perms
             };
             if (!payload.centro_codigo) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta el cliente', text: 'Elige un cliente o la opción Sin cliente.' });
-                return null;
+                if (!revision) {
+                    if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta el cliente', text: 'Elige un cliente o la opción Sin cliente.' });
+                    return null;
+                }
+                payload.centro_codigo = EMPRESA_CODIGO;
+                payload.centro_nombre = EMPRESA_NOMBRE;
             }
             if (isSinCentro(payload.centro_codigo)) {
                 payload.centro_codigo = SIN_CENTRO_CODIGO;
                 payload.centro_nombre = SIN_CENTRO_NOMBRE;
             }
-            if (!ctas.length) {
+            if (isEmpresaCompleta(payload.centro_codigo)) {
+                payload.centro_nombre = EMPRESA_NOMBRE;
+                payload.cuentas = [];
+            }
+            if (!revision && !ctas.length) {
                 if (window.Swal) Swal.fire({ icon: 'warning', title: 'Sin productos', text: 'Selecciona al menos un producto.' });
                 return null;
             }
@@ -2247,7 +2361,7 @@
                 user_id: a.user_id || userId(),
                 centro_codigo: a.centro_codigo,
                 centro_nombre: a.centro_nombre || '',
-                cuentas: (a.cuentas || []).slice(),
+                cuentas: isEmpresaCompleta(a.centro_codigo) ? [] : (a.cuentas || []).slice(),
                 permisos: (a.permisos || []).slice()
             };
         }
@@ -2264,8 +2378,7 @@
             }
         }
 
-        function postFila(row) {
-            var payload = payloadDeFila(row);
+        function postLote(rows) {
             return fetch(cfg.storeUrl, {
                 method: 'POST',
                 headers: {
@@ -2274,19 +2387,10 @@
                     'X-CSRF-TOKEN': csrf,
                     'X-Requested-With': 'XMLHttpRequest'
                 },
-                body: JSON.stringify(payload)
-            }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); })
-                .then(function (res) {
-                    if (!res.ok) {
-                        return { ok: false, message: (res.json && res.json.message) || 'No se pudo guardar un cliente.' };
-                    }
-                    var savedRow = (res.json && res.json.asignacion) ? res.json.asignacion : payload;
-                    savedRow.pending = false;
-                    if (!savedRow.centro_codigo) savedRow.centro_codigo = payload.centro_codigo;
-                    if (!savedRow.empresa) savedRow.empresa = payload.empresa;
-                    upsertSaved(savedRow);
-                    return { ok: true, maestros: Number(res.json && res.json.maestro_creados) || 0 };
-                });
+                body: JSON.stringify({ asignaciones: rows.map(payloadDeFila) })
+            }).then(function (r) {
+                return r.json().then(function (j) { return { ok: r.ok, json: j }; });
+            });
         }
 
         function guardarPendientes(alTerminar) {
@@ -2310,87 +2414,80 @@
             if (saveBusy) return;
             saveBusy = true;
             setGuardando(true);
-            var i = 0;
-            var maestros = 0;
-            var fallos = 0;
-            var aviso = '';
-            function paso() {
-                if (i >= cola.length) {
-                    saveBusy = false;
-                    setGuardando(false);
-                    renderResumen();
-                    renderEmpresaCards();
-                    markEmpresaCard(cfg.empresa);
-                    fillCentros(ccQ ? ccQ.value : '');
-                    if (fallos) {
-                        if (window.Swal) {
-                            Swal.fire({
-                                icon: 'error',
-                                title: 'No se guardó todo',
-                                text: aviso || 'Algunos clientes siguen en la tabla sin registrar. Vuelve a pulsar Guardar.'
-                            });
-                        }
-                        if (alTerminar) alTerminar(false);
-                        return;
-                    }
-                    var n = cola.length;
-                    var texto = n + (n === 1 ? ' cliente registrado.' : ' clientes registrados.');
-                    if (maestros > 0) {
-                        texto += ' ' + maestros + (maestros === 1
-                            ? ' producto nuevo en el maestro de precios.'
-                            : ' productos nuevos en el maestro de precios.');
-                    }
+            postLote(cola).then(function (res) {
+                saveBusy = false;
+                setGuardando(false);
+                if (!res.ok) {
+                    var aviso = (res.json && res.json.message) || 'No se pudieron guardar las asignaciones.';
                     if (window.Swal) {
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Asignaciones guardadas',
-                            text: texto,
-                            position: 'center',
-                            width: '36rem',
-                            confirmButtonText: 'Listo',
-                            showConfirmButton: true,
-                            didOpen: function (popup) {
-                                var title = popup.querySelector('.swal2-title');
-                                var body = popup.querySelector('.swal2-html-container');
-                                var icon = popup.querySelector('.swal2-icon');
-                                if (title) {
-                                    title.style.fontSize = '2.15rem';
-                                    title.style.fontWeight = '700';
-                                }
-                                if (body) {
-                                    body.style.fontSize = '1.25rem';
-                                    body.style.lineHeight = '1.45';
-                                }
-                                if (icon) {
-                                    icon.style.transform = 'scale(1.35)';
-                                    icon.style.margin = '1.75rem auto 1rem';
-                                }
-                            }
-                        }).then(function () {
-                            if (alTerminar) alTerminar(true);
-                        });
-                    } else if (alTerminar) {
-                        alTerminar(true);
+                        Swal.fire({ icon: 'error', title: 'No se guardó', text: aviso });
                     }
+                    if (alTerminar) alTerminar(false);
                     return;
                 }
-                postFila(cola[i]).then(function (res) {
-                    if (!res.ok) {
-                        fallos += 1;
-                        if (!aviso) aviso = res.message || '';
-                    } else {
-                        maestros += res.maestros || 0;
-                    }
-                    i += 1;
-                    paso();
-                }).catch(function () {
-                    fallos += 1;
-                    if (!aviso) aviso = 'No se pudo guardar un cliente.';
-                    i += 1;
-                    paso();
+                var lista = (res.json && res.json.asignaciones) || [];
+                lista.forEach(function (savedRow) {
+                    savedRow.pending = false;
+                    upsertSaved(savedRow);
                 });
-            }
-            paso();
+                cola.forEach(function (src) {
+                    var i = findSavedIndex(src.empresa, src.centro_codigo);
+                    if (i >= 0 && saved[i].pending) {
+                        saved[i].pending = false;
+                    }
+                });
+                renderResumen();
+                renderEmpresaCards();
+                markEmpresaCard(cfg.empresa);
+                fillCentros(ccQ ? ccQ.value : '');
+                var n = lista.length || cola.length;
+                var maestros = Number(res.json && res.json.maestro_creados) || 0;
+                var texto = n + (n === 1 ? ' cliente registrado.' : ' clientes registrados.');
+                if (maestros > 0) {
+                    texto += ' ' + maestros + (maestros === 1
+                        ? ' producto nuevo en el maestro de precios.'
+                        : ' productos nuevos en el maestro de precios.');
+                }
+                if (window.Swal) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Asignaciones guardadas',
+                        text: texto,
+                        position: 'center',
+                        width: '36rem',
+                        confirmButtonText: 'Listo',
+                        showConfirmButton: true,
+                        didOpen: function (popup) {
+                            var title = popup.querySelector('.swal2-title');
+                            var body = popup.querySelector('.swal2-html-container');
+                            var icon = popup.querySelector('.swal2-icon');
+                            if (title) {
+                                title.style.fontSize = '2.15rem';
+                                title.style.fontWeight = '700';
+                            }
+                            if (body) {
+                                body.style.fontSize = '1.25rem';
+                                body.style.lineHeight = '1.45';
+                            }
+                            if (icon) {
+                                icon.style.transform = 'scale(1.35)';
+                                icon.style.margin = '1.75rem auto 1rem';
+                            }
+                        }
+                    }).then(function () {
+                        if (alTerminar) alTerminar(true);
+                    });
+                } else if (alTerminar) {
+                    alTerminar(true);
+                }
+            }).catch(function () {
+                saveBusy = false;
+                setGuardando(false);
+                if (window.Swal) {
+                    Swal.fire({ icon: 'error', title: 'No se guardó', text: 'No se pudieron guardar las asignaciones.' });
+                }
+                if (alTerminar) alTerminar(false);
+            });
         }
 
         if (btnSave) btnSave.addEventListener('click', function (ev) {
@@ -2427,10 +2524,22 @@
             pickUser('');
         });
 
+        document.querySelectorAll('#asig-permisos input[name="permiso"]').forEach(function (i) {
+            i.addEventListener('change', function () {
+                if (i.checked && (i.value === 'capturar' || i.value === 'revisar')) {
+                    var other = i.value === 'capturar' ? 'revisar' : 'capturar';
+                    document.querySelectorAll('#asig-permisos input[name="permiso"]').forEach(function (x) {
+                        if (x.value === other) x.checked = false;
+                    });
+                }
+                refrescarModo();
+            });
+        });
+
         unlockEmpresas();
         loadEmpresas();
         fillUsers('');
-        setStep(1);
+        refrescarModo();
     };
 
     function setStep(n) {

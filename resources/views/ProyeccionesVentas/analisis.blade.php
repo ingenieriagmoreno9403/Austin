@@ -24,13 +24,20 @@
     <div class="cc-panel">
         <div class="cc-filters cc-filters-asig">
             <label class="cc-filter-field" for="an-empresa">Empresa
-                <select id="an-empresa" class="cc-select"></select>
+                <select id="an-empresa" class="cc-select">
+                    <option value="">Seleccionar</option>
+                    <option value="*">Todas</option>
+                </select>
             </label>
             <label class="cc-filter-field" for="an-cliente">Cliente
-                <select id="an-cliente" class="cc-select"></select>
+                <select id="an-cliente" class="cc-select">
+                    <option value="">Seleccionar</option>
+                </select>
             </label>
             <label class="cc-filter-field" for="an-user">Usuario
-                <select id="an-user" class="cc-select"></select>
+                <select id="an-user" class="cc-select">
+                    <option value="">Seleccionar</option>
+                </select>
             </label>
         </div>
     </div>
@@ -46,14 +53,14 @@
         <div class="cc-api-wait-bar" aria-hidden="true"><span></span></div>
     </div>
 
-    <div id="an-empty" class="cc-panel" hidden>
+    <div id="an-empty" class="cc-panel">
         <div class="cc-empty" style="padding:2.2rem 1rem">
-            <i class="fa-solid fa-chart-line" id="an-empty-icon"></i>
-            <div id="an-empty-msg">No hay clientes asignados en este ciclo. Asigna usuarios y productos en Proyecciones de ventas.</div>
+            <i class="fa-solid fa-filter" id="an-empty-icon"></i>
+            <div id="an-empty-msg">Selecciona una empresa, o Todas, para ver el análisis.</div>
         </div>
     </div>
 
-    <div id="an-work">
+    <div id="an-work" hidden>
     <div class="cc-kpis cc-kpis-equal">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Productos ya capturados</div></div>
         <div class="cc-kpi alert"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Clientes debajo del 40%</div></div>

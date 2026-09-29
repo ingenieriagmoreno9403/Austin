@@ -60,9 +60,12 @@ class RegisterController extends Controller
         $varlistasocios = $this->obtenerSociosSinUsuario();
         $varlistaempresas = $this->obtenerEmpresasParaRegistro();
         $esMasterEmpresa = $this->esSesionMasterEmpresa();
+        $usuariosEmpresa = $esMasterEmpresa
+            ? $this->filtrarUsuariosDeEmpresa($valusers, $this->empresaIdSesion())
+            : collect();
 
         return view('sistemas.registro',compact('varpantallas','varsubmenus',
-        'varlistaempleados','valusers','optenerproveedoresuser', 'varlistaalumnos', 'varlistasocios', 'varlistaempresas', 'esMasterEmpresa'));
+        'varlistaempleados','valusers','optenerproveedoresuser', 'varlistaalumnos', 'varlistasocios', 'varlistaempresas', 'esMasterEmpresa', 'usuariosEmpresa'));
     }
 
     // public function __construct()
@@ -236,6 +239,70 @@ class RegisterController extends Controller
             }else{
                 return redirect()->route('registro')->with("error_msg_large","No se logro agregar la contraseña");
             }
+    }
+
+    public function editarUsuario(Request $request)
+    {
+        if (!$this->esSesionMasterEmpresa()) {
+            return redirect()->route('registro')->with('warning', 'Solo el superusuario de la empresa puede editar nombre, correo y contraseña.');
+        }
+
+        $iduser = $request->get('iduser');
+        if (is_null($iduser)) {
+            return redirect()->route('registro')->with('warning', 'Selecciona un usuario.');
+        }
+
+        $enAlcance = $this->filtrarUsuariosDeEmpresa($this->obtenerusuarios(), $this->empresaIdSesion())
+            ->first(function ($usuario) use ($iduser) {
+                return (int) $usuario->id === (int) $iduser;
+            });
+
+        if (!$enAlcance) {
+            return redirect()->route('registro')->with('warning', 'No puedes editar usuarios de otra empresa.');
+        }
+
+        $user = User::find($iduser);
+        if (!$user) {
+            return redirect()->route('registro')->with('warning', 'No se encontró el usuario seleccionado.');
+        }
+
+        $name = trim((string) $request->get('name'));
+        $email = trim((string) $request->get('email'));
+        $pass = trim((string) $request->get('contrasena', ''));
+        $repass = trim((string) $request->get('recontrasena', ''));
+
+        if (mb_strlen($name) < 3 || mb_strlen($name) > 100) {
+            return redirect()->route('registro')->with('warning', 'El nombre debe tener entre 3 y 100 caracteres.');
+        }
+
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || mb_strlen($email) > 100) {
+            return redirect()->route('registro')->with('warning', 'Captura un correo válido.');
+        }
+
+        if (User::where('email', $email)->where('id', '<>', $user->id)->exists()) {
+            return redirect()->route('registro')->with('warning', 'Ese correo ya está registrado en otro usuario.');
+        }
+
+        if ($pass !== '' || $repass !== '') {
+            if ($pass !== $repass) {
+                return redirect()->route('registro')->with('warning_msg', 'Las contraseñas no coinciden. Verifica e inténtalo de nuevo.');
+            }
+            if (mb_strlen($pass) < 8) {
+                return redirect()->route('registro')->with('warning', 'La contraseña debe tener al menos 8 caracteres.');
+            }
+            $user->password = bcrypt($pass);
+        }
+
+        $user->name = $name;
+        $user->email = $email;
+        $user->updated_at = Carbon::now()->format('Y-m-d');
+        $user->updated_by = auth()->user()->name;
+
+        if ($user->save()) {
+            return redirect()->route('registro')->with('success_msg_large', 'Se actualizó la información de ' . $user->name);
+        }
+
+        return redirect()->route('registro')->with('error_msg_large', 'No se pudo actualizar la información del usuario.');
     }
 
     public function inactivar(Request $request)

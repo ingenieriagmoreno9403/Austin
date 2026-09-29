@@ -444,6 +444,10 @@
             if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, mapped);
             return mapped;
         }
+        var revisionSinProductos = asig && !asig.capturar && (asig.revisar || ((asig.permisos || []).indexOf('revisar') !== -1));
+        if (revisionSinProductos && (CC.state.page === 'control' || CC.state.page === 'detalle')) {
+            return mergeCuentasAnalisis(c, []);
+        }
         if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, []);
         if (CC.state.page === 'control' || CC.state.page === 'detalle') return [];
         var all = CC.state.cuentas.filter(function (cta) {
@@ -469,12 +473,16 @@
             || (document.getElementById('an-ciclo') && val('an-ciclo'))
             || CC.state.cicloCodigo || '';
         var cicloNeedle = String(ciclo || '').toUpperCase();
-        return (CC.state.misAsignaciones || []).filter(function (a) {
-            var sameCc = codigoClienteAsig(a) === String(c.codigo || '').trim();
+        var code = String(c.codigo || '').trim();
+        var pool = (CC.state.misAsignaciones || []).filter(function (a) {
             var sameEmp = String(a.empresa || '').toLowerCase() === String(c.empresa || a.empresa || '').toLowerCase();
             var sameCiclo = !cicloNeedle || String(a.ciclo || '').toUpperCase() === cicloNeedle;
-            return sameCc && sameEmp && sameCiclo;
+            return sameEmp && sameCiclo;
         });
+        var exact = pool.filter(function (a) { return codigoClienteAsig(a) === code; });
+        if (exact.length) return exact;
+        if (!code) return [];
+        return pool.filter(function (a) { return isEmpresaCompleta(codigoClienteAsig(a)); });
     }
 
     function asigDe(c) {
@@ -498,6 +506,11 @@
             base.editar = !!(base.editar || a.editar);
             base.revisar = !!(base.revisar || a.revisar);
         });
+        if (c && isEmpresaCompleta(base.centro_codigo) && !isEmpresaCompleta(c.codigo)) {
+            base.centro_codigo = c.codigo;
+            base.centro_nombre = c.nombre || c.codigo;
+            base.revisar = true;
+        }
         return base;
     }
 
@@ -3739,7 +3752,7 @@
             var emp = String(a.empresa || '').toUpperCase().trim();
             var code = codigoClienteAsig(a);
             var k = emp + '|' + code;
-            if (!emp || !code) return;
+            if (!emp || !code || isEmpresaCompleta(code)) return;
             if (!map[k]) {
                 map[k] = {
                     codigo: code,
@@ -4186,6 +4199,7 @@
     function pendientesDeEmpresa(emp) {
         var list = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
         return list.reduce(function (n, a) {
+            if (isEmpresaCompleta(a.centro_codigo)) return n;
             return n + statsDeCentro({
                 codigo: a.centro_codigo,
                 nombre: a.centro_nombre || a.centro_codigo,
@@ -4217,6 +4231,46 @@
         paintNavStatus('ctl-emp-status', (CC._capturaReady && sel) ? pendientesDeEmpresa(sel) : null, el);
     }
 
+    function cacheKeyClientesEmpresa(emp) {
+        var year = Number(CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear());
+        return String(emp || '').toUpperCase() + '|' + year;
+    }
+
+    function clientesEmpresaDe(emp) {
+        CC._cliEmp = CC._cliEmp || {};
+        return CC._cliEmp[cacheKeyClientesEmpresa(emp)] || null;
+    }
+
+    function nombreCatalogoCliente(emp, codigo) {
+        var rows = clientesEmpresaDe(emp) || [];
+        var code = String(codigo || '').trim();
+        var hit = rows.filter(function (c) { return String(c.codigo || '').trim() === code; })[0];
+        return hit ? String(hit.nombre || '').trim() : '';
+    }
+
+    function ensureClientesEmpresa(emp) {
+        var key = cacheKeyClientesEmpresa(emp);
+        CC._cliEmp = CC._cliEmp || {};
+        CC._cliEmpLoad = CC._cliEmpLoad || {};
+        if (CC._cliEmp[key] || CC._cliEmpLoad[key]) return;
+        CC._cliEmpLoad[key] = true;
+        var year = key.split('|')[1];
+        fetch('/ProyeccionesVentas/api/centros?empresa=' + encodeURIComponent(String(emp || '').toLowerCase()) + '&year=' + encodeURIComponent(year), {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) { return r.json(); }).then(function (json) {
+            CC._cliEmp[key] = json.centros || [];
+            CC._cliEmpLoad[key] = false;
+            if (String(val('ctl-empresa') || '').toUpperCase() !== String(emp || '').toUpperCase()) return;
+            var before = String(val('ctl-centro') || '');
+            renderNavCentros();
+            var now = String(val('ctl-centro') || '');
+            if (now && now !== before) loadControlCentro();
+        }).catch(function () {
+            CC._cliEmp[key] = [];
+            CC._cliEmpLoad[key] = false;
+        });
+    }
+
     function renderNavCentros() {
         var el = document.getElementById('ctl-centro');
         if (!el) return;
@@ -4229,14 +4283,42 @@
             return;
         }
         var raw = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
+        var wide = raw.some(function (a) { return isEmpresaCompleta(a.centro_codigo); });
         var seenCc = {};
         var list = [];
         raw.forEach(function (a) {
             var code = String(a.centro_codigo || '').trim();
-            if (!code || seenCc[code]) return;
+            if (!code || isEmpresaCompleta(code) || seenCc[code]) return;
             seenCc[code] = true;
             list.push(a);
         });
+        if (wide) {
+            var catalogo = clientesEmpresaDe(emp);
+            if (!catalogo) {
+                ensureClientesEmpresa(emp);
+                if (!list.length) {
+                    el.innerHTML = '<option value="">Cargando clientes de la empresa…</option>';
+                    el.disabled = true;
+                    el.classList.remove('is-warn', 'is-ok', 'is-danger');
+                    paintNavStatus('ctl-cc-status', null, el);
+                    return;
+                }
+            } else {
+                catalogo.forEach(function (c) {
+                    var code = String(c.codigo || '').trim();
+                    if (!code || seenCc[code]) return;
+                    seenCc[code] = true;
+                    list.push({
+                        centro_codigo: code,
+                        centro_nombre: c.nombre || code,
+                        empresa: emp,
+                        revisar: true,
+                        capturar: false,
+                        permisos: ['revisar']
+                    });
+                });
+            }
+        }
         var cur = String(val('ctl-centro') || '').trim();
         var html = '<option value="">Elige cliente…</option>';
         list.forEach(function (a) {
@@ -4607,10 +4689,17 @@
                     && String(x.empresa || '').toUpperCase().trim() === e;
             })[0] || null;
         }
+        if (!a) {
+            a = asignacionesDelCiclo(ciclo || val('ctl-ciclo') || CC.state.cicloCodigo).filter(function (x) {
+                return isEmpresaCompleta(x.centro_codigo)
+                    && String(x.empresa || '').toUpperCase().trim() === e;
+            })[0] || null;
+        }
         if (!a) return null;
+        var wide = isEmpresaCompleta(a.centro_codigo);
         return mergedCentro({
-            codigo: String(a.centro_codigo || '').trim(),
-            nombre: a.centro_nombre || a.centro_codigo,
+            codigo: wide ? code : String(a.centro_codigo || '').trim(),
+            nombre: wide ? (nombreCatalogoCliente(e, code) || code) : (a.centro_nombre || a.centro_codigo),
             empresa: e,
             usuario: a.usuario || '',
             estado: 'abierto',
@@ -4619,8 +4708,8 @@
             ciclo: a.ciclo || ciclo || CC.state.cicloCodigo || '',
             capturar: !!a.capturar,
             editar: !!a.editar,
-            revisar: !!a.revisar,
-            permisos: a.permisos || [],
+            revisar: !!(a.revisar || wide),
+            permisos: (a.permisos && a.permisos.length) ? a.permisos : (wide ? ['revisar'] : []),
             sap: true
         });
     }
@@ -7211,6 +7300,14 @@
         if (prev) el.value = prev;
     }
 
+    var AN_EMP_TODAS = '*';
+
+    function empresaAnalisisConcreta(raw) {
+        var emp = raw == null ? val('an-empresa') : raw;
+        if (!emp || emp === AN_EMP_TODAS) return '';
+        return emp;
+    }
+
     function fillAnalisisFilters() {
         var rows = (CC.state.centros || []).map(mergedCentro);
         var empEl = document.getElementById('an-empresa');
@@ -7225,10 +7322,12 @@
             if (c.empresa && emps.indexOf(c.empresa) === -1) emps.push(c.empresa);
         });
         emps.sort();
-        if (emp && emps.indexOf(emp) === -1) emp = '';
+        if (emp && emp !== AN_EMP_TODAS && emps.indexOf(emp) === -1) emp = '';
+        var empConcreta = empresaAnalisisConcreta(emp);
+        var empresaElegida = emp === AN_EMP_TODAS || !!empConcreta;
 
         var scoped = rows.filter(function (c) {
-            return !emp || c.empresa === emp;
+            return !empConcreta || c.empresa === empConcreta;
         });
         if (cli && !scoped.some(function (c) { return clienteFilterKey(c) === cli; })) cli = '';
 
@@ -7258,18 +7357,24 @@
             var label = (c.nombre && c.nombre !== c.codigo)
                 ? (c.nombre + ' — ' + c.codigo)
                 : (c.codigo || c.nombre || '—');
-            if (!emp && c.empresa) label = c.empresa + ' · ' + label;
+            if (!empConcreta && c.empresa) label = c.empresa + ' · ' + label;
             clients.push({ codigo: key, nombre: label });
         });
         clients.sort(function (a, b) {
             return String(a.nombre).localeCompare(String(b.nombre), 'es');
         });
+        if (!empresaElegida) {
+            clients = [];
+            users = [];
+            cli = '';
+            user = '';
+        }
 
-        fillSelectKeepEscaped(empEl, emps, '<option value="">Todas las empresas</option>');
-        fillSelectKeepEscaped(cliEl, clients, '<option value="">Todos los clientes</option>');
+        fillSelectKeepEscaped(empEl, emps, '<option value="">Seleccionar</option><option value="' + AN_EMP_TODAS + '">Todas</option>');
+        fillSelectKeepEscaped(cliEl, clients, '<option value="">' + (empresaElegida ? 'Todos los clientes' : 'Seleccionar') + '</option>');
         fillSelectKeepEscaped(userEl, users.map(function (n) {
             return { codigo: n, nombre: n };
-        }), '<option value="">Todos los usuarios</option>');
+        }), '<option value="">' + (empresaElegida ? 'Todos los usuarios' : 'Seleccionar') + '</option>');
         if (empEl) empEl.value = emp;
         if (cliEl) cliEl.value = cli;
         if (userEl) userEl.value = user;
@@ -7289,6 +7394,12 @@
         CC._anAsigLoaded = false;
         CC._anAsigLoading = false;
         CC._anGastoTried = {};
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        CC._anGastoRunning = false;
+        CC._anGastoLeft = 0;
+        CC._anGastoTotal = 0;
+        CC._anGastoPhase = '';
+        CC._anGastoFilterKey = '';
         CC.initAnalisis();
     }
 
@@ -7394,79 +7505,104 @@
         });
     }
 
+    function asigPuedeRevisar(a) {
+        return !!(a && (a.revisar || ((a.permisos || []).indexOf('revisar') !== -1)));
+    }
+
+    /** Empresas (y clientes, si la revisión no es de toda la empresa) que el usuario actual puede revisar. */
+    function alcanceRevisionPropio(list) {
+        var uid = Number(CC.state.usuarioActualId || 0);
+        var scope = {};
+        (list || []).forEach(function (a) {
+            if (!uid || Number(a.user_id) !== uid) return;
+            if (!asigPuedeRevisar(a)) return;
+            var e = String(a.empresa || '').toUpperCase().trim();
+            if (!e) return;
+            if (!scope[e]) scope[e] = { wide: false, clientes: {} };
+            var code = codigoClienteAsig(a);
+            if (isEmpresaCompleta(code)) scope[e].wide = true;
+            else if (code) scope[e].clientes[code] = true;
+        });
+        return scope;
+    }
+
+    function asignacionesVisiblesAnalisis(list) {
+        var scope = alcanceRevisionPropio(list);
+        CC._anScopeRevision = scope;
+        CC._anSinRevision = !!(list && list.length) && !Object.keys(scope).length;
+        return (list || []).filter(function (a) {
+            var e = String(a.empresa || '').toUpperCase().trim();
+            var rule = scope[e];
+            if (!rule) return false;
+            var code = codigoClienteAsig(a);
+            if (!code || isEmpresaCompleta(code)) return false;
+            if (rule.wide) return true;
+            return !!rule.clientes[code];
+        });
+    }
+
     function fetchAnalisisAsignaciones(ciclo) {
         var todas = '/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones';
         var mias = '/ProyeccionesVentas/api/mis-asignaciones';
         return fetchJsonOk(todas).then(function (json) {
             var list = (json && json.asignaciones) || [];
-            if (list.length) return list;
+            if (list.length) return asignacionesVisiblesAnalisis(list);
             return fetchJsonOk(mias).then(function (mine) {
-                return (mine && mine.asignaciones) || [];
-            }).catch(function () { return []; });
+                return asignacionesVisiblesAnalisis((mine && mine.asignaciones) || []);
+            }).catch(function () { return asignacionesVisiblesAnalisis([]); });
         }).catch(function () {
             return fetchJsonOk(mias).then(function (mine) {
-                return (mine && mine.asignaciones) || [];
-            }).catch(function () { return CC.state.misAsignaciones || []; });
+                return asignacionesVisiblesAnalisis((mine && mine.asignaciones) || []);
+            }).catch(function () { return asignacionesVisiblesAnalisis(CC.state.misAsignaciones || []); });
         });
     }
 
     function paintAnalisisLoading() {
         var box = document.getElementById('an-loading');
-        if (!box) return;
-        var waitingAsig = !CC._anAsigLoaded;
-        var waitingCap = !!CC._anCapturaCiclo && !CC._capturaReady;
-        var left = CC._anGastoLeft || 0;
-        var total = CC._anGastoTotal || 0;
-        var phase = CC._anGastoPhase || '';
-        var on = waitingAsig || waitingCap || left > 0 || phase === 'snapshot' || phase === 'sap';
-        box.hidden = !on;
-        var msg = document.getElementById('an-loading-msg');
-        if (!msg) return;
-        if (waitingAsig) {
-            msg.textContent = 'Cargando clientes del ciclo…';
-        } else if (phase === 'snapshot') {
-            msg.textContent = 'Leyendo snapshots locales…';
-        } else if (phase === 'sap' && total > 0) {
-            var doneSap = Math.max(0, total - left);
-            msg.textContent = 'Snapshot listo · sync SAP ' + doneSap + ' de ' + total + ' faltantes.';
-        } else if (left > 0) {
-            var done = Math.max(0, total - left);
-            msg.textContent = 'Cargando ventas… ' + done + ' de ' + total + '.';
-        } else if (waitingCap) {
-            msg.textContent = 'Cargando proyecciones capturadas…';
-        }
+        if (box) box.hidden = true;
     }
 
-    /** Hay filtro concreto (no “Todos”). Sin eso no se consultan ventas. */
+    function ventaCentroLista(c) {
+        var key = gastoCacheKey(c);
+        if (gastoCacheEntry(key)) return true;
+        return !!(CC._anGastoTried && CC._anGastoTried[key]);
+    }
+
+    function htmlCargando() {
+        return '<span class="text-muted">Cargando...</span>';
+    }
+
+    /** Empresa concreta, Todas, cliente o usuario. “Seleccionar” no consulta ventas. */
     function analisisTieneFiltro() {
         return !!(val('an-empresa') || val('an-cliente') || val('an-user'));
     }
 
-    function centrosFiltradosAnalisis() {
-        var emp = val('an-empresa');
+    function maybeQueueAnalisisGastos() {
+        if (CC.state.page !== 'analisis') return;
+        queueAnalisisGastos();
+    }
+
+    function centroPermitidoAnalisis(c) {
+        var scope = CC._anScopeRevision || {};
+        var e = String((c && c.empresa) || '').toUpperCase().trim();
+        var rule = scope[e];
+        if (!rule) return false;
+        if (rule.wide) return true;
+        return !!rule.clientes[String((c && c.codigo) || '').trim()];
+    }
+
+    function centrosObjetivoAnalisis() {
+        var rows = (CC.state.centros || []).map(mergedCentro).filter(centroPermitidoAnalisis);
+        if (!analisisTieneFiltro()) return rows;
+        var emp = empresaAnalisisConcreta();
         var cli = val('an-cliente');
         var user = val('an-user');
-        return (CC.state.centros || []).filter(function (raw) {
-            var c = mergedCentro(raw);
+        return rows.filter(function (c) {
             if (emp && c.empresa !== emp) return false;
             if (cli && clienteFilterKey(c) !== cli) return false;
             if (user && (c.usuarios || []).indexOf(user) === -1 && c.usuario !== user) return false;
             return true;
         });
-    }
-
-    function maybeQueueAnalisisGastos() {
-        if (CC.state.page !== 'analisis') return;
-        if (!analisisTieneFiltro()) {
-            CC._anGastoGen = (CC._anGastoGen || 0) + 1;
-            CC._anGastoLeft = 0;
-            CC._anGastoTotal = 0;
-            CC._anGastoPhase = '';
-            CC._anGastoRunning = false;
-            paintAnalisisLoading();
-            return;
-        }
-        queueAnalisisGastos();
     }
 
     function queueAnalisisGastos() {
@@ -7478,17 +7614,18 @@
             paintAnalisisLoading();
             return;
         }
-        if (!analisisTieneFiltro()) {
-            CC._anGastoLeft = 0;
-            CC._anGastoTotal = 0;
-            CC._anGastoPhase = '';
-            CC._anGastoRunning = false;
+        var year = CC.state.anioGasto || 2026;
+        var silencioso = !analisisTieneFiltro();
+        var centros = centrosObjetivoAnalisis();
+        var filterKey = silencioso
+            ? ['__bg__', year].join('|')
+            : [val('an-empresa') || '', val('an-cliente') || '', val('an-user') || '', year].join('|');
+        var bgKey = '__bg__|' + year;
+        if (CC._anGastoRunning && CC._anGastoFilterKey === bgKey && !silencioso) {
+            renderAnalisis();
             paintAnalisisLoading();
             return;
         }
-        var year = CC.state.anioGasto || 2026;
-        var centros = centrosFiltradosAnalisis();
-        var filterKey = [val('an-empresa') || '', val('an-cliente') || '', val('an-user') || '', year].join('|');
         var needGasto = centros.filter(function (c) {
             var gKey = gastoCacheKey(c);
             if (gastoCacheEntry(gKey)) return false;
@@ -7581,7 +7718,7 @@
                 paintTimer = setTimeout(function () {
                     paintTimer = null;
                     if (gen !== CC._anGastoGen) return;
-                    if (CC.state.page === 'analisis' && dirty) {
+                    if (CC.state.page === 'analisis' && dirty && analisisTieneFiltro()) {
                         dirty = false;
                         renderAnalisis();
                     }
@@ -7660,7 +7797,7 @@
                 paintTimer = setTimeout(function () {
                     paintTimer = null;
                     if (gen !== CC._anGastoGen) return;
-                    if (CC.state.page === 'analisis' && dirty) renderAnalisis();
+                    if (CC.state.page === 'analisis' && dirty && analisisTieneFiltro()) renderAnalisis();
                 }, 400);
             }
             function kick() {
@@ -7794,6 +7931,8 @@
                 avance: pct(filled, ctas.length || 1),
                 yoY: deltaPct(ppto, gasto),
                 over: gasto > 0 && ppto > gasto * 1.1,
+                ventaLista: ventaCentroLista(c),
+                proyLista: !!CC._capturaReady,
                 departamento: deptoDeCentro(c),
                 usuarios: users,
                 monthGasto: MONTHS.map(function (_, i) {
@@ -7894,7 +8033,9 @@
                     yoY: deltaPct(ppto, gasto),
                     over: gasto > 0 && ppto > gasto * 1.1,
                     capturadas: capturadas,
-                    avance: listo ? 100 : pct(filled, 12)
+                    avance: listo ? 100 : pct(filled, 12),
+                    ventaLista: !!c.ventaLista,
+                    proyLista: !!c.proyLista
                 });
             });
         });
@@ -7950,15 +8091,21 @@
             var byCli = {};
             chosen.forEach(function (p) {
                 var key = p.clienteNombre || p.clienteCodigo || '—';
-                byCli[key] = byCli[key] || { venta: 0, proy: 0 };
-                byCli[key].venta += Number(p.gasto) || 0;
-                byCli[key].proy += Number(p.ppto) || 0;
+                byCli[key] = byCli[key] || { venta: 0, proy: 0, ventaOk: false, proyOk: false };
+                if (p.ventaLista) {
+                    byCli[key].venta += Number(p.gasto) || 0;
+                    byCli[key].ventaOk = true;
+                }
+                if (p.proyLista) {
+                    byCli[key].proy += Number(p.ppto) || 0;
+                    byCli[key].proyOk = true;
+                }
             });
             labels = Object.keys(byCli).sort(function (a, b) {
                 return String(a).localeCompare(String(b), 'es');
             });
-            venta = labels.map(function (k) { return byCli[k].venta; });
-            proy = labels.map(function (k) { return byCli[k].proy; });
+            venta = labels.map(function (k) { return byCli[k].ventaOk ? byCli[k].venta : null; });
+            proy = labels.map(function (k) { return byCli[k].proyOk ? byCli[k].proy : null; });
             if (!labels.length) {
                 labels = [name];
                 venta = [0];
@@ -7971,23 +8118,35 @@
             if (source) {
                 source.forEach(function (p) {
                     var key = p.empresa || '—';
-                    byChart[key] = byChart[key] || { venta: 0, proy: 0 };
-                    byChart[key].venta += Number(p.gasto) || 0;
-                    byChart[key].proy += Number(p.ppto) || 0;
+                    byChart[key] = byChart[key] || { venta: 0, proy: 0, ventaOk: false, proyOk: false };
+                    if (p.ventaLista) {
+                        byChart[key].venta += Number(p.gasto) || 0;
+                        byChart[key].ventaOk = true;
+                    }
+                    if (p.proyLista) {
+                        byChart[key].proy += Number(p.ppto) || 0;
+                        byChart[key].proyOk = true;
+                    }
                 });
             } else {
                 (rows || []).forEach(function (c) {
                     var key = c.empresa || '—';
-                    byChart[key] = byChart[key] || { venta: 0, proy: 0 };
-                    byChart[key].venta += Number(c.gasto) || 0;
-                    byChart[key].proy += Number(c.ppto) || 0;
+                    byChart[key] = byChart[key] || { venta: 0, proy: 0, ventaOk: false, proyOk: false };
+                    if (c.ventaLista) {
+                        byChart[key].venta += Number(c.gasto) || 0;
+                        byChart[key].ventaOk = true;
+                    }
+                    if (c.proyLista) {
+                        byChart[key].proy += Number(c.ppto) || 0;
+                        byChart[key].proyOk = true;
+                    }
                 });
             }
             labels = Object.keys(byChart).sort(function (a, b) {
                 return String(a).localeCompare(String(b), 'es');
             });
-            venta = labels.map(function (e) { return byChart[e].venta; });
-            proy = labels.map(function (e) { return byChart[e].proy; });
+            venta = labels.map(function (e) { return byChart[e].ventaOk ? byChart[e].venta : null; });
+            proy = labels.map(function (e) { return byChart[e].proyOk ? byChart[e].proy : null; });
             if (hint) {
                 hint.textContent = labels.length
                     ? 'Venta y proyección por empresa'
@@ -8003,7 +8162,8 @@
     function renderAnalisis() {
         fillAnalisisFilters();
         var q = normSearch(val('an-q') || '');
-        var emp = val('an-empresa');
+        var empRaw = val('an-empresa');
+        var emp = empresaAnalisisConcreta(empRaw);
         var cli = val('an-cliente');
         var user = val('an-user');
         var gYear = CC.state.anioGasto || 2026;
@@ -8017,17 +8177,26 @@
         paintAnalisisLoading();
         if (empty) {
             if (!CC._anAsigLoaded) {
-                empty.hidden = true;
+                empty.hidden = false;
+                if (analisisTieneFiltro()) {
+                    if (emptyMsg) emptyMsg.textContent = 'Cargando...';
+                    if (emptyIcon) emptyIcon.className = 'fa-solid fa-spinner fa-spin';
+                } else {
+                    if (emptyMsg) emptyMsg.textContent = 'Selecciona una empresa, o Todas, para ver el análisis.';
+                    if (emptyIcon) emptyIcon.className = 'fa-solid fa-filter';
+                }
             } else if (!all.length) {
                 empty.hidden = false;
                 if (emptyMsg) {
-                    emptyMsg.textContent = 'No hay clientes asignados en este ciclo. Asigna usuarios y productos en Proyecciones de ventas.';
+                    emptyMsg.textContent = CC._anSinRevision
+                        ? 'No tienes permiso de revisar ninguna empresa en este ciclo.'
+                        : 'No hay clientes asignados en este ciclo. Asigna usuarios y productos en Proyecciones de ventas.';
                 }
                 if (emptyIcon) emptyIcon.className = 'fa-solid fa-chart-line';
             } else if (needsFilter) {
                 empty.hidden = false;
                 if (emptyMsg) {
-                    emptyMsg.textContent = 'Elige empresa, cliente o usuario para cargar el análisis. No se consultan ventas hasta que filtres.';
+                    emptyMsg.textContent = 'Selecciona una empresa, o Todas, para ver el análisis.';
                 }
                 if (emptyIcon) emptyIcon.className = 'fa-solid fa-filter';
             } else {
@@ -8072,7 +8241,9 @@
                     yoY: c.yoY || 0,
                     over: !!c.over,
                     capturadas: c.capturadas || 0,
-                    avance: c.avance || 0
+                    avance: c.avance || 0,
+                    ventaLista: !!c.ventaLista,
+                    proyLista: !!c.proyLista
                 };
             });
         }
@@ -8086,42 +8257,67 @@
         });
 
         if (!rows.length) {
-            setText('an-kpi-avance', all.length ? '—' : '—');
+            setText('an-kpi-avance', '—');
             setText('an-kpi-poco', all.length ? '0' : '—');
             setText('an-kpi-over', all.length ? '0' : '—');
             setText('an-kpi-yoy', '—');
         } else {
-            var tot = rows.length;
-            var avgAv = Math.round(rows.reduce(function (a, c) { return a + c.avance; }, 0) / tot);
-            var poco = rows.filter(function (c) { return c.avance < 40; }).length;
-            var over = rows.filter(function (c) { return c.over; }).length;
-            var withGasto = rows.filter(function (c) { return c.gasto > 0; });
-            var avgYoy = withGasto.length
-                ? Math.round(withGasto.reduce(function (a, c) { return a + c.yoY; }, 0) / withGasto.length * 10) / 10
-                : 0;
-            setText('an-kpi-avance', avgAv + '%');
-            setText('an-kpi-poco', poco);
-            setText('an-kpi-over', over);
-            setText('an-kpi-yoy', withGasto.length ? ((avgYoy > 0 ? '+' : '') + avgYoy + '%') : '—');
+            var listosProy = rows.filter(function (c) { return c.proyLista; });
+            var listosVenta = rows.filter(function (c) { return c.ventaLista; });
+            if (!listosProy.length) {
+                setText('an-kpi-avance', 'Cargando...');
+                setText('an-kpi-poco', 'Cargando...');
+            } else {
+                var tot = listosProy.length;
+                var avgAv = Math.round(listosProy.reduce(function (a, c) { return a + c.avance; }, 0) / tot);
+                var poco = listosProy.filter(function (c) { return c.avance < 40; }).length;
+                setText('an-kpi-avance', avgAv + '%');
+                setText('an-kpi-poco', poco);
+            }
+            if (!listosVenta.length) {
+                setText('an-kpi-over', 'Cargando...');
+                setText('an-kpi-yoy', 'Cargando...');
+            } else {
+                var over = listosVenta.filter(function (c) { return c.over; }).length;
+                var withGasto = listosVenta.filter(function (c) { return c.gasto > 0; });
+                var avgYoy = withGasto.length
+                    ? Math.round(withGasto.reduce(function (a, c) { return a + c.yoY; }, 0) / withGasto.length * 10) / 10
+                    : 0;
+                setText('an-kpi-over', over);
+                setText('an-kpi-yoy', withGasto.length ? ((avgYoy > 0 ? '+' : '') + avgYoy + '%') : '—');
+            }
         }
 
         var byEmp = {};
         rows.forEach(function (c) {
-            byEmp[c.empresa] = byEmp[c.empresa] || { n: 0, av: 0, gasto: 0, ppto: 0 };
+            byEmp[c.empresa] = byEmp[c.empresa] || { n: 0, av: 0, avN: 0, gasto: 0, ppto: 0, ventaPend: 0, proyPend: 0 };
             byEmp[c.empresa].n += 1;
-            byEmp[c.empresa].av += c.avance;
-            byEmp[c.empresa].gasto += c.gasto;
-            byEmp[c.empresa].ppto += c.ppto;
+            if (c.proyLista) {
+                byEmp[c.empresa].av += c.avance;
+                byEmp[c.empresa].avN += 1;
+                byEmp[c.empresa].ppto += c.ppto;
+            } else {
+                byEmp[c.empresa].proyPend += 1;
+            }
+            if (c.ventaLista) byEmp[c.empresa].gasto += c.gasto;
+            else byEmp[c.empresa].ventaPend += 1;
         });
         var empBox = document.getElementById('an-empresas');
         if (empBox) {
             empBox.innerHTML = Object.keys(byEmp).map(function (e) {
-                var av = Math.round(byEmp[e].av / byEmp[e].n);
-                var cls = av < 40 ? 'warn' : (av > 85 ? 'good' : '');
-                var on = emp === e ? ' is-on' : '';
-                return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' clientes</span></div>' +
-                    '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>' +
-                    '<div class="text-muted mt-1" style="font-size:.75rem">Venta ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Proyecciones ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
+                var info = byEmp[e];
+                var av = info.avN ? Math.round(info.av / info.avN) : null;
+                var cls = av == null ? '' : (av < 40 ? 'warn' : (av > 85 ? 'good' : ''));
+                var on = empRaw === e ? ' is-on' : '';
+                var avTxt = av == null ? 'Cargando...' : (av + '% capturado · ' + info.n + ' clientes');
+                var ventaTxt = info.ventaPend ? (info.ventaPend === info.n ? 'Cargando...' : (money(info.gasto) + ' · Cargando...')) : money(info.gasto);
+                var proyTxt = info.proyPend ? (info.proyPend === info.n ? 'Cargando...' : (money(info.ppto) + ' · Cargando...')) : money(info.ppto);
+                var bar = av == null
+                    ? '<div class="text-muted mt-1" style="font-size:.8rem">Cargando...</div>'
+                    : '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>';
+                return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + avTxt + '</span></div>' +
+                    bar +
+                    '<div class="text-muted mt-1" style="font-size:.75rem">Venta ' + gYear + ' ' + ventaTxt + ' · Proyecciones ' + pYear + ' ' + proyTxt + '</div></div>';
             }).join('') || '<div class="cc-empty">Sin empresas</div>';
         }
 
@@ -8133,16 +8329,27 @@
                     ? p.usuario + ' +' + (p.usuarios.length - 1)
                     : p.usuario;
                 var cliSub = [p.empresa, p.departamento].filter(Boolean).join(' · ');
+                var capCell = p.proyLista
+                    ? ('<div class="d-flex justify-content-between"><span>' + p.capturadas + '/12</span><span class="cc-semaforo-' + cls + '">' + p.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(p.avance, 100) + '%"></span></div>')
+                    : htmlCargando();
+                var ventaCell = p.ventaLista ? textoImporteReal(p.gasto, p.unidadesVenta) : htmlCargando();
+                var proyCell = p.proyLista ? moneyGasto(p.ppto) : htmlCargando();
+                var deltaCell = (p.ventaLista && p.proyLista)
+                    ? (p.gasto ? ((p.yoY > 0 ? '+' : '') + p.yoY + '%') : '—')
+                    : htmlCargando();
+                var limiteCell = (p.ventaLista && p.proyLista)
+                    ? (p.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>')
+                    : htmlCargando();
                 return '<tr><td>' + htmlNombreCodigo(p.productoNombre, p.productoCodigo) + '</td>' +
                     '<td>' + htmlNombreCodigo(p.clienteNombre, p.clienteCodigo) +
                         (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
                     '<td>' + userCell(userLabel) + '</td>' +
                     '<td>' + renderBadge(p.estado) + '</td>' +
-                    '<td><div class="d-flex justify-content-between"><span>' + p.capturadas + '/12</span><span class="cc-semaforo-' + cls + '">' + p.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(p.avance, 100) + '%"></span></div></td>' +
-                    '<td class="num">' + textoImporteReal(p.gasto, p.unidadesVenta) + '</td>' +
-                    '<td class="num">' + moneyGasto(p.ppto) + '</td>' +
-                    '<td class="num ' + (p.yoY > 10 ? 'text-danger' : '') + '">' + (p.gasto ? ((p.yoY > 0 ? '+' : '') + p.yoY + '%') : '—') + '</td>' +
-                    '<td>' + (p.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
+                    '<td>' + capCell + '</td>' +
+                    '<td class="num">' + ventaCell + '</td>' +
+                    '<td class="num">' + proyCell + '</td>' +
+                    '<td class="num ' + (p.yoY > 10 ? 'text-danger' : '') + '">' + deltaCell + '</td>' +
+                    '<td>' + limiteCell + '</td>' +
                     '<td><a class="cc-btn" href="' + detalleHref(p.centro) + '">Ver</a></td></tr>';
             }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin productos con esos filtros</div></td></tr>';
         }
@@ -8154,17 +8361,24 @@
             } else {
                 var sumGasto = 0;
                 var sumPpto = 0;
+                var ventaPend = false;
+                var proyPend = false;
                 tableRows.forEach(function (p) {
-                    sumGasto += Number(p.gasto) || 0;
-                    sumPpto += Number(p.ppto) || 0;
+                    if (p.ventaLista) sumGasto += Number(p.gasto) || 0;
+                    else ventaPend = true;
+                    if (p.proyLista) sumPpto += Number(p.ppto) || 0;
+                    else proyPend = true;
                 });
-                var yoyTot = deltaPct(sumPpto, sumGasto);
+                var yoyTot = (!ventaPend && !proyPend) ? deltaPct(sumPpto, sumGasto) : null;
                 var nProd = tableRows.length;
+                var gastoFoot = ventaPend ? (tableRows.some(function (p) { return p.ventaLista; }) ? (moneyDosDecimales(sumGasto) + ' · Cargando...') : 'Cargando...') : moneyDosDecimales(sumGasto);
+                var pptoFoot = proyPend ? (tableRows.some(function (p) { return p.proyLista; }) ? (moneyGasto(sumPpto) + ' · Cargando...') : 'Cargando...') : moneyGasto(sumPpto);
+                var deltaFoot = yoyTot == null ? 'Cargando...' : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
                 tf.innerHTML = '<tr>' +
                     '<td colspan="5">Totales · ' + nProd + (nProd === 1 ? ' producto' : ' productos') + '</td>' +
-                    '<td class="num">' + moneyDosDecimales(sumGasto) + '</td>' +
-                    '<td class="num">' + moneyGasto(sumPpto) + '</td>' +
-                    '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—') + '</td>' +
+                    '<td class="num">' + gastoFoot + '</td>' +
+                    '<td class="num">' + pptoFoot + '</td>' +
+                    '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + deltaFoot + '</td>' +
                     '<td colspan="2"></td>' +
                     '</tr>';
             }
@@ -8195,12 +8409,18 @@
                         if (!byProd[key]) {
                             byProd[key] = {
                                 label: (p.productoCodigo || '') + (p.productoNombre && p.productoNombre !== p.productoCodigo ? (' ' + p.productoNombre) : ''),
-                                months: MONTHS.map(function () { return 0; })
+                                months: MONTHS.map(function () { return 0; }),
+                                pending: false,
+                                ready: false
                             };
                         }
-                        (p.monthsVenta || []).forEach(function (v, i) {
-                            byProd[key].months[i] += Number(v) || 0;
-                        });
+                        if (!p.ventaLista) byProd[key].pending = true;
+                        else {
+                            byProd[key].ready = true;
+                            (p.monthsVenta || []).forEach(function (v, i) {
+                                byProd[key].months[i] += Number(v) || 0;
+                            });
+                        }
                     });
                 } else {
                     rows.forEach(function (c) {
@@ -8210,19 +8430,25 @@
                             if (!byProd[key]) {
                                 byProd[key] = {
                                     label: (p.codigo || '') + (p.nombre && p.nombre !== p.codigo ? (' ' + p.nombre) : ''),
-                                    months: MONTHS.map(function () { return 0; })
+                                    months: MONTHS.map(function () { return 0; }),
+                                    pending: false,
+                                    ready: false
                                 };
                             }
-                            (p.months || []).forEach(function (v, i) {
-                                byProd[key].months[i] += v || 0;
-                            });
+                            if (!c.ventaLista) byProd[key].pending = true;
+                            else {
+                                byProd[key].ready = true;
+                                (p.months || []).forEach(function (v, i) {
+                                    byProd[key].months[i] += v || 0;
+                                });
+                            }
                         });
                     });
                 }
                 heatItems = Object.keys(byProd).map(function (k) {
                     var item = byProd[k];
                     var tot = item.months.reduce(function (a, v) { return a + (v || 0); }, 0);
-                    return { label: item.label, months: item.months, tot: tot, attr: '' };
+                    return { label: item.label, months: item.months, tot: tot, attr: '', pending: item.pending && !item.ready };
                 }).sort(function (a, b) { return b.tot - a.tot; });
                 setText('an-heat-label', 'Venta ' + gYear + ' · por producto · ' + emp);
                 var heatInput = document.getElementById('an-heat-q');
@@ -8232,24 +8458,39 @@
                 if (heatSource) {
                     heatSource.forEach(function (p) {
                         var key = p.empresa || '—';
-                        byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
-                        (p.monthsVenta || []).forEach(function (v, i) {
-                            byEmpHeat[key][i] += Number(v) || 0;
-                        });
+                        byEmpHeat[key] = byEmpHeat[key] || { months: MONTHS.map(function () { return 0; }), pending: false, ready: false };
+                        if (!p.ventaLista) byEmpHeat[key].pending = true;
+                        else {
+                            byEmpHeat[key].ready = true;
+                            (p.monthsVenta || []).forEach(function (v, i) {
+                                byEmpHeat[key].months[i] += Number(v) || 0;
+                            });
+                        }
                     });
                 } else {
                     rows.forEach(function (c) {
                         var key = c.empresa || '—';
-                        byEmpHeat[key] = byEmpHeat[key] || MONTHS.map(function () { return 0; });
-                        (c.monthGasto || []).forEach(function (v, i) {
-                            byEmpHeat[key][i] += v || 0;
-                        });
+                        byEmpHeat[key] = byEmpHeat[key] || { months: MONTHS.map(function () { return 0; }), pending: false, ready: false };
+                        if (!c.ventaLista) byEmpHeat[key].pending = true;
+                        else {
+                            byEmpHeat[key].ready = true;
+                            (c.monthGasto || []).forEach(function (v, i) {
+                                byEmpHeat[key].months[i] += v || 0;
+                            });
+                        }
                     });
                 }
                 heatItems = Object.keys(byEmpHeat).map(function (e) {
-                    var months = byEmpHeat[e];
+                    var item = byEmpHeat[e];
+                    var months = item.months || item;
                     var tot = months.reduce(function (a, v) { return a + (v || 0); }, 0);
-                    return { label: e, months: months, tot: tot, attr: ' data-emp="' + escapeHtml(e) + '"' };
+                    return {
+                        label: e,
+                        months: months,
+                        tot: tot,
+                        attr: ' data-emp="' + escapeHtml(e) + '"',
+                        pending: !!(item.pending && !item.ready)
+                    };
                 }).sort(function (a, b) { return b.tot - a.tot; });
                 setText('an-heat-label', 'Venta ' + gYear + ' · por empresa');
                 var heatInputAll = document.getElementById('an-heat-q');
@@ -8266,9 +8507,12 @@
                 });
                 heat.innerHTML = heatItems.map(function (item) {
                     var click = item.attr ? ' is-click' : '';
+                    var cells = item.pending
+                        ? '<span class="text-muted" style="font-size:.75rem">Cargando...</span>'
+                        : heatMonthCells(item.months, maxHeat);
                     return '<div class="cc-heat-row' + click + '"' + item.attr + '>' +
                         '<div class="cc-heat-name" title="' + escapeHtml(item.label) + '">' + escapeHtml(item.label) + '</div>' +
-                        '<div class="cc-heat">' + heatMonthCells(item.months, maxHeat) + '</div>' +
+                        '<div class="cc-heat">' + cells + '</div>' +
                         '</div>';
                 }).join('');
             }
@@ -8324,7 +8568,11 @@
     function isSinCentro(codigo) {
         return String(codigo || '').replace(/\s+/g, '').toUpperCase() === 'SIN_CC';
     }
+    function isEmpresaCompleta(codigo) {
+        return String(codigo || '').replace(/\s+/g, '').toUpperCase() === 'EMPRESA';
+    }
     function labelNombreCodigo(nombre, codigo) {
+        if (isEmpresaCompleta(codigo)) return 'Toda la empresa';
         if (isSinCentro(codigo)) return String(nombre || '').trim() || 'Sin centro de costos';
         var name = String(nombre || '').trim();
         var id = codigoCuentaVisible(codigo);
@@ -9546,6 +9794,7 @@
         CC.state.preciosCache = {};
         CC.state.cicloCodigo = boot.cicloCodigo || boot.cicloInicial || '';
         CC.state.usuarioActual = boot.usuarioActual || '';
+        CC.state.usuarioActualId = Number(boot.usuarioActualId || 0);
         CC.state.ciclos = loadCiclos(boot.periodoDefault, boot.ciclos);
         if (Array.isArray(boot.misAsignaciones)) {
             CC.state.misAsignaciones = boot.misAsignaciones;
