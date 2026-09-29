@@ -7417,15 +7417,21 @@
         var waitingCap = !!CC._anCapturaCiclo && !CC._capturaReady;
         var left = CC._anGastoLeft || 0;
         var total = CC._anGastoTotal || 0;
-        var on = waitingAsig || waitingCap || left > 0;
+        var phase = CC._anGastoPhase || '';
+        var on = waitingAsig || waitingCap || left > 0 || phase === 'snapshot' || phase === 'sap';
         box.hidden = !on;
         var msg = document.getElementById('an-loading-msg');
         if (!msg) return;
         if (waitingAsig) {
             msg.textContent = 'Cargando clientes del ciclo…';
+        } else if (phase === 'snapshot') {
+            msg.textContent = 'Leyendo snapshots locales…';
+        } else if (phase === 'sap' && total > 0) {
+            var doneSap = Math.max(0, total - left);
+            msg.textContent = 'Snapshot listo · sync SAP ' + doneSap + ' de ' + total + ' faltantes.';
         } else if (left > 0) {
             var done = Math.max(0, total - left);
-            msg.textContent = 'Cargando ventas (snapshot)… ' + done + ' de ' + total + '.';
+            msg.textContent = 'Cargando ventas… ' + done + ' de ' + total + '.';
         } else if (waitingCap) {
             msg.textContent = 'Cargando proyecciones capturadas…';
         }
@@ -7455,6 +7461,7 @@
             CC._anGastoGen = (CC._anGastoGen || 0) + 1;
             CC._anGastoLeft = 0;
             CC._anGastoTotal = 0;
+            CC._anGastoPhase = '';
             CC._anGastoRunning = false;
             paintAnalisisLoading();
             return;
@@ -7466,12 +7473,16 @@
         if (CC.state.page !== 'analisis') {
             CC._anGastoLeft = 0;
             CC._anGastoTotal = 0;
+            CC._anGastoPhase = '';
+            CC._anGastoRunning = false;
             paintAnalisisLoading();
             return;
         }
         if (!analisisTieneFiltro()) {
             CC._anGastoLeft = 0;
             CC._anGastoTotal = 0;
+            CC._anGastoPhase = '';
+            CC._anGastoRunning = false;
             paintAnalisisLoading();
             return;
         }
@@ -7490,8 +7501,7 @@
             return !(CC.state.preciosCache && Object.prototype.hasOwnProperty.call(CC.state.preciosCache, pKey));
         });
 
-        // Evitar reinicios que dejan el contador colgado (overlays / doble change).
-        if (CC._anGastoRunning && CC._anGastoFilterKey === filterKey && (CC._anGastoLeft || 0) > 0) {
+        if (CC._anGastoRunning && CC._anGastoFilterKey === filterKey) {
             return;
         }
 
@@ -7499,16 +7509,16 @@
         var gen = CC._anGastoGen;
         CC._anGastoFilterKey = filterKey;
         CC._anGastoRunning = true;
-
-        // El spinner solo cuenta ventas (snapshot). Precios van en background.
-        CC._anGastoTotal = Math.max(needGasto.length, 0);
-        CC._anGastoLeft = CC._anGastoTotal;
+        CC._anGastoPhase = needGasto.length ? 'snapshot' : '';
+        CC._anGastoTotal = 0;
+        CC._anGastoLeft = 0;
         paintAnalisisLoading();
 
         function clearLoading() {
             if (gen !== CC._anGastoGen) return;
             CC._anGastoLeft = 0;
             CC._anGastoTotal = 0;
+            CC._anGastoPhase = '';
             CC._anGastoRunning = false;
             paintAnalisisLoading();
         }
@@ -7548,19 +7558,35 @@
             return missing;
         }
 
+        /** Fase B: faltantes vía /gasto-real (SAP → snapshot), con progreso. */
         function fetchGastoIndividual(centrosMissing, done) {
             if (gen !== CC._anGastoGen) return;
             if (!centrosMissing.length) {
                 done();
                 return;
             }
+            CC._anGastoPhase = 'sap';
             CC._anGastoTotal = centrosMissing.length;
             CC._anGastoLeft = centrosMissing.length;
             CC._anGastoRunning = true;
             paintAnalisisLoading();
+
             var pending = centrosMissing.slice();
             var inflight = 0;
-            var max = 4;
+            var max = 5;
+            var dirty = false;
+            var paintTimer = null;
+            function schedulePaint() {
+                if (paintTimer) return;
+                paintTimer = setTimeout(function () {
+                    paintTimer = null;
+                    if (gen !== CC._anGastoGen) return;
+                    if (CC.state.page === 'analisis' && dirty) {
+                        dirty = false;
+                        renderAnalisis();
+                    }
+                }, 500);
+            }
             function kickOne() {
                 if (gen !== CC._anGastoGen) return;
                 if (!pending.length && !inflight) {
@@ -7580,6 +7606,7 @@
                             inflight -= 1;
                             CC._anGastoLeft = Math.max(0, (CC._anGastoLeft || 0) - 1);
                             paintAnalisisLoading();
+                            schedulePaint();
                             if (!pending.length && !inflight) done();
                             else kickOne();
                         }
@@ -7601,6 +7628,7 @@
                                 });
                                 CC.state.gastoLookup = CC.state.gastoLookup || {};
                                 CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
+                                dirty = true;
                             } else {
                                 CC._anGastoTried = CC._anGastoTried || {};
                                 CC._anGastoTried[cacheKey] = true;
@@ -7667,7 +7695,6 @@
                                 kick();
                             }
                         }
-                        // Timeout: no dejar el análisis esperando precios SAP.
                         var timer = setTimeout(function () {
                             if (gen !== CC._anGastoGen) return;
                             CC.state.preciosCache = CC.state.preciosCache || {};
@@ -7698,7 +7725,7 @@
             kick();
         }
 
-        function afterGasto() {
+        function finishAll() {
             if (gen !== CC._anGastoGen) return;
             clearLoading();
             renderAnalisis();
@@ -7706,7 +7733,7 @@
         }
 
         if (!needGasto.length) {
-            afterGasto();
+            finishAll();
             return;
         }
 
@@ -7733,14 +7760,20 @@
         }).then(function (json) {
             if (gen !== CC._anGastoGen) return;
             var missing = hydrateGastoBatch(json) || [];
+            // Fase A lista: pintar lo que vino del snapshot ya.
+            CC._anGastoPhase = missing.length ? 'sap' : '';
+            renderAnalisis();
+            paintAnalisisLoading();
             if (missing.length) {
-                fetchGastoIndividual(missing, afterGasto);
+                fetchGastoIndividual(missing, finishAll);
                 return;
             }
-            afterGasto();
+            finishAll();
         }).catch(function () {
             if (gen !== CC._anGastoGen) return;
-            fetchGastoIndividual(needGasto.slice(), afterGasto);
+            // Sin batch: todo por API individual con progreso SAP.
+            renderAnalisis();
+            fetchGastoIndividual(needGasto.slice(), finishAll);
         });
     }
 
