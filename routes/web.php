@@ -289,11 +289,15 @@ use App\Http\Controllers\ProyeccionesVentasController;
         Route::get('/UsuarioPermisos/{id}', 'App\Http\Controllers\SistemasController@indexUserPermisos')->name('indexUserPermisos');
         Route::post('/UsuarioPermisos/{id}/acciones', 'App\Http\Controllers\SistemasController@guardarAccionesUser')->name('guardar_acciones_user');
         Route::post('/UsuarioPermisos/{id}/modulos', 'App\Http\Controllers\SistemasController@guardarPermisosModuloUser')->name('guardar_permisos_modulo_user');
+        Route::post('/UsuarioPermisos/{id}/credenciales', 'App\Http\Controllers\SistemasController@actualizarCredencialesUser')->name('actualizar_credenciales_user');
         Route::get('/Usuarios', 'App\Http\Controllers\SistemasController@getUsuariosPermisos')->name('usuario_permisos');
         Route::get('/eliminar_acciones_user/{id}', 'App\Http\Controllers\SistemasController@eliminar_acciones_user')->name('eliminar_acciones_user');
         Route::get('/eliminar_perfil_user/{id}', 'App\Http\Controllers\SistemasController@eliminar_perfil_user')->name('eliminar_perfil_user');
 
         Route::get('/facturacion', 'App\Http\Controllers\SistemasController@facturacion')->name('sistemas.facturacion');
+        Route::get('/VerTodasEmpresas', function () {
+            return redirect('/ControlCentros?vista=visor');
+        })->name('sistemas.ver_todas_empresas');
 
         Route::get('/api/datos-fiscales', [\App\Http\Controllers\DatosFiscalesEmpresaController::class, 'index'])->name('sistemas.api.datos_fiscales.index');
         Route::post('/api/datos-fiscales', [\App\Http\Controllers\DatosFiscalesEmpresaController::class, 'store'])->name('sistemas.api.datos_fiscales.store');

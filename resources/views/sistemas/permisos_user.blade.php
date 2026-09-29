@@ -2,6 +2,15 @@
 @section('content')
 <link href="{{ asset('css/vistas.css') }}" rel="stylesheet">
 
+@php
+    $puedeEditarCredenciales = $puedeEditarCredenciales ?? false;
+    $puedeEditarPermisos = $puedeEditarPermisos ?? true;
+    $nombreUsuario = trim((string) ($varusuario->name ?? ''));
+    if ($nombreUsuario === '') {
+        $nombreUsuario = trim((string) ($varusuario->Nombre ?? ''));
+    }
+@endphp
+
 <div class="container-fluid">
     <div class="row mb-4">
         <div class="col-12">
@@ -13,9 +22,9 @@
                     <div>
                         <h2 class="mb-0 text-marino fw-bold">Editar permisos de usuario</h2>
                         <p class="text-muted mb-0">
-                            {{ $varusuario->Nombre ?? 'Usuario seleccionado' }}
-                            @if (!empty($varusuario->name))
-                                <span class="text-muted">({{ $varusuario->name }})</span>
+                            {{ $nombreUsuario !== '' ? $nombreUsuario : 'Usuario seleccionado' }}
+                            @if (!empty($varusuario->email))
+                                <span class="text-muted">({{ $varusuario->email }})</span>
                             @endif
                         </p>
                     </div>
@@ -29,6 +38,47 @@
         </div>
     </div>
 
+    @if ($puedeEditarCredenciales)
+    <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
+        <div class="card-header text-start bg-body border-0 pb-0">
+            <h5 class="text-secondary mb-1">
+                <i class="fa-solid fa-user-pen me-2"></i>Nombre, correo y contraseña
+            </h5>
+            <p class="text-muted fs-8 mb-0">Cambia el nombre o el correo de acceso. La contraseña es opcional: déjala vacía si no la vas a cambiar.</p>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ route('actualizar_credenciales_user', $varusuario->id) }}" class="row g-3 align-items-end">
+                @csrf
+                <div class="col-lg-3 col-md-6">
+                    <label class="form-label" for="credencialNombre">Nombre</label>
+                    <input type="text" class="form-control" id="credencialNombre" name="name"
+                        value="{{ old('name', $nombreUsuario) }}" maxlength="255" required>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <label class="form-label" for="credencialEmail">Correo</label>
+                    <input type="email" class="form-control" id="credencialEmail" name="email"
+                        value="{{ old('email', $varusuario->email ?? '') }}" maxlength="255" required>
+                </div>
+                <div class="col-lg-2 col-md-6">
+                    <label class="form-label" for="credencialPass">Nueva contraseña</label>
+                    <input type="password" class="form-control" id="credencialPass" name="contrasena"
+                        minlength="8" autocomplete="new-password" placeholder="Opcional">
+                </div>
+                <div class="col-lg-2 col-md-6">
+                    <label class="form-label" for="credencialPass2">Confirmar contraseña</label>
+                    <input type="password" class="form-control" id="credencialPass2" name="recontrasena"
+                        minlength="8" autocomplete="new-password" placeholder="Opcional">
+                </div>
+                <div class="col-lg-2 col-md-6">
+                    <button type="submit" class="btn btn-baseColor w-100">
+                        <i class="fa-solid fa-floppy-disk me-1"></i> Guardar
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    @endif
+
     <div class="row g-3 mb-4">
         <div class="col-lg-4 col-md-6">
             <div class="usuario-permisos-info-card">
@@ -37,7 +87,7 @@
                 </span>
                 <div>
                     <p class="usuario-permisos-info-card__label">Usuario</p>
-                    <p class="usuario-permisos-info-card__value">{{ $varusuario->Nombre ?? 'Sin nombre' }}</p>
+                    <p class="usuario-permisos-info-card__value">{{ $nombreUsuario !== '' ? $nombreUsuario : 'Sin nombre' }}</p>
                 </div>
             </div>
         </div>
@@ -65,6 +115,7 @@
         </div>
     </div>
 
+    @if ($puedeEditarPermisos)
     <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
         <div class="card-header text-start bg-body border-0 pb-0">
             <h5 class="text-secondary mb-1">
@@ -278,6 +329,7 @@
     </div>
         </div>
     </div>
+    @endif
 </div>
 
 @foreach ($varlistuseracc as $datos)

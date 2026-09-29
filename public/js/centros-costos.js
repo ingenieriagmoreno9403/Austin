@@ -3753,6 +3753,32 @@
         CC.initAnalisis();
     }
 
+    function fetchAnalisisJson(url) {
+        return fetch(url, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        }).then(function (r) {
+            if (!r.ok) throw new Error(String(r.status));
+            return r.json();
+        });
+    }
+
+    function fetchAnalisisAsignaciones(ciclo) {
+        var todas = '/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones';
+        var mias = '/CentrosCostos/api/mis-asignaciones?ciclo=' + encodeURIComponent(ciclo);
+        return fetchAnalisisJson(todas).then(function (json) {
+            var list = (json && json.asignaciones) || [];
+            if (list.length) return list;
+            return fetchAnalisisJson(mias).then(function (mine) {
+                return (mine && mine.asignaciones) || [];
+            }).catch(function () { return []; });
+        }).catch(function () {
+            return fetchAnalisisJson(mias).then(function (mine) {
+                return (mine && mine.asignaciones) || [];
+            }).catch(function () { return CC.state.misAsignaciones || []; });
+        });
+    }
+
     CC.initAnalisis = function () {
         renderAnalisisCiclos();
         paintAnalisisYears();
@@ -3819,23 +3845,14 @@
                 return;
             }
             CC._anAsigLoading = true;
-            fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
-                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).then(function (r) { return r.json(); }).then(function (json) {
-                CC.state.misAsignaciones = json.asignaciones || [];
+            fetchAnalisisAsignaciones(ciclo).then(function (list) {
+                CC.state.misAsignaciones = list || [];
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 CC._anAsigLoaded = true;
                 CC._anAsigLoading = false;
                 fillAnalisisFilters();
                 renderAnalisis();
                 queueAnalisisGastos();
-            }).catch(function () {
-                CC.state.misAsignaciones = CC.state.misAsignaciones || [];
-                CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
-                fillAnalisisFilters();
-                renderAnalisis();
             });
             return;
         }

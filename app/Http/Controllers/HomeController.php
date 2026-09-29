@@ -826,7 +826,11 @@ class HomeController extends Controller
             return [];
         }
 
-        $mios = CcAsignacion::query()->where('user_id', auth()->id())->get();
+        $q = CcAsignacion::query();
+        if (! $this->usuarioVeTodasEmpresas()) {
+            $q->where('user_id', auth()->id());
+        }
+        $mios = $q->get();
         if ($mios->isEmpty()) {
             return [];
         }
@@ -910,7 +914,11 @@ class HomeController extends Controller
             return [];
         }
 
-        $mios = PvAsignacion::query()->where('user_id', auth()->id())->get();
+        $q = PvAsignacion::query();
+        if (! $this->usuarioVeTodasEmpresas()) {
+            $q->where('user_id', auth()->id());
+        }
+        $mios = $q->get();
         if ($mios->isEmpty()) {
             return [];
         }

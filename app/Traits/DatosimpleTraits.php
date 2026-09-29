@@ -42,6 +42,7 @@ trait DatosimpleTraits
         COALESCE(users.id_empresa, tblsucursales.idempresa) as id_empresa,
         COALESCE(emp_user.nombre_empresa, emp_suc.nombre_empresa) as empresa,
         users.name,
+        users.email,
         users.estado_user,
         tblpuestos.nombre as puesto,
         CONCAT(tblempleados.primer_nombre,' ',tblempleados.segundo_nombre,' ',tblempleados.apellido_paterno,' ',tblempleados.apellido_materno) AS Nombre

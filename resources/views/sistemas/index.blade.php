@@ -34,7 +34,7 @@
         ],
 
         [
-            'permiso' => $permisos5,
+            'permiso' => $permisos5 == 'editar_permisos' || ($permisosCredenciales ?? '') == 'editar_credenciales_usuario' ? 'editar_permisos' : ($permisos5 ?? ''),
             'valor' => 'editar_permisos',
             'url' => '/Sistemas/Usuarios',
             'titulo' => 'Editar permisos',

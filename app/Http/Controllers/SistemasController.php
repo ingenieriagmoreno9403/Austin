@@ -20,7 +20,9 @@ use DB;
 use App\Models\usuario_perfiles;
 use App\Models\CcCiclo;
 use App\Models\PvCiclo;
+use App\Models\User;
 use App\Traits\EmpresaCatalogoTrait;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 
 class SistemasController extends Controller
@@ -46,8 +48,9 @@ class SistemasController extends Controller
             $permisos3 = $this->forpermisos('registrar_perfiles');
             $permisos4 = $this->forpermisos('registrar_usuarios');
             $permisos5 = $this->forpermisos('editar_permisos');
+            $permisosCredenciales = $this->forpermisos('editar_credenciales_usuario');
             $esMasterEmpresa = $this->esSesionMasterEmpresa();
-            return view('sistemas.index', compact('varpantallas', 'varsubmenus', 'varlistausers', 'permisos1', 'permisos2', 'permisos3', 'permisos4', 'permisos5', 'esMasterEmpresa'));
+            return view('sistemas.index', compact('varpantallas', 'varsubmenus', 'varlistausers', 'permisos1', 'permisos2', 'permisos3', 'permisos4', 'permisos5', 'permisosCredenciales', 'esMasterEmpresa'));
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
         }
@@ -477,6 +480,12 @@ class SistemasController extends Controller
     public function indexUserPermisos(Request $request, int $id)
     {
         try {
+            $puedeEditarPermisos = $this->puedeEditarPermisosUsuario();
+            $puedeEditarCredenciales = $this->puedeEditarCredencialesUsuario();
+            if (!$puedeEditarPermisos && !$puedeEditarCredenciales) {
+                abort(403, 'No tiene permiso para editar este usuario.');
+            }
+
             $varpantallas = $this->Traermenuenc();
             $varsubmenus = $this->Traermenudet();
             $varlistausers = $this->obtenerusuariosAlcance();
@@ -485,6 +494,9 @@ class SistemasController extends Controller
             $varusuario = $varlistausers->firstWhere('id', $id);
             if ($this->esSesionMasterEmpresa() && !$varusuario) {
                 return back()->with('warning', 'No puedes editar usuarios de otra empresa.');
+            }
+            if (!$varusuario) {
+                return back()->with('warning', 'No se encontró el usuario.');
             }
             $varlistuseracc = $this->obtenerAccionesUser($id);
             $varperfilesUser = $this->obtenerPerfilesUsuario($id);
@@ -501,7 +513,9 @@ class SistemasController extends Controller
                 'permisosModulo',
                 'varlistuseracc',
                 'varperfilesUser',
-                'varusuario'
+                'varusuario',
+                'puedeEditarPermisos',
+                'puedeEditarCredenciales'
             ));
         } catch (\Illuminate\Database\QueryException $ex) {
             return back()->with("warningBD", "no guardado correctamente");
@@ -520,6 +534,9 @@ class SistemasController extends Controller
 
     public function guardarAccionesUser(Request $request, int $id)
     {
+        if (!$this->puedeEditarPermisosUsuario()) {
+            abort(403, 'No tiene permiso para editar permisos.');
+        }
         $varlistausers = $this->obtenerusuariosAlcance();
         $varusuario = $varlistausers->firstWhere('id', $id);
         if (!$varusuario) {
@@ -575,6 +592,9 @@ class SistemasController extends Controller
 
     public function guardarPermisosModuloUser(Request $request, int $id)
     {
+        if (!$this->puedeEditarPermisosUsuario()) {
+            abort(403, 'No tiene permiso para editar permisos.');
+        }
         $varusuario = $this->obtenerusuariosAlcance()->firstWhere('id', $id);
         if (!$varusuario) {
             return back()->with('warning', 'No puedes editar este usuario.');
@@ -600,6 +620,9 @@ class SistemasController extends Controller
     public function eliminar_acciones_user(int $id)
     {
         try {
+            if (!$this->puedeEditarPermisosUsuario()) {
+                abort(403, 'No tiene permiso para editar permisos.');
+            }
             $row = DB::selectOne(
                 'SELECT id, idusuario FROM tblusuario_acciones WHERE id = ? LIMIT 1',
                 [$id]
@@ -627,6 +650,9 @@ class SistemasController extends Controller
     public function eliminar_perfil_user(int $id)
     {
         try {
+            if (!$this->puedeEditarPermisosUsuario()) {
+                abort(403, 'No tiene permiso para editar permisos.');
+            }
             DB::select('delete from tblusuario_perfiles where id = ? ', [$id]);
             return back()->with("success_msg_large", "guardado correctamente");
         } catch (\Illuminate\Database\QueryException $ex) {
@@ -850,14 +876,108 @@ class SistemasController extends Controller
         return collect($perfiles);
     }
 
+    public function actualizarCredencialesUser(Request $request, int $id)
+    {
+        if (!$this->puedeEditarCredencialesUsuario()) {
+            abort(403, 'No tiene permiso para cambiar nombre, correo o contraseña.');
+        }
+
+        $alcance = $this->obtenerusuariosAlcance()->firstWhere('id', $id);
+        if (!$alcance) {
+            return back()->with('warning', 'No puedes editar este usuario.');
+        }
+
+        $user = User::find($id);
+        if (!$user) {
+            return back()->with('warning', 'No se encontró el usuario.');
+        }
+
+        if (!$this->puedeCambiarCredencialesDe($user)) {
+            return back()->with('warning', 'No puedes cambiar las credenciales de ese usuario.');
+        }
+
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'email', 'max:255', 'unique:users,email,'.$id],
+            'contrasena' => ['nullable', 'string', 'min:8'],
+            'recontrasena' => ['nullable', 'string'],
+        ], [
+            'name.required' => 'Escribe el nombre del usuario.',
+            'email.required' => 'Escribe el correo del usuario.',
+            'email.email' => 'El correo no es válido.',
+            'email.unique' => 'Ese correo ya está en uso.',
+            'contrasena.min' => 'La contraseña debe tener al menos 8 caracteres.',
+        ]);
+
+        $password = trim((string) ($data['contrasena'] ?? ''));
+        $confirm = (string) ($data['recontrasena'] ?? '');
+        if ($password !== '' && $password !== $confirm) {
+            return back()->with('warning_msg', 'Las contraseñas no coinciden. Verifica e inténtalo de nuevo.')->withInput();
+        }
+
+        $user->name = trim($data['name']);
+        $user->email = strtolower(trim($data['email']));
+        if ($password !== '') {
+            $user->password = Hash::make($password);
+        }
+        $user->updated_by = auth()->user()->name;
+        $user->save();
+
+        $msg = $password !== ''
+            ? 'Se actualizó el nombre, el correo y la contraseña.'
+            : 'Se actualizó el nombre y el correo del usuario.';
+
+        return back()->with('success_msg_large', $msg);
+    }
+
+    private function puedeEditarPermisosUsuario(): bool
+    {
+        return $this->esAdminErp()
+            || $this->esSesionMasterEmpresa()
+            || $this->tieneAccion('editar_permisos');
+    }
+
+    private function puedeEditarCredencialesUsuario(): bool
+    {
+        return $this->esAdminErp()
+            || $this->esSesionMasterEmpresa()
+            || $this->tieneAccion('editar_credenciales_usuario');
+    }
+
+    private function puedeCambiarCredencialesDe(User $target): bool
+    {
+        $tipo = strtolower((string) ($target->tipo ?? ''));
+        $idEmpresaTarget = (int) ($target->id_empresa ?? 0);
+
+        if ($this->esAdminErp()) {
+            return true;
+        }
+
+        if ($tipo === 'master' && $idEmpresaTarget === 0) {
+            return false;
+        }
+
+        $idEmpresaSesion = (int) ($this->empresaIdSesion() ?? (auth()->user()->id_empresa ?? 0));
+        if ($idEmpresaSesion > 0 && $idEmpresaTarget !== $idEmpresaSesion) {
+            return false;
+        }
+
+        if (!$this->esSesionMasterEmpresa() && in_array($tipo, ['master', 'empresa'], true) && $idEmpresaTarget > 0) {
+            return false;
+        }
+
+        return true;
+    }
+
     private function obtenerusuariosAlcance()
     {
         $usuarios = $this->obtenerusuarios();
-        if (!$this->esSesionMasterEmpresa()) {
+        $idEmpresa = (int) ($this->empresaIdSesion() ?? 0);
+        if ($idEmpresa <= 0) {
             return $usuarios;
         }
 
-        return $this->filtrarUsuariosDeEmpresa($usuarios, $this->empresaIdSesion());
+        return $this->filtrarUsuariosDeEmpresa($usuarios, $idEmpresa);
     }
 
     private function obtenersucursalesAlcance()

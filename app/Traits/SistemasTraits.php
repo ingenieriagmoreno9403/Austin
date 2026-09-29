@@ -85,7 +85,7 @@ trait SistemasTraits{
             $tipo = strtolower((string) ($usuario->tipo ?? ''));
             $esMasterEmpresa = in_array($tipo, ['empresa', 'master'], true)
                 && (int) ($usuario->id_empresa ?? 0) > 0;
-            if ($esMasterEmpresa && in_array($permisobuscado, ['registrar_perfiles', 'editar_permisos', 'registrar_usuarios'], true)) {
+            if ($esMasterEmpresa && in_array($permisobuscado, ['registrar_perfiles', 'editar_permisos', 'registrar_usuarios', 'editar_credenciales_usuario'], true)) {
                 return $permisobuscado;
             }
         }
@@ -109,6 +109,11 @@ trait SistemasTraits{
 
         return strtolower((string) ($usuario->tipo ?? '')) === 'master'
             && (int) ($usuario->id_empresa ?? 0) === 0;
+    }
+
+    protected function usuarioVeTodasEmpresas(): bool
+    {
+        return $this->esAdminErp() || $this->tieneAccion('ver_todas_empresas');
     }
 
     protected function requireAccion(string $permisobuscado, string $mensaje = 'No tiene permiso para esta acción.'): void

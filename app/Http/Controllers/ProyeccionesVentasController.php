@@ -94,6 +94,7 @@ class ProyeccionesVentasController extends Controller
     {
         return $this->page('analisis', 'ProyeccionesVentas.analisis', [
             'detalleUrl' => route('pv.detalle'),
+            'misAsignaciones' => $this->misAsignacionesList(''),
         ]);
     }
 
@@ -3609,16 +3610,30 @@ class ProyeccionesVentasController extends Controller
             return [];
         }
 
-        $q = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
-            ->where('user_id', auth()->id());
+        $verTodas = $this->usuarioVeTodasEmpresas();
+        $yo = (int) auth()->id();
+        $q = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo']);
+        if (! $verTodas) {
+            $q->where('user_id', $yo);
+        }
         if ($ciclo !== '') {
             $q->where('ciclo_codigo', $ciclo);
         }
 
         return $q->orderBy('ciclo_codigo')->orderBy('empresa')->orderBy('cliente_codigo')
             ->get()
-            ->map(function (PvAsignacion $a) {
-                return $this->asignacionPayload($a);
+            ->map(function (PvAsignacion $a) use ($verTodas, $yo) {
+                $payload = $this->asignacionPayload($a);
+                if ($verTodas && (int) $a->user_id !== $yo) {
+                    $payload['capturar'] = false;
+                    $payload['editar'] = false;
+                    $payload['importar'] = false;
+                    $payload['revisar'] = true;
+                    $payload['permisos'] = ['revisar'];
+                    $payload['solo_lectura'] = true;
+                }
+
+                return $payload;
             })->values()->all();
     }
 
@@ -5398,6 +5413,7 @@ class ProyeccionesVentasController extends Controller
             return $this->moduloPermisosCache;
         }
 
+        $verTodas = $this->usuarioVeTodasEmpresas();
         if ($this->esAdminErp()) {
             $this->moduloPermisosCache = [
                 'captura' => true,
@@ -5405,14 +5421,15 @@ class ProyeccionesVentasController extends Controller
                 'analisis' => true,
                 'admin' => true,
                 'eliminarCiclo' => true,
+                'verTodasEmpresas' => true,
             ];
 
             return $this->moduloPermisosCache;
         }
 
         $captura = $this->tieneAccion('ver_ventas_capturas') || $this->usuarioAsignadoModulo();
-        $visor = $this->tieneAccion('visor_ventas');
-        $analisis = $this->tieneAccion('ver_ventas_analisis');
+        $visor = $this->tieneAccion('visor_ventas') || $verTodas;
+        $analisis = $this->tieneAccion('ver_ventas_analisis') || $verTodas;
         $admin = $this->tieneAccion('ver_ventas_asignaciones');
         $eliminarCiclo = $this->tieneAccion('eliminar_ciclo_ventas');
 
@@ -5422,6 +5439,7 @@ class ProyeccionesVentasController extends Controller
             'analisis' => $analisis,
             'admin' => $admin,
             'eliminarCiclo' => $eliminarCiclo,
+            'verTodasEmpresas' => $verTodas,
         ];
 
         return $this->moduloPermisosCache;

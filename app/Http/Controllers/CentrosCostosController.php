@@ -91,6 +91,7 @@ class CentrosCostosController extends Controller
     {
         return $this->page('analisis', 'CentrosCostos.analisis', [
             'detalleUrl' => route('centros.detalle'),
+            'misAsignaciones' => $this->misAsignacionesList(''),
         ]);
     }
 
@@ -729,16 +730,30 @@ class CentrosCostosController extends Controller
             return [];
         }
 
-        $q = CcAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
-            ->where('user_id', auth()->id());
+        $verTodas = $this->usuarioVeTodasEmpresas();
+        $yo = (int) auth()->id();
+        $q = CcAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo']);
+        if (! $verTodas) {
+            $q->where('user_id', $yo);
+        }
         if ($ciclo !== '') {
             $q->where('ciclo_codigo', $ciclo);
         }
 
         return $q->orderBy('ciclo_codigo')->orderBy('empresa')->orderBy('centro_codigo')
             ->get()
-            ->map(function (CcAsignacion $a) {
-                return $this->asignacionPayload($a);
+            ->map(function (CcAsignacion $a) use ($verTodas, $yo) {
+                $payload = $this->asignacionPayload($a);
+                if ($verTodas && (int) $a->user_id !== $yo) {
+                    $payload['capturar'] = false;
+                    $payload['editar'] = false;
+                    $payload['importar'] = false;
+                    $payload['revisar'] = true;
+                    $payload['permisos'] = ['revisar'];
+                    $payload['solo_lectura'] = true;
+                }
+
+                return $payload;
             })->values()->all();
     }
 
@@ -1811,6 +1826,7 @@ class CentrosCostosController extends Controller
             return $this->moduloPermisosCache;
         }
 
+        $verTodas = $this->usuarioVeTodasEmpresas();
         if ($this->esAdminErp()) {
             $this->moduloPermisosCache = [
                 'captura' => true,
@@ -1818,14 +1834,15 @@ class CentrosCostosController extends Controller
                 'analisis' => true,
                 'admin' => true,
                 'eliminarCiclo' => true,
+                'verTodasEmpresas' => true,
             ];
 
             return $this->moduloPermisosCache;
         }
 
         $captura = $this->tieneAccion('ver_control_costos') || $this->usuarioAsignadoModulo();
-        $visor = $this->tieneAccion('visor_centros');
-        $analisis = $this->tieneAccion('ver_analisis_centros');
+        $visor = $this->tieneAccion('visor_centros') || $verTodas;
+        $analisis = $this->tieneAccion('ver_analisis_centros') || $verTodas;
         $admin = $this->tieneAccion('ver_admin_centro_costos');
         $eliminarCiclo = $this->tieneAccion('eliminar_ciclo_centros');
 
@@ -1835,6 +1852,7 @@ class CentrosCostosController extends Controller
             'analisis' => $analisis,
             'admin' => $admin,
             'eliminarCiclo' => $eliminarCiclo,
+            'verTodasEmpresas' => $verTodas,
         ];
 
         return $this->moduloPermisosCache;

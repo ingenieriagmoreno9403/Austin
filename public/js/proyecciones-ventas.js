@@ -7396,7 +7396,7 @@
 
     function fetchAnalisisAsignaciones(ciclo) {
         var todas = '/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones';
-        var mias = '/ProyeccionesVentas/api/mis-asignaciones';
+        var mias = '/ProyeccionesVentas/api/mis-asignaciones?ciclo=' + encodeURIComponent(ciclo);
         return fetchJsonOk(todas).then(function (json) {
             var list = (json && json.asignaciones) || [];
             if (list.length) return list;
