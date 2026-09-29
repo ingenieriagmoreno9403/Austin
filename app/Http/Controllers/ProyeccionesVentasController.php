@@ -3752,6 +3752,128 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * Batch de venta real desde snapshot local (sin SAP).
+     * Body JSON: { year, clientes: [{ empresa, cc }, ...] }
+     * Respuesta: por_cliente["EMPRESA|CC"] = { por_cuenta, fuente, synced_at }
+     */
+    public function gastoRealBatch(Request $request): JsonResponse
+    {
+        $year = (int) $request->input('year', $request->input('anio', 0));
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+
+        $raw = $request->input('clientes', []);
+        if (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            $raw = is_array($decoded) ? $decoded : [];
+        }
+        if (! is_array($raw)) {
+            $raw = [];
+        }
+
+        $alias = ['ABSA' => 'AUSTIN'];
+        /** @var array<string, array{empresa: string, cc: string}> $wanted */
+        $wanted = [];
+        foreach ($raw as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $empresa = strtoupper(trim((string) ($item['empresa'] ?? '')));
+            $cc = trim((string) ($item['cc'] ?? $item['cliente'] ?? $item['codigo'] ?? ''));
+            if (isset($alias[$empresa])) {
+                $empresa = $alias[$empresa];
+            }
+            if ($empresa === '' || $cc === '') {
+                continue;
+            }
+            $key = $empresa.'|'.$cc;
+            $wanted[$key] = ['empresa' => $empresa, 'cc' => $cc];
+        }
+
+        if ($wanted === []) {
+            return response()->json([
+                'ok' => true,
+                'year' => $year,
+                'por_cliente' => (object) [],
+                'faltantes' => [],
+                'mensaje' => 'Sin clientes solicitados.',
+            ]);
+        }
+
+        if (! Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+            return response()->json([
+                'ok' => true,
+                'year' => $year,
+                'por_cliente' => (object) [],
+                'faltantes' => array_keys($wanted),
+                'mensaje' => 'Tabla de snapshot no disponible.',
+            ]);
+        }
+
+        $empresas = array_values(array_unique(array_map(static function ($w) {
+            return $w['empresa'];
+        }, $wanted)));
+
+        $rows = PvVentaRealSnapshot::query()
+            ->where('anio', $year)
+            ->where(function ($q) use ($empresas) {
+                foreach ($empresas as $e) {
+                    $q->orWhereRaw('UPPER(empresa) = ?', [$e]);
+                }
+            })
+            ->get(['empresa', 'cliente_codigo', 'anio', 'por_cuenta', 'synced_at']);
+
+        /** @var array<string, array<string, mixed>> $porCliente */
+        $porCliente = [];
+        foreach ($rows as $snap) {
+            $emp = strtoupper(trim((string) $snap->empresa));
+            $cc = trim((string) $snap->cliente_codigo);
+            $key = $emp.'|'.$cc;
+            if (! isset($wanted[$key])) {
+                // Match case-insensitive cliente
+                $hitKey = null;
+                foreach ($wanted as $wk => $w) {
+                    if ($w['empresa'] === $emp && strcasecmp($w['cc'], $cc) === 0) {
+                        $hitKey = $wk;
+                        break;
+                    }
+                }
+                if ($hitKey === null) {
+                    continue;
+                }
+                $key = $hitKey;
+            }
+            $por = is_array($snap->por_cuenta) ? $snap->por_cuenta : [];
+            if ($por === []) {
+                continue;
+            }
+            $porCliente[$key] = [
+                'empresa' => $emp,
+                'cc' => $cc,
+                'por_cuenta' => $por,
+                'fuente' => 'snapshot',
+                'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
+            ];
+        }
+
+        $faltantes = [];
+        foreach (array_keys($wanted) as $key) {
+            if (! isset($porCliente[$key])) {
+                $faltantes[] = $key;
+            }
+        }
+
+        return response()->json([
+            'ok' => true,
+            'year' => $year,
+            'por_cliente' => $porCliente ?: (object) [],
+            'faltantes' => $faltantes,
+            'mensaje' => null,
+        ]);
+    }
+
+    /**
      * @param  array<string, mixed>  $porCuenta
      */
     protected function guardarVentaRealSnapshot(
@@ -5305,6 +5427,7 @@ class ProyeccionesVentasController extends Controller
             'sapBase' => url('/Sistemas/AutinApi'),
             'catalogoUrl' => route('pv.catalogo'),
             'gastoUrl' => route('pv.api.gasto_real'),
+            'gastoBatchUrl' => route('pv.api.gasto_real_batch'),
             'listasPreciosUrl' => route('pv.api.listas_precios'),
             'ventasBudgetUrl' => route('pv.api.captura.ventas_budget'),
             'costosUrl' => route('pv.api.costos'),

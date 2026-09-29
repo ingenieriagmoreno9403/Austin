@@ -1266,6 +1266,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::post('/ProyeccionesVentas/api/costos/importar-excel', [ProyeccionesVentasController::class, 'importarCostosExcel'])->name('pv.api.costos.import_excel');
     Route::get('/ProyeccionesVentas/api/catalogo', [ProyeccionesVentasController::class, 'catalogo'])->name('pv.catalogo');
     Route::get('/ProyeccionesVentas/api/gasto-real', [ProyeccionesVentasController::class, 'gastoReal'])->name('pv.api.gasto_real');
+    Route::post('/ProyeccionesVentas/api/gasto-real-batch', [ProyeccionesVentasController::class, 'gastoRealBatch'])->name('pv.api.gasto_real_batch');
     Route::get('/ProyeccionesVentas/api/listas-precios', [ProyeccionesVentasController::class, 'listasPrecios'])->name('pv.api.listas_precios');
     Route::get('/ProyeccionesVentas/api/captura', [ProyeccionesVentasController::class, 'captura'])->name('pv.api.captura');
     Route::get('/ProyeccionesVentas/api/captura/ventas-budget', [ProyeccionesVentasController::class, 'capturaVentasBudget'])->name('pv.api.captura.ventas_budget');
