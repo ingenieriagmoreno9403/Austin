@@ -1817,9 +1817,15 @@
             return Number((window.CC && CC.state && (CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia))) || new Date().getFullYear());
         }
 
-        function loadCentros() {
+        function loadCentros(opts) {
+            opts = opts || {};
+            var qRemote = String(opts.q != null ? opts.q : (ccQ ? ccQ.value : '')).trim();
             var meta = document.getElementById('asig-cc-meta');
-            if (meta) meta.textContent = 'Cargando clientes SAP…';
+            if (meta) {
+                meta.textContent = qRemote.length >= 2
+                    ? ('Buscando “' + qRemote + '” en SAP…')
+                    : 'Cargando clientes de la empresa…';
+            }
             var year = anioRef();
             var key = String(cfg.empresa || '').toLowerCase() + '|' + year;
             var req = ++centrosReq;
@@ -1834,16 +1840,22 @@
                             + (savedDeEmpresa(cfg.empresa).length ? ' · ' + savedDeEmpresa(cfg.empresa).length + ' ya asignados' : '');
                         meta.textContent = mensaje ? (base + ' · ' + mensaje) : base;
                     } else {
-                        meta.textContent = mensaje || 'Sin clientes en AutinApi';
+                        meta.textContent = mensaje || 'Sin clientes. Escribe código o nombre para buscar en SAP.';
                     }
                 }
             };
-            if (cacheCentros[key]) {
-                apply(cacheCentros[key], null);
+            if (!opts.force && cacheCentros[key]) {
+                apply(cacheCentros[key].rows, cacheCentros[key].mensaje);
                 return;
             }
             getJSONRetry('/ProyeccionesVentas/api/centros?empresa=' + encodeURIComponent(cfg.empresa) + '&year=' + encodeURIComponent(year)).then(function (json) {
                 if (req !== centrosReq) return;
+            var url = '/ProyeccionesVentas/api/asignacion/clientes?empresa=' + encodeURIComponent(cfg.empresa)
+                + '&year=' + encodeURIComponent(year);
+            if (qRemote.length >= 2) {
+                url += '&q=' + encodeURIComponent(qRemote);
+            }
+            getJSON(url).then(function (json) {
                 var rows = json.centros || [];
                 if (esDemasiadosIntentos(json.mensaje) && !rows.length) {
                     apply([], 'El catálogo está ocupado. Vuelve a elegir la empresa en un momento.');
@@ -2077,7 +2089,8 @@
             return out;
         }
 
-        function loadCuentas() {
+        function loadCuentas(opts) {
+            opts = opts || {};
             var box = document.getElementById('asig-cta-list');
             var cliente = centroSel ? String(centroSel.value || '').trim() : '';
             if (!cliente) {
@@ -2107,12 +2120,16 @@
                     return;
                 }
                 renderCuentas(ctaQ ? ctaQ.value : '');
+                var foot = document.getElementById('asig-cta-sel');
+                if (foot && mensaje && cuentas.length) {
+                    // hint suave en meta de productos si existe
+                }
             };
-            if (cacheCuentas[key]) {
+            if (!opts.force && cacheCuentas[key]) {
                 apply(cacheCuentas[key], agrupaciones);
                 return;
             }
-            var url = '/ProyeccionesVentas/api/cuentas?empresa=' + encodeURIComponent(cfg.empresa) +
+            var url = '/ProyeccionesVentas/api/asignacion/productos?empresa=' + encodeURIComponent(cfg.empresa) +
                 '&year=' + encodeURIComponent(year);
             url += todas
                 ? '&todas=1'
@@ -2231,7 +2248,21 @@
         if (userSel) userSel.addEventListener('change', onUserChanged);
 
         if (ccQ) {
-            var onCcSearch = function () { fillCentros(ccQ.value); };
+            var ccSearchTimer = null;
+            var onCcSearch = function () {
+                fillCentros(ccQ.value);
+                clearTimeout(ccSearchTimer);
+                var q = String(ccQ.value || '').trim();
+                if (q.length >= 2) {
+                    ccSearchTimer = setTimeout(function () {
+                        loadCentros({ q: q });
+                    }, 450);
+                } else if (q.length === 0 && cfg.empresa) {
+                    ccSearchTimer = setTimeout(function () {
+                        loadCentros({ q: '' });
+                    }, 200);
+                }
+            };
             ccQ.addEventListener('input', onCcSearch);
             ccQ.addEventListener('search', onCcSearch);
             ccQ.addEventListener('keyup', onCcSearch);
@@ -2247,10 +2278,25 @@
             refrescarModo();
         });
 
-        if (ctaQ) ctaQ.addEventListener('input', function () {
-            syncCtaSelectedFromDom();
-            renderCuentas(ctaQ.value);
-        });
+        if (ctaQ) {
+            var ctaSearchTimer = null;
+            ctaQ.addEventListener('input', function () {
+                syncCtaSelectedFromDom();
+                renderCuentas(ctaQ.value);
+                clearTimeout(ctaSearchTimer);
+                var q = String(ctaQ.value || '').trim();
+                if (!centroSel || !centroSel.value) return;
+                if (q.length >= 2) {
+                    ctaSearchTimer = setTimeout(function () {
+                        loadCuentas({ q: q });
+                    }, 500);
+                } else if (q.length === 0) {
+                    ctaSearchTimer = setTimeout(function () {
+                        loadCuentas({ q: '' });
+                    }, 250);
+                }
+            });
+        }
         var todasEl = document.getElementById('asig-cta-todas');
         if (todasEl) todasEl.addEventListener('change', function () {
             var on = this.checked;

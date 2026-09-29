@@ -110,7 +110,7 @@
                         <span><i style="background:#ecfdf5;border:1px solid #047857"></i> Ya asignado</span>
                         <span><i style="background:#f4f4f5;border:1px solid #0a0a0a"></i> Seleccionado ahora</span>
                     </div>
-                    <div class="text-muted" style="font-size:.75rem" id="asig-cc-meta">Elige una empresa para cargar CardName de OINV + ORIN</div>
+                    <div class="text-muted" style="font-size:.75rem" id="asig-cc-meta">Elige una empresa. Luego busca por código o nombre (solo clientes de esa empresa).</div>
                 </div>
             </div>
             <div class="cc-panel cc-asig-col">
