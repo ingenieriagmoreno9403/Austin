@@ -13,7 +13,7 @@
         <div>
             <div class="cc-kicker" id="asig-kicker">{{ $ciclo }}</div>
             <h1 class="cc-title">Asignar centros de costo</h1>
-            <p class="cc-sub" id="asig-sub">Primero el usuario. Luego empresa, centro y cuentas. Cada vez que agregues, se aplica a la tabla de resultados de abajo, sin recargar.</p>
+            <p class="cc-sub" id="asig-sub">Primero el usuario y el permiso. Con Capturar sigue empresa, centro y cuentas. Con Revisar puedes dejar toda la empresa, un centro o las cuentas que marques; lo que no elijas se toma de lo que ya tienen los usuarios.</p>
         </div>
         <div class="cc-header-actions">
             <a class="cc-btn" href="{{ route('centros.ciclo', $ciclo) }}">
@@ -24,9 +24,9 @@
 
     <div class="cc-wizard">
         <div class="cc-step is-on" data-step="1"><span>1</span> Usuario</div>
-        <div class="cc-step" data-step="2"><span>2</span> Empresa</div>
-        <div class="cc-step" data-step="3"><span>3</span> Centro</div>
-        <div class="cc-step" data-step="4"><span>4</span> Cuentas y permisos</div>
+        <div class="cc-step" data-step="2"><span>2</span> Permiso</div>
+        <div class="cc-step" data-step="3"><span>3</span> Empresa</div>
+        <div class="cc-step" data-step="4" id="asig-step-4"><span>4</span> Centro y cuentas</div>
     </div>
 
     <div class="cc-panel" id="asig-user-panel">
@@ -60,9 +60,28 @@
         </div>
     </div>
 
+    <div class="cc-panel is-locked" id="asig-perm-panel">
+        <div class="cc-panel-head"><h3><i class="fa-solid fa-shield"></i> 2. Permiso</h3></div>
+        <p class="text-muted mb-3" style="font-size:.85rem" id="asig-perm-hint">Capturar sigue el proceso de siempre: empresa, centro y cuentas. Revisar deja toda la empresa, un centro o las cuentas que marques. Capturar y Revisar no se combinan.</p>
+        <div class="cc-perm-grid is-wide" id="asig-permisos">
+            @foreach($bootstrap['permisosCatalogo'] ?? [] as $p)
+                <label class="cc-perm-card">
+                    <input type="checkbox" name="permiso" value="{{ $p['clave'] }}" {{ $p['clave'] === 'capturar' ? 'checked' : '' }}>
+                    <strong>{{ $p['nombre'] }}</strong>
+                    <span>{{ $p['descripcion'] ?? '' }}</span>
+                </label>
+            @endforeach
+            @if(empty($bootstrap['permisosCatalogo']))
+                <label class="cc-perm-card"><input type="checkbox" name="permiso" value="capturar" checked><strong>Capturar</strong><span>Puede capturar presupuesto mientras el budget esté Abierto</span></label>
+                <label class="cc-perm-card"><input type="checkbox" name="permiso" value="editar"><strong>Editar</strong><span>Puede modificar montos cuando el ciclo está En revisión o Cerrado</span></label>
+                <label class="cc-perm-card"><input type="checkbox" name="permiso" value="revisar"><strong>Revisar</strong><span>Puede consultar sin editar</span></label>
+            @endif
+        </div>
+    </div>
+
     <div id="asig-empresas" class="cc-panel is-locked">
         <div class="cc-panel-head">
-            <h3><i class="fa-solid fa-building"></i> 2. Empresas (AutinApi / SAP)</h3>
+            <h3><i class="fa-solid fa-building"></i> 3. Empresas (AutinApi / SAP)</h3>
             <span id="sap-flag" class="cc-sap-flag off">Catálogo SAP</span>
         </div>
         <p class="text-muted mb-3" style="font-size:.85rem" id="asig-emp-hint">Elige un usuario para habilitar las empresas.</p>
@@ -72,9 +91,10 @@
     </div>
 
     <div id="asig-detalle" hidden>
+        <p class="text-muted mb-3" style="font-size:.85rem" id="asig-rev-banner" hidden>Revisión: toda la empresa, un centro o las cuentas marcadas. Lo que no elijas son las cuentas que ya tienen los usuarios.</p>
         <div class="cc-asig-pair">
             <div class="cc-panel cc-asig-col">
-                <div class="cc-panel-head"><h3 id="asig-cc-title"><i class="fa-solid fa-sitemap"></i> 3. Centro de costos</h3></div>
+                <div class="cc-panel-head"><h3 id="asig-cc-title"><i class="fa-solid fa-sitemap"></i> 4. Centro de costos</h3></div>
                 <div class="cc-pick-search">
                     <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
                     <input id="asig-cc-q" class="cc-input" type="search" placeholder="Buscar centro por código o nombre…">
@@ -95,7 +115,7 @@
             </div>
             <div class="cc-panel cc-asig-col">
                 <div class="cc-panel-head">
-                    <h3><i class="fa-solid fa-list"></i> 4. Cuentas con acceso</h3>
+                    <h3 id="asig-cta-title"><i class="fa-solid fa-list"></i> Cuentas con acceso</h3>
                     <label class="cc-todas-toggle">
                         <input type="checkbox" id="asig-cta-todas"> Todas
                     </label>
@@ -120,25 +140,8 @@
                 </div>
             </div>
         </div>
-        <div class="cc-panel cc-perm-panel">
-            <div class="cc-panel-head"><h3><i class="fa-solid fa-shield"></i> Permisos</h3></div>
-            <div class="cc-perm-grid is-wide" id="asig-permisos">
-                @foreach($bootstrap['permisosCatalogo'] ?? [] as $p)
-                    <label class="cc-perm-card">
-                        <input type="checkbox" name="permiso" value="{{ $p['clave'] }}" {{ $p['clave'] === 'capturar' ? 'checked' : '' }}>
-                        <strong>{{ $p['nombre'] }}</strong>
-                        <span>{{ $p['descripcion'] ?? '' }}</span>
-                    </label>
-                @endforeach
-                @if(empty($bootstrap['permisosCatalogo']))
-                    <label class="cc-perm-card"><input type="checkbox" name="permiso" value="capturar" checked><strong>Capturar</strong><span>Puede capturar presupuesto mientras el budget esté Abierto</span></label>
-                    <label class="cc-perm-card"><input type="checkbox" name="permiso" value="editar"><strong>Editar</strong><span>Puede modificar montos cuando el ciclo está En revisión o Cerrado</span></label>
-                    <label class="cc-perm-card"><input type="checkbox" name="permiso" value="revisar"><strong>Revisar</strong><span>Puede consultar sin editar</span></label>
-                @endif
-            </div>
-        </div>
         <div class="cc-apply-bar mb-2">
-            <span class="cc-apply-hint">Aplica el centro y las cuentas a la tabla de abajo. El usuario y la empresa se quedan seleccionados.</span>
+            <span class="cc-apply-hint" id="asig-apply-hint">Suma este centro a la tabla de abajo. El usuario y la empresa se quedan seleccionados.</span>
             <button type="button" class="cc-btn cc-btn-ink cc-btn-lg" id="asig-guardar">
                 <i class="fa-solid fa-plus"></i> Asignar
             </button>

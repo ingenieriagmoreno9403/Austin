@@ -76,10 +76,19 @@
         </div>
     </div>
 
+    <div class="cc-an-stage">
+    <div id="an-busy" class="cc-busy-overlay" aria-hidden="true">
+        <div class="cc-busy">
+            <span class="cc-dots is-lg" role="status" aria-label="Cargando">
+                <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </span>
+        </div>
+    </div>
+
     <div id="an-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
-            <i class="fa-solid fa-chart-line"></i>
-            No hay centros asignados en este ciclo. Asigna usuarios y cuentas en Budgets y Asignaciones.
+            <i class="fa-solid fa-chart-line" id="an-empty-icon"></i>
+            <span id="an-empty-msg">No hay centros asignados en este ciclo. Asigna usuarios y cuentas en Budgets y Asignaciones.</span>
         </div>
     </div>
 
@@ -158,6 +167,7 @@
                 <tbody id="an-tbody"></tbody>
             </table>
         </div>
+    </div>
     </div>
     </div>
 </div>

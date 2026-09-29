@@ -309,14 +309,27 @@
         return all;
     }
 
+    function mismoCentroCodigo(a, b) {
+        a = String(a || '').trim().toUpperCase();
+        b = String(b || '').trim().toUpperCase();
+        if (!a || !b) return false;
+        if (a === b) return true;
+        var na = a.replace(/^0+/, '');
+        var nb = b.replace(/^0+/, '');
+        return na !== '' && na === nb;
+    }
+
     function asigsDe(c) {
         var ciclo = (document.getElementById('ctl-ciclo') && val('ctl-ciclo'))
             || (document.getElementById('an-ciclo') && val('an-ciclo'))
             || CC.state.cicloCodigo || '';
-        return (CC.state.misAsignaciones || []).filter(function (a) {
-            var sameCc = String(a.centro_codigo) === String(c.codigo);
-            var sameEmp = String(a.empresa || '').toLowerCase() === String(c.empresa || a.empresa || '').toLowerCase();
-            var sameCiclo = !ciclo || String(a.ciclo || '') === String(ciclo);
+        var fuente = CC.state.page === 'control' ? asignacionesCaptura(ciclo) : (CC.state.misAsignaciones || []);
+        var emp = String(c.empresa || '').toUpperCase();
+        var cicloNeedle = String(ciclo || '').toUpperCase();
+        return fuente.filter(function (a) {
+            var sameCc = mismoCentroCodigo(a.centro_codigo, c.codigo);
+            var sameEmp = String(a.empresa || '').toUpperCase() === emp;
+            var sameCiclo = !cicloNeedle || String(a.ciclo || '').toUpperCase() === cicloNeedle;
             return sameCc && sameEmp && sameCiclo;
         });
     }
@@ -357,6 +370,22 @@
         var vis = codigoCuentaVisible(codigo);
         if (!vis) return String(codigo || '').trim();
         return vis.replace(/\D+/g, '') || vis;
+    }
+
+    function clavesCuentaLookup(codigo) {
+        var out = [];
+        function add(k) {
+            k = String(k || '').trim();
+            if (!k || out.indexOf(k) !== -1) return;
+            out.push(k);
+        }
+        var ck = codigoCuentaKey(codigo);
+        var digits = String(codigo || '').replace(/\D+/g, '');
+        add(ck);
+        add(digits);
+        add(digits.replace(/^0+/, ''));
+        add(String(ck || '').replace(/^0+/, ''));
+        return out;
     }
 
     function nombreCuentaKey(nombre) {
@@ -410,6 +439,14 @@
 
     function gastoMensualDe(codigo, nombre, mapOpt) {
         var map = mapOpt || control._gastoMap || {};
+        var claves = clavesCuentaLookup(codigo);
+        var byCode = null;
+        for (var ci = 0; ci < claves.length; ci++) {
+            byCode = map['c:' + claves[ci]] || map[claves[ci]];
+            if (byCode && byCode.length === 12) break;
+            byCode = null;
+        }
+        if (byCode && byCode.length === 12) return byCode.slice();
         var nk = nombreCuentaKey(nombre);
         if (!nk) return zeros12();
         var compact = nk.replace(/\s+/g, '');
@@ -446,7 +483,12 @@
             var row = porCuenta[key] || {};
             var gasto = asMeses12(row.gasto || row);
             if (!gasto) return;
-            var nk = nombreCuentaKey(row.nombre || key || '');
+            clavesCuentaLookup(row.codigo || '').concat(clavesCuentaLookup(/^\d/.test(String(key)) ? key : '')).forEach(function (ck) {
+                if (!ck || !/\d/.test(ck)) return;
+                map['c:' + ck] = gasto;
+                map[ck] = gasto;
+            });
+            var nk = nombreCuentaKey(row.nombre || '');
             if (!nk) return;
             var compact = nk.replace(/\s+/g, '');
             map['n:' + nk] = gasto;
@@ -507,30 +549,37 @@
         return !!(hit && hit.length === 12);
     }
 
+    function gastoDeCuentaCargado(cta) {
+        var map = control._gastoMap || {};
+        var ck = codigoCuentaKey(cta && cta.codigo);
+        if (ck && map['c:' + ck] && map['c:' + ck].length === 12) return true;
+        return nombreGastoCargado(cta && cta.nombre);
+    }
+
     function gastoCentroListo(c) {
         if (!c || !CC.state.gastoUrl) return true;
-        var nombres = nombresAsignadosCentro(c);
-        if (!nombres.length) return true;
-        return nombres.every(nombreGastoCargado);
+        var cuentas = cuentasAsignadasCentro(c);
+        if (!cuentas.length) return true;
+        return cuentas.every(gastoDeCuentaCargado);
     }
 
     function labelGastoMes(cta, i) {
         var n = Number((cta && cta.gasto && cta.gasto[i]) || 0);
         if (n) return 'Gastó ' + money(n);
-        if (!nombreGastoCargado(cta && cta.nombre)) return 'Cargando…';
+        if (!gastoDeCuentaCargado(cta)) return 'Cargando…';
         return 'Sin gasto';
     }
 
-    function nombresAsignadosCentro(c) {
+    function cuentasAsignadasCentro(c) {
         var asig = asigDe(c);
         var out = [];
         var seen = {};
         ((asig && asig.cuentas) || []).forEach(function (x) {
-            var n = String((x && x.nombre) || '').trim();
-            var k = nombreCuentaKey(n);
+            var codigo = String((x && x.codigo) || '').trim();
+            var k = codigoCuentaKey(codigo);
             if (!k || seen[k]) return;
             seen[k] = true;
-            out.push(n);
+            out.push({ codigo: codigo, nombre: String((x && x.nombre) || '').trim() });
         });
         return out;
     }
@@ -542,8 +591,8 @@
         applyGastoMap(CC.state.gastoCache[key]);
     }
 
-    function fetchGastoNombres(c, nombres, done) {
-        if (!nombres.length) {
+    function fetchGastoCuentas(c, cuentas, done) {
+        if (!cuentas.length) {
             if (done) done();
             return;
         }
@@ -552,7 +601,7 @@
         params.set('empresa', c.empresa || '');
         params.set('cc', c.codigo || '');
         params.set('year', String(year));
-        nombres.forEach(function (n) { params.append('nombres[]', n); });
+        cuentas.forEach(function (cta) { params.append('cuentas[]', (cta && cta.codigo) || cta); });
         fetch(CC.state.gastoUrl + '?' + params.toString(), {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
@@ -560,12 +609,6 @@
             mergePorCuenta((json && json.por_cuenta) || {});
             if (done) done();
         }).catch(function () {
-            if (control._gastoReq !== gastoCacheKey(c)) return;
-            var dummy = {};
-            nombres.forEach(function (n) {
-                dummy[nombreCuentaKey(n)] = { nombre: n, gasto: zeros12() };
-            });
-            mergePorCuenta(dummy);
             if (done) done();
         });
     }
@@ -585,23 +628,31 @@
             control._gastoMap = {};
             control._gastoNombres = [];
         }
-        var all = nombresAsignadosCentro(c);
-        var pend = all.filter(function (n) { return !nombreGastoCargado(n); });
+        var all = cuentasAsignadasCentro(c);
+        var pend = all.filter(function (cta) { return !gastoDeCuentaCargado(cta); });
         if (!pend.length) {
             markGastoReady(c);
             return;
         }
         var actual = currentCta();
         var first = [];
-        if (actual && actual.nombre && !nombreGastoCargado(actual.nombre)) first = [actual.nombre];
-        if (!first.length) first = pend.slice(0, 1);
-        var rest = pend.filter(function (n) {
-            return nombreCuentaKey(n) !== nombreCuentaKey(first[0] || '');
+        if (actual && actual.codigo && !gastoDeCuentaCargado(actual)) first = [actual];
+        var firstKey = codigoCuentaKey((first[0] && first[0].codigo) || '');
+        var rest = pend.filter(function (cta) {
+            return codigoCuentaKey(cta.codigo) !== firstKey;
         });
-        fetchGastoNombres(c, first, function () {
-            if (!rest.length) markGastoReady(c);
-            else fetchGastoNombres(c, rest, function () { markGastoReady(c); });
-        });
+        var chunks = [];
+        if (first.length) chunks.push(first);
+        for (var i = 0; i < rest.length; i += 4) chunks.push(rest.slice(i, i + 4));
+        function run(n) {
+            if (control._gastoReq !== key) return;
+            if (n >= chunks.length) {
+                markGastoReady(c);
+                return;
+            }
+            fetchGastoCuentas(c, chunks[n], function () { run(n + 1); });
+        }
+        run(0);
     }
 
     function markGastoReady(c) {
@@ -615,7 +666,7 @@
 
     function gastoCentroReady(c) {
         if (!c || !CC.state.gastoUrl) return true;
-        if (!nombresAsignadosCentro(c).length) return true;
+        if (!cuentasAsignadasCentro(c).length) return true;
         CC.state.gastoReady = CC.state.gastoReady || {};
         return !!CC.state.gastoReady[gastoCacheKey(c)];
     }
@@ -635,7 +686,7 @@
             var key = gastoCacheKey(c);
             if (seen[key] || CC.state.gastoReady[key] || CC._visorGastoQueued[key]) return;
             seen[key] = true;
-            if (!nombresAsignadosCentro(c).length) {
+            if (!cuentasAsignadasCentro(c).length) {
                 CC.state.gastoReady[key] = true;
                 return;
             }
@@ -650,7 +701,7 @@
     }
 
     function pumpVisorGastos() {
-        var max = 3;
+        var max = 1;
         function kick() {
             var pending = CC._visorGastoPending || [];
             while ((CC._visorGastoInflight || 0) < max && pending.length) {
@@ -659,26 +710,38 @@
                 var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
                 CC._visorGastoInflight = (CC._visorGastoInflight || 0) + 1;
                 (function (c, key, y) {
-                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(c.empresa || '') +
-                        '&cc=' + encodeURIComponent(c.codigo || '') +
-                        '&year=' + encodeURIComponent(y), {
-                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                    }).then(function (res) { return res.json(); }).then(function (json) {
-                        CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[key] = (json && json.por_cuenta) || {};
-                        CC.state.gastoLookup = CC.state.gastoLookup || {};
-                        CC.state.gastoLookup[key] = mapFromPorCuenta(CC.state.gastoCache[key]).map;
-                    }).catch(function () {
-                        CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[key] = CC.state.gastoCache[key] || {};
-                    }).then(function () {
-                        CC.state.gastoReady = CC.state.gastoReady || {};
-                        CC.state.gastoReady[key] = true;
-                        CC._visorGastoInflight -= 1;
-                        if (control.centro && control._gastoReq === key) applyGastoMap(CC.state.gastoCache[key] || {});
-                        else renderVisorTable();
-                        kick();
-                    });
+                    var cuentas = cuentasAsignadasCentro(c);
+                    var chunks = [];
+                    for (var i = 0; i < cuentas.length; i += 4) chunks.push(cuentas.slice(i, i + 4));
+                    var merged = {};
+                    function run(n) {
+                        if (n >= chunks.length) {
+                            CC.state.gastoCache = CC.state.gastoCache || {};
+                            CC.state.gastoCache[key] = Object.assign({}, CC.state.gastoCache[key] || {}, merged);
+                            CC.state.gastoLookup = CC.state.gastoLookup || {};
+                            CC.state.gastoLookup[key] = mapFromPorCuenta(CC.state.gastoCache[key]).map;
+                            CC.state.gastoReady = CC.state.gastoReady || {};
+                            CC.state.gastoReady[key] = true;
+                            CC._visorGastoInflight -= 1;
+                            if (control.centro && control._gastoReq === key) applyGastoMap(CC.state.gastoCache[key] || {});
+                            else renderVisorTable();
+                            kick();
+                            return;
+                        }
+                        var params = new URLSearchParams();
+                        params.set('empresa', c.empresa || '');
+                        params.set('cc', c.codigo || '');
+                        params.set('year', String(y));
+                        chunks[n].forEach(function (cta) { params.append('cuentas[]', cta.codigo); });
+                        fetch(CC.state.gastoUrl + '?' + params.toString(), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            Object.assign(merged, (json && json.por_cuenta) || {});
+                        }).catch(function () { /* la tanda se reintenta al abrir el centro */ }).then(function () {
+                            run(n + 1);
+                        });
+                    }
+                    run(0);
                 })(centro, cacheKey, year);
             }
             if (!pending.length && !(CC._visorGastoInflight || 0)) CC._visorGastoPump = false;
@@ -1744,15 +1807,192 @@
         });
     }
 
+    function clavesPermiso(a) {
+        var p = (a && a.permisos) || [];
+        return {
+            capturar: !!(a && (a.capturar || p.indexOf('capturar') !== -1)),
+            editar: !!(a && (a.editar || p.indexOf('editar') !== -1)),
+            revisar: !!(a && (a.revisar || p.indexOf('revisar') !== -1))
+        };
+    }
+
+    /** Revisar no entra a captura, aunque la fila también tenga Editar. */
+    function esAsignacionRevision(a) {
+        var k = clavesPermiso(a);
+        return k.revisar && !k.capturar;
+    }
+
+    function permisoCapturaOEditar(a) {
+        if (!a || esAsignacionRevision(a)) return false;
+        var k = clavesPermiso(a);
+        return k.capturar || k.editar;
+    }
+
+    function esAsignacionPropia(a) {
+        var uid = Number(CC.state.usuarioActualId || 0);
+        if (!uid) return true;
+        var owner = Number(a && a.user_id);
+        return !owner || owner === uid;
+    }
+
+    /**
+     * Captura lista centros y cuentas propios con Capturar o Editar.
+     * Sigue visible con el ciclo cerrado, para ver cuáles quedaron asignados.
+     * Las de revisión (aunque tengan Editar) no entran.
+     */
+    function asignacionesCaptura(ciclo) {
+        return asignacionesDelCiclo(ciclo).filter(function (a) {
+            var code = String(a.centro_codigo || '').trim();
+            if (!code || isEmpresaCompleta(code)) return false;
+            return esAsignacionPropia(a) && permisoCapturaOEditar(a);
+        });
+    }
+
     function centrosDesdeAsignaciones(list) {
         return centrosAgrupadosDesdeAsignaciones(list);
+    }
+
+    function isEmpresaCompleta(codigo) {
+        return String(codigo || '').replace(/\s+/g, '').toUpperCase() === 'EMPRESA';
+    }
+
+    function asigPuedeRevisar(a) {
+        return !!(a && (a.revisar || ((a.permisos || []).indexOf('revisar') !== -1)));
+    }
+
+    function recordarAsignacionesPropias(list) {
+        if (!CC._asigPropias) CC._asigPropias = (list || []).slice();
+    }
+
+    /** Empresas, centros y cuentas que el usuario actual puede revisar. */
+    function alcanceRevisionPropio(list) {
+        var uid = Number(CC.state.usuarioActualId || 0);
+        var scope = {};
+        (list || []).forEach(function (a) {
+            if (!uid || Number(a.user_id) !== uid) return;
+            if (!asigPuedeRevisar(a)) return;
+            var e = String(a.empresa || '').toUpperCase().trim();
+            if (!e) return;
+            if (!scope[e]) scope[e] = { wide: false, todasEmpresa: false, cuentasEmpresa: [], centros: {} };
+            var code = String(a.centro_codigo || '').trim();
+            var cuentas = (a.cuentas || []).map(function (c) { return String(c.codigo || '').trim(); }).filter(Boolean);
+            if (isEmpresaCompleta(code)) {
+                scope[e].wide = true;
+                if (!cuentas.length) scope[e].todasEmpresa = true;
+                else cuentas.forEach(function (c) {
+                    if (scope[e].cuentasEmpresa.indexOf(c) === -1) scope[e].cuentasEmpresa.push(c);
+                });
+                return;
+            }
+            if (!code) return;
+            if (!scope[e].centros[code]) scope[e].centros[code] = { todas: false, cuentas: [] };
+            var slot = scope[e].centros[code];
+            if (!cuentas.length) slot.todas = true;
+            else cuentas.forEach(function (c) {
+                if (slot.cuentas.indexOf(c) === -1) slot.cuentas.push(c);
+            });
+        });
+        return scope;
+    }
+
+    function filtrarCuentasAlcance(cuentas, permitidas) {
+        if (!permitidas) return (cuentas || []).slice();
+        var set = {};
+        permitidas.forEach(function (c) { set[String(c)] = true; });
+        return (cuentas || []).filter(function (x) { return set[String(x.codigo || '').trim()]; });
+    }
+
+    function filasCubiertasPorRevision(list, scope) {
+        var out = [];
+        (list || []).forEach(function (a) {
+            var e = String(a.empresa || '').toUpperCase().trim();
+            var rule = scope[e];
+            if (!rule) return;
+            var code = String(a.centro_codigo || '').trim();
+            if (!code || isEmpresaCompleta(code)) return;
+            var permitidas = null;
+            if (rule.wide) {
+                if (!rule.todasEmpresa) permitidas = rule.cuentasEmpresa || [];
+            } else {
+                var slot = rule.centros[code];
+                if (!slot) return;
+                if (!slot.todas) permitidas = slot.cuentas;
+            }
+            var cuentas = filtrarCuentasAlcance(a.cuentas, permitidas);
+            if (permitidas && !cuentas.length) return;
+            out.push(Object.assign({}, a, { cuentas: cuentas }));
+        });
+        return out;
+    }
+
+    function filasVisiblesRevision(list) {
+        var scope = alcanceRevisionPropio(list);
+        CC._anScopeRevision = scope;
+        CC._anSinRevision = !!(list && list.length) && !Object.keys(scope).length;
+        var uid = Number(CC.state.usuarioActualId || 0);
+        return filasCubiertasPorRevision(list, scope).map(function (a) {
+            if (uid && Number(a.user_id) === uid) return a;
+            return Object.assign({}, a, {
+                capturar: false,
+                editar: false,
+                revisar: true,
+                permisos: ['revisar']
+            });
+        });
+    }
+
+    function revisionNecesitaHerencia(list, ciclo) {
+        var needle = String(ciclo || '');
+        return (list || []).some(function (a) {
+            if (needle && String(a.ciclo || '') !== needle) return false;
+            if (!asigPuedeRevisar(a)) return false;
+            if (isEmpresaCompleta(a.centro_codigo)) return true;
+            return !(a.cuentas && a.cuentas.length);
+        });
+    }
+
+    function aplicarHerenciaRevision(ciclo, luego) {
+        var key = String(ciclo || '');
+        var propias = CC._asigPropias || CC.state.misAsignaciones || [];
+        if (!key || !revisionNecesitaHerencia(propias, key) || CC._revHerenciaCiclo === key) {
+            if (luego) luego();
+            return;
+        }
+        if (CC._revHerenciaLoading === key) return;
+        CC._revHerenciaLoading = key;
+        fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) { return r.json(); }).then(function (json) {
+            var scope = alcanceRevisionPropio(propias);
+            var uid = Number(CC.state.usuarioActualId || 0);
+            var extras = filasCubiertasPorRevision(json.asignaciones || [], scope).filter(function (a) {
+                return !uid || Number(a.user_id) !== uid;
+            }).map(function (a) {
+                return Object.assign({}, a, {
+                    capturar: false,
+                    editar: false,
+                    revisar: true,
+                    permisos: ['revisar']
+                });
+            });
+            CC.state.misAsignaciones = propias.concat(extras);
+            CC._revHerenciaCiclo = key;
+            CC._revHerenciaLoading = '';
+            if (luego) luego();
+        }).catch(function () {
+            CC._revHerenciaCiclo = key;
+            CC._revHerenciaLoading = '';
+            if (luego) luego();
+        });
     }
 
     function centrosAgrupadosDesdeAsignaciones(list) {
         var map = {};
         (list || []).forEach(function (a) {
             var emp = String(a.empresa || '').toUpperCase();
-            var k = emp + '|' + String(a.centro_codigo || '');
+            var code = String(a.centro_codigo || '').trim();
+            if (!emp || !code || isEmpresaCompleta(code)) return;
+            var k = emp + '|' + code;
             if (!map[k]) {
                 map[k] = {
                     codigo: a.centro_codigo,
@@ -1787,7 +2027,7 @@
         });
         return Object.keys(map).map(function (k) {
             var row = map[k];
-            row.modo = puedeEscribirAsig(row, row.ciclo) ? 'captura' : 'solo_revision';
+            row.modo = (row.capturar || row.editar) ? 'captura' : 'solo_revision';
             return row;
         });
     }
@@ -1839,7 +2079,9 @@
     }
 
     function cicloControlPreferido() {
-        var mine = ciclosDeMisAsignaciones();
+        var mine = ciclosDeMisAsignaciones().filter(function (c) {
+            return CC.state.page !== 'control' || asignacionesCaptura(c.codigo).length;
+        });
         var ini = CC.state.cicloInicial || '';
         if (ini && mine.filter(function (c) { return c.codigo === ini; }).length) return ini;
         var ranked = mine.slice().sort(function (a, b) {
@@ -2007,10 +2249,19 @@
     }
 
     function asigsPorEmpresa(ciclo) {
-        var asigs = asignacionesDelCiclo(ciclo);
+        var asigs = CC.state.page === 'control' ? asignacionesCaptura(ciclo) : asignacionesDelCiclo(ciclo);
         var emps = {};
+        var seen = {};
         asigs.forEach(function (a) {
+            if (isEmpresaCompleta(a.centro_codigo)) return;
             var e = String(a.empresa || '').toUpperCase();
+            if (!e) return;
+            if (CC.state.page === 'control') {
+                var code = String(a.centro_codigo || '').trim();
+                var k = e + '|' + code;
+                if (!code || seen[k]) return;
+                seen[k] = true;
+            }
             (emps[e] = emps[e] || []).push(a);
         });
         return emps;
@@ -2164,7 +2415,9 @@
     function renderCicloPicks() {
         var el = document.getElementById('ctl-ciclo');
         if (!el) return;
-        var ciclos = ciclosDeMisAsignaciones();
+        var ciclos = ciclosDeMisAsignaciones().filter(function (c) {
+            return CC.state.page !== 'control' || asignacionesCaptura(c.codigo).length;
+        });
         var selected = el.value || cicloControlPreferido();
         if (!CC._cicloUserPicked) selected = cicloControlPreferido() || selected;
         el.innerHTML = ciclos.map(function (c) {
@@ -2211,7 +2464,7 @@
                 if (period.anio) CC.state.anioPresupuesto = period.anio;
                 paintOverLegends();
             }
-            CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
+            CC.state.centros = centrosDesdeAsignaciones(asignacionesCaptura(ciclo));
             if (empEl && !emp) empEl.value = '';
             fillVisorFilters();
             var overlaysPend = loadOverlaysForCycle();
@@ -2228,6 +2481,7 @@
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).then(function (r) { return r.json(); }).then(function (json) {
                 CC.state.misAsignaciones = json.asignaciones || [];
+                recordarAsignacionesPropias(CC.state.misAsignaciones);
                 CC._asigLoaded = true;
                 CC.initControl();
             }).catch(function () {
@@ -2240,8 +2494,7 @@
 
         var empty = document.getElementById('ctl-empty');
         var work = document.getElementById('ctl-work');
-        var mineAll = CC.state.misAsignaciones || [];
-        if (!mineAll.length) {
+        if (!asignacionesCaptura('').length) {
             if (empty) empty.hidden = false;
             if (work) work.hidden = true;
             setCapturaEnabled(false);
@@ -2253,6 +2506,7 @@
         var cicloSel = document.getElementById('ctl-ciclo');
         renderCicloPicks();
         var ciclo = val('ctl-ciclo') || cicloControlPreferido();
+        if (ciclo && !asignacionesCaptura(ciclo).length) ciclo = cicloControlPreferido();
         if (cicloSel && ciclo) cicloSel.value = ciclo;
         CC.state.cicloCodigo = ciclo || '';
         var period = findCiclo(ciclo);
@@ -2261,7 +2515,7 @@
             if (period.anioReferencia) CC.state.anioGasto = period.anioReferencia;
             if (period.anio) CC.state.anioPresupuesto = period.anio;
         }
-        CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
+        CC.state.centros = centrosDesdeAsignaciones(asignacionesCaptura(ciclo));
 
         if (!CC._controlBound) {
             if (cicloSel) cicloSel.addEventListener('change', function () {
@@ -2338,6 +2592,7 @@
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).then(function (r) { return r.json(); }).then(function (json) {
                 CC.state.misAsignaciones = json.asignaciones || [];
+                recordarAsignacionesPropias(CC.state.misAsignaciones);
                 CC._asigLoaded = true;
                 CC.initDetalle();
             }).catch(function () {
@@ -2354,6 +2609,10 @@
         if (ciclo) {
             setVal('ctl-ciclo', ciclo);
             CC.state.cicloCodigo = ciclo;
+            if (revisionNecesitaHerencia(CC._asigPropias || CC.state.misAsignaciones, ciclo) && CC._revHerenciaCiclo !== String(ciclo)) {
+                aplicarHerenciaRevision(ciclo, function () { CC.initDetalle(); });
+                return;
+            }
             var period = findCiclo(ciclo);
             if (period) {
                 CC.state.period = Object.assign({}, CC.state.period, period);
@@ -2542,8 +2801,8 @@
         renderDetalleChart();
         paintScopeHints();
         var cta = currentCta();
-        if (control.centro && cta && cta.nombre && !nombreGastoCargado(cta.nombre)) {
-            fetchGastoNombres(control.centro, [cta.nombre]);
+        if (control.centro && cta && cta.codigo && !gastoDeCuentaCargado(cta)) {
+            fetchGastoCuentas(control.centro, [cta]);
         }
     }
 
@@ -2616,7 +2875,7 @@
     }
 
     function updateFormTotals(cta) {
-        setText('ctl-form-gasto', nombreGastoCargado(cta.nombre) ? moneyGasto(cta.totG) : 'Cargando…');
+        setText('ctl-form-gasto', gastoDeCuentaCargado(cta) ? moneyGasto(cta.totG) : 'Cargando…');
         setText('ctl-form-ppto', money(cta.totP));
         var d = deltaPct(cta.totP, cta.totG);
         var el = document.getElementById('ctl-form-delta');
@@ -2634,7 +2893,7 @@
             var shown = inputAmount(cta.ppto[i]);
             var cur = currentCurrency();
             return '<div class="' + cls + '"><div class="m">' + m + ' <em>' + cur + '</em></div>' +
-                '<div class="prev' + (Number(cta.gasto[i] || 0) || nombreGastoCargado(cta.nombre) ? '' : ' is-loading') + '">' + labelGastoMes(cta, i) + '</div>' +
+                '<div class="prev' + (Number(cta.gasto[i] || 0) || gastoDeCuentaCargado(cta) ? '' : ' is-loading') + '">' + labelGastoMes(cta, i) + '</div>' +
                 '<input type="number" step="0.01" min="0" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' + (control.locked ? 'disabled' : '') + ' placeholder="0.00"></div>';
         }).join('');
         grid.querySelectorAll('input').forEach(function (inp) {
@@ -3750,6 +4009,9 @@
         CC._anCapturaCiclo = null;
         CC._anAsigLoaded = false;
         CC._anAsigLoading = false;
+        CC.state.gastoCache = {};
+        CC.state.gastoLookup = {};
+        CC.state.gastoReady = {};
         CC.initAnalisis();
     }
 
@@ -3822,7 +4084,8 @@
             fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).then(function (r) { return r.json(); }).then(function (json) {
-                CC.state.misAsignaciones = json.asignaciones || [];
+                var list = (json && json.asignaciones) || [];
+                CC.state.misAsignaciones = filasVisiblesRevision(list);
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 CC._anAsigLoaded = true;
                 CC._anAsigLoading = false;
@@ -3830,7 +4093,8 @@
                 renderAnalisis();
                 queueAnalisisGastos();
             }).catch(function () {
-                CC.state.misAsignaciones = CC.state.misAsignaciones || [];
+                var list = CC.state.misAsignaciones || [];
+                CC.state.misAsignaciones = filasVisiblesRevision(list);
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 CC._anAsigLoaded = true;
                 CC._anAsigLoading = false;
@@ -3846,45 +4110,131 @@
         queueAnalisisGastos();
     };
 
+    function htmlCargando(size) {
+        var cls = 'cc-dots' + (size ? ' is-' + size : '');
+        return '<span class="' + cls + '" role="status" aria-label="Cargando">' +
+            '<span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>';
+    }
+
+    function showAnalisisBusy() {
+        var page = document.querySelector('.cc-page');
+        if (page) page.classList.add('is-an-busy');
+        var busy = document.getElementById('an-busy');
+        if (busy) busy.setAttribute('aria-hidden', 'false');
+    }
+
+    function hideAnalisisBusy() {
+        var page = document.querySelector('.cc-page');
+        if (page) page.classList.remove('is-an-busy');
+        var busy = document.getElementById('an-busy');
+        if (busy) busy.setAttribute('aria-hidden', 'true');
+    }
+
+    function firmaCuentasCentro(c) {
+        return cuentasAsignadasCentro(c).map(function (x) {
+            return codigoCuentaKey(x.codigo) || String(x.codigo || '');
+        }).filter(Boolean).sort().join(',');
+    }
+
+    function analisisGastoListo(c) {
+        if (!c || !CC.state.gastoUrl) return true;
+        var firma = firmaCuentasCentro(c);
+        if (!firma) return true;
+        CC.state.gastoReady = CC.state.gastoReady || {};
+        return CC.state.gastoReady[gastoCacheKey(c)] === firma;
+    }
+
     function queueAnalisisGastos() {
-        if (!CC.state.gastoUrl || CC.state.page !== 'analisis') return;
-        var year = CC.state.anioGasto || 2026;
-        var seenEmp = {};
-        var pending = (CC.state.centros || []).filter(function (c) {
+        if (!CC.state.gastoUrl || CC.state.page !== 'analisis') {
+            hideAnalisisBusy();
+            return;
+        }
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        var gen = CC._anGastoGen;
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        var seen = {};
+        var pending = [];
+        (CC.state.centros || []).forEach(function (c) {
             var key = gastoCacheKey(c);
-            if (seenEmp[key]) return false;
-            seenEmp[key] = true;
-            return !(CC.state.gastoCache && CC.state.gastoCache[key]);
+            if (seen[key]) return;
+            seen[key] = true;
+            var firma = firmaCuentasCentro(c);
+            if (!firma) return;
+            CC.state.gastoReady = CC.state.gastoReady || {};
+            if (CC.state.gastoReady[key] === firma && CC.state.gastoCache && CC.state.gastoCache[key]) return;
+            pending.push(c);
         });
-        if (!pending.length) return;
+        if (!pending.length) {
+            hideAnalisisBusy();
+            return;
+        }
+        showAnalisisBusy();
         var inflight = 0;
-        var max = 3;
-        var dirty = false;
+        var max = 2;
+        function finishOne() {
+            inflight -= 1;
+            if (gen !== CC._anGastoGen) return;
+            if (!pending.length && !inflight) {
+                hideAnalisisBusy();
+                renderAnalisis();
+            } else {
+                kick();
+            }
+        }
         function kick() {
+            if (gen !== CC._anGastoGen) return;
             while (inflight < max && pending.length) {
-                var c = pending.shift();
-                var key = gastoCacheKey(c);
+                var centro = pending.shift();
+                var cacheKey = gastoCacheKey(centro);
+                var firma = firmaCuentasCentro(centro);
+                var cuentas = cuentasAsignadasCentro(centro);
                 inflight += 1;
-                (function (centro, cacheKey) {
-                    fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
-                        '&cc=' + encodeURIComponent(centro.codigo || '') +
-                        '&year=' + encodeURIComponent(year), {
-                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                    }).then(function (res) { return res.json(); }).then(function (json) {
+                (function (c, key, firmaCentro, lista) {
+                    var chunks = [];
+                    for (var i = 0; i < lista.length; i += 4) chunks.push(lista.slice(i, i + 4));
+                    var merged = {};
+                    var done = false;
+                    function guardar() {
+                        if (done || gen !== CC._anGastoGen) return;
+                        done = true;
                         CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
+                        CC.state.gastoCache[key] = merged;
                         CC.state.gastoLookup = CC.state.gastoLookup || {};
-                        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(CC.state.gastoCache[cacheKey]).map;
-                        dirty = true;
-                    }).catch(function () {
-                        CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[cacheKey] = {};
-                    }).then(function () {
-                        inflight -= 1;
-                        if (!pending.length && !inflight && dirty) renderAnalisis();
-                        else kick();
-                    });
-                })(c, key);
+                        CC.state.gastoLookup[key] = mapFromPorCuenta(merged).map;
+                        CC.state.gastoReady = CC.state.gastoReady || {};
+                        CC.state.gastoReady[key] = firmaCentro;
+                        finishOne();
+                    }
+                    function run(n) {
+                        if (done || gen !== CC._anGastoGen) return;
+                        if (n >= chunks.length) {
+                            guardar();
+                            return;
+                        }
+                        var params = new URLSearchParams();
+                        params.set('empresa', c.empresa || '');
+                        params.set('cc', c.codigo || '');
+                        params.set('year', String(year));
+                        chunks[n].forEach(function (cta) {
+                            if (cta && cta.codigo) params.append('cuentas[]', cta.codigo);
+                        });
+                        var step = false;
+                        function next() {
+                            if (step || done) return;
+                            step = true;
+                            clearTimeout(timer);
+                            run(n + 1);
+                        }
+                        var timer = setTimeout(next, 25000);
+                        fetch(CC.state.gastoUrl + '?' + params.toString(), {
+                            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }).then(function (res) { return res.json(); }).then(function (json) {
+                            if (gen !== CC._anGastoGen || done) return;
+                            Object.assign(merged, (json && json.por_cuenta) || {});
+                        }).catch(function () { /* el centro sigue con lo que ya llegó */ }).then(next);
+                    }
+                    run(0);
+                })(centro, cacheKey, firma, cuentas);
             }
         }
         kick();
@@ -3892,25 +4242,27 @@
 
     function snapshotCentros() {
         return CC.state.centros.map(mergedCentro).map(function (c) {
+            var listo = analisisGastoListo(c);
             var ctas = cuentasDeCentro(c);
             var st = statsDeCentro(c);
-            var gasto = st.totG;
+            var gasto = listo ? st.totG : 0;
             var ppto = st.totP;
             var filled = st.capturadas;
             var users = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             return Object.assign({}, c, {
                 gasto: gasto,
+                gastoListo: listo,
                 ppto: ppto,
                 cuentas: ctas.length,
                 capturadas: filled,
                 avance: pct(filled, ctas.length || 1),
-                yoY: deltaPct(ppto, gasto),
-                over: gasto > 0 && ppto > gasto * 1.1,
+                yoY: listo ? deltaPct(ppto, gasto) : 0,
+                over: listo && gasto > 0 && ppto > gasto * 1.1,
                 departamento: deptoDeCentro(c),
                 usuarios: users,
-                monthGasto: MONTHS.map(function (_, i) {
+                monthGasto: listo ? MONTHS.map(function (_, i) {
                     return ctas.reduce(function (a, x) { return a + ((x.gasto || [])[i] || 0); }, 0);
-                })
+                }) : MONTHS.map(function () { return 0; })
             });
         });
     }
@@ -3967,6 +4319,14 @@
         var all = snapshotCentros();
         if (empty) empty.hidden = !!all.length;
         if (work) work.hidden = !all.length;
+        if (!all.length) {
+            var emptyMsg = document.getElementById('an-empty-msg');
+            if (emptyMsg) {
+                emptyMsg.textContent = CC._anSinRevision
+                    ? 'No tienes permiso de revisar en este ciclo. La revisión sigue la empresa, el centro o las cuentas que te asignaron.'
+                    : 'No hay centros asignados en este ciclo. Asigna usuarios y cuentas en Budgets y Asignaciones.';
+            }
+        }
 
         var rows = all.filter(function (c) {
             if (emp && c.empresa !== emp) return false;
@@ -3979,33 +4339,42 @@
             return !q || blob.indexOf(q) !== -1;
         });
 
+        function paintKpi(id, listo, text) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (!listo) el.innerHTML = htmlCargando('lg');
+            else el.textContent = text;
+        }
+        var gastoListo = !rows.length || rows.every(function (c) { return c.gastoListo; });
         if (!rows.length) {
             setText('an-kpi-avance', all.length ? '—' : '—');
             setText('an-kpi-poco', all.length ? '0' : '—');
-            setText('an-kpi-over', all.length ? '0' : '—');
-            setText('an-kpi-yoy', '—');
+            paintKpi('an-kpi-over', true, all.length ? '0' : '—');
+            paintKpi('an-kpi-yoy', true, '—');
         } else {
             var tot = rows.length;
             var avgAv = Math.round(rows.reduce(function (a, c) { return a + c.avance; }, 0) / tot);
             var poco = rows.filter(function (c) { return c.avance < 40; }).length;
-            var over = rows.filter(function (c) { return c.over; }).length;
-            var withGasto = rows.filter(function (c) { return c.gasto > 0; });
+            var loaded = rows.filter(function (c) { return c.gastoListo; });
+            var over = loaded.filter(function (c) { return c.over; }).length;
+            var withGasto = loaded.filter(function (c) { return c.gasto > 0; });
             var avgYoy = withGasto.length
                 ? Math.round(withGasto.reduce(function (a, c) { return a + c.yoY; }, 0) / withGasto.length * 10) / 10
                 : 0;
             setText('an-kpi-avance', avgAv + '%');
             setText('an-kpi-poco', poco);
-            setText('an-kpi-over', over);
-            setText('an-kpi-yoy', withGasto.length ? ((avgYoy > 0 ? '+' : '') + avgYoy + '%') : '—');
+            paintKpi('an-kpi-over', gastoListo, String(over));
+            paintKpi('an-kpi-yoy', gastoListo, withGasto.length ? ((avgYoy > 0 ? '+' : '') + avgYoy + '%') : '—');
         }
 
         var byEmp = {};
         rows.forEach(function (c) {
-            byEmp[c.empresa] = byEmp[c.empresa] || { n: 0, av: 0, gasto: 0, ppto: 0 };
+            byEmp[c.empresa] = byEmp[c.empresa] || { n: 0, av: 0, gasto: 0, ppto: 0, listo: true };
             byEmp[c.empresa].n += 1;
             byEmp[c.empresa].av += c.avance;
             byEmp[c.empresa].gasto += c.gasto;
             byEmp[c.empresa].ppto += c.ppto;
+            byEmp[c.empresa].listo = byEmp[c.empresa].listo && !!c.gastoListo;
         });
         var empBox = document.getElementById('an-empresas');
         if (empBox) {
@@ -4013,9 +4382,10 @@
                 var av = Math.round(byEmp[e].av / byEmp[e].n);
                 var cls = av < 40 ? 'warn' : (av > 85 ? 'good' : '');
                 var on = emp === e ? ' is-on' : '';
+                var gastoTxt = byEmp[e].listo ? money(byEmp[e].gasto) : htmlCargando('sm');
                 return '<div class="mb-3 cc-an-emp' + on + '" data-emp="' + escapeHtml(e) + '"><div class="d-flex justify-content-between"><strong>' + escapeHtml(e) + '</strong><span>' + av + '% capturado · ' + byEmp[e].n + ' centros</span></div>' +
                     '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>' +
-                    '<div class="text-muted mt-1" style="font-size:.75rem">Gasto ' + gYear + ' ' + money(byEmp[e].gasto) + ' · Ppto ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
+                    '<div class="text-muted mt-1" style="font-size:.75rem">Gasto ' + gYear + ' ' + gastoTxt + ' · Ppto ' + pYear + ' ' + money(byEmp[e].ppto) + '</div></div>';
             }).join('') || '<div class="cc-empty">Sin empresas</div>';
         }
 
@@ -4031,10 +4401,10 @@
                     '<td>' + userCell(userLabel) + '</td>' +
                     '<td>' + renderBadge(c.estado) + '</td>' +
                     '<td><div class="d-flex justify-content-between"><span>' + c.capturadas + '/' + c.cuentas + '</span><span>' + c.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(c.avance, 100) + '%"></span></div></td>' +
-                    '<td class="num">' + money(c.gasto) + '</td>' +
+                    '<td class="num">' + (c.gastoListo ? money(c.gasto) : htmlCargando('sm')) + '</td>' +
                     '<td class="num">' + money(c.ppto) + '</td>' +
-                    '<td class="num ' + (c.yoY > 10 ? 'text-danger' : '') + '">' + (c.gasto ? ((c.yoY > 0 ? '+' : '') + c.yoY + '%') : '—') + '</td>' +
-                    '<td>' + (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>') + '</td>' +
+                    '<td class="num ' + (c.gastoListo && c.yoY > 10 ? 'text-danger' : '') + '">' + (c.gastoListo ? (c.gasto ? ((c.yoY > 0 ? '+' : '') + c.yoY + '%') : '—') : htmlCargando('sm')) + '</td>' +
+                    '<td>' + (!c.gastoListo ? htmlCargando('sm') : (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>')) + '</td>' +
                     '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
             }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin coincidencias</div></td></tr>';
         }
@@ -4264,9 +4634,11 @@
         CC.state.gastoReady = {};
         CC.state.cicloCodigo = boot.cicloCodigo || boot.cicloInicial || '';
         CC.state.usuarioActual = boot.usuarioActual || '';
+        CC.state.usuarioActualId = Number(boot.usuarioActualId || 0);
         CC.state.ciclos = loadCiclos(boot.periodoDefault, boot.ciclos);
         if (Array.isArray(boot.misAsignaciones)) {
             CC.state.misAsignaciones = boot.misAsignaciones;
+            recordarAsignacionesPropias(boot.misAsignaciones);
             CC._asigLoaded = true;
         }
         var actual = findCiclo(CC.state.cicloCodigo)

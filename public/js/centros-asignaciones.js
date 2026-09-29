@@ -14,9 +14,15 @@
 
     var SIN_CENTRO_CODIGO = 'SIN_CC';
     var SIN_CENTRO_NOMBRE = 'Sin centro de costos';
+    var EMPRESA_CODIGO = 'EMPRESA';
+    var EMPRESA_NOMBRE = 'Toda la empresa';
 
     function isSinCentro(codigo) {
         return String(codigo || '').replace(/\s+/g, '').toUpperCase() === SIN_CENTRO_CODIGO;
+    }
+
+    function isEmpresaCompleta(codigo) {
+        return String(codigo || '').replace(/\s+/g, '').toUpperCase() === EMPRESA_CODIGO;
     }
 
     function ctaPretty(codigo) {
@@ -32,6 +38,7 @@
     }
 
     function etiquetaCentro(codigo, nombre) {
+        if (isEmpresaCompleta(codigo)) return EMPRESA_NOMBRE;
         if (isSinCentro(codigo)) return SIN_CENTRO_NOMBRE;
         var code = String(codigo || '').trim();
         var nom = String(nombre || '').trim();
@@ -1489,10 +1496,11 @@
                 var on = emp === needle && needle !== '';
                 card.classList.toggle('is-on', on);
                 var n = savedDeEmpresa(emp).length;
+                var toda = savedDeEmpresa(emp).some(function (a) { return isEmpresaCompleta(a.centro_codigo); });
                 var badge = card.querySelector('[data-asig-n]');
                 card.classList.toggle('has-asig', n > 0);
                 if (badge) {
-                    badge.textContent = n ? (n + (n === 1 ? ' centro' : ' centros')) : 'Sin asignar';
+                    badge.textContent = toda ? 'Toda la empresa' : (n ? (n + (n === 1 ? ' centro' : ' centros')) : 'Sin asignar');
                     badge.className = 'cc-badge ' + (n ? 'cc-badge-ink' : 'cc-badge-solo_revision');
                 }
                 var label = card.querySelector('.cc-card-pick');
@@ -1516,13 +1524,15 @@
             grid.innerHTML = empresas.map(function (e) {
                 var code = String(e.codigo || '').toLowerCase();
                 var on = selected === code && selected !== '';
-                var n = savedDeEmpresa(code).length;
+                var rowsEmp = savedDeEmpresa(code);
+                var n = rowsEmp.length;
+                var toda = rowsEmp.some(function (a) { return isEmpresaCompleta(a.centro_codigo); });
                 var badgeCls = n ? 'cc-badge-ink' : 'cc-badge-solo_revision';
                 var pickCls = (on || n) ? 'cc-btn-ink' : '';
                 var pickLabel = on ? 'Seleccionada' : (n ? 'Ya asignada' : 'Seleccionar');
                 return '<article class="cc-ciclo-card is-pickable' + (on ? ' is-on' : '') + (n ? ' has-asig' : '') + '" data-emp="' + escapeHtml(e.codigo) + '" data-nombre="' + escapeHtml(e.nombre) + '" role="button" tabindex="0">' +
                     '<div class="top"><div><div class="code">SAP</div><h3>' + escapeHtml(e.nombre) + '</h3></div>' +
-                    '<span class="cc-badge ' + badgeCls + '" data-asig-n>' + (n ? (n + (n === 1 ? ' centro' : ' centros')) : 'Sin asignar') + '</span></div>' +
+                    '<span class="cc-badge ' + badgeCls + '" data-asig-n>' + (toda ? 'Toda la empresa' : (n ? (n + (n === 1 ? ' centro' : ' centros')) : 'Sin asignar')) + '</span></div>' +
                     '<div class="cc-ciclo-obs">Centros de costo y cuentas de ' + escapeHtml(e.nombre) + ' vía AutinApi.</div>' +
                     '<div class="actions"><span class="text-muted" style="font-size:.75rem">' + (n ? 'Ya tiene centros en resultados' : 'Clic en cualquier parte') + '</span>' +
                     '<span class="cc-btn ' + pickCls + ' cc-card-pick">' + pickLabel + '</span></div></article>';
@@ -1575,11 +1585,21 @@
                 if (a.pending) cls.push('is-pending');
                 else cls.push('is-done');
                 if (key === lastFlashKey) cls.push('is-new');
+                var cliTitulo = isEmpresaCompleta(a.centro_codigo)
+                    ? EMPRESA_NOMBRE
+                    : (isSinCentro(a.centro_codigo) ? SIN_CENTRO_NOMBRE : a.centro_codigo);
+                var cliSub = isEmpresaCompleta(a.centro_codigo)
+                    ? 'Revisión de la empresa'
+                    : (isSinCentro(a.centro_codigo) ? 'Cuentas sin afiliar a un centro' : (a.centro_nombre || ''));
+                var revisionFila = (a.permisos || []).indexOf('revisar') !== -1 && (a.permisos || []).indexOf('capturar') === -1;
+                var prodTxt = nCtas
+                    ? (nCtas + (nCtas === 1 ? ' cuenta' : ' cuentas'))
+                    : ((isEmpresaCompleta(a.centro_codigo) || revisionFila) ? 'Cuentas de los usuarios' : 'Sin cuentas');
                 return '<tr class="' + cls.join(' ') + '" data-emp="' + escapeHtml(a.empresa) + '" data-key="' + escapeHtml(key) + '">' +
                     '<td><strong>' + escapeHtml(empresaNombre(a.empresa)) + '</strong></td>' +
-                    '<td><div class="fw-semibold">' + escapeHtml(isSinCentro(a.centro_codigo) ? SIN_CENTRO_NOMBRE : a.centro_codigo) + '</div>' +
-                    '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(isSinCentro(a.centro_codigo) ? 'Cuentas sin afiliar a un centro' : (a.centro_nombre || '')) + '</div></td>' +
-                    '<td>' + nCtas + (nCtas === 1 ? ' cuenta' : ' cuentas') + '</td>' +
+                    '<td><div class="fw-semibold">' + escapeHtml(cliTitulo) + '</div>' +
+                    '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div></td>' +
+                    '<td>' + escapeHtml(prodTxt) + '</td>' +
                     '<td>' + permBadges(a.permisos) + '</td>' +
                     '<td><button type="button" class="cc-icon-btn" data-del="' + escapeHtml(a.id) + '" data-emp="' + escapeHtml(a.empresa) + '" data-cc="' + escapeHtml(a.centro_codigo) + '" title="Quitar"><i class="fa-solid fa-trash"></i></button></td>' +
                     '</tr>';
@@ -1637,11 +1657,11 @@
             var kicker = document.getElementById('asig-kicker');
             var title = document.getElementById('asig-cc-title');
             if (kicker) kicker.textContent = cfg.ciclo + ' · ' + userName() + ' · ' + nom;
-            if (title) title.innerHTML = '<i class="fa-solid fa-sitemap"></i> 3. Centro de costos (' + nom + ')';
+            if (title) title.innerHTML = '<i class="fa-solid fa-sitemap"></i> ' + (modoRevision() ? '4. Centro de costos (opcional)' : '4. Centro de costos') + ' (' + nom + ')';
             if (detBox) detBox.hidden = false;
             markEmpresaCard(cfg.empresa);
             renderResumen();
-            setStep(3);
+            refrescarModo();
             if (same && centros.length) {
                 fillCentros(ccQ ? ccQ.value : '');
                 loadGrupos();
@@ -1673,12 +1693,66 @@
 
         function unlockEmpresas() {
             if (empBox) empBox.classList.toggle('is-locked', !userId());
+            refrescarModo();
+        }
+
+        function permisosMarcados() {
+            var perms = [];
+            document.querySelectorAll('#asig-permisos input[name="permiso"]:checked').forEach(function (i) {
+                perms.push(i.value);
+            });
+            return perms;
+        }
+
+        function modoRevision() {
+            var perms = permisosMarcados();
+            return perms.indexOf('revisar') !== -1 && perms.indexOf('capturar') === -1;
+        }
+
+        function pasoWizard() {
+            if (!userId()) return 1;
+            if (!permisosMarcados().length) return 2;
+            if (!cfg.empresa) return 3;
+            if (modoRevision()) return 4;
+            if (centroSel && String(centroSel.value || '').trim()) return 4;
+            return 3;
+        }
+
+        function refrescarModo() {
+            var rev = modoRevision();
+            var permPanel = document.getElementById('asig-perm-panel');
+            if (permPanel) permPanel.classList.toggle('is-locked', !userId());
+            var step4 = document.getElementById('asig-step-4');
+            if (step4) step4.innerHTML = '<span>4</span> ' + (rev ? 'Centro (opcional)' : 'Centro y cuentas');
             var hint = document.getElementById('asig-emp-hint');
             if (hint) {
-                hint.textContent = userId()
-                    ? 'Elige la empresa. Luego el centro. Puedes cambiar de empresa cuando quieras; lo guardado se acumula abajo.'
-                    : 'Elige un usuario para habilitar las empresas.';
+                hint.textContent = !userId()
+                    ? 'Elige un usuario para habilitar las empresas.'
+                    : (rev
+                        ? 'Elige la empresa. En revisión puedes asignar toda la empresa, un centro o las cuentas que marques.'
+                        : 'Elige la empresa. Luego el centro y las cuentas. Puedes cambiar de empresa cuando quieras; lo guardado se acumula abajo.');
             }
+            var banner = document.getElementById('asig-rev-banner');
+            if (banner) banner.hidden = !rev;
+            var apply = document.getElementById('asig-apply-hint');
+            if (apply) {
+                apply.textContent = rev
+                    ? 'Revisión: asigna toda la empresa, un centro o las cuentas marcadas. Lo que no elijas son las cuentas de los usuarios.'
+                    : 'Suma este centro a la tabla de abajo. El usuario y la empresa se quedan seleccionados.';
+            }
+            var ctaTitle = document.getElementById('asig-cta-title');
+            if (ctaTitle) {
+                ctaTitle.innerHTML = '<i class="fa-solid fa-list"></i> ' + (rev ? 'Cuentas (opcionales)' : 'Cuentas con acceso');
+            }
+            var ccTitle = document.getElementById('asig-cc-title');
+            if (ccTitle && cfg.empresa) {
+                var nom = String(cfg.empresa).toUpperCase();
+                ccTitle.innerHTML = '<i class="fa-solid fa-sitemap"></i> 4. Centro de costos'
+                    + (rev ? ' (opcional)' : '')
+                    + ' (' + nom + ')';
+            }
+            if (rev && ctaQ && cfg.empresa) ctaQ.disabled = false;
+            setStep(pasoWizard());
         }
 
         function loadEmpresas() {
@@ -1781,6 +1855,18 @@
 
         function pickCentro(codigo, nombre) {
             if (!centroSel) return;
+            if (modoRevision() && codigo && String(centroSel.value || '') === String(codigo)) {
+                centroSel.value = '';
+                var listOff = document.getElementById('asig-cc-list');
+                if (listOff) {
+                    listOff.querySelectorAll('.cc-cc-item').forEach(function (btn) {
+                        btn.classList.remove('is-on');
+                        btn.setAttribute('aria-selected', 'false');
+                    });
+                }
+                refrescarModo();
+                return;
+            }
             var exists = false;
             Array.prototype.forEach.call(centroSel.options, function (opt) {
                 if (opt.value === codigo) exists = true;
@@ -1972,8 +2058,6 @@
                 updateCtaSelCount();
                 return;
             }
-            var current = centroSel ? centroSel.value : '';
-            var prev = asignacionDeCentro(cfg.empresa, current);
             var groups = groupByMask(rows);
             box.innerHTML = Object.keys(groups).map(function (key) {
                 var pack = groups[key];
@@ -1992,7 +2076,6 @@
                             '<span class="cc-cta-name">' + escapeHtml(c.nombre) + '</span></label>';
                     }).join('') + '</div>';
             }).join('');
-            syncPermisos(prev ? prev.permisos : null);
             var boxes = box.querySelectorAll('[data-cta]');
             var nOn = 0;
             boxes.forEach(function (i) { if (i.checked) nOn += 1; });
@@ -2043,7 +2126,7 @@
             fillMaskUi('asig-cta-mask', agrupaciones, cuentas, '', setCtaMask);
             fillGrupoUi('asig-cta-grupo', grupos, '', setCtaGrupo);
             updateCtaSelCount();
-            setStep(cfg.empresa ? 3 : (userId() ? 2 : 1));
+            refrescarModo();
         }
 
         function onUserChanged() {
@@ -2055,13 +2138,13 @@
                 saved = [];
                 renderEmpresaCards();
                 renderResumen();
-                setStep(1);
+                refrescarModo();
                 return;
             }
             if (kicker) kicker.textContent = cfg.empresa
                 ? (cfg.ciclo + ' · ' + userName() + ' · ' + String(cfg.empresa).toUpperCase())
                 : (cfg.ciclo + ' · ' + userName());
-            setStep(cfg.empresa ? 3 : 2);
+            refrescarModo();
             loadSaved().then(function () {
                 unlockEmpresas();
                 renderEmpresaCards();
@@ -2079,10 +2162,13 @@
         if (ccQ) ccQ.addEventListener('input', function () { fillCentros(ccQ.value); });
 
         if (centroSel) centroSel.addEventListener('change', function () {
-            if (!centroSel.value) return;
-            setStep(4);
+            if (!centroSel.value) {
+                refrescarModo();
+                return;
+            }
             if (ctaQ) ctaQ.disabled = false;
             loadCuentas();
+            refrescarModo();
         });
 
         if (ctaQ) ctaQ.addEventListener('input', function () {
@@ -2123,10 +2209,12 @@
             var opt = centroSel && centroSel.options[centroSel.selectedIndex];
             syncCtaSelectedFromDom();
             var ctas = Object.keys(ctaSelected).map(function (k) { return ctaSelected[k]; });
-            var perms = [];
-            document.querySelectorAll('#asig-permisos input[name="permiso"]:checked').forEach(function (i) {
-                perms.push(i.value);
-            });
+            var perms = permisosMarcados();
+            var revision = modoRevision();
+            if (!perms.length) {
+                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta un permiso', text: 'Marca Capturar o Revisar.' });
+                return null;
+            }
             var payload = {
                 empresa: cfg.empresa,
                 user_id: userId(),
@@ -2136,14 +2224,21 @@
                 permisos: perms
             };
             if (!payload.centro_codigo) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta el centro', text: 'Elige un centro de costos o la opción Sin centro de costos.' });
-                return null;
+                if (!revision) {
+                    if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta el centro', text: 'Elige un centro de costos o la opción Sin centro de costos.' });
+                    return null;
+                }
+                payload.centro_codigo = EMPRESA_CODIGO;
+                payload.centro_nombre = EMPRESA_NOMBRE;
             }
             if (isSinCentro(payload.centro_codigo)) {
                 payload.centro_codigo = SIN_CENTRO_CODIGO;
                 payload.centro_nombre = SIN_CENTRO_NOMBRE;
             }
-            if (!ctas.length) {
+            if (isEmpresaCompleta(payload.centro_codigo)) {
+                payload.centro_nombre = EMPRESA_NOMBRE;
+            }
+            if (!revision && !ctas.length) {
                 if (window.Swal) Swal.fire({ icon: 'warning', title: 'Sin cuentas', text: 'Selecciona al menos una cuenta.' });
                 return null;
             }
@@ -2255,10 +2350,22 @@
             pickUser('');
         });
 
+        document.querySelectorAll('#asig-permisos input[name="permiso"]').forEach(function (input) {
+            input.addEventListener('change', function () {
+                if (input.checked && (input.value === 'capturar' || input.value === 'revisar')) {
+                    var otro = input.value === 'capturar' ? 'revisar' : 'capturar';
+                    document.querySelectorAll('#asig-permisos input[name="permiso"]').forEach(function (i) {
+                        if (i.value === otro) i.checked = false;
+                    });
+                }
+                refrescarModo();
+            });
+        });
+
         unlockEmpresas();
         loadEmpresas();
         fillUsers('');
-        setStep(1);
+        refrescarModo();
     };
 
     function setStep(n) {

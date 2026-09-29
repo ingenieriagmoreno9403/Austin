@@ -265,6 +265,169 @@ class AutinApiClient
     }
 
     /**
+     * Una consulta por par centro + cuenta (FormatCode).
+     * El filtro CC/Cuenta de la API es parcial; el llamador se queda con el par exacto.
+     * Un HTTP 429 no cuenta como “sin gasto”.
+     *
+     * @param  array<int, string>  $cuentas
+     * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>, failed: array<int, string>}
+     */
+    public function gastoRealPorCuentas(string $empresa, int $year, array $cuentas, int $maxPages = 12, int $concurrency = 3, string $cc = ''): array
+    {
+        $cuentas = array_values(array_unique(array_filter(array_map('trim', $cuentas))));
+        if (! $cuentas) {
+            return ['ok' => true, 'message' => null, 'rows' => [], 'failed' => []];
+        }
+
+        $base = [
+            'Empresa' => $empresa,
+            'year' => $year,
+            'fecha_desde' => $year . '-01-01',
+            'fecha_hasta' => $year . '-12-31',
+            'per_page' => 500,
+        ];
+        $cc = trim($cc);
+        if ($cc !== '') {
+            $base['CC'] = $cc;
+        }
+        $url = $this->baseUrl.'/gasto-real';
+        $rows = [];
+        $lastByCuenta = [];
+        $failed = [];
+        $message = null;
+
+        $take = function ($response, $i) use (&$rows, &$lastByCuenta, &$failed, $maxPages, $cuentas) {
+            $status = method_exists($response, 'getStatusCode') ? $response->getStatusCode() : 0;
+            if ($status !== 200) {
+                $failed[$i] = $cuentas[$i] ?? (string) $i;
+
+                return;
+            }
+            unset($failed[$i]);
+            $json = json_decode((string) $response->getBody(), true);
+            $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+            foreach ($data as $row) {
+                if (is_array($row)) {
+                    $rows[] = $row;
+                }
+            }
+            $meta = is_array($json['meta'] ?? null) ? $json['meta'] : [];
+            $last = (int) ($meta['last_page'] ?? 1);
+            $lastByCuenta[$i] = min(max(1, $last), max(1, $maxPages));
+        };
+
+        $runPool = function (callable $requests) use ($concurrency, $take, &$message) {
+            $pool = new Pool($this->client, $requests(), [
+                'concurrency' => max(1, $concurrency),
+                'fulfilled' => function ($response, $i) use ($take) {
+                    $take($response, $i);
+                },
+                'rejected' => function ($reason, $i) use (&$failed, &$message, $cuentas) {
+                    $failed[$i] = $cuentas[$i] ?? (string) $i;
+                    $message = $message ?: ('No se pudo conectar con AutinApi: ' . $reason);
+                },
+            ]);
+            $pool->promise()->wait();
+        };
+
+        $runPool(function () use ($url, $base, $cuentas) {
+            foreach ($cuentas as $i => $cuenta) {
+                $query = array_filter(array_merge($base, ['Cuenta' => $cuenta, 'CC' => $base['CC'] ?? null, 'page' => 1]), static function ($value) {
+                    return $value !== null && $value !== '';
+                });
+                yield $i => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        });
+
+        if ($failed) {
+            usleep(800000);
+            $retry = $failed;
+            $runPool(function () use ($url, $base, $retry) {
+                foreach ($retry as $i => $cuenta) {
+                    $query = array_filter(array_merge($base, ['Cuenta' => $cuenta, 'CC' => $base['CC'] ?? null, 'page' => 1]), static function ($value) {
+                        return $value !== null && $value !== '';
+                    });
+                    yield $i => new Request('GET', $url.'?'.http_build_query($query));
+                }
+            });
+        }
+
+        $pageReqs = function () use ($url, $base, $cuentas, $lastByCuenta) {
+            foreach ($cuentas as $i => $cuenta) {
+                if (! isset($lastByCuenta[$i])) {
+                    continue;
+                }
+                $last = (int) $lastByCuenta[$i];
+                for ($page = 2; $page <= $last; $page++) {
+                    $query = array_filter(array_merge($base, ['Cuenta' => $cuenta, 'CC' => $base['CC'] ?? null, 'page' => $page]), static function ($value) {
+                        return $value !== null && $value !== '';
+                    });
+                    yield $i . '-' . $page => new Request('GET', $url.'?'.http_build_query($query));
+                }
+            }
+        };
+        $pageFailed = [];
+        $poolPages = new Pool($this->client, $pageReqs(), [
+            'concurrency' => max(1, $concurrency),
+            'fulfilled' => function ($response, $key) use (&$rows, &$pageFailed) {
+                if ($response->getStatusCode() !== 200) {
+                    $pageFailed[$key] = true;
+
+                    return;
+                }
+                unset($pageFailed[$key]);
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                foreach ($data as $row) {
+                    if (is_array($row)) {
+                        $rows[] = $row;
+                    }
+                }
+            },
+            'rejected' => function ($reason, $key) use (&$pageFailed, &$message) {
+                $pageFailed[$key] = true;
+                $message = $message ?: ('No se pudo conectar con AutinApi: ' . $reason);
+            },
+        ]);
+        $poolPages->promise()->wait();
+        if ($pageFailed) {
+            usleep(800000);
+            $retryPages = function () use ($pageReqs, $pageFailed) {
+                foreach ($pageReqs() as $key => $request) {
+                    if (isset($pageFailed[$key])) {
+                        yield $key => $request;
+                    }
+                }
+            };
+            $poolRetry = new Pool($this->client, $retryPages(), [
+                'concurrency' => max(1, $concurrency),
+                'fulfilled' => function ($response) use (&$rows) {
+                    if ($response->getStatusCode() !== 200) {
+                        return;
+                    }
+                    $json = json_decode((string) $response->getBody(), true);
+                    $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                    foreach ($data as $row) {
+                        if (is_array($row)) {
+                            $rows[] = $row;
+                        }
+                    }
+                },
+            ]);
+            $poolRetry->promise()->wait();
+        }
+
+        $failedCodes = array_values(array_unique(array_filter($failed)));
+
+        return [
+            'ok' => $failedCodes === [] || $lastByCuenta !== [],
+            'message' => ($failedCodes === [] || $lastByCuenta !== []) ? null : ($message ?: 'Sin conexión a gasto real SAP'),
+            'rows' => $rows,
+            'failed' => $failedCodes,
+        ];
+    }
+
+    /**
      * Una fila de gasto-real por centro para leer DEPTO.
      *
      * @param  array<int, string>  $ccs

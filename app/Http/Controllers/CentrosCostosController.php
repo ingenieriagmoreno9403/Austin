@@ -750,7 +750,7 @@ class CentrosCostosController extends Controller
         $empresa = strtoupper(trim((string) $request->get('empresa', '')));
         $cc = trim((string) $request->get('cc', $request->get('CC', '')));
         $year = (int) $request->get('year', $request->get('anio', 0));
-        $nombres = $this->listaRequest($request, 'nombres');
+        $cuentas = $this->listaRequest($request, 'cuentas');
 
         $alias = [
             'ABSA' => 'AUSTIN',
@@ -766,19 +766,19 @@ class CentrosCostosController extends Controller
             $year = (int) date('Y');
         }
 
-        if (! $nombres) {
-            $this->completarNombresGastoDesdeAsignaciones($empresa, $cc, $nombres);
+        if (! $cuentas) {
+            $this->completarCuentasGastoDesdeAsignaciones($empresa, $cc, $cuentas);
         }
 
-        $cacheKey = 'cc.gasto-real.v7.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($nombres));
+        $cacheKey = 'cc.gasto-real.v9.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['por_cuenta'])) {
             return response()->json($cached);
         }
 
         try {
-            $payload = $this->cargarGastoRealCentro($empresa, $cc, $year, $nombres);
-            if (! empty($payload['ok']) && ! empty($payload['por_cuenta'])) {
+            $payload = $this->cargarGastoRealCentro($empresa, $cc, $year, $cuentas);
+            if (! empty($payload['ok']) && ! empty($payload['completo']) && ! empty($payload['por_cuenta'])) {
                 Cache::put($cacheKey, $payload, 900);
             }
         } catch (Throwable $e) {
@@ -1418,10 +1418,10 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * @param  array<int, string>  $nombres
+     * @param  array<int, string>  $cuentas
      * @return array{ok: bool, year: int, por_cuenta: array<string, array<string, mixed>>|\stdClass, mensaje: string|null}
      */
-    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year, array $nombres = []): array
+    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year, array $cuentas = []): array
     {
         $api = app(AutinApiClient::class);
         $porCuenta = [];
@@ -1435,34 +1435,45 @@ class CentrosCostosController extends Controller
         ];
 
         $consultas = [];
-        foreach ($nombres as $nombre) {
-            $nombre = trim($nombre);
-            if ($nombre !== '') {
-                $consultas[] = $nombre;
+        foreach ($cuentas as $cuenta) {
+            $cuenta = trim($cuenta);
+            if ($cuenta !== '') {
+                $consultas[$this->codigoCuentaKey($cuenta)] = $cuenta;
             }
         }
+        $consultas = array_values($consultas);
+        $failed = [];
 
         if ($consultas) {
-            $cachedNombres = [];
+            $cachedCuentas = [];
             $faltan = [];
-            foreach ($consultas as $nombre) {
-                $nk = $this->nombreCuentaKey($nombre);
-                $nomCache = 'cc.gasto-nom.v2.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($nk);
-                $hit = Cache::get($nomCache);
+            foreach ($consultas as $cuenta) {
+                $ck = $this->codigoCuentaKey($cuenta);
+                $ctaCache = 'cc.gasto-cta.v4.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($ck);
+                $hit = Cache::get($ctaCache);
                 if (is_array($hit) && isset($hit['gasto']) && is_array($hit['gasto'])) {
-                    $porCuenta[$nk] = [
-                        'nombre' => $hit['nombre'] ?? $nombre,
+                    $porCuenta[$ck] = [
+                        'codigo' => $hit['codigo'] ?? $cuenta,
+                        'nombre' => $hit['nombre'] ?? '',
                         'gasto' => $hit['gasto'],
                     ];
-                    $cachedNombres[$nk] = true;
+                    $cachedCuentas[$ck] = true;
                 } else {
-                    $faltan[] = $nombre;
+                    $faltan[] = $cuenta;
                 }
             }
+            $failed = [];
             if ($faltan) {
-                $res = $api->gastoRealPorNombres($empresa, $year, $faltan, 12, 8, $cc);
+                $pedido = [];
+                foreach ($faltan as $cuenta) {
+                    $pedido[] = $this->codigoCuentaKey($cuenta);
+                }
+                $res = $api->gastoRealPorCuentas($empresa, $year, $pedido, 12, 3, $cc);
+                foreach ($res['failed'] ?? [] as $codigo) {
+                    $failed[$this->codigoCuentaKey((string) $codigo)] = true;
+                }
                 if (empty($res['ok'])) {
-                    if (! $cachedNombres) {
+                    if (! $cachedCuentas) {
                         $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
                     }
                 } else {
@@ -1473,19 +1484,26 @@ class CentrosCostosController extends Controller
                             $this->acumularGastoRealFila($porCuenta, $row, $empresa, $year, $faltan, $cc);
                         }
                     }
-                    foreach ($faltan as $nombre) {
-                        $nk = $this->nombreCuentaKey($nombre);
-                        if (! isset($porCuenta[$nk])) {
-                            $porCuenta[$nk] = [
-                                'nombre' => $nombre,
+                    foreach ($faltan as $cuenta) {
+                        $ck = $this->codigoCuentaKey($cuenta);
+                        if (isset($failed[$ck])) {
+                            continue;
+                        }
+                        if (! isset($porCuenta[$ck])) {
+                            $porCuenta[$ck] = [
+                                'codigo' => $cuenta,
+                                'nombre' => '',
                                 'gasto' => array_fill(0, 12, 0.0),
                             ];
                         }
-                        Cache::put('cc.gasto-nom.v2.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($nk), $porCuenta[$nk], 1800);
+                        $suma = array_sum($porCuenta[$ck]['gasto']);
+                        if ($suma != 0.0) {
+                            Cache::put('cc.gasto-cta.v4.' . $empresa . '.' . $cc . '.' . $year . '.' . md5($ck), $porCuenta[$ck], 1800);
+                        }
                     }
                 }
             }
-            if ($cachedNombres) {
+            if ($cachedCuentas) {
                 $ok = true;
             }
         } elseif ($cc !== '') {
@@ -1496,7 +1514,7 @@ class CentrosCostosController extends Controller
                 $ok = true;
                 foreach ($res['rows'] as $row) {
                     if (is_array($row)) {
-                        $this->acumularGastoRealFila($porCuenta, $row, $empresa, $year, $nombres, $cc);
+                        $this->acumularGastoRealFila($porCuenta, $row, $empresa, $year, [], $cc);
                     }
                 }
             }
@@ -1504,6 +1522,7 @@ class CentrosCostosController extends Controller
 
         return [
             'ok' => $ok,
+            'completo' => $consultas !== [] && $failed === [] && count($porCuenta) >= count($consultas),
             'year' => $year,
             'por_cuenta' => $porCuenta ?: (object) [],
             'mensaje' => $mensaje,
@@ -1534,9 +1553,9 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * @param  array<int, string>  $nombres
+     * @param  array<int, string>  $cuentas
      */
-    protected function completarNombresGastoDesdeAsignaciones(string $empresa, string $cc, array &$nombres): void
+    protected function completarCuentasGastoDesdeAsignaciones(string $empresa, string $cc, array &$cuentas): void
     {
         if (! Schema::hasTable('tbl_cc_asignaciones') || ! Schema::hasTable('tbl_cc_asignacion_cuentas')) {
             return;
@@ -1553,23 +1572,24 @@ class CentrosCostosController extends Controller
         }
         foreach ($q->get() as $asig) {
             foreach ($asig->cuentas as $cta) {
-                $nom = trim((string) $cta->cuenta_nombre);
-                if ($nom !== '') {
-                    $nombres[] = $nom;
+                $codigo = trim((string) $cta->cuenta_codigo);
+                if ($codigo !== '') {
+                    $cuentas[] = $codigo;
                 }
             }
         }
-        $nombres = array_values(array_unique($nombres));
+        $cuentas = array_values(array_unique($cuentas));
     }
 
     /**
-     * Suma importes de la misma cuenta / DescCuenta en el mismo mes.
+     * Suma importes de la misma cuenta en el mismo mes.
+     * Cuenta y CC de la API son coincidencias parciales: aquí se exige el código y el centro exactos.
      *
      * @param  array<string, array{codigo: string, nombre: string, gasto: array<int, float>}>  $porCuenta
      * @param  array<string, mixed>  $row
-     * @param  array<int, string>  $nombresPedido
+     * @param  array<int, string>  $cuentasPedido
      */
-    protected function acumularGastoRealFila(array &$porCuenta, array $row, string $empresa, int $year, array $nombresPedido = [], string $cc = ''): void
+    protected function acumularGastoRealFila(array &$porCuenta, array $row, string $empresa, int $year, array $cuentasPedido = [], string $cc = ''): void
     {
         $rowEmp = $this->campoFila($row, ['EMPRESA', 'Empresa', 'empresa', 'DB']);
         if ($rowEmp !== '' && ! $this->mismaEmpresaSap($rowEmp, $empresa)) {
@@ -1581,8 +1601,9 @@ class CentrosCostosController extends Controller
             return;
         }
 
-        $nombre = $this->campoFila($row, ['DescCuenta', 'AcctName', 'NOMBRE', 'AccountName', 'nombre']);
-        if ($nombre === '' || ($nombresPedido && ! $this->nombreGastoPedido($nombre, $nombresPedido))) {
+        $codigo = $this->campoFila($row, ['Cuenta', 'FormatCode', 'AcctCode', 'CUENTA', 'codigo']);
+        $key = $this->codigoCuentaKey($codigo);
+        if ($key === '' || ($cuentasPedido && ! $this->cuentaGastoPedida($key, $cuentasPedido))) {
             return;
         }
 
@@ -1596,31 +1617,30 @@ class CentrosCostosController extends Controller
             return;
         }
 
+        $nombre = $this->campoFila($row, ['DescCuenta', 'AcctName', 'NOMBRE', 'AccountName', 'nombre']);
         $importe = $this->importeGastoFila($row);
-        $key = $this->nombreCuentaKey($nombre);
-        if ($key === '') {
-            return;
-        }
         if (! isset($porCuenta[$key])) {
             $porCuenta[$key] = [
+                'codigo' => $codigo,
                 'nombre' => $nombre,
                 'gasto' => array_fill(0, 12, 0.0),
             ];
+        } elseif ($nombre !== '' && ($porCuenta[$key]['nombre'] ?? '') === '') {
+            $porCuenta[$key]['nombre'] = $nombre;
         }
         $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $importe, 2);
     }
 
     /**
-     * @param  array<int, string>  $nombres
+     * @param  array<int, string>  $cuentas
      */
-    protected function nombreGastoPedido(string $nombre, array $nombres): bool
+    protected function cuentaGastoPedida(string $key, array $cuentas): bool
     {
-        $nk = $this->nombreCuentaKey($nombre);
-        if ($nk === '') {
+        if ($key === '') {
             return false;
         }
-        foreach ($nombres as $req) {
-            if ($this->nombreCuentaKey((string) $req) === $nk) {
+        foreach ($cuentas as $req) {
+            if ($this->codigoCuentaKey((string) $req) === $key) {
                 return true;
             }
         }

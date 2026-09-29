@@ -43,8 +43,8 @@
     <div id="ctl-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
             <i class="fa-solid fa-user-lock"></i>
-            No tienes centros de costo asignados en ningún ciclo.
-            Pide a contabilidad que te asigne usuario, centro, cuentas y permiso de captura.
+            No tienes centros ni cuentas con permiso de capturar o editar.
+            Aquí se ven los que te quedan asignados después de cerrar el ciclo, no los de revisión.
         </div>
     </div>
 
