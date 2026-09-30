@@ -9837,7 +9837,10 @@
                 toast('error', 'Sin CardCode', 'Se necesita CodigoCliente para consultar listaPreciosventa.');
                 return;
             }
+            var prevHtml = btn.innerHTML;
             btn.disabled = true;
+            btn.setAttribute('aria-busy', 'true');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
             var payloadBase = {
                 empresa: emp,
                 card_code: card,
@@ -9846,16 +9849,34 @@
                 anio: CC.state.anioGasto || new Date().getFullYear(),
                 anio_proyeccion: costosAnio()
             };
+            function parseJsonResponse(r) {
+                return r.text().then(function (txt) {
+                    var json = null;
+                    try {
+                        json = txt ? JSON.parse(txt) : null;
+                    } catch (e) {
+                        json = null;
+                    }
+                    if (!r.ok) {
+                        var msg = (json && json.message)
+                            || (r.status === 404
+                                ? 'No se encontró el producto en listaPreciosventa.'
+                                : (r.status === 504 || r.status === 408
+                                    ? 'La consulta a SAP tardó demasiado. Intenta de nuevo.'
+                                    : ('Error HTTP ' + r.status + (txt && !json ? ' (respuesta no JSON)' : ''))));
+                        throw new Error(msg);
+                    }
+                    if (!json) {
+                        throw new Error('La respuesta del servidor no es JSON válido.');
+                    }
+                    return json;
+                });
+            }
             fetch(url + '/actualizar-desde-api', {
                 method: 'POST',
                 headers: apiJsonHeaders(),
                 body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: false }))
-            }).then(function (r) {
-                return r.json().then(function (json) {
-                    if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar la API');
-                    return json;
-                });
-            }).then(function (json) {
+            }).then(parseJsonResponse).then(function (json) {
                 if (json.igual) {
                     toast('info', 'Sin cambios', 'El precio global ya coincide con la API (' +
                         moneyTxt(json.precio_api, json.moneda_api) + ').');
@@ -9872,12 +9893,7 @@
                     method: 'POST',
                     headers: apiJsonHeaders(),
                     body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: true }))
-                }).then(function (r) {
-                    return r.json().then(function (j2) {
-                        if (!r.ok) throw new Error((j2 && j2.message) || 'No se pudo actualizar');
-                        return j2;
-                    });
-                }).then(function (j2) {
+                }).then(parseJsonResponse).then(function (j2) {
                     if (j2.actualizado) {
                         toast('success', 'Precio global actualizado',
                             moneyTxt(j2.precio_anterior, j2.moneda_anterior) + ' → ' +
@@ -9891,6 +9907,8 @@
                 toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
             }).then(function () {
                 btn.disabled = false;
+                btn.removeAttribute('aria-busy');
+                btn.innerHTML = prevHtml || '<i class="fa-solid fa-cloud-arrow-down"></i>';
             });
         }
 

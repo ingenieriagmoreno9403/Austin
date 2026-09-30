@@ -598,6 +598,9 @@ class ProyeccionesVentasController extends Controller
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
             return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
         }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(120);
+        }
 
         $data = $request->validate([
             'empresa' => 'required|string|max:40',
@@ -642,70 +645,20 @@ class ProyeccionesVentasController extends Controller
         $monedaLocal = $local ? strtoupper((string) ($local->moneda ?: 'MXN')) : null;
 
         try {
-            $api = app(AutinApiClient::class);
-            $res = $api->listaPreciosVenta([
-                'Empresa' => $empresa,
-                'CodigoCliente' => $card,
-                'CodigoArticulo' => $item,
-                'per_page' => 100,
-                'page' => 1,
-            ]);
+            // Misma ruta optimizada que Lista de precios / Asignaciones (cache + por artículo).
+            $pack = $this->cargarListasPreciosCliente($empresa, $card, $anioProy, [$item], false);
         } catch (Throwable $e) {
             return response()->json(['message' => 'Error al consultar API: '.$e->getMessage()], 422);
         }
-        if (empty($res['ok'])) {
+        if (empty($pack['ok'])) {
             return response()->json([
-                'message' => $res['message'] ?? 'Sin conexión a listaPreciosventa',
+                'message' => $pack['mensaje'] ?? 'Sin conexión a listaPreciosventa',
             ], 422);
         }
 
-        $body = is_array($res['body'] ?? null) ? $res['body'] : [];
-        $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
-        // Prefijo en API: si página 1 no trae el ítem exacto, seguir páginas.
-        if (! $this->listaPrecioTraeArticulo($rows, $item, $card)) {
-            $rows = array_merge($rows, $this->paginasListaPrecioArticulo($api, $empresa, $card, $item));
-        }
-
-        // Casar ItemCode exacto; CardCode flexible (D139 ≈ DD139).
-        $hitExact = null;
-        $hitRel = null;
-        $hitItem = null;
-        foreach ($rows as $apiRow) {
-            if (! is_array($apiRow)) {
-                continue;
-            }
-            $apiItem = trim((string) (
-                $apiRow['CodigoArticulo']
-                ?? $apiRow['Codigo de Articulo']
-                ?? $apiRow['ItemCode']
-                ?? $apiRow['Itemcode']
-                ?? ''
-            ));
-            if ($apiItem === '' || strcasecmp($apiItem, $item) !== 0) {
-                continue;
-            }
-            if ($this->precioPositivoLista($apiRow) <= 0) {
-                continue;
-            }
-            if ($hitItem === null) {
-                $hitItem = $apiRow;
-            }
-            $apiCard = trim((string) (
-                $apiRow['CodigoCliente']
-                ?? $apiRow['CardCode']
-                ?? ''
-            ));
-            if ($apiCard === '' || strcasecmp($apiCard, $card) === 0) {
-                $hitExact = $apiRow;
-                break;
-            }
-            if ($this->mismoCentroCodigo($apiCard, $card)) {
-                $hitRel = $hitRel ?? $apiRow;
-            }
-        }
-        $hit = $hitExact ?? $hitRel ?? $hitItem;
-
-        if (! $hit) {
+        $porArt = is_array($pack['por_articulo'] ?? null) ? $pack['por_articulo'] : [];
+        $hitEntry = $porArt[$item] ?? $porArt[strtoupper($item)] ?? null;
+        if (! is_array($hitEntry) || (float) ($hitEntry['precio'] ?? 0) <= 0) {
             return response()->json([
                 'ok' => false,
                 'message' => 'No se encontró ese producto en listaPreciosventa (Empresa + CodigoCliente + CodigoArticulo).',
@@ -718,10 +671,7 @@ class ProyeccionesVentasController extends Controller
             ], 404);
         }
 
-        $precioApi = round($this->precioPositivoLista($hit), 4);
-        if ($precioApi <= 0) {
-            $precioApi = round($this->numeroVenta($hit, ['Precio', 'Price', 'precio']), 4);
-        }
+        $precioApi = round((float) $hitEntry['precio'], 4);
         if ($precioApi <= 0) {
             return response()->json([
                 'ok' => false,
@@ -731,14 +681,12 @@ class ProyeccionesVentasController extends Controller
                 'producto_codigo' => $item,
             ], 422);
         }
-        $monedaApi = strtoupper(trim((string) (
-            $hit['Moneda'] ?? $hit['Currency'] ?? $hit['DocCur'] ?? ''
-        )));
+        $monedaApi = strtoupper(trim((string) ($hitEntry['moneda'] ?? '')));
         if (! in_array($monedaApi, ['MXN', 'USD'], true)) {
             $monedaApi = $monedaLocal ?: 'MXN';
         }
-        $cardNameApi = trim((string) ($hit['Cliente'] ?? $hit['CardName'] ?? ''));
-        $nombreApi = trim((string) ($hit['Descripcion'] ?? $hit['ItemName'] ?? ''));
+        $cardNameApi = '';
+        $nombreApi = trim((string) ($hitEntry['nombre'] ?? ''));
 
         $mismoPrecio = $precioLocal !== null && abs($precioLocal - $precioApi) < 0.0001;
         $mismaMoneda = $monedaLocal !== null && $monedaLocal === $monedaApi;
@@ -8483,9 +8431,9 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Al guardar una asignación a usuario: si el cliente+producto no están en el maestro
-     * local (tbl_pv_productos_costo), los crea con precio de lista SAP (o el enviado).
-     * No corre al solo seleccionar en la UI.
+     * Al guardar una asignación: siembra Precio global (mes=0) en el maestro local.
+     * Usa precio enviado; si falta, consulta listaPreciosventa.
+     * No pisa precios ya capturados (costo_unitario > 0).
      *
      * @param  array<int, array<string, mixed>>  $cuentas
      */
@@ -8518,10 +8466,10 @@ class ProyeccionesVentasController extends Controller
                 continue;
             }
             $item = trim((string) ($cta['codigo'] ?? $cta['cuenta_codigo'] ?? ''));
-            $precio = round(max(0, (float) ($cta['precio'] ?? $cta['costo'] ?? 0)), 4);
-            if ($item === '' || $precio <= 0) {
+            if ($item === '') {
                 continue;
             }
+            $precio = round(max(0, (float) ($cta['precio'] ?? $cta['costo'] ?? 0)), 4);
             $moneda = strtoupper(trim((string) ($cta['moneda'] ?? 'MXN'))) ?: 'MXN';
             if (! in_array($moneda, ['MXN', 'USD'], true)) {
                 $moneda = 'MXN';
@@ -8558,15 +8506,73 @@ class ProyeccionesVentasController extends Controller
             $existentes[strtoupper(trim((string) $prev->producto_codigo))] = $prev;
         }
 
+        // Opción C: no tocar filas con Precio global ya capturado.
+        $faltanLista = [];
+        foreach ($desired as $key => $d) {
+            $prev = $existentes[$key] ?? null;
+            if ($prev && (float) $prev->costo_unitario > 0) {
+                unset($desired[$key]);
+
+                continue;
+            }
+            if ((float) ($d['precio'] ?? 0) <= 0) {
+                $faltanLista[] = $d['codigo'];
+            }
+        }
+        if (! $desired) {
+            return 0;
+        }
+
+        if ($faltanLista) {
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(120);
+            }
+            try {
+                $pack = $this->cargarListasPreciosCliente($empresa, $card, $anio, $faltanLista, false);
+            } catch (Throwable $e) {
+                $pack = ['ok' => false, 'por_articulo' => [], 'mensaje' => $e->getMessage()];
+            }
+            $porArt = is_array($pack['por_articulo'] ?? null) ? $pack['por_articulo'] : [];
+            foreach ($faltanLista as $codigo) {
+                $key = strtoupper($codigo);
+                if (! isset($desired[$key]) || (float) $desired[$key]['precio'] > 0) {
+                    continue;
+                }
+                $hit = $porArt[$codigo] ?? $porArt[$key] ?? null;
+                if (! is_array($hit)) {
+                    continue;
+                }
+                $precioLista = round((float) ($hit['precio'] ?? 0), 4);
+                if ($precioLista <= 0) {
+                    continue;
+                }
+                $monedaLista = strtoupper(trim((string) ($hit['moneda'] ?? 'MXN'))) ?: 'MXN';
+                if (! in_array($monedaLista, ['MXN', 'USD'], true)) {
+                    $monedaLista = 'MXN';
+                }
+                $desired[$key]['precio'] = $precioLista;
+                $desired[$key]['moneda'] = $monedaLista;
+                $nombreLista = trim((string) ($hit['nombre'] ?? ''));
+                if ($nombreLista !== '' && (
+                    $desired[$key]['nombre'] === ''
+                    || strcasecmp($desired[$key]['nombre'], $desired[$key]['codigo']) === 0
+                )) {
+                    $desired[$key]['nombre'] = mb_substr($nombreLista, 0, 180);
+                }
+            }
+        }
+
         $inserts = [];
         $historial = [];
         $creados = 0;
         foreach ($desired as $key => $d) {
+            if ((float) $d['precio'] <= 0) {
+                continue;
+            }
             $prev = $existentes[$key] ?? null;
             if ($prev) {
-                $igual = abs((float) $prev->costo_unitario - $d['precio']) < 0.0001
-                    && strtoupper((string) ($prev->moneda ?: 'MXN')) === $d['moneda'];
-                if ($igual) {
+                // Solo rellena vacío; no sobrescribe capturado.
+                if ((float) $prev->costo_unitario > 0) {
                     continue;
                 }
                 PvProductoCosto::query()->where('id', $prev->id)->update([
