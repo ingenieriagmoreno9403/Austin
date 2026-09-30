@@ -4028,7 +4028,7 @@ class ProyeccionesVentasController extends Controller
                 $cuentas = $esEmpresa ? [] : $data['cuentas'];
                 $this->syncCuentas($asig, $cuentas);
                 if (! $esEmpresa) {
-                    $this->propagarCuentasAColaboradores($asig);
+                $this->propagarCuentasAColaboradores($asig);
                     $creadosMaestro = $this->asegurarMaestroDesdeAsignacion($asig, $cuentas);
                 }
             }
@@ -4215,11 +4215,11 @@ class ProyeccionesVentasController extends Controller
         // 2) Cache RAM corta (útil mientras se escribe el snapshot).
         $cacheKey = 'pv.venta-real.v6.'.$empresa.'.'.$cc.'.'.$year;
         if (! $force) {
-            $cached = Cache::get($cacheKey);
-            if (is_array($cached) && ! empty($cached['ok'])) {
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['ok'])) {
                 $cached['fuente'] = $cached['fuente'] ?? 'cache';
 
-                return response()->json($cached);
+            return response()->json($cached);
             }
         } else {
             Cache::forget($cacheKey);
@@ -5887,71 +5887,71 @@ class ProyeccionesVentasController extends Controller
     protected function agregarPorCuentaVentas(array $rows, int $year, string $cc = ''): array
     {
         $porCuenta = [];
-        foreach ($rows as $row) {
-            if (! is_array($row)) {
-                continue;
-            }
-            $rowCc = (string) ($row['CardCode'] ?? $row['Cardcode'] ?? $row['CC'] ?? '');
-            if ($cc !== '' && ! $this->mismoCentroCodigo($rowCc, $cc)) {
-                continue;
-            }
-            $codigo = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
-            if ($codigo === '') {
-                continue;
-            }
-            $fecha = (string) ($row['DocDate'] ?? $row['Fecha'] ?? $row['fecha'] ?? $row['TaxDate'] ?? '');
-            $ts = strtotime(substr($fecha, 0, 19));
-            if ($ts && (int) date('Y', $ts) !== $year) {
-                continue;
-            }
-            $mes = $this->mesDeFecha($fecha);
-            if ($mes < 0) {
-                continue;
-            }
-            $qty = $this->cantidadVenta($row);
-            $importe = $this->importeVenta($row, ['LineTotal', 'linetotal', 'GTotal']);
-            $importeUsd = $this->importeVenta($row, ['LineTotalUSD', 'LineTotalUsd', 'LineTotalFC', 'TotalFrgn']);
-            $price = $this->numeroVenta($row, ['Price', 'Precio', 'UnitPrice', 'PriceBefDi']);
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $rowCc = (string) ($row['CardCode'] ?? $row['Cardcode'] ?? $row['CC'] ?? '');
+                if ($cc !== '' && ! $this->mismoCentroCodigo($rowCc, $cc)) {
+                    continue;
+                }
+                $codigo = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+                if ($codigo === '') {
+                    continue;
+                }
+                $fecha = (string) ($row['DocDate'] ?? $row['Fecha'] ?? $row['fecha'] ?? $row['TaxDate'] ?? '');
+                $ts = strtotime(substr($fecha, 0, 19));
+                if ($ts && (int) date('Y', $ts) !== $year) {
+                    continue;
+                }
+                $mes = $this->mesDeFecha($fecha);
+                if ($mes < 0) {
+                    continue;
+                }
+                $qty = $this->cantidadVenta($row);
+                $importe = $this->importeVenta($row, ['LineTotal', 'linetotal', 'GTotal']);
+                $importeUsd = $this->importeVenta($row, ['LineTotalUSD', 'LineTotalUsd', 'LineTotalFC', 'TotalFrgn']);
+                $price = $this->numeroVenta($row, ['Price', 'Precio', 'UnitPrice', 'PriceBefDi']);
             $costoInv = $this->costoInventarioVenta($row);
-            $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
+                $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
             $unidad = $this->elegirUnidadDesdeVenta($row);
             $key = $this->claveProductoVenta($codigo);
             if ($key === '') {
                 continue;
             }
-            if (! isset($porCuenta[$key])) {
-                $porCuenta[$key] = [
-                    'codigo' => $codigo,
-                    'nombre' => $nombre,
+                if (! isset($porCuenta[$key])) {
+                    $porCuenta[$key] = [
+                        'codigo' => $codigo,
+                        'nombre' => $nombre,
                     'unidad' => $unidad,
-                    'gasto' => array_fill(0, 12, 0.0),
-                    'importe' => array_fill(0, 12, 0.0),
-                    'importe_usd' => array_fill(0, 12, 0.0),
-                    'precio_w' => array_fill(0, 12, 0.0),
-                    'precio_q' => array_fill(0, 12, 0.0),
+                        'gasto' => array_fill(0, 12, 0.0),
+                        'importe' => array_fill(0, 12, 0.0),
+                        'importe_usd' => array_fill(0, 12, 0.0),
+                        'precio_w' => array_fill(0, 12, 0.0),
+                        'precio_q' => array_fill(0, 12, 0.0),
                     'costo' => $costoInv,
                     'costo_moneda' => 'MXN',
-                ];
-            } elseif ($nombre !== '' && $porCuenta[$key]['nombre'] === '') {
-                $porCuenta[$key]['nombre'] = $nombre;
-            }
+                    ];
+                } elseif ($nombre !== '' && $porCuenta[$key]['nombre'] === '') {
+                    $porCuenta[$key]['nombre'] = $nombre;
+                }
             if ($unidad !== '') {
                 $actual = (string) ($porCuenta[$key]['unidad'] ?? '');
                 if ($actual === '' || $this->unidadEsMejor($unidad, $actual)) {
                     $porCuenta[$key]['unidad'] = $unidad;
                 }
             }
-            $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $qty, 4);
-            $porCuenta[$key]['importe'][$mes] = round($porCuenta[$key]['importe'][$mes] + $importe, 2);
-            $porCuenta[$key]['importe_usd'][$mes] = round($porCuenta[$key]['importe_usd'][$mes] + $importeUsd, 2);
-            $peso = abs($qty);
-            if ($price == 0.0 && abs($qty) > 0.0001) {
-                $price = $importe / $qty;
-            }
-            if ($peso > 0 && $price != 0.0) {
-                $porCuenta[$key]['precio_w'][$mes] += $peso * $price;
-                $porCuenta[$key]['precio_q'][$mes] += $peso;
-            }
+                $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $qty, 4);
+                $porCuenta[$key]['importe'][$mes] = round($porCuenta[$key]['importe'][$mes] + $importe, 2);
+                $porCuenta[$key]['importe_usd'][$mes] = round($porCuenta[$key]['importe_usd'][$mes] + $importeUsd, 2);
+                $peso = abs($qty);
+                if ($price == 0.0 && abs($qty) > 0.0001) {
+                    $price = $importe / $qty;
+                }
+                if ($peso > 0 && $price != 0.0) {
+                    $porCuenta[$key]['precio_w'][$mes] += $peso * $price;
+                    $porCuenta[$key]['precio_q'][$mes] += $peso;
+                }
             if ($costoInv > 0) {
                 $porCuenta[$key]['costo'] = $costoInv;
             }
@@ -6507,14 +6507,20 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Elige la mejor unidad de una fila de ventas SAP.
-     * Prefiere SalPackMsr (suele ser legible: KILOS, PZA, METROS) o la que tenga
-     * nombre en tblunidadesmedida; SalUnitMsr suele ser código interno (H87, XBX).
+     * Elige la mejor unidad de una fila de ventas SAP (solo etiqueta; no altera qty/montos).
+     * Si SalUnitMsr tiene nombre conocido (catálogo o alias, p. ej. RK→Bobina), se prefiere.
+     * Si no, se mantiene SalPackMsr cuando es más legible (KILOS, METROS, PZA…).
      */
     protected function elegirUnidadDesdeVenta(array $row): string
     {
         $pack = trim((string) ($row['SalPackMsr'] ?? $row['unidad'] ?? ''));
         $unit = trim((string) ($row['SalUnitMsr'] ?? $row['UomCode'] ?? ''));
+
+        // Bobina/carrete etc.: preferir unidad de venta si tenemos etiqueta amigable.
+        if ($unit !== '' && $this->nombreUnidadMedida($unit) !== '') {
+            return $unit;
+        }
+
         if ($pack !== '' && $unit !== '') {
             return $this->unidadEsMejor($pack, $unit) ? $pack : $unit;
         }
@@ -6569,7 +6575,27 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Mapa código UoM → nombre (tblunidadesmedida).
+     * Alias de códigos SAP (SalUnitMsr) → nombre visible.
+     * Sin cantidades de empaque (SalPackUn).
+     *
+     * @return array<string, string>
+     */
+    protected function aliasUnidadesSap(): array
+    {
+        return [
+            'RK' => 'Bobina',
+            'RL' => 'Rollo',
+            'RO' => 'Rollo',
+            'BO' => 'Botella',
+            'PR' => 'Par',
+            'SET' => 'Juego',
+            'PZA' => 'Pieza',
+            'PZ' => 'Pieza',
+        ];
+    }
+
+    /**
+     * Mapa código UoM → nombre (aliases SAP + tblunidadesmedida).
      *
      * @return array<string, string>
      */
@@ -6580,6 +6606,9 @@ class ProyeccionesVentasController extends Controller
             return $cache;
         }
         $cache = [];
+        foreach ($this->aliasUnidadesSap() as $code => $nombre) {
+            $cache[strtoupper((string) $code)] = $nombre;
+        }
         if (! Schema::hasTable('tblunidadesmedida')) {
             return $cache;
         }
@@ -6825,8 +6854,8 @@ class ProyeccionesVentasController extends Controller
             ], $extra), $maxPages, 4);
             if (empty($pack['ok'])) {
                 $ok = false;
-                $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
-            }
+                    $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
+                }
             $filas += count($pack['rows'] ?? []);
             $total += (int) ($pack['total'] ?? 0);
             foreach ($pack['rows'] ?? [] as $row) {
@@ -7229,27 +7258,27 @@ class ProyeccionesVentasController extends Controller
     {
         $map = [];
         foreach ($rows as $row) {
-            if (! is_array($row)) {
-                continue;
+                if (! is_array($row)) {
+                    continue;
+                }
+                $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
+                if ($card === '') {
+                    continue;
+                }
+                $name = trim((string) ($row['CardName'] ?? $row['Cardname'] ?? ''));
+                $key = strtoupper($card);
+                if (! isset($map[$key])) {
+                    $map[$key] = [
+                        'codigo' => $card,
+                        'nombre' => $name !== '' ? $name : $card,
+                        'empresa' => $empresa,
+                        'activo' => true,
+                        'departamento' => '',
+                    ];
+                } elseif (($map[$key]['nombre'] === $map[$key]['codigo']) && $name !== '') {
+                    $map[$key]['nombre'] = $name;
+                }
             }
-            $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
-            if ($card === '') {
-                continue;
-            }
-            $name = trim((string) ($row['CardName'] ?? $row['Cardname'] ?? ''));
-            $key = strtoupper($card);
-            if (! isset($map[$key])) {
-                $map[$key] = [
-                    'codigo' => $card,
-                    'nombre' => $name !== '' ? $name : $card,
-                    'empresa' => $empresa,
-                    'activo' => true,
-                    'departamento' => '',
-                ];
-            } elseif (($map[$key]['nombre'] === $map[$key]['codigo']) && $name !== '') {
-                $map[$key]['nombre'] = $name;
-            }
-        }
 
         return $map;
     }
@@ -8749,7 +8778,7 @@ class ProyeccionesVentasController extends Controller
             }
             $vistos[$permisoId] = true;
             $rows[] = [
-                'asignacion_id' => $asig->id,
+                    'asignacion_id' => $asig->id,
                 'permiso_id' => $permisoId,
                 'created_at' => $now,
                 'updated_at' => $now,

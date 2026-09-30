@@ -5678,18 +5678,27 @@
     function nombreUnidadMedida(codigo) {
         var code = String(codigo || '').trim();
         if (!code) return '';
+        var aliases = {
+            RK: 'Bobina',
+            RL: 'Rollo',
+            RO: 'Rollo',
+            BO: 'Botella',
+            PR: 'Par',
+            SET: 'Juego',
+            PZA: 'Pieza',
+            PZ: 'Pieza'
+        };
+        var up = code.toUpperCase();
+        if (aliases[up]) return aliases[up];
         var map = CC.state.unidadesMedida || {};
-        return String(map[code.toUpperCase()] || map[code] || '').trim();
+        return String(map[up] || map[code] || '').trim();
     }
 
-    /** Etiqueta visible: "PIEZAS (PZA)" o solo el código si no hay nombre. */
+    /** Etiqueta visible: solo el nombre (Bobina, PIEZAS…). Sin metros ni código SAP. */
     function formatUnidadLabel(codigo, nombre) {
         var code = String(codigo || '').trim();
         var name = String(nombre || '').trim() || nombreUnidadMedida(code);
         if (!code && !name) return '';
-        if (name && code && name.toUpperCase() !== code.toUpperCase()) {
-            return name + ' (' + code + ')';
-        }
         return name || code;
     }
 
