@@ -772,7 +772,7 @@ class CentrosCostosController extends Controller
         $cuentas = array_values(array_unique($cuentas));
         sort($cuentas);
 
-        $cacheKey = 'cc.gasto-real.v11.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
+        $cacheKey = 'cc.gasto-real.v12.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['por_cuenta'])) {
             return response()->json($cached);
@@ -1451,6 +1451,7 @@ class CentrosCostosController extends Controller
                             'codigo' => $cuenta,
                             'nombre' => '',
                             'gasto' => array_fill(0, 12, 0.0),
+                            'gasto_usd' => array_fill(0, 12, 0.0),
                         ];
                     }
                 } else {
@@ -1476,7 +1477,7 @@ class CentrosCostosController extends Controller
      */
     protected function indiceGastoPorCentro(string $empresa, string $cc, int $year): array
     {
-        $cacheKey = 'cc.gasto-indice.v1.' . $empresa . '.' . $cc . '.' . $year;
+        $cacheKey = 'cc.gasto-indice.v2.' . $empresa . '.' . $cc . '.' . $year;
         $cached = Cache::get($cacheKey);
         if (is_array($cached)) {
             return ['ok' => true, 'por_cuenta' => $cached, 'mensaje' => null];
@@ -1624,16 +1625,22 @@ class CentrosCostosController extends Controller
 
         $nombre = $this->campoFila($row, ['DescCuenta', 'AcctName', 'NOMBRE', 'AccountName', 'nombre']);
         $importe = $this->importeGastoFila($row);
+        $importeUsd = $this->importeGastoFilaUsd($row);
         if (! isset($porCuenta[$key])) {
             $porCuenta[$key] = [
                 'codigo' => $codigo,
                 'nombre' => $nombre,
                 'gasto' => array_fill(0, 12, 0.0),
+                'gasto_usd' => array_fill(0, 12, 0.0),
             ];
         } elseif ($nombre !== '' && ($porCuenta[$key]['nombre'] ?? '') === '') {
             $porCuenta[$key]['nombre'] = $nombre;
         }
+        if (! isset($porCuenta[$key]['gasto_usd']) || ! is_array($porCuenta[$key]['gasto_usd'])) {
+            $porCuenta[$key]['gasto_usd'] = array_fill(0, 12, 0.0);
+        }
         $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $importe, 2);
+        $porCuenta[$key]['gasto_usd'][$mes] = round($porCuenta[$key]['gasto_usd'][$mes] + $importeUsd, 2);
     }
 
     /**
@@ -1686,6 +1693,22 @@ class CentrosCostosController extends Controller
         $credit = (float) ($row['Credit'] ?? $row['CreditLC'] ?? 0);
         if ($debit != 0.0 || $credit != 0.0) {
             return round($debit - $credit, 2);
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * Dólares de /gasto-real (ImporteDlls). No se convierte con el tipo de cambio.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    protected function importeGastoFilaUsd(array $row): float
+    {
+        foreach (['ImporteDlls', 'ImporteDLLS', 'ImporteUSD', 'LineTotalUSD'] as $key) {
+            if (isset($row[$key]) && $row[$key] !== '' && $row[$key] !== null) {
+                return round((float) $row[$key], 2);
+            }
         }
 
         return 0.0;

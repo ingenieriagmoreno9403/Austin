@@ -312,6 +312,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
             Route::get('/gasto-real', [AutinApiController::class, 'gastoReal'])->name('autin-api.gasto-real');
             Route::get('/ventas', [AutinApiController::class, 'ventas'])->name('autin-api.ventas');
             Route::get('/listas-precios', [AutinApiController::class, 'listasPrecios'])->name('autin-api.listas-precios');
+            Route::get('/sumas', [AutinApiController::class, 'sumas'])->name('autin-api.sumas');
 
             Route::get('/{database}/catalogos', [AutinApiController::class, 'catalogos'])
                 ->where('database', 'austin|imsa|pitic|sydney')

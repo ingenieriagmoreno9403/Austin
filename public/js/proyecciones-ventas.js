@@ -31,6 +31,28 @@
         });
     }
 
+    /** Importe que ya está en la moneda de vista (LineTotal o LineTotalUSD). No aplica TC. */
+    function moneyVista(n) {
+        var v = Number(n);
+        if (!isFinite(v)) v = 0;
+        var sym = isUsdView() ? 'US$' : '$';
+        return sym + v.toLocaleString('es-MX', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2
+        });
+    }
+
+    /** Importe SAP ya en la moneda indicada. No aplica tipo de cambio. */
+    function moneyVistaFijo(n, currency) {
+        var v = Number(n);
+        if (!isFinite(v) || !v) return '—';
+        var sym = String(currency || 'MXN').toUpperCase() === 'USD' ? 'US$' : '$';
+        return sym + v.toLocaleString('es-MX', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2
+        });
+    }
+
     function moneyDec(n, monthIdx) {
         return toDisplayAmount(n, monthIdx).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
@@ -597,19 +619,11 @@
         return zeros12();
     }
 
-    /** Venta real del mes en la moneda de vista: USD → LineTotalUSD; MXN → LineTotal. */
+    /** Venta real del mes: USD = LineTotalUSD guardado; MXN = LineTotal. Sin tipo de cambio. */
     function importeMesVentaVista(cta, i) {
         if (!cta) return 0;
-        if (isUsdView()) {
-            var usd = Number((usdSeriesOf(cta)[i]) || 0);
-            if (usd) return usd;
-            return toDisplayAmount(importeMesVentaMxn(cta, i), i);
-        }
-        var mxn = Number((cta.importe && cta.importe[i]) || 0);
-        if (mxn) return mxn;
-        var usdOnly = Number((usdSeriesOf(cta)[i]) || 0);
-        if (usdOnly) return usdOnly * fxRate(i);
-        return importeMesVentaMxn(cta, i);
+        if (isUsdView()) return Number(usdSeriesOf(cta)[i]) || 0;
+        return Number((cta.importe && cta.importe[i]) || 0);
     }
 
     /** Total anual de venta real en la moneda de vista (suma mensual SAP). */
@@ -3205,6 +3219,7 @@
                         renderControlTable();
                     }
                 }
+                if (CC.state.page === 'analisis') renderAnalisis();
                 toast('success', 'TC guardado', 'Base ' + pack.base.toFixed(2) + (fxMesesVarian() ? ' · con variaciones mensuales' : ' · 12 meses iguales'));
                 return true;
             });
@@ -3505,7 +3520,6 @@
         tb.innerHTML = rows.map(function (c) {
             var ctas = cuentasDeCentro(c);
             var ppto = totPptoCentro(c, ctas);
-            var gasto = totGastoCentro(c, ctas) || c.gasto2026 || 0;
             return '<tr data-key="' + centroKey(c) + '">' +
                 '<td><div class="fw-semibold">' + c.codigo + ' — ' + escapeHtml(c.nombre) + '</div><div class="text-muted" style="font-size:.75rem">' + ctas.length + ' productos · ' + (c.sap ? 'SAP' : 'catálogo') + '</div></td>' +
                 '<td>' + escapeHtml(c.empresa) + '</td>' +
@@ -3513,7 +3527,7 @@
                 '<td>' + userCell(c.usuario) + '</td>' +
                 '<td>' + renderBadge(c.estado) + '</td>' +
                 '<td>' + (c.modo === 'solo_revision' ? '<span class="cc-badge cc-badge-solo_revision">Solo revisar</span>' : '<span class="cc-badge cc-badge-captura">Captura</span>') + '</td>' +
-                '<td class="num">' + money(gasto) + '</td>' +
+                '<td class="num">' + moneyVista(totGastoCentroVista(c, ctas)) + '</td>' +
                 '<td class="num">' + money(ppto) + '</td>' +
                 '<td><div class="cc-row-actions">' +
                     '<button class="cc-icon-btn" data-act="detalle" title="Detalle"><i class="fa-solid fa-eye"></i></button>' +
@@ -3551,6 +3565,14 @@
         return (ctas || cuentasEnriquecidas(c)).reduce(function (a, cta) {
             if (cta.importeVenta != null) return a + Number(cta.importeVenta || 0);
             return a + importeVentaMxn(cta);
+        }, 0);
+    }
+
+    /** Venta real ya en la moneda de vista (LineTotal o LineTotalUSD). */
+    function totGastoCentroVista(c, ctas) {
+        return (ctas || cuentasEnriquecidas(c)).reduce(function (a, cta) {
+            if (cta.importeVentaVista != null) return a + Number(cta.importeVentaVista || 0);
+            return a + importeVentaVista(cta);
         }, 0);
     }
 
@@ -3630,8 +3652,9 @@
     function openDetalle(c) {
         var ctas = cuentasDeCentro(c);
         var ppto = totPptoCentro(c, ctas);
-        var gasto = totGastoCentro(c, ctas);
-        var av = pct(ppto, gasto);
+        var gastoMxn = totGastoCentro(c, ctas);
+        var gasto = totGastoCentroVista(c, ctas);
+        var av = pct(ppto, gastoMxn);
         document.getElementById('det-title').textContent = c.codigo + ' — ' + c.nombre;
         document.getElementById('det-body').innerHTML =
             '<div class="cc-context">' +
@@ -3639,7 +3662,7 @@
             item('Responsable', c.usuario || 'Sin asignar') + item('Estado', STATUS[normalizeEstado(c.estado)].label) +
             item('Modo', c.modo === 'solo_revision' ? 'Solo revisar' : 'Puede capturar') +
             item('Productos', ctas.length) +
-            item('Venta 2026', money(gasto)) + item('Proy. 2027', money(ppto)) +
+            item('Venta ' + (CC.state.anioGasto || ''), moneyVista(gasto)) + item('Proy. ' + (CC.state.anioPresupuesto || ''), money(ppto)) +
             '</div>' +
             '<div class="mb-2 d-flex justify-content-between"><span class="text-muted">Avance vs venta 2026</span><strong>' + av + '%</strong></div>' +
             '<div class="cc-progress ' + (av < 40 ? 'warn' : 'good') + '"><span style="width:' + Math.min(av, 100) + '%"></span></div>' +
@@ -5525,8 +5548,8 @@
         return '<div class="cc-month-real">' +
             '<div class="cc-month-qty">' + qtyLabel(qty) + ' <em>uds</em></div>' +
             '<div class="cc-month-money">' +
-                '<span>MXN ' + money(tot) + '</span>' +
-                (usd ? '<span>USD ' + money(usd) + '</span>' : '') +
+                '<span>MXN ' + moneyVistaFijo(tot, 'MXN') + '</span>' +
+                (usd ? '<span>USD ' + moneyVistaFijo(usd, 'USD') + '</span>' : '') +
             '</div>' +
             (price ? '<div class="cc-month-price">P. ' + moneyDec(price) + '</div>' : '') +
             '</div>';
@@ -6073,7 +6096,9 @@
                     html += '<td class="num cc-price-cell" title="' +
                         escapeHtml(pPast.title || ('Precio unitario promedio de la venta ' + CC.state.anioGasto)) + '">' +
                         precioInfoHtml(pPast) + '</td>';
-                    html += '<td class="num" title="Suma de LineTotalUSD (SAP). No es uds × precio redondeado.">' + moneyGasto(impG) + '</td>';
+                    html += '<td class="num" title="' + (isUsdView()
+                        ? 'Suma de LineTotalUSD (SAP). No se convierte con el tipo de cambio.'
+                        : 'Suma de LineTotal (SAP).') + '">' + moneyGasto(impG) + '</td>';
                     html += '<td class="num cc-price-cell" title="Precio de lista actual (proyección ' + CC.state.anioPresupuesto + ')">' + precioInfoHtml(precioProyeccionInfo(cta)) + '</td>';
                     html += '<td class="num fw-semibold">' + moneyGasto(impP) + '</td>';
                     html += '<td class="num ' + dCls + '" title="Variación de importe en la moneda de vista (VENTA vs PROY)">' +
@@ -7449,7 +7474,23 @@
         CC.initAnalisis();
     }
 
+    function bindAnalisisCurrency() {
+        var mon = document.getElementById('ctl-moneda');
+        if (mon) mon.value = CC.state.currency || 'MXN';
+        paintFxBadge();
+        if (CC._anMonedaBound) return;
+        CC._anMonedaBound = true;
+        if (!mon) return;
+        mon.addEventListener('change', function () {
+            CC.state.currency = this.value || 'MXN';
+            saveJSON(SK.currency, CC.state.currency);
+            paintFxBadge();
+            renderAnalisis();
+        });
+    }
+
     CC.initAnalisis = function () {
+        bindAnalisisCurrency();
         renderAnalisisCiclos();
         paintAnalisisYears();
         if (!CC._analisisBound) {
@@ -7828,7 +7869,7 @@
                 var cc = String(c.codigo || '').trim();
                 var hit = index[emp + '|' + cc.toUpperCase()] || map[emp + '|' + cc] || null;
                 var cacheKey = gastoCacheKey(c);
-                if (hit && hit.por_cuenta && typeof hit.por_cuenta === 'object' && Object.keys(hit.por_cuenta).length) {
+                if (hit && hit.por_cuenta && typeof hit.por_cuenta === 'object') {
                     rememberGastoCache(cacheKey, hit.por_cuenta, {
                         fuente: hit.fuente || 'snapshot',
                         synced_at: hit.synced_at || null,
@@ -7859,7 +7900,7 @@
 
             var pending = centrosMissing.slice();
             var inflight = 0;
-            var max = 5;
+            var max = 8;
             var dirty = false;
             var paintTimer = null;
             function schedulePaint() {
@@ -7896,11 +7937,12 @@
                             if (!pending.length && !inflight) done();
                             else kickOne();
                         }
-                        var timer = setTimeout(doneOne, 25000);
+                        var timer = setTimeout(doneOne, 60000);
                         fetch((CC.state.gastoUrl || '/ProyeccionesVentas/api/gasto-real') +
                             '?empresa=' + encodeURIComponent(centro.empresa || '') +
                             '&cc=' + encodeURIComponent(centro.codigo || '') +
-                            '&year=' + encodeURIComponent(year), {
+                            '&year=' + encodeURIComponent(year) +
+                            '&ligero=1', {
                             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
                         }).then(function (res) { return res.json(); }).then(function (json) {
                             if (gen !== CC._anGastoGen) return;
@@ -8105,7 +8147,13 @@
                 });
             }
             var ctas = cuentasDeCentro(c);
-            var gasto = totGastoCentro(c, ctas);
+            var enriched = cuentasEnriquecidas(c);
+            var gasto = 0;
+            var pptoVista = 0;
+            enriched.forEach(function (x) {
+                gasto += Number(x.importeVentaVista) || 0;
+                pptoVista += Number(x.importeProyVista) || 0;
+            });
             var ppto = totPptoCentro(c, ctas);
             var filled = ctas.filter(function (cta) {
                 return mesesTodosLlenos(pptoDe(c.empresa, c.codigo, cta, cta.gasto)) || cuentaMarcada(c.empresa, c.codigo, cta.codigo);
@@ -8113,11 +8161,12 @@
             return Object.assign({}, c, {
                 gasto: gasto,
                 ppto: ppto,
+                pptoVista: pptoVista,
                 cuentas: ctas.length,
                 capturadas: filled,
                 avance: pct(filled, ctas.length || 1),
-                yoY: deltaPct(ppto, gasto),
-                over: gasto > 0 && ppto > gasto * 1.1,
+                yoY: deltaPct(pptoVista, gasto),
+                over: gasto > 0 && pptoVista > gasto * 1.1,
                 ventaLista: ventaCentroLista(c),
                 proyLista: !!CC._capturaReady,
                 departamento: deptoDeCentro(c),
@@ -8439,7 +8488,7 @@
                     productoCodigo: '',
                     productoNombre: 'Sin productos asignados',
                     gasto: Number(c.gasto) || 0,
-                    ppto: Number(c.ppto) || 0,
+                    ppto: Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0,
                     unidadesVenta: 0,
                     unidadesProy: 0,
                     yoY: c.yoY || 0,
@@ -8516,8 +8565,8 @@
                 var on = empRaw === e ? ' is-on' : '';
                 var avTxt = av == null ? htmlCargando('sm') : (av + '% capturado · ' + info.n + ' clientes');
                 var ventaTxt = info.ventaPend
-                    ? (info.ventaPend === info.n ? htmlCargando('sm') : (money(info.gasto) + ' · ' + htmlCargando('sm')))
-                    : money(info.gasto);
+                    ? (info.ventaPend === info.n ? htmlCargando('sm') : (moneyVista(info.gasto) + ' · ' + htmlCargando('sm')))
+                    : moneyVista(info.gasto);
                 var proyTxt = info.proyPend
                     ? (info.proyPend === info.n ? htmlCargando('sm') : (money(info.ppto) + ' · ' + htmlCargando('sm')))
                     : money(info.ppto);
@@ -8743,7 +8792,7 @@
                     x: { grid: { display: false } },
                     y: {
                         beginAtZero: true,
-                        ticks: { callback: function (v) { return money(v); } },
+                        ticks: { callback: function (v) { return moneyVista(v); } },
                         grid: { color: '#f1f1f3' }
                     }
                 }

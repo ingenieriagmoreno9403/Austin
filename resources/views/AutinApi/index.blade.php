@@ -428,6 +428,7 @@
 (function () {
     const routes = {
         health: @json(route('autin-api.health')),
+        sumas: @json(route('autin-api.sumas')),
         base: @json(url('/Sistemas/AutinApi'))
     };
 
@@ -437,6 +438,10 @@
     let currentPage = 1;
     let loadedRows = [];
     let loadedKeys = [];
+    let tableJob = 0;
+    let totalsJob = 0;
+    let totalsAbort = null;
+    let grand = null;
 
     const SUM_NAME = /(importe|monto|amount|debit|credit|qty|quantity|cantidad|precio|price|costo|cost|saldo|total|tax|iva|descuento|discount|peso)/i;
     const SKIP_SUM = /(code|codigo|cuenta|fecha|date|year|anio|mask|empresa|nombre|name|desc|estatus|status|tipo|depto|prc|format|card|item|docnum|docentry|linenum|linea|^id$|_id$)/i;
@@ -623,6 +628,10 @@
         });
     }
 
+    function formatCount(value) {
+        return Number(value || 0).toLocaleString('es-MX');
+    }
+
     function columnIsSummable(key, rows) {
         if (SKIP_SUM.test(key) && !SUM_NAME.test(key)) return false;
         if (/(code|codigo|^id$|_id$|fecha|date|year)/i.test(key)) return false;
@@ -671,48 +680,122 @@
         }).join('');
     }
 
-    function paintTotals(rows) {
+    function totalsChips(totals) {
+        return Object.keys(totals).map(function (key) {
+            return '<div class="sap-total-chip"><span class="k">' + escapeHtml(key) + '</span><span class="v">' + formatAmount(Number(totals[key]) || 0) + '</span></div>';
+        }).join('');
+    }
+
+    function renderTotalsBox() {
         const box = document.getElementById('sapTotals');
-        const search = document.getElementById('sapSearch');
-        if (!loadedRows.length || !loadedKeys.length) {
+        if (!grand) {
             box.hidden = true;
             box.innerHTML = '';
-            search.disabled = true;
             return;
         }
-
-        search.disabled = false;
-        const summable = loadedKeys.filter(function (key) {
-            return columnIsSummable(key, loadedRows);
-        });
-        const query = search.value.trim();
-        const label = query
-            ? (rows.length + ' coincidencias de ' + loadedRows.length + ' en esta página')
-            : (loadedRows.length + ' registros en esta página');
-
-        if (!summable.length) {
+        if (grand.loading) {
             box.hidden = false;
-            box.innerHTML = '<div class="sap-meta mb-0">' + label + ' · esta consulta no trae columnas numéricas para totalizar.</div>';
+            box.innerHTML = '<div class="sap-meta mb-0">Calculando la suma de todos los registros…</div>';
+            return;
+        }
+        const totals = grand.totals && typeof grand.totals === 'object' && !Array.isArray(grand.totals) ? grand.totals : null;
+        if (!totals) {
+            box.hidden = false;
+            box.innerHTML = '<div class="text-danger mb-0">' + escapeHtml(grand.error || 'No se pudo calcular la suma') + '</div>';
             return;
         }
 
-        const chips = summable.map(function (key) {
-            const total = rows.reduce(function (sum, row) {
+        const countLabel = formatCount(grand.total) + ' registros · todas las páginas';
+        const keys = Object.keys(totals);
+        if (!keys.length) {
+            box.hidden = false;
+            box.innerHTML = '<div class="sap-meta mb-0">' + countLabel + ' · esta consulta no trae columnas numéricas para totalizar.</div>';
+            return;
+        }
+
+        const warn = grand.error
+            ? '<div class="sap-meta mt-2 mb-0">' + escapeHtml(grand.error) + '</div>'
+            : '';
+        box.hidden = false;
+        box.innerHTML = '<div class="fw-semibold mb-2">Suma de totales · ' + countLabel + '</div><div class="sap-totals-grid">' + totalsChips(totals) + '</div>' + warn;
+    }
+
+    function applyLocalTotals(rows, total) {
+        const totals = {};
+        loadedKeys.forEach(function (key) {
+            if (!columnIsSummable(key, rows)) return;
+            totals[key] = rows.reduce(function (sum, row) {
                 const amount = parseAmount(row[key]);
                 return sum + (amount === null ? 0 : amount);
             }, 0);
-            return '<div class="sap-total-chip"><span class="k">' + escapeHtml(key) + '</span><span class="v">' + formatAmount(total) + '</span></div>';
-        }).join('');
+        });
+        grand = { loading: false, total: total, totals: totals, error: null };
+        renderTotalsBox();
+    }
 
-        box.hidden = false;
-        box.innerHTML = '<div class="fw-semibold mb-2">Suma de totales · ' + label + '</div><div class="sap-totals-grid">' + chips + '</div>';
+    function buildSumasUrl() {
+        const built = buildRequest();
+        const u = new URL(built.url, window.location.origin);
+        const basePath = new URL(routes.base, window.location.origin).pathname.replace(/\/$/, '');
+        let catalogo = decodeURIComponent(u.pathname);
+        if (catalogo.indexOf(basePath + '/') === 0) {
+            catalogo = catalogo.slice(basePath.length + 1);
+        }
+        u.searchParams.delete('page');
+        u.searchParams.delete('per_page');
+        u.searchParams.set('catalogo', catalogo);
+        const sumasPath = new URL(routes.sumas, window.location.origin).pathname;
+        return sumasPath + '?' + u.searchParams.toString();
+    }
+
+    function scheduleTotals(payload, sumasUrl) {
+        const data = Array.isArray(payload.data) ? payload.data : [];
+        const meta = payload.meta || {};
+        const last = meta.last_page || 1;
+        if (last <= 1) {
+            applyLocalTotals(data, meta.total != null ? meta.total : data.length);
+            return;
+        }
+        startGrandTotals(sumasUrl);
+    }
+
+    async function startGrandTotals(sumasUrl) {
+        const token = ++totalsJob;
+        if (totalsAbort) totalsAbort.abort();
+        totalsAbort = new AbortController();
+        grand = { loading: true, total: null, totals: null, error: null };
+        renderTotalsBox();
+
+        try {
+            const json = await fetchJson(sumasUrl, totalsAbort.signal);
+            if (token !== totalsJob) return;
+            const totals = json.totals && typeof json.totals === 'object' && !Array.isArray(json.totals)
+                ? json.totals
+                : {};
+            grand = {
+                loading: false,
+                total: json.total,
+                totals: totals,
+                error: json.complete === false
+                    ? 'No se pudieron leer todas las páginas; la suma puede estar incompleta.'
+                    : null
+            };
+            renderTotalsBox();
+        } catch (err) {
+            if (err.name === 'AbortError' || token !== totalsJob) return;
+            grand = {
+                loading: false,
+                total: null,
+                totals: null,
+                error: err.message || 'No se pudo calcular la suma de todos los registros'
+            };
+            renderTotalsBox();
+        }
     }
 
     function applyResultView() {
         const query = document.getElementById('sapSearch').value.trim();
-        const rows = visibleRows();
-        paintRows(rows, query);
-        paintTotals(rows);
+        paintRows(visibleRows(), query);
     }
 
     function renderTable(payload) {
@@ -743,6 +826,7 @@
 
         const search = document.getElementById('sapSearch');
         search.value = '';
+        search.disabled = data.length === 0;
         loadedRows = data;
         loadedKeys = data.length ? Object.keys(data[0]) : [];
 
@@ -756,35 +840,65 @@
         applyResultView();
     }
 
-    async function loadData() {
+    async function fetchJson(url, signal) {
+        const res = await fetch(url, {
+            signal: signal,
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        let json = {};
+        try {
+            json = await res.json();
+        } catch (parseErr) {
+            json = {};
+        }
+        if (!res.ok) {
+            throw new Error(json.message || json.error || ('Error HTTP ' + res.status));
+        }
+        return json;
+    }
+
+    async function loadData(options) {
+        const refreshTotals = !options || options.refreshTotals !== false;
+        const job = ++tableJob;
         const built = buildRequest();
+        const sumasUrl = refreshTotals ? buildSumasUrl() : '';
         const btn = document.getElementById('sapBtnLoad');
         btn.disabled = true;
         btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Cargando…';
 
+        if (refreshTotals) {
+            totalsJob += 1;
+            if (totalsAbort) totalsAbort.abort();
+            grand = { loading: true, total: null, totals: null, error: null };
+            renderTotalsBox();
+        }
+
         try {
-            const res = await fetch(built.url, {
-                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            });
-            const json = await res.json();
-            if (!res.ok) {
-                throw new Error(json.message || json.error || ('Error HTTP ' + res.status));
-            }
+            const json = await fetchJson(built.url);
+            if (job !== tableJob) return;
             renderTable(json);
+            if (refreshTotals) scheduleTotals(json, sumasUrl);
         } catch (err) {
+            if (job !== tableJob) return;
             loadedRows = [];
             loadedKeys = [];
             document.getElementById('sapSearch').value = '';
             document.getElementById('sapSearch').disabled = true;
-            document.getElementById('sapTotals').hidden = true;
-            document.getElementById('sapTotals').innerHTML = '';
+            if (refreshTotals) {
+                if (totalsAbort) totalsAbort.abort();
+                grand = null;
+                document.getElementById('sapTotals').hidden = true;
+                document.getElementById('sapTotals').innerHTML = '';
+            }
             document.getElementById('sapTbody').innerHTML =
                 '<tr><td class="text-danger py-4">' + escapeHtml(err.message || 'Error al consultar') + '</td></tr>';
             document.getElementById('sapThead').innerHTML = '';
             document.getElementById('sapMeta').textContent = 'Error';
         } finally {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-search me-1"></i> Consultar';
+            if (job === tableJob) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-search me-1"></i> Consultar';
+            }
         }
     }
 
@@ -799,13 +913,13 @@
     document.getElementById('sapPrev').addEventListener('click', function () {
         if (currentPage > 1) {
             currentPage -= 1;
-            loadData();
+            loadData({ refreshTotals: false });
         }
     });
 
     document.getElementById('sapNext').addEventListener('click', function () {
         currentPage += 1;
-        loadData();
+        loadData({ refreshTotals: false });
     });
 
     document.getElementById('sapBtnHealth').addEventListener('click', async function () {

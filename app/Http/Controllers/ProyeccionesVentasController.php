@@ -3949,16 +3949,16 @@ class ProyeccionesVentasController extends Controller
                 ->whereRaw('UPPER(cliente_codigo) = ?', [strtoupper($cc)])
                 ->where('anio', $year)
                 ->first();
-            if ($snap && is_array($snap->por_cuenta) && $snap->por_cuenta !== []) {
+            if ($snap && $this->ventaRealSnapshotSirve($snap->por_cuenta)) {
                 $payload = [
                     'ok' => true,
                     'year' => $year,
-                    'por_cuenta' => $snap->por_cuenta,
+                    'por_cuenta' => $this->porCuentaSinMeta($snap->por_cuenta),
                     'mensaje' => null,
                     'fuente' => 'snapshot',
                     'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
                 ];
-                $cacheKey = 'pv.venta-real.v3.'.$empresa.'.'.$cc.'.'.$year;
+                $cacheKey = 'pv.venta-real.v4.'.$empresa.'.'.$cc.'.'.$year;
                 Cache::put($cacheKey, $payload, 900);
                 // No reescribir maestro en cada lectura de snapshot (eso volvía lenta la recarga).
 
@@ -3967,7 +3967,7 @@ class ProyeccionesVentasController extends Controller
         }
 
         // 2) Cache RAM corta (útil mientras se escribe el snapshot).
-        $cacheKey = 'pv.venta-real.v3.'.$empresa.'.'.$cc.'.'.$year;
+        $cacheKey = 'pv.venta-real.v4.'.$empresa.'.'.$cc.'.'.$year;
         if (! $force) {
             $cached = Cache::get($cacheKey);
             if (is_array($cached) && ! empty($cached['ok'])) {
@@ -3983,16 +3983,18 @@ class ProyeccionesVentasController extends Controller
         try {
             $payload = $this->cargarGastoRealCentro($empresa, $cc, $year);
             if (! empty($payload['ok'])) {
-                $payload['fuente'] = 'api';
-                $payload['synced_at'] = now()->format('Y-m-d H:i');
-                Cache::put($cacheKey, $payload, 900);
+                $stored = is_array($payload['por_cuenta'] ?? null) ? $payload['por_cuenta'] : [];
                 $this->guardarVentaRealSnapshot(
                     $empresa,
                     $cc,
                     $year,
-                    is_array($payload['por_cuenta'] ?? null) ? $payload['por_cuenta'] : [],
+                    $stored,
                     optional($request->user())->id
                 );
+                $payload['por_cuenta'] = $this->porCuentaSinMeta($stored);
+                $payload['fuente'] = 'api';
+                $payload['synced_at'] = now()->format('Y-m-d H:i');
+                Cache::put($cacheKey, $payload, 900);
             }
         } catch (Throwable $e) {
             // Si falla la API pero hay snapshot viejo, úsalo.
@@ -4006,7 +4008,7 @@ class ProyeccionesVentasController extends Controller
                     return response()->json([
                         'ok' => true,
                         'year' => $year,
-                        'por_cuenta' => $snap->por_cuenta,
+                        'por_cuenta' => $this->porCuentaSinMeta($snap->por_cuenta),
                         'mensaje' => 'API no disponible; se usó snapshot local ('.$e->getMessage().').',
                         'fuente' => 'snapshot_fallback',
                         'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
@@ -4023,7 +4025,8 @@ class ProyeccionesVentasController extends Controller
             ], 200);
         }
 
-        if (! empty($payload['ok']) && ! empty($payload['por_cuenta'])) {
+        $ligero = filter_var($request->get('ligero', false), FILTER_VALIDATE_BOOLEAN);
+        if (! $ligero && ! empty($payload['ok']) && ! empty($payload['por_cuenta'])) {
             $this->asegurarCostosMaestroDesdePorCuenta($empresa, $payload['por_cuenta']);
         }
 
@@ -4132,13 +4135,13 @@ class ProyeccionesVentasController extends Controller
                 $key = $hitKey;
             }
             $por = is_array($snap->por_cuenta) ? $snap->por_cuenta : [];
-            if ($por === []) {
+            if (! $this->ventaRealSnapshotSirve($por)) {
                 continue;
             }
             $porCliente[$key] = [
                 'empresa' => $emp,
                 'cc' => $cc,
-                'por_cuenta' => $por,
+                'por_cuenta' => $this->porCuentaSinMeta($por),
                 'fuente' => 'snapshot',
                 'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
             ];
@@ -4161,6 +4164,51 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * Lo ya guardado en tabla se usa tal cual. Solo se va a la API si no hay fila.
+     *
+     * @param  mixed  $por
+     */
+    protected function ventaRealSnapshotSirve($por): bool
+    {
+        if (! is_array($por) || $por === []) {
+            return false;
+        }
+        foreach ($por as $key => $item) {
+            if ($key === '_meta') {
+                continue;
+            }
+            if (is_array($item)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Un guardado nuevo solo se persiste si la bajada de /ventas vino completa.
+     *
+     * @param  mixed  $por
+     */
+    protected function ventaRealSnapshotEsCompleto($por): bool
+    {
+        return is_array($por)
+            && is_array($por['_meta'] ?? null)
+            && ! empty($por['_meta']['completo']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $por
+     * @return array<string, mixed>
+     */
+    protected function porCuentaSinMeta(array $por): array
+    {
+        unset($por['_meta']);
+
+        return $por;
+    }
+
+    /**
      * @param  array<string, mixed>  $porCuenta
      */
     protected function guardarVentaRealSnapshot(
@@ -4170,7 +4218,7 @@ class ProyeccionesVentasController extends Controller
         array $porCuenta,
         $userId = null
     ): void {
-        if (! Schema::hasTable('tbl_pv_venta_real_snapshot') || $porCuenta === []) {
+        if (! Schema::hasTable('tbl_pv_venta_real_snapshot') || $porCuenta === [] || ! $this->ventaRealSnapshotEsCompleto($porCuenta)) {
             return;
         }
 
@@ -5109,21 +5157,15 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * @return array{ok: bool, year: int, por_cuenta: array<string, array<string, mixed>>, mensaje: string|null}
+     * Suma líneas de /ventas por ItemCode. $cc vacío acepta cualquier cliente.
+     *
+     * @param  array<int, mixed>  $rows
+     * @return array<string, array<string, mixed>>
      */
-    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year): array
+    protected function agregarPorCuentaVentas(array $rows, int $year, string $cc = ''): array
     {
-        $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
-            'CardCode' => $cc,
-            'fecha_desde' => $year.'/01/01',
-            'fecha_hasta' => $year.'/12/31',
-        ]);
-
         $porCuenta = [];
-        $ok = ! empty($pack['ok']);
-        $mensaje = $pack['mensaje'] ?? null;
-
-        foreach ($pack['rows'] as $row) {
+        foreach ($rows as $row) {
             if (! is_array($row)) {
                 continue;
             }
@@ -5151,7 +5193,6 @@ class ProyeccionesVentasController extends Controller
             $costoInv = $this->costoInventarioVenta($row);
             $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
             $unidad = $this->elegirUnidadDesdeVenta($row);
-            // Clave = ItemCode exacto (no solo dígitos: REPE-3PE MT ≠ "3").
             $key = $codigo;
             if (! isset($porCuenta[$key])) {
                 $porCuenta[$key] = [
@@ -5191,7 +5232,19 @@ class ProyeccionesVentasController extends Controller
             }
         }
 
+        return $porCuenta;
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $porCuenta
+     * @return array<string, array<string, mixed>>
+     */
+    protected function cerrarPorCuentaVentas(array $porCuenta): array
+    {
         foreach ($porCuenta as &$item) {
+            if (! is_array($item) || ! isset($item['precio_q'])) {
+                continue;
+            }
             $precio = [];
             for ($m = 0; $m < 12; $m++) {
                 $den = (float) ($item['precio_q'][$m] ?? 0);
@@ -5202,7 +5255,6 @@ class ProyeccionesVentasController extends Controller
             $item['precio'] = $precio;
             unset($item['precio_w'], $item['precio_q']);
 
-            // Precio/costo unitario del año: promedio ponderado de la venta (USD si hay LineTotalUSD).
             $qtyTot = array_sum($item['gasto'] ?? []);
             $usdTot = array_sum($item['importe_usd'] ?? []);
             $mxnTot = array_sum($item['importe'] ?? []);
@@ -5219,6 +5271,32 @@ class ProyeccionesVentasController extends Controller
             $item['unidad_nombre'] = $this->nombreUnidadMedida((string) ($item['unidad'] ?? ''));
         }
         unset($item);
+
+        return $porCuenta;
+    }
+
+    /**
+     * @return array{ok: bool, year: int, por_cuenta: array<string, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year): array
+    {
+        $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
+            'CardCode' => $cc,
+            'fecha_desde' => $year.'/01/01',
+            'fecha_hasta' => $year.'/12/31',
+        ], 80);
+
+        $porCuenta = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($pack['rows'] ?? [], $year, $cc));
+        $ok = ! empty($pack['ok']);
+        $mensaje = $pack['mensaje'] ?? null;
+
+        if ($ok) {
+            $porCuenta['_meta'] = [
+                'completo' => true,
+                'filas' => (int) ($pack['filas'] ?? count($pack['rows'] ?? [])),
+                'api_total' => (int) ($pack['total'] ?? 0),
+            ];
+        }
 
         return [
             'ok' => $ok,
@@ -5792,18 +5870,25 @@ class ProyeccionesVentasController extends Controller
         $rows = [];
         $ok = false;
         $mensaje = null;
+        $filas = 0;
+        $total = 0;
         foreach ($this->empresasFiltroVentas($empresa) as $empFiltro) {
             $pack = $api->ventasTodasPaginas(array_merge([
                 'year' => $year,
                 'Empresa' => $empFiltro,
-            ], $extra), $maxPages, 3);
+            ], $extra), $maxPages, 4);
             if (empty($pack['ok'])) {
-                if (! $ok) {
-                    $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
-                }
-                continue;
+                return [
+                    'ok' => false,
+                    'rows' => [],
+                    'mensaje' => $pack['message'] ?? 'Sin conexión a ventas SAP',
+                    'filas' => 0,
+                    'total' => 0,
+                ];
             }
             $ok = true;
+            $filas += count($pack['rows']);
+            $total += (int) ($pack['total'] ?? 0);
             foreach ($pack['rows'] as $row) {
                 if (is_array($row)) {
                     $rows[] = $row;
@@ -5811,7 +5896,7 @@ class ProyeccionesVentasController extends Controller
             }
         }
 
-        return ['ok' => $ok, 'rows' => $rows, 'mensaje' => $mensaje];
+        return ['ok' => $ok, 'rows' => $rows, 'mensaje' => $mensaje, 'filas' => $filas, 'total' => $total];
     }
 
     /**

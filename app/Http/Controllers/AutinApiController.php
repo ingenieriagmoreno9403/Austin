@@ -238,6 +238,14 @@ class AutinApiController extends Controller
         return $this->jsonFromApi($result);
     }
 
+    public function sumas(Request $request, AutinApiClient $api): JsonResponse
+    {
+        $catalogo = trim((string) $request->query('catalogo', ''), '/');
+        $filters = $request->except(['_token', 'catalogo', 'page', 'per_page']);
+
+        return $this->jsonFromApi($api->sumarCatalogo($catalogo, $filters));
+    }
+
     public function catalogos(Request $request, AutinApiClient $api, string $database): JsonResponse
     {
         try {

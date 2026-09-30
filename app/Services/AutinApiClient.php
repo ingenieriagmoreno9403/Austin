@@ -32,6 +32,15 @@ class AutinApiClient
         'transacciones',
     ];
 
+    /** @var string[] */
+    protected array $globalCatalogs = [
+        'centros-costo',
+        'cuentas',
+        'gasto-real',
+        'ventas',
+        'listas-precios',
+    ];
+
     public function __construct()
     {
         $this->baseUrl = rtrim((string) config('services.autin_api.base_url'), '/');
@@ -708,13 +717,15 @@ class AutinApiClient
     /**
      * Recorre páginas de /ventas.
      * per_page alto (p. ej. 500) suele provocar 504 en AutinApi; por defecto 80.
+     * No devuelve ok si falta alguna página: un corte (p. ej. solo las primeras 500
+     * líneas, que la API entrega de la más nueva a la más vieja) deja el año incompleto.
      *
      * @param  array<string, mixed>  $filters
-     * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>}
+     * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>, total: int, completo: bool}
      */
-    public function ventasTodasPaginas(array $filters, int $maxPages = 30, int $concurrency = 6, int $perPage = 80): array
+    public function ventasTodasPaginas(array $filters, int $maxPages = 30, int $concurrency = 4, int $perPage = 400): array
     {
-        $perPage = max(20, min(120, $perPage));
+        $perPage = max(20, min(500, $perPage));
         $filters['per_page'] = $perPage;
         $first = $this->ventas(array_merge($filters, ['page' => 1]));
         if (empty($first['ok'])) {
@@ -722,73 +733,93 @@ class AutinApiClient
                 'ok' => false,
                 'message' => $first['message'] ?? 'Sin conexión a ventas SAP',
                 'rows' => [],
+                'total' => 0,
+                'completo' => false,
             ];
         }
 
         $body = is_array($first['body'] ?? null) ? $first['body'] : [];
-        $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+        $pageRows = [1 => is_array($body['data'] ?? null) ? $body['data'] : []];
         $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
-        $last = (int) ($meta['last_page'] ?? 1);
-        if ($last < 1) {
-            $last = 1;
+        $total = (int) ($meta['total'] ?? 0);
+        $reportedLast = (int) ($meta['last_page'] ?? 1);
+        if ($reportedLast < 1) {
+            $reportedLast = 1;
         }
-        $last = min($last, max(1, $maxPages));
-        if ($last <= 1) {
-            return ['ok' => true, 'message' => null, 'rows' => $rows];
-        }
+        $last = min($reportedLast, max(1, $maxPages));
+        $capped = $reportedLast > $last;
 
-        $url = $this->baseUrl.'/ventas';
-        $requests = function () use ($url, $filters, $last) {
-            for ($page = 2; $page <= $last; $page++) {
-                $query = array_filter(array_merge($filters, ['page' => $page]), static function ($value) {
-                    return $value !== null && $value !== '';
-                });
-                yield $page => new Request('GET', $url.'?'.http_build_query($query));
-            }
-        };
-
-        $extra = [];
-        $retryPages = [];
-        $pool = new Pool($this->client, $requests(), [
-            'concurrency' => max(1, min(3, $concurrency)),
-            'fulfilled' => function ($response, $page) use (&$extra, &$retryPages) {
-                if ((int) $response->getStatusCode() === 429) {
-                    $retryPages[] = (int) $page;
-
-                    return;
+        if ($last > 1) {
+            $url = $this->baseUrl.'/ventas';
+            $pending = range(2, $last);
+            $attempts = 0;
+            while ($pending && $attempts < 3) {
+                $attempts++;
+                if ($attempts > 1) {
+                    usleep(800000);
                 }
-                $json = json_decode((string) $response->getBody(), true);
-                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
-                foreach ($data as $row) {
-                    if (is_array($row)) {
-                        $extra[] = $row;
+                $batch = $pending;
+                $pending = [];
+                $requests = function () use ($url, $filters, $batch) {
+                    foreach ($batch as $page) {
+                        $query = array_filter(array_merge($filters, ['page' => $page]), static function ($value) {
+                            return $value !== null && $value !== '';
+                        });
+                        yield $page => new Request('GET', $url.'?'.http_build_query($query));
                     }
-                }
-            },
-            'rejected' => function ($reason, $page) use (&$retryPages) {
-                $retryPages[] = (int) $page;
-            },
-        ]);
-        $pool->promise()->wait();
+                };
+                $pool = new Pool($this->client, $requests(), [
+                    'concurrency' => max(1, min(4, $concurrency)),
+                    'fulfilled' => function ($response, $page) use (&$pageRows, &$pending) {
+                        $status = (int) $response->getStatusCode();
+                        if ($status < 200 || $status >= 300) {
+                            $pending[] = (int) $page;
 
-        if ($retryPages) {
-            usleep(800000);
-            foreach ($retryPages as $page) {
-                $again = $this->ventas(array_merge($filters, ['page' => $page]));
-                if (empty($again['ok'])) {
-                    continue;
-                }
-                $againBody = is_array($again['body'] ?? null) ? $again['body'] : [];
-                $data = is_array($againBody['data'] ?? null) ? $againBody['data'] : [];
-                foreach ($data as $row) {
-                    if (is_array($row)) {
-                        $extra[] = $row;
-                    }
-                }
+                            return;
+                        }
+                        $json = json_decode((string) $response->getBody(), true);
+                        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                        $clean = [];
+                        foreach ($data as $row) {
+                            if (is_array($row)) {
+                                $clean[] = $row;
+                            }
+                        }
+                        $pageRows[(int) $page] = $clean;
+                    },
+                    'rejected' => function ($reason, $page) use (&$pending) {
+                        $pending[] = (int) $page;
+                    },
+                ]);
+                $pool->promise()->wait();
             }
         }
 
-        return ['ok' => true, 'message' => null, 'rows' => array_merge($rows, $extra)];
+        ksort($pageRows);
+        $rows = [];
+        foreach ($pageRows as $chunk) {
+            foreach ($chunk as $row) {
+                if (is_array($row)) {
+                    $rows[] = $row;
+                }
+            }
+        }
+
+        $missingPages = $last > 1 && count($pageRows) < $last;
+        $short = $total > 0 && count($rows) < $total;
+        $completo = ! $capped && ! $missingPages && ! $short;
+        $message = null;
+        if (! $completo) {
+            $message = 'Ventas incompletas: se recibieron '.count($rows).' de '.($total ?: '?').' líneas.';
+        }
+
+        return [
+            'ok' => $completo,
+            'message' => $message,
+            'rows' => $rows,
+            'total' => $total,
+            'completo' => $completo,
+        ];
     }
 
     /**
@@ -846,6 +877,225 @@ class AutinApiClient
         }
 
         return $resource;
+    }
+
+    /**
+     * Suma columnas numéricas de todas las páginas de un catálogo.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, status: int, body: array|null, message: string|null}
+     */
+    public function sumarCatalogo(string $uri, array $filters, int $perPage = 200): array
+    {
+        $uri = strtolower(trim($uri, '/'));
+        if (! $this->uriPermitida($uri)) {
+            return [
+                'ok' => false,
+                'status' => 422,
+                'body' => ['message' => 'Catálogo no permitido'],
+                'message' => 'Catálogo no permitido',
+            ];
+        }
+
+        set_time_limit(180);
+
+        unset($filters['page'], $filters['per_page'], $filters['sumas'], $filters['catalogo']);
+        $perPage = max(50, min(200, $perPage));
+        $filters['per_page'] = $perPage;
+
+        $first = $this->request('GET', $uri, array_merge($filters, ['page' => 1]));
+        if (empty($first['ok']) && $perPage > 80) {
+            $perPage = 80;
+            $filters['per_page'] = $perPage;
+            $first = $this->request('GET', $uri, array_merge($filters, ['page' => 1]));
+        }
+        if (empty($first['ok'])) {
+            return $first;
+        }
+
+        $body = is_array($first['body'] ?? null) ? $first['body'] : [];
+        $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+        $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
+        $last = (int) ($meta['last_page'] ?? $body['last_page'] ?? 1);
+        if ($last < 1) {
+            $last = 1;
+        }
+        $total = (int) ($meta['total'] ?? $body['total'] ?? count($rows));
+
+        $keys = [];
+        if ($rows && is_array($rows[0])) {
+            foreach (array_keys($rows[0]) as $key) {
+                if ($this->columnIsSummable((string) $key, $rows)) {
+                    $keys[] = (string) $key;
+                }
+            }
+        }
+
+        $sums = array_fill_keys($keys, 0.0);
+        if ($keys) {
+            $this->addSums($rows, $keys, $sums);
+        }
+
+        $failed = [];
+        if ($last > 1 && $keys) {
+            $url = $this->baseUrl.'/'.$uri;
+            $requests = function () use ($url, $filters, $last) {
+                for ($page = 2; $page <= $last; $page++) {
+                    $query = array_filter(array_merge($filters, ['page' => $page]), static function ($value) {
+                        return $value !== null && $value !== '';
+                    });
+                    yield $page => new Request('GET', $url.'?'.http_build_query($query));
+                }
+            };
+            $pool = new Pool($this->client, $requests(), [
+                'concurrency' => 4,
+                'fulfilled' => function ($response, $page) use (&$sums, &$failed, $keys) {
+                    if ($response->getStatusCode() !== 200) {
+                        $failed[] = (int) $page;
+
+                        return;
+                    }
+                    $json = json_decode((string) $response->getBody(), true);
+                    $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                    $this->addSums($data, $keys, $sums);
+                },
+                'rejected' => function ($reason, $page) use (&$failed) {
+                    $failed[] = (int) $page;
+                },
+            ]);
+            $pool->promise()->wait();
+
+            if ($failed) {
+                $retry = $failed;
+                $failed = [];
+                foreach ($retry as $page) {
+                    $again = $this->request('GET', $uri, array_merge($filters, ['page' => $page]));
+                    if (empty($again['ok'])) {
+                        $failed[] = $page;
+
+                        continue;
+                    }
+                    $againBody = is_array($again['body'] ?? null) ? $again['body'] : [];
+                    $data = is_array($againBody['data'] ?? null) ? $againBody['data'] : [];
+                    $this->addSums($data, $keys, $sums);
+                }
+            }
+        }
+
+        return [
+            'ok' => true,
+            'status' => 200,
+            'body' => [
+                'total' => $total,
+                'totals' => $sums === [] ? new \stdClass() : $sums,
+                'complete' => $failed === [],
+                'failed_pages' => count($failed),
+            ],
+            'message' => null,
+        ];
+    }
+
+    protected function uriPermitida(string $uri): bool
+    {
+        if (! preg_match('/^[a-z0-9\-]+(\/[a-z0-9\-]+)?$/', $uri)) {
+            return false;
+        }
+        if (in_array($uri, $this->globalCatalogs, true)) {
+            return true;
+        }
+        $parts = explode('/', $uri);
+        if (count($parts) !== 2) {
+            return false;
+        }
+
+        return in_array($parts[0], $this->allowedDatabases, true)
+            && in_array($parts[1], $this->allowedResources, true);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     */
+    protected function columnIsSummable(string $key, array $rows): bool
+    {
+        $sumName = '/(importe|monto|amount|debit|credit|qty|quantity|cantidad|precio|price|costo|cost|saldo|total|tax|iva|descuento|discount|peso)/i';
+        $skip = '/(code|codigo|cuenta|fecha|date|year|anio|mask|empresa|nombre|name|desc|estatus|status|tipo|depto|prc|format|card|item|docnum|docentry|linenum|linea|^id$|_id$)/i';
+        if (preg_match($skip, $key) && ! preg_match($sumName, $key)) {
+            return false;
+        }
+        if (preg_match('/(code|codigo|^id$|_id$|fecha|date|year)/i', $key)) {
+            return false;
+        }
+
+        $filled = 0;
+        $numeric = 0;
+        $withDecimal = 0;
+        foreach ($rows as $row) {
+            if (! is_array($row) || ! array_key_exists($key, $row)) {
+                continue;
+            }
+            $value = $row[$key];
+            if ($value === null || trim((string) $value) === '') {
+                continue;
+            }
+            $filled++;
+            if ($this->parseAmount($value) === null) {
+                continue;
+            }
+            $numeric++;
+            if (is_string($value) && str_contains($value, '.')) {
+                $withDecimal++;
+            } elseif (is_float($value)) {
+                $withDecimal++;
+            }
+        }
+        if ($filled === 0 || $numeric !== $filled) {
+            return false;
+        }
+        if (preg_match($sumName, $key)) {
+            return true;
+        }
+
+        return $withDecimal > 0;
+    }
+
+    protected function parseAmount(mixed $value): ?float
+    {
+        if (is_int($value) || is_float($value)) {
+            return is_finite((float) $value) ? (float) $value : null;
+        }
+        if ($value === null || is_array($value)) {
+            return null;
+        }
+        $raw = preg_replace('/[$\s]/', '', trim((string) $value));
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        $normalized = str_replace(',', '', $raw);
+        if (! preg_match('/^-?\d+(\.\d+)?$/', $normalized)) {
+            return null;
+        }
+
+        return (float) $normalized;
+    }
+
+    /**
+     * @param  array<int, mixed>  $rows
+     * @param  array<int, string>  $keys
+     * @param  array<string, float>  $sums
+     */
+    protected function addSums(array $rows, array $keys, array &$sums): void
+    {
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            foreach ($keys as $key) {
+                $amount = $this->parseAmount($row[$key] ?? null);
+                if ($amount !== null) {
+                    $sums[$key] += $amount;
+                }
+            }
+        }
     }
 
     /**

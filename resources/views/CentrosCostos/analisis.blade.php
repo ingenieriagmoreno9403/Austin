@@ -64,15 +64,25 @@
 
     <div class="cc-panel">
         <div class="cc-filters cc-filters-asig">
-            <label class="cc-filter-field" for="an-empresa">Empresa
-                <select id="an-empresa" class="cc-select"></select>
-            </label>
-            <label class="cc-filter-field" for="an-centro">Centro de costos
-                <select id="an-centro" class="cc-select"></select>
-            </label>
-            <label class="cc-filter-field" for="an-user">Usuario
-                <select id="an-user" class="cc-select"></select>
-            </label>
+            <div class="cc-filter-field">
+                <label for="an-empresa">Empresa</label>
+                <select id="an-empresa" class="cc-select cc-select-search">
+                    <option value="">Seleccionar</option>
+                    <option value="*">Todas</option>
+                </select>
+            </div>
+            <div class="cc-filter-field">
+                <label for="an-centro">Centro de costos</label>
+                <select id="an-centro" class="cc-select cc-select-search">
+                    <option value="">Seleccionar</option>
+                </select>
+            </div>
+            <div class="cc-filter-field">
+                <label for="an-user">Usuario</label>
+                <select id="an-user" class="cc-select cc-select-search">
+                    <option value="">Seleccionar</option>
+                </select>
+            </div>
         </div>
     </div>
 
@@ -85,14 +95,14 @@
         </div>
     </div>
 
-    <div id="an-empty" class="cc-panel" hidden>
+    <div id="an-empty" class="cc-panel">
         <div class="cc-empty" style="padding:2.2rem 1rem">
-            <i class="fa-solid fa-chart-line" id="an-empty-icon"></i>
-            <span id="an-empty-msg">No hay centros asignados en este ciclo. Asigna usuarios y cuentas en Budgets y Asignaciones.</span>
+            <i class="fa-solid fa-filter" id="an-empty-icon"></i>
+            <div id="an-empty-msg">Selecciona una empresa, o Todas, para ver el análisis.</div>
         </div>
     </div>
 
-    <div id="an-work">
+    <div id="an-work" hidden>
     <div class="cc-kpis cc-kpis-equal" id="an-kpis">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Cuentas ya capturadas</div></div>
         <div class="cc-kpi is-warn"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Centros debajo del 40%</div></div>
