@@ -1988,7 +1988,9 @@
         if (esBudgetTipo()) {
             var i = Number(monthIdx);
             if (i >= 9 && i <= 11) {
-                return lookupVentasBudgetRefQty(cta, i);
+                var qRef = lookupVentasBudgetRefQty(cta, i);
+                if (qRef) return qRef;
+                return lookupAnalisisVentasBudgetRefQty(cta, i);
             }
             return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
         }
@@ -2026,6 +2028,27 @@
         if (!hit || !Array.isArray(hit.meses)) return 0;
         var n = Number(hit.meses[monthIdx]);
         return isFinite(n) && n > 0 ? n : 0;
+    }
+
+    /** Oct–Dic en Análisis: catálogo ventas-budget por empresa|cliente (sin depender de Captura). */
+    function lookupAnalisisVentasBudgetRefQty(cta, monthIdx) {
+        if (!cta) return 0;
+        var emp = String(cta._empresa || (control.centro && control.centro.empresa) || '').toUpperCase();
+        var cc = String(cta._cliente || (control.centro && control.centro.codigo) || '').trim();
+        if (!emp || !cc) return 0;
+        var bag = (CC._anVentasBudget || {})[emp + '|' + cc];
+        if (!bag || typeof bag !== 'object') return 0;
+        var hit = bag[cta.codigo]
+            || bag[String(cta.codigo || '').toUpperCase()]
+            || bag[codigoCuentaKey(cta.codigo)]
+            || null;
+        if (!hit || !Array.isArray(hit.meses)) return 0;
+        var n = Number(hit.meses[monthIdx]);
+        return isFinite(n) && n > 0 ? n : 0;
+    }
+
+    function analisisVentasBudgetKey(c) {
+        return String((c && c.empresa) || '').toUpperCase() + '|' + String((c && c.codigo) || '').trim();
     }
 
     function applyVentasBudgetRefMap(porArticulo) {
@@ -3977,6 +4000,8 @@
                 ? maestroMesesHit.meses.slice(0, 12)
                 : mesesVacios12();
             var enriched = Object.assign({}, cta, {
+                _empresa: c.empresa || '',
+                _cliente: c.codigo || '',
                 ppto: ppto,
                 totG: sum(cta.gasto),
                 totP: totP,
@@ -7801,6 +7826,82 @@
         });
     }
 
+    /**
+     * Oct–Dic (tipo Budget): carga /captura/ventas-budget por cliente filtrado
+     * para rellenar estacionalidad cuando gasto-real aún no tiene esos meses.
+     */
+    function loadAnalisisVentasBudget(centros, gen, done) {
+        done = typeof done === 'function' ? done : function () {};
+        if (!esBudgetTipo()) {
+            done();
+            return;
+        }
+        var url = CC.state.ventasBudgetUrl || '/ProyeccionesVentas/api/captura/ventas-budget';
+        CC._anVentasBudget = CC._anVentasBudget || {};
+        var list = (centros || []).filter(function (c) {
+            var key = analisisVentasBudgetKey(c);
+            if (!key || key === '|') return false;
+            if (Object.prototype.hasOwnProperty.call(CC._anVentasBudget, key)) return false;
+            if (CC._anVentasBudgetTried && CC._anVentasBudgetTried[key]) return false;
+            return true;
+        });
+        if (!list.length) {
+            done();
+            return;
+        }
+        CC._anVentasBudgetTried = CC._anVentasBudgetTried || {};
+        CC._anGastoPhase = 'budget';
+        paintAnalisisLoading();
+        var left = list.length;
+        var dirty = false;
+        var concurrency = 3;
+        var idx = 0;
+
+        function oneDone() {
+            left -= 1;
+            if (left <= 0) {
+                if (gen === CC._anGastoGen && dirty) renderAnalisis();
+                done();
+            } else {
+                kick();
+            }
+        }
+
+        function kick() {
+            while (idx < list.length && concurrency > 0) {
+                concurrency -= 1;
+                (function (c) {
+                    var key = analisisVentasBudgetKey(c);
+                    CC._anVentasBudgetTried[key] = true;
+                    var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
+                        '&cliente=' + encodeURIComponent(c.codigo || '') +
+                        '&meses=10,11,12';
+                    fetch(url + qs, {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(function (r) {
+                        return r.json().then(function (json) {
+                            if (!r.ok || (json && json.ok === false)) {
+                                throw new Error((json && (json.message || json.mensaje)) || 'ventas-budget');
+                            }
+                            return json;
+                        });
+                    }).then(function (json) {
+                        if (gen !== CC._anGastoGen) return;
+                        CC._anVentasBudget[key] = (json && json.por_articulo) || {};
+                        dirty = true;
+                    }).catch(function () {
+                        if (gen !== CC._anGastoGen) return;
+                        CC._anVentasBudget[key] = {};
+                    }).then(function () {
+                        concurrency += 1;
+                        oneDone();
+                    });
+                })(list[idx++]);
+            }
+        }
+        kick();
+    }
+
     function queueAnalisisGastos() {
         if (CC.state.page !== 'analisis') {
             CC._anGastoLeft = 0;
@@ -8708,7 +8809,8 @@
                     var tot = item.months.reduce(function (a, v) { return a + (v || 0); }, 0);
                     return { label: item.label, months: item.months, tot: tot, attr: '', pending: item.pending && !item.ready };
                 }).sort(function (a, b) { return b.tot - a.tot; });
-                setText('an-heat-label', 'Venta ' + gYear + ' · por producto · ' + emp);
+                setText('an-heat-label', 'Venta ' + gYear + ' · por producto · ' + emp
+                    + (esBudgetTipo() ? ' · Oct–Dic ventas-budget' : ''));
                 var heatInput = document.getElementById('an-heat-q');
                 if (heatInput) heatInput.placeholder = 'Buscar producto…';
             } else {
@@ -8750,7 +8852,8 @@
                         pending: !!(item.pending && !item.ready)
                     };
                 }).sort(function (a, b) { return b.tot - a.tot; });
-                setText('an-heat-label', 'Venta ' + gYear + ' · por empresa');
+                setText('an-heat-label', 'Venta ' + gYear + ' · por empresa'
+                    + (esBudgetTipo() ? ' · Oct–Dic ventas-budget' : ''));
                 var heatInputAll = document.getElementById('an-heat-q');
                 if (heatInputAll) heatInputAll.placeholder = 'Buscar empresa o producto…';
             }
