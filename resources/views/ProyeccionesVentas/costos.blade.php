@@ -25,7 +25,7 @@
             <h3><i class="fa-solid fa-tags"></i> Maestro de precios</h3>
             <span class="text-muted" style="font-size:.8rem" id="pv-costos-hint">Cargando…</span>
         </div>
-        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto auto;">
+        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto auto auto;">
             <select id="pv-costos-anio" class="cc-select" title="Año de proyección del maestro">
                 <option value="{{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}">Proy. {{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}</option>
             </select>
@@ -50,6 +50,9 @@
             </button>
             <button type="button" class="cc-btn" id="pv-costos-import-lista" title="Actualiza solo el precio global (mes=0) desde la lista de precios SAP del cliente">
                 <i class="fa-solid fa-tags"></i> Lista de precios
+            </button>
+            <button type="button" class="cc-btn" id="pv-costos-rellenar-ceros" title="Rellena Precio global en $0 desde lista SAP, por empresa">
+                <i class="fa-solid fa-fill-drip"></i> Rellenar $0
             </button>
         </div>
         <div class="cc-table-wrap">
@@ -283,6 +286,52 @@
                 <button type="button" class="cc-btn" data-bs-dismiss="modal">Cerrar</button>
                 <button type="button" class="cc-btn cc-btn-ink" id="pv-precios-subir">
                     <i class="fa-solid fa-upload"></i> Subir y actualizar
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade cc-modal" id="modalPvRellenarCeros" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0">Rellenar precios en $0</h5>
+                    <p class="text-muted mb-0 mt-1" style="font-size:.82rem">
+                        Consulta lista SAP y guarda solo el Precio global vacío (mes = 0).
+                    </p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+            </div>
+            <div class="modal-body">
+                <p style="font-size:.88rem;margin-bottom:.85rem">
+                    Elige la <b>empresa</b>. Se tomarán del maestro local los productos con Precio global
+                    en <b>$0</b>, se buscará su precio en <code>listaPreciosventa</code> y se guardará localmente.
+                    No se modifican precios ya capturados ni los meses Ene–Dic.
+                </p>
+                <div class="mb-3">
+                    <label class="form-label" for="pv-ceros-empresa">Empresa</label>
+                    <select id="pv-ceros-empresa" class="form-select">
+                        <option value="">Selecciona…</option>
+                        <option value="AUSTIN">AUSTIN</option>
+                        <option value="IMSA">IMSA</option>
+                        <option value="PITIC">PITIC</option>
+                        <option value="SYDNEY">SYDNEY</option>
+                    </select>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Proyección</label>
+                    <div class="fw-semibold" id="pv-ceros-anio-label">—</div>
+                </div>
+                <div class="text-muted" style="font-size:.78rem" id="pv-ceros-hint">
+                    Puede tardar varios minutos si hay muchos clientes.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="cc-btn cc-btn-ink" id="pv-ceros-ejecutar">
+                    <i class="fa-solid fa-cloud-arrow-down"></i> Consultar y rellenar
                 </button>
             </div>
         </div>

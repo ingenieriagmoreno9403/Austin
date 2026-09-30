@@ -2254,6 +2254,7 @@ class ProyeccionesVentasController extends Controller
             'anio_proyeccion' => 'nullable|integer|min:2000|max:2100',
             'todas_empresas' => 'nullable|boolean',
             'preview' => 'nullable|boolean',
+            'solo_vacios' => 'nullable|boolean',
             'afectados' => 'nullable|array|max:3000',
             'afectados.*.empresa' => 'nullable|string|max:40',
             'afectados.*.card_code' => 'nullable|string|max:40',
@@ -2265,6 +2266,7 @@ class ProyeccionesVentasController extends Controller
         ]);
 
         $preview = ! empty($data['preview']);
+        $soloVacios = ! empty($data['solo_vacios']);
         if (! $preview && ($deny = $this->denyUnlessPuedeEditarPrecios())) {
             return $deny;
         }
@@ -2273,7 +2275,7 @@ class ProyeccionesVentasController extends Controller
 
         // Guardar lo ya confirmado en el preview (evita reconsultar SAP y perder el guardado por timeout).
         if (! $preview && ! empty($data['afectados']) && is_array($data['afectados'])) {
-            return $this->aplicarAfectadosDesdeListaPrecios($data['afectados'], $anioProy, $userId);
+            return $this->aplicarAfectadosDesdeListaPrecios($data['afectados'], $anioProy, $userId, $soloVacios);
         }
 
         $todasEmpresas = ! array_key_exists('todas_empresas', $data) || (bool) $data['todas_empresas'];
@@ -2281,6 +2283,13 @@ class ProyeccionesVentasController extends Controller
         $cardFiltro = trim((string) ($data['card_code'] ?? ''));
         $clienteFiltro = trim((string) ($data['cliente'] ?? ''));
         $anioProy = $this->anioProyeccionCostos((int) ($data['anio_proyeccion'] ?? 0));
+
+        if ($soloVacios && $empresaFiltro === '') {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Para rellenar precios en $0 elige una empresa (AUSTIN, IMSA, PITIC o SYDNEY).',
+            ], 422);
+        }
 
         $empresas = $empresaFiltro !== ''
             ? [$empresaFiltro]
@@ -2305,6 +2314,15 @@ class ProyeccionesVentasController extends Controller
             $q->whereRaw('UPPER(empresa) = ?', [$empresaFiltro]);
         } else {
             $q->whereIn(DB::raw('UPPER(empresa)'), $empresas);
+        }
+        if ($soloVacios) {
+            // Solo Precio global (mes=0) vacío o 0.
+            if ($hasMes) {
+                $q->where('mes', 0);
+            }
+            $q->where(function ($w) {
+                $w->whereNull('costo_unitario')->orWhere('costo_unitario', '<=', 0);
+            });
         }
         if ($hasCard && ($cardFiltro !== '' || $clienteFiltro !== '')) {
             $needle = $cardFiltro !== '' ? $cardFiltro : $clienteFiltro;
@@ -2354,16 +2372,25 @@ class ProyeccionesVentasController extends Controller
             }
         });
 
+        if ($soloVacios && $maestro) {
+            $maestro = array_filter($maestro, static function ($m) {
+                return (float) ($m['precio_actual'] ?? 0) <= 0;
+            });
+        }
+
         if (! $maestro) {
             return response()->json([
                 'ok' => true,
                 'preview' => $preview,
+                'solo_vacios' => $soloVacios,
                 'anio_proyeccion' => $anioProy,
                 'productos_unicos' => 0,
                 'afectados' => [],
                 'afectados_total' => 0,
                 'omitidos_sin_lista' => 0,
-                'message' => 'Tu maestro de proyección '.$anioProy.' no tiene productos para actualizar.',
+                'message' => $soloVacios
+                    ? ('No hay productos con Precio global en $0 para '.($empresaFiltro ?: 'esa empresa').' en proyección '.$anioProy.'.')
+                    : ('Tu maestro de proyección '.$anioProy.' no tiene productos para actualizar.'),
             ]);
         }
 
@@ -2555,6 +2582,7 @@ class ProyeccionesVentasController extends Controller
         return response()->json([
             'ok' => true,
             'preview' => $preview,
+            'solo_vacios' => $soloVacios,
             'anio_proyeccion' => $anioProy,
             'origen' => 'listaPreciosventa',
             'productos_unicos' => count($maestro),
@@ -2567,9 +2595,13 @@ class ProyeccionesVentasController extends Controller
             'importados' => $importados,
             'propagadas' => $propagadasTot,
             'message' => $preview
-                ? ('Vista previa: '.count($listaAfectados).' producto(s) con precio en lista SAP'
-                    .$sinCardTxt.$errTxt.'.')
-                : ('Precio global actualizado en '.$importados.' producto(s)'
+                ? ($soloVacios
+                    ? ('Vista previa: '.count($listaAfectados).' producto(s) con Precio global en $0 y precio en lista SAP'
+                        .$sinCardTxt.$errTxt.'.')
+                    : ('Vista previa: '.count($listaAfectados).' producto(s) con precio en lista SAP'
+                        .$sinCardTxt.$errTxt.'.'))
+                : (($soloVacios ? 'Precio global ($0) actualizado en ' : 'Precio global actualizado en ')
+                    .$importados.' producto(s)'
                     .($propagadasTot ? (' · '.$propagadasTot.' proyección(es) abiertas') : '')
                     .$sinCardTxt.$errTxt.'.'),
         ]);
@@ -2580,13 +2612,14 @@ class ProyeccionesVentasController extends Controller
      *
      * @param  array<int, array<string, mixed>>  $afectados
      */
-    protected function aplicarAfectadosDesdeListaPrecios(array $afectados, int $anioProy, $userId): JsonResponse
+    protected function aplicarAfectadosDesdeListaPrecios(array $afectados, int $anioProy, $userId, bool $soloVacios = false): JsonResponse
     {
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
         $hasAnio = $this->hasAnioCostos();
         $importados = 0;
+        $omitidosConPrecio = 0;
         $propagadasTot = 0;
         $guardados = [];
 
@@ -2626,6 +2659,12 @@ class ProyeccionesVentasController extends Controller
             $esNuevo = ! $row->exists;
             $precioAnterior = $esNuevo ? null : (float) $row->costo_unitario;
             $monedaAnterior = $esNuevo ? null : (string) ($row->moneda ?: 'MXN');
+
+            // No pisar precios ya capturados cuando solo se rellenan ceros.
+            if ($soloVacios && ! $esNuevo && $precioAnterior !== null && $precioAnterior > 0) {
+                $omitidosConPrecio++;
+                continue;
+            }
 
             if ($hasAnio) {
                 $row->anio = $anioProy;
@@ -2680,13 +2719,17 @@ class ProyeccionesVentasController extends Controller
         return response()->json([
             'ok' => true,
             'preview' => false,
+            'solo_vacios' => $soloVacios,
             'anio_proyeccion' => $anioProy,
             'origen' => 'listaPreciosventa',
             'importados' => $importados,
+            'omitidos_con_precio' => $omitidosConPrecio,
             'propagadas' => $propagadasTot,
             'afectados_total' => $importados,
             'afectados' => $guardados,
-            'message' => 'Precio global actualizado en '.$importados.' producto(s)'
+            'message' => ($soloVacios ? 'Precio global ($0) actualizado en ' : 'Precio global actualizado en ')
+                .$importados.' producto(s)'
+                .($omitidosConPrecio ? (' · '.$omitidosConPrecio.' omitido(s) ya tenían precio') : '')
                 .($propagadasTot ? (' · '.$propagadasTot.' proyección(es) abiertas') : '').'.',
         ]);
     }
