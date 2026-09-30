@@ -4161,7 +4161,7 @@ class ProyeccionesVentasController extends Controller
                 $key = $hitKey;
             }
             $por = is_array($snap->por_cuenta) ? $snap->por_cuenta : [];
-            if (! $this->ventaRealSnapshotSirve($por) || $this->mesesPorRellenar($por) !== []) {
+            if (! $this->ventaRealSnapshotSirve($por)) {
                 continue;
             }
             $porCliente[$key] = [
@@ -4170,6 +4170,7 @@ class ProyeccionesVentasController extends Controller
                 'por_cuenta' => $this->porCuentaSinMeta($por),
                 'fuente' => 'snapshot',
                 'budget_completo' => $this->budgetCompletoDe($por),
+                'rellenar' => $this->mesesPorRellenar($por) !== [],
                 'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
             ];
         }
@@ -4294,67 +4295,86 @@ class ProyeccionesVentasController extends Controller
      */
     protected function rellenarMesesIniciales(PvVentaRealSnapshot $snap, string $empresa, string $cc, int $year): PvVentaRealSnapshot
     {
-        $por = is_array($snap->por_cuenta) ? $snap->por_cuenta : [];
+        $por = $this->colapsarPorCuentaProductos(is_array($snap->por_cuenta) ? $snap->por_cuenta : []);
         $huecos = $this->mesesPorRellenar($por);
         if ($huecos === []) {
             return $snap;
         }
 
         @set_time_limit(300);
+        $desdeMes = $huecos[0];
+        $hastaMes = $huecos[count($huecos) - 1];
+        $fin = (int) date('t', strtotime(sprintf('%04d-%02d-01', $year, $hastaMes)));
+        $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
+            'CardCode' => $cc,
+            'fecha_desde' => sprintf('%04d/%02d/01', $year, $desdeMes),
+            'fecha_hasta' => sprintf('%04d/%02d/%02d', $year, $hastaMes, $fin),
+        ], 80);
+        $rows = is_array($pack['rows'] ?? null) ? $pack['rows'] : [];
+        if ($rows === [] && empty($pack['ok'])) {
+            return $snap;
+        }
+
+        $traido = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($rows, $year, $cc));
         $meta = is_array($por['_meta'] ?? null) ? $por['_meta'] : [];
         $ok = array_map('intval', (array) ($meta['meses_ok'] ?? []));
+        $escrito = false;
         foreach ($huecos as $mes) {
-            $desde = sprintf('%04d/%02d/01', $year, $mes);
-            $fin = (int) date('t', strtotime(sprintf('%04d-%02d-01', $year, $mes)));
-            $hasta = sprintf('%04d/%02d/%02d', $year, $mes, $fin);
-            $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
-                'CardCode' => $cc,
-                'fecha_desde' => $desde,
-                'fecha_hasta' => $hasta,
-            ], 40);
-            if (empty($pack['ok'])) {
-                continue;
-            }
-            $rows = is_array($pack['rows'] ?? null) ? $pack['rows'] : [];
             $idx = $mes - 1;
-            $enMes = 0;
-            foreach ($rows as $row) {
-                if (! is_array($row)) {
+            $mesTraido = false;
+            foreach ($traido as $hit) {
+                if (! is_array($hit)) {
                     continue;
                 }
-                $fecha = (string) ($row['DocDate'] ?? $row['Fecha'] ?? $row['fecha'] ?? $row['TaxDate'] ?? '');
-                if ($this->mesDeFecha($fecha) === $idx) {
-                    $enMes++;
+                if ((float) ($hit['importe'][$idx] ?? 0) != 0.0
+                    || (float) ($hit['gasto'][$idx] ?? 0) != 0.0
+                    || (float) ($hit['importe_usd'][$idx] ?? 0) != 0.0) {
+                    $mesTraido = true;
+                    break;
                 }
             }
-            if ($rows !== [] && $enMes === 0) {
+            if (! $mesTraido) {
                 continue;
             }
-            $traido = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($rows, $year, $cc));
             foreach ($traido as $cod => $hit) {
                 if (! is_array($hit)) {
                     continue;
                 }
-                if (! isset($por[$cod]) || ! is_array($por[$cod])) {
-                    $por[$cod] = $hit;
+                $clave = $this->claveProductoVenta(trim((string) ($hit['codigo'] ?? $cod)));
+                if ($clave === '') {
+                    continue;
+                }
+                if (! isset($por[$clave]) || ! is_array($por[$clave])) {
+                    $hit['codigo'] = trim((string) ($hit['codigo'] ?? $cod));
+                    $por[$clave] = $hit;
 
                     continue;
                 }
                 foreach (['gasto', 'importe', 'importe_usd'] as $field) {
-                    $serie = $por[$cod][$field] ?? [];
+                    $serie = $por[$clave][$field] ?? [];
                     if (! is_array($serie)) {
                         $serie = [];
                     }
                     $serie = array_pad(array_slice(array_values($serie), 0, 12), 12, 0.0);
                     $decimales = $field === 'gasto' ? 4 : 2;
                     $serie[$idx] = round((float) ($hit[$field][$idx] ?? 0), $decimales);
-                    $por[$cod][$field] = $serie;
+                    $por[$clave][$field] = $serie;
                 }
-                if (($por[$cod]['nombre'] ?? '') === '' && ! empty($hit['nombre'])) {
-                    $por[$cod]['nombre'] = (string) $hit['nombre'];
+                if (($por[$clave]['nombre'] ?? '') === '' && ! empty($hit['nombre'])) {
+                    $por[$clave]['nombre'] = (string) $hit['nombre'];
                 }
             }
             $ok[] = $mes;
+            $escrito = true;
+        }
+        if (! empty($pack['ok'])) {
+            foreach ($huecos as $mes) {
+                $ok[] = $mes;
+            }
+            $escrito = true;
+        }
+        if (! $escrito) {
+            return $snap;
         }
         $ok = array_values(array_unique($ok));
         sort($ok);
@@ -4415,11 +4435,95 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * Misma clave para ItemCode aunque cambie mayúsculas, espacios o el guion.
+     */
+    protected function claveProductoVenta(string $codigo): string
+    {
+        $codigo = str_replace(["\xc2\xa0", '–', '—'], ['', '-', '-'], $codigo);
+        $codigo = preg_replace('/\s+/u', '', trim($codigo)) ?? trim($codigo);
+
+        return strtoupper($codigo);
+    }
+
+    /**
+     * Una fila por producto. La bajada de /ventas y los 3 meses de ventas-budget
+     * a veces quedan con claves distintas: se rellenan los meses vacíos y no se
+     * suma otra vez un mes que ya trae el mismo importe.
+     *
+     * @param  array<string, mixed>  $por
+     * @return array<string, mixed>
+     */
+    protected function colapsarPorCuentaProductos(array $por): array
+    {
+        $meta = $por['_meta'] ?? null;
+        unset($por['_meta']);
+        $out = [];
+        foreach ($por as $key => $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $raw = trim((string) ($item['codigo'] ?? $key));
+            $clave = $this->claveProductoVenta($raw !== '' ? $raw : (string) $key);
+            if ($clave === '') {
+                continue;
+            }
+            if (! isset($out[$clave])) {
+                $item['codigo'] = $raw !== '' ? $raw : (string) $key;
+                foreach (['gasto', 'importe', 'importe_usd'] as $field) {
+                    $serie = $item[$field] ?? [];
+                    if (! is_array($serie)) {
+                        $serie = [];
+                    }
+                    $item[$field] = array_pad(array_slice(array_values($serie), 0, 12), 12, 0.0);
+                }
+                $out[$clave] = $item;
+
+                continue;
+            }
+            $base = &$out[$clave];
+            if (($base['nombre'] ?? '') === '' && ! empty($item['nombre'])) {
+                $base['nombre'] = (string) $item['nombre'];
+            }
+            foreach (['unidad', 'unidad_nombre'] as $field) {
+                if (($base[$field] ?? '') === '' && ! empty($item[$field])) {
+                    $base[$field] = $item[$field];
+                }
+            }
+            if ((float) ($base['costo'] ?? 0) <= 0 && (float) ($item['costo'] ?? 0) > 0) {
+                $base['costo'] = $item['costo'];
+                $base['costo_moneda'] = $item['costo_moneda'] ?? ($base['costo_moneda'] ?? 'MXN');
+            }
+            foreach (['gasto', 'importe', 'importe_usd'] as $field) {
+                $dec = $field === 'gasto' ? 4 : 2;
+                $a = $base[$field];
+                $b = is_array($item[$field] ?? null) ? array_values($item[$field]) : [];
+                for ($i = 0; $i < 12; $i++) {
+                    $va = (float) ($a[$i] ?? 0);
+                    $vb = (float) ($b[$i] ?? 0);
+                    if (abs($va) < 0.0000001) {
+                        $a[$i] = round($vb, $dec);
+                    } elseif (abs($vb) >= 0.0000001 && abs($va - $vb) >= 0.0001 && abs($vb) > abs($va)) {
+                        $a[$i] = round($vb, $dec);
+                    }
+                }
+                $base[$field] = $a;
+            }
+            unset($base);
+        }
+        if (is_array($meta)) {
+            $out['_meta'] = $meta;
+        }
+
+        return $out;
+    }
+
+    /**
      * @param  array<string, mixed>  $por
      * @return array<string, mixed>
      */
     protected function porCuentaSinMeta(array $por): array
     {
+        $por = $this->colapsarPorCuentaProductos($por);
         unset($por['_meta']);
 
         return $por;
@@ -4456,18 +4560,19 @@ class ProyeccionesVentasController extends Controller
             'cliente_codigo' => $cc,
             'anio' => $year,
         ]);
-        $por = is_array($row->por_cuenta) ? $row->por_cuenta : [];
+        $por = $this->colapsarPorCuentaProductos(is_array($row->por_cuenta) ? $row->por_cuenta : []);
 
         foreach ($porArticulo as $cod => $hit) {
             if (! is_array($hit)) {
                 continue;
             }
             $codigo = trim((string) ($hit['codigo'] ?? $cod));
-            if ($codigo === '') {
+            $clave = $this->claveProductoVenta($codigo);
+            if ($clave === '') {
                 continue;
             }
-            if (! isset($por[$codigo]) || ! is_array($por[$codigo])) {
-                $por[$codigo] = [
+            if (! isset($por[$clave]) || ! is_array($por[$clave])) {
+                $por[$clave] = [
                     'codigo' => $codigo,
                     'nombre' => (string) ($hit['nombre'] ?? ''),
                     'gasto' => array_fill(0, 12, 0.0),
@@ -4476,15 +4581,15 @@ class ProyeccionesVentasController extends Controller
                 ];
             }
             foreach (['gasto', 'importe', 'importe_usd'] as $field) {
-                $serie = $por[$codigo][$field] ?? [];
+                $serie = $por[$clave][$field] ?? [];
                 if (! is_array($serie)) {
                     $serie = [];
                 }
                 $serie = array_slice(array_values($serie), 0, 12);
-                $por[$codigo][$field] = array_pad($serie, 12, 0.0);
+                $por[$clave][$field] = array_pad($serie, 12, 0.0);
             }
-            if (($por[$codigo]['nombre'] ?? '') === '' && ! empty($hit['nombre'])) {
-                $por[$codigo]['nombre'] = (string) $hit['nombre'];
+            if (($por[$clave]['nombre'] ?? '') === '' && ! empty($hit['nombre'])) {
+                $por[$clave]['nombre'] = (string) $hit['nombre'];
             }
             $qty = is_array($hit['meses'] ?? null) ? $hit['meses'] : [];
             $mxn = is_array($hit['importe'] ?? null) ? $hit['importe'] : [];
@@ -4493,14 +4598,14 @@ class ProyeccionesVentasController extends Controller
                 $q = (float) ($qty[$i] ?? 0);
                 $mx = (float) ($mxn[$i] ?? 0);
                 $us = (float) ($usd[$i] ?? 0);
-                if ((float) $por[$codigo]['gasto'][$i] == 0.0 && $q > 0) {
-                    $por[$codigo]['gasto'][$i] = round($q, 4);
+                if ((float) $por[$clave]['gasto'][$i] == 0.0 && $q > 0) {
+                    $por[$clave]['gasto'][$i] = round($q, 4);
                 }
-                if ((float) $por[$codigo]['importe'][$i] == 0.0 && $mx > 0) {
-                    $por[$codigo]['importe'][$i] = round($mx, 2);
+                if ((float) $por[$clave]['importe'][$i] == 0.0 && $mx > 0) {
+                    $por[$clave]['importe'][$i] = round($mx, 2);
                 }
-                if ((float) $por[$codigo]['importe_usd'][$i] == 0.0 && $us > 0) {
-                    $por[$codigo]['importe_usd'][$i] = round($us, 2);
+                if ((float) $por[$clave]['importe_usd'][$i] == 0.0 && $us > 0) {
+                    $por[$clave]['importe_usd'][$i] = round($us, 2);
                 }
             }
         }
@@ -4531,6 +4636,8 @@ class ProyeccionesVentasController extends Controller
      */
     protected function conservarMesesBudget(array $prev, array $nuevo): array
     {
+        $prev = $this->colapsarPorCuentaProductos($prev);
+        $nuevo = $this->colapsarPorCuentaProductos($nuevo);
         $meta = is_array($prev['_meta'] ?? null) ? $prev['_meta'] : [];
         if (empty($meta['budget_at'])) {
             return $nuevo;
@@ -5587,7 +5694,10 @@ class ProyeccionesVentasController extends Controller
             $costoInv = $this->costoInventarioVenta($row);
             $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
             $unidad = $this->elegirUnidadDesdeVenta($row);
-            $key = $codigo;
+            $key = $this->claveProductoVenta($codigo);
+            if ($key === '') {
+                continue;
+            }
             if (! isset($porCuenta[$key])) {
                 $porCuenta[$key] = [
                     'codigo' => $codigo,
@@ -6263,28 +6373,22 @@ class ProyeccionesVentasController extends Controller
     {
         $api = app(AutinApiClient::class);
         $rows = [];
-        $ok = false;
         $mensaje = null;
         $filas = 0;
         $total = 0;
+        $ok = true;
         foreach ($this->empresasFiltroVentas($empresa) as $empFiltro) {
             $pack = $api->ventasTodasPaginas(array_merge([
                 'year' => $year,
                 'Empresa' => $empFiltro,
             ], $extra), $maxPages, 4);
             if (empty($pack['ok'])) {
-                return [
-                    'ok' => false,
-                    'rows' => [],
-                    'mensaje' => $pack['message'] ?? 'Sin conexión a ventas SAP',
-                    'filas' => 0,
-                    'total' => 0,
-                ];
+                $ok = false;
+                $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
             }
-            $ok = true;
-            $filas += count($pack['rows']);
+            $filas += count($pack['rows'] ?? []);
             $total += (int) ($pack['total'] ?? 0);
-            foreach ($pack['rows'] as $row) {
+            foreach ($pack['rows'] ?? [] as $row) {
                 if (is_array($row)) {
                     $rows[] = $row;
                 }

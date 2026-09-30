@@ -4249,11 +4249,12 @@ body.cc-api-waiting {
 .cc-page.is-an-busy .cc-busy-overlay {
     opacity: 1;
     visibility: visible;
-    pointer-events: auto;
+    pointer-events: none;
+    background: transparent;
 }
 .cc-page.is-an-busy #an-empty,
 .cc-page.is-an-busy #an-work {
-    visibility: hidden;
+    visibility: visible;
 }
 @keyframes cc-dots-wave {
     0%, 100% {
