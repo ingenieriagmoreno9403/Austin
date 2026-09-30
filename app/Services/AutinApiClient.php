@@ -281,7 +281,7 @@ class AutinApiClient
      * @param  array<int, string>  $cuentas
      * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>, failed: array<int, string>}
      */
-    public function gastoRealPorCuentas(string $empresa, int $year, array $cuentas, int $maxPages = 12, int $concurrency = 3, string $cc = ''): array
+    public function gastoRealPorCuentas(string $empresa, int $year, array $cuentas, int $maxPages = 12, int $concurrency = 3, string $cc = '', string $groupMask = ''): array
     {
         $cuentas = array_values(array_unique(array_filter(array_map('trim', $cuentas))));
         if (! $cuentas) {
@@ -298,6 +298,10 @@ class AutinApiClient
         $cc = trim($cc);
         if ($cc !== '') {
             $base['CC'] = $cc;
+        }
+        $groupMask = trim($groupMask);
+        if ($groupMask !== '') {
+            $base['GroupMask'] = $groupMask;
         }
         $url = $this->baseUrl.'/gasto-real';
         $rows = [];
@@ -325,7 +329,7 @@ class AutinApiClient
             $lastByCuenta[$i] = min(max(1, $last), max(1, $maxPages));
         };
 
-        $runPool = function (callable $requests) use ($concurrency, $take, &$message) {
+        $runPool = function (callable $requests) use ($concurrency, $take, &$message, &$failed, $cuentas) {
             $pool = new Pool($this->client, $requests(), [
                 'concurrency' => max(1, $concurrency),
                 'fulfilled' => function ($response, $i) use ($take) {
