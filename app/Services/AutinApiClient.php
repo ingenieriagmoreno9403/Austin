@@ -658,74 +658,123 @@ class AutinApiClient
 
     /**
      * Recorre páginas de /ventas-budget.
+     * per_page 500 provoca 504; se piden páginas chicas y no se da por buena
+     * una bajada a la que le faltó alguna página (eso deja oct–dic incompletos).
      *
      * @param  array<string, mixed>  $filters
-     * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>}
+     * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>, total: int, completo: bool}
      */
-    public function ventasBudgetTodasPaginas(array $filters, int $maxPages = 30, int $concurrency = 6): array
+    public function ventasBudgetTodasPaginas(array $filters, int $maxPages = 80, int $concurrency = 4, int $perPage = 120): array
     {
-        $filters['per_page'] = 500;
+        $perPage = max(20, min(200, $perPage));
+        $filters['per_page'] = $perPage;
         $first = $this->ventasBudget(array_merge($filters, ['page' => 1]));
         if (empty($first['ok'])) {
             return [
                 'ok' => false,
                 'message' => $first['message'] ?? 'Sin conexión a ventas-budget',
                 'rows' => [],
+                'total' => 0,
+                'completo' => false,
             ];
         }
 
         $body = is_array($first['body'] ?? null) ? $first['body'] : [];
-        $rows = is_array($body['data'] ?? null) ? $body['data'] : [];
+        $pageRows = [1 => is_array($body['data'] ?? null) ? $body['data'] : []];
         $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
-        $last = (int) ($meta['last_page'] ?? $body['last_page'] ?? 1);
-        if ($last < 1) {
-            $last = 1;
+        $total = (int) ($meta['total'] ?? 0);
+        $reportedLast = (int) ($meta['last_page'] ?? $body['last_page'] ?? 1);
+        if ($reportedLast < 1) {
+            $reportedLast = 1;
         }
-        $last = min($last, max(1, $maxPages));
-        if ($last <= 1) {
-            return ['ok' => true, 'message' => null, 'rows' => $rows];
-        }
+        $last = min($reportedLast, max(1, $maxPages));
+        $capped = $reportedLast > $last;
 
-        $url = $this->baseUrl.'/ventas-budget';
-        $requests = function () use ($url, $filters, $last) {
-            for ($page = 2; $page <= $last; $page++) {
-                $query = array_filter(array_merge($filters, ['page' => $page]), static function ($value) {
-                    return $value !== null && $value !== '';
-                });
-                yield $page => new Request('GET', $url.'?'.http_build_query($query));
-            }
-        };
-
-        $extra = [];
-        $pool = new Pool($this->client, $requests(), [
-            'concurrency' => max(1, $concurrency),
-            'fulfilled' => function ($response) use (&$extra) {
-                $json = json_decode((string) $response->getBody(), true);
-                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
-                foreach ($data as $row) {
-                    if (is_array($row)) {
-                        $extra[] = $row;
-                    }
+        if ($last > 1) {
+            $url = $this->baseUrl.'/ventas-budget';
+            $pending = range(2, $last);
+            $attempts = 0;
+            while ($pending && $attempts < 3) {
+                $attempts++;
+                if ($attempts > 1) {
+                    usleep(800000);
                 }
-            },
-        ]);
-        $pool->promise()->wait();
+                $batch = $pending;
+                $pending = [];
+                $requests = function () use ($url, $filters, $batch) {
+                    foreach ($batch as $page) {
+                        $query = array_filter(array_merge($filters, ['page' => $page]), static function ($value) {
+                            return $value !== null && $value !== '';
+                        });
+                        yield $page => new Request('GET', $url.'?'.http_build_query($query));
+                    }
+                };
+                $pool = new Pool($this->client, $requests(), [
+                    'concurrency' => max(1, min(4, $concurrency)),
+                    'fulfilled' => function ($response, $page) use (&$pageRows, &$pending) {
+                        $status = (int) $response->getStatusCode();
+                        if ($status < 200 || $status >= 300) {
+                            $pending[] = (int) $page;
 
-        return ['ok' => true, 'message' => null, 'rows' => array_merge($rows, $extra)];
+                            return;
+                        }
+                        $json = json_decode((string) $response->getBody(), true);
+                        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                        $clean = [];
+                        foreach ($data as $row) {
+                            if (is_array($row)) {
+                                $clean[] = $row;
+                            }
+                        }
+                        $pageRows[(int) $page] = $clean;
+                    },
+                    'rejected' => function ($reason, $page) use (&$pending) {
+                        $pending[] = (int) $page;
+                    },
+                ]);
+                $pool->promise()->wait();
+            }
+        }
+
+        ksort($pageRows);
+        $rows = [];
+        foreach ($pageRows as $chunk) {
+            foreach ($chunk as $row) {
+                if (is_array($row)) {
+                    $rows[] = $row;
+                }
+            }
+        }
+
+        $missingPages = $last > 1 && count($pageRows) < $last;
+        $short = $total > 0 && count($rows) < $total;
+        $completo = ! $capped && ! $missingPages && ! $short;
+        $message = null;
+        if (! $completo) {
+            $message = 'Ventas-budget incompletas: se recibieron '.count($rows).' de '.($total ?: '?').' líneas.';
+        }
+
+        return [
+            'ok' => $completo,
+            'message' => $message,
+            'rows' => $completo ? $rows : [],
+            'total' => $total,
+            'completo' => $completo,
+        ];
     }
 
     /**
      * Recorre páginas de /ventas.
-     * per_page alto (p. ej. 500) suele provocar 504 en AutinApi; por defecto 80.
+     * per_page alto (p. ej. 500) suele provocar 504 en AutinApi; se piden páginas de 150.
      * No devuelve ok si falta alguna página: un corte (p. ej. solo las primeras 500
      * líneas, que la API entrega de la más nueva a la más vieja) deja el año incompleto.
      *
      * @param  array<string, mixed>  $filters
      * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>, total: int, completo: bool}
      */
-    public function ventasTodasPaginas(array $filters, int $maxPages = 30, int $concurrency = 4, int $perPage = 400): array
+    public function ventasTodasPaginas(array $filters, int $maxPages = 30, int $concurrency = 4, int $perPage = 150): array
     {
-        $perPage = max(20, min(500, $perPage));
+        $perPage = max(20, min(200, $perPage));
         $filters['per_page'] = $perPage;
         $first = $this->ventas(array_merge($filters, ['page' => 1]));
         if (empty($first['ok'])) {

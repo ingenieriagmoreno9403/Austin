@@ -7881,9 +7881,9 @@
     }
 
     function ventaCentroLista(c) {
-        var key = gastoCacheKey(c);
-        if (gastoCacheEntry(key)) return true;
-        return !!(CC._anGastoTried && CC._anGastoTried[key]);
+        var entry = gastoCacheEntry(gastoCacheKey(c));
+        if (!entry || !entry.por) return false;
+        return Object.keys(entry.por).length > 0;
     }
 
     function htmlCargando(size) {
@@ -7930,13 +7930,14 @@
         });
     }
 
-    /** El snapshot local ya trae unidades o importe en oct, nov o dic. */
-    function snapshotTieneUltimos3(c) {
+    /** Oct–dic ya bajados y con importe. La marca sola no basta: un refresh no debe dejarlos en cero. */
+    function budgetCompletoEnCache(c) {
         var entry = gastoCacheEntry(gastoCacheKey(c));
-        if (!entry || !entry.por) return false;
-        var keys = Object.keys(entry.por);
+        if (!(entry && entry.meta && entry.meta.budget_completo)) return false;
+        var por = entry.por || {};
+        var keys = Object.keys(por);
         for (var k = 0; k < keys.length; k++) {
-            var row = entry.por[keys[k]];
+            var row = por[keys[k]];
             if (!row || typeof row !== 'object') continue;
             var gasto = row.gasto || [];
             var imp = row.importe || [];
@@ -7999,7 +8000,8 @@
             fuente: (entry && entry.meta && entry.meta.fuente) || 'snapshot',
             synced_at: (entry && entry.meta && entry.meta.synced_at) || null,
             year: CC.state.anioGasto || 2026,
-            mensaje: null
+            mensaje: null,
+            budget_completo: true
         });
         CC.state.gastoLookup = CC.state.gastoLookup || {};
         CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
@@ -8020,7 +8022,7 @@
         var list = (centros || []).filter(function (c) {
             var key = analisisVentasBudgetKey(c);
             if (!key || key === '|') return false;
-            if (snapshotTieneUltimos3(c)) return false;
+            if (budgetCompletoEnCache(c)) return false;
             if (Object.prototype.hasOwnProperty.call(CC._anVentasBudget, key)) return false;
             if (CC._anVentasBudgetTried && CC._anVentasBudgetTried[key]) return false;
             return true;
@@ -8157,7 +8159,8 @@
                         fuente: hit.fuente || 'snapshot',
                         synced_at: hit.synced_at || null,
                         year: year,
-                        mensaje: null
+                        mensaje: null,
+                        budget_completo: !!hit.budget_completo
                     });
                     CC.state.gastoLookup = CC.state.gastoLookup || {};
                     CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(hit.por_cuenta);
@@ -8183,7 +8186,7 @@
 
             var pending = centrosMissing.slice();
             var inflight = 0;
-            var max = 8;
+            var max = 2;
             var dirty = false;
             var paintTimer = null;
             function schedulePaint() {
@@ -8220,7 +8223,7 @@
                             if (!pending.length && !inflight) done();
                             else kickOne();
                         }
-                        var timer = setTimeout(doneOne, 60000);
+                        var timer = setTimeout(doneOne, 180000);
                         fetch((CC.state.gastoUrl || '/ProyeccionesVentas/api/gasto-real') +
                             '?empresa=' + encodeURIComponent(centro.empresa || '') +
                             '&cc=' + encodeURIComponent(centro.codigo || '') +
@@ -8230,12 +8233,18 @@
                         }).then(function (res) { return res.json(); }).then(function (json) {
                             if (gen !== CC._anGastoGen) return;
                             var por = (json && json.por_cuenta) || {};
+                            if (json && json.ok === false) {
+                                CC._anGastoTried = CC._anGastoTried || {};
+                                CC._anGastoTried[cacheKey] = true;
+                                return;
+                            }
                             if (por && Object.keys(por).length) {
                                 rememberGastoCache(cacheKey, por, {
                                     fuente: (json && json.fuente) || (json && json.ok ? 'api' : 'error'),
                                     synced_at: (json && json.synced_at) || null,
                                     year: (json && json.year) || year,
-                                    mensaje: (json && json.mensaje) || null
+                                    mensaje: (json && json.mensaje) || null,
+                                    budget_completo: !!(json && json.budget_completo)
                                 });
                                 CC.state.gastoLookup = CC.state.gastoLookup || {};
                                 CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
@@ -8364,6 +8373,7 @@
         var sliceAt = 0;
         var inflightChunks = 0;
         var maxChunks = 3;
+        var missingAll = [];
 
         function postChunk(slice) {
             return fetch(batchUrl, {
@@ -8386,17 +8396,10 @@
             });
         }
 
-        function markSinSnapshot(list) {
-            CC._anGastoTried = CC._anGastoTried || {};
-            (list || []).forEach(function (c) {
-                CC._anGastoTried[gastoCacheKey(c)] = true;
-            });
-        }
-
         function pumpChunks() {
             if (gen !== CC._anGastoGen) return;
             if (sliceAt >= slices.length && !inflightChunks) {
-                finishAll();
+                fetchGastoIndividual(missingAll, finishAll);
                 return;
             }
             while (inflightChunks < maxChunks && sliceAt < slices.length) {
@@ -8404,10 +8407,12 @@
                 (function (slice) {
                     postChunk(slice).then(function (json) {
                         if (gen !== CC._anGastoGen) return;
-                        markSinSnapshot(hydrateGastoBatch(json, slice) || []);
+                        (hydrateGastoBatch(json, slice) || []).forEach(function (c) {
+                            missingAll.push(c);
+                        });
                     }).catch(function () {
                         if (gen !== CC._anGastoGen) return;
-                        markSinSnapshot(slice);
+                        slice.forEach(function (c) { missingAll.push(c); });
                     }).then(function () {
                         inflightChunks -= 1;
                         pumpChunks();

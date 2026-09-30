@@ -3972,24 +3972,27 @@ class ProyeccionesVentasController extends Controller
                 ->where('anio', $year)
                 ->first();
             if ($snap && $this->ventaRealSnapshotSirve($snap->por_cuenta)) {
+                if ($this->mesesPorRellenar(is_array($snap->por_cuenta) ? $snap->por_cuenta : []) !== []) {
+                    $snap = $this->rellenarMesesIniciales($snap, $empresa, $cc, $year);
+                }
                 $payload = [
                     'ok' => true,
                     'year' => $year,
-                    'por_cuenta' => $this->porCuentaSinMeta($snap->por_cuenta),
+                    'por_cuenta' => $this->porCuentaSinMeta(is_array($snap->por_cuenta) ? $snap->por_cuenta : []),
                     'mensaje' => null,
                     'fuente' => 'snapshot',
+                    'budget_completo' => $this->budgetCompletoDe($snap->por_cuenta),
                     'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
                 ];
-                $cacheKey = 'pv.venta-real.v4.'.$empresa.'.'.$cc.'.'.$year;
+                $cacheKey = 'pv.venta-real.v6.'.$empresa.'.'.$cc.'.'.$year;
                 Cache::put($cacheKey, $payload, 900);
-                // No reescribir maestro en cada lectura de snapshot (eso volvía lenta la recarga).
 
                 return response()->json($payload);
             }
         }
 
         // 2) Cache RAM corta (útil mientras se escribe el snapshot).
-        $cacheKey = 'pv.venta-real.v4.'.$empresa.'.'.$cc.'.'.$year;
+        $cacheKey = 'pv.venta-real.v6.'.$empresa.'.'.$cc.'.'.$year;
         if (! $force) {
             $cached = Cache::get($cacheKey);
             if (is_array($cached) && ! empty($cached['ok'])) {
@@ -4001,41 +4004,48 @@ class ProyeccionesVentasController extends Controller
             Cache::forget($cacheKey);
         }
 
-        // 3) API SAP → guardar snapshot.
+        // 3) API SAP → guardar snapshot. Un corte no se manda al navegador:
+        // la API entrega de la fecha más nueva a la más vieja y esos meses se pintarían como el año.
+        @set_time_limit(300);
         try {
             $payload = $this->cargarGastoRealCentro($empresa, $cc, $year);
             if (! empty($payload['ok'])) {
                 $stored = is_array($payload['por_cuenta'] ?? null) ? $payload['por_cuenta'] : [];
-                $this->guardarVentaRealSnapshot(
+                $stored = $this->guardarVentaRealSnapshot(
                     $empresa,
                     $cc,
                     $year,
                     $stored,
                     optional($request->user())->id
                 );
+                $payload['budget_completo'] = $this->budgetCompletoDe($stored);
                 $payload['por_cuenta'] = $this->porCuentaSinMeta($stored);
                 $payload['fuente'] = 'api';
                 $payload['synced_at'] = now()->format('Y-m-d H:i');
                 Cache::put($cacheKey, $payload, 900);
+            } else {
+                $snapPrevio = $this->snapshotVentaRealGuardado($empresa, $cc, $year);
+                if ($snapPrevio) {
+                    return $this->jsonVentaRealSnapshot(
+                        $snapPrevio,
+                        $year,
+                        $payload['mensaje'] ?? 'La bajada nueva no terminó; se dejó la venta ya guardada.',
+                        'snapshot_fallback'
+                    );
+                }
+                $payload['ok'] = false;
+                $payload['por_cuenta'] = (object) [];
+                $payload['fuente'] = 'incompleto';
             }
         } catch (Throwable $e) {
-            // Si falla la API pero hay snapshot viejo, úsalo.
-            if (Schema::hasTable('tbl_pv_venta_real_snapshot')) {
-                $snap = PvVentaRealSnapshot::query()
-                    ->where('empresa', $empresa)
-                    ->where('cliente_codigo', $cc)
-                    ->where('anio', $year)
-                    ->first();
-                if ($snap && is_array($snap->por_cuenta) && $snap->por_cuenta !== []) {
-                    return response()->json([
-                        'ok' => true,
-                        'year' => $year,
-                        'por_cuenta' => $this->porCuentaSinMeta($snap->por_cuenta),
-                        'mensaje' => 'API no disponible; se usó snapshot local ('.$e->getMessage().').',
-                        'fuente' => 'snapshot_fallback',
-                        'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
-                    ]);
-                }
+            $snapPrevio = $this->snapshotVentaRealGuardado($empresa, $cc, $year);
+            if ($snapPrevio) {
+                return $this->jsonVentaRealSnapshot(
+                    $snapPrevio,
+                    $year,
+                    'API no disponible; se usó la venta ya guardada ('.$e->getMessage().').',
+                    'snapshot_fallback'
+                );
             }
 
             return response()->json([
@@ -4151,7 +4161,7 @@ class ProyeccionesVentasController extends Controller
                 $key = $hitKey;
             }
             $por = is_array($snap->por_cuenta) ? $snap->por_cuenta : [];
-            if (! $this->ventaRealSnapshotSirve($por)) {
+            if (! $this->ventaRealSnapshotSirve($por) || $this->mesesPorRellenar($por) !== []) {
                 continue;
             }
             $porCliente[$key] = [
@@ -4159,6 +4169,7 @@ class ProyeccionesVentasController extends Controller
                 'cc' => $cc,
                 'por_cuenta' => $this->porCuentaSinMeta($por),
                 'fuente' => 'snapshot',
+                'budget_completo' => $this->budgetCompletoDe($por),
                 'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
             ];
         }
@@ -4180,7 +4191,8 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Lo ya guardado en tabla se usa tal cual. Solo se va a la API si no hay fila.
+     * Lo guardado se vuelve a mostrar al recargar. No se exige la bajada nueva:
+     * si esa falla, la pantalla se quedaba en ceros.
      *
      * @param  mixed  $por
      */
@@ -4199,6 +4211,195 @@ class ProyeccionesVentasController extends Controller
         }
 
         return false;
+    }
+
+    protected function snapshotVentaRealGuardado(string $empresa, string $cc, int $year): ?PvVentaRealSnapshot
+    {
+        if (! Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+            return null;
+        }
+        $snap = PvVentaRealSnapshot::query()
+            ->where('empresa', $empresa)
+            ->where('cliente_codigo', $cc)
+            ->where('anio', $year)
+            ->first();
+        if (! $snap || ! $this->ventaRealSnapshotSirve($snap->por_cuenta)) {
+            return null;
+        }
+
+        return $snap;
+    }
+
+    protected function jsonVentaRealSnapshot(PvVentaRealSnapshot $snap, int $year, ?string $mensaje = null, string $fuente = 'snapshot'): JsonResponse
+    {
+        return response()->json([
+            'ok' => true,
+            'year' => $year,
+            'por_cuenta' => $this->porCuentaSinMeta(is_array($snap->por_cuenta) ? $snap->por_cuenta : []),
+            'mensaje' => $mensaje,
+            'fuente' => $fuente,
+            'budget_completo' => $this->budgetCompletoDe($snap->por_cuenta),
+            'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
+        ]);
+    }
+
+    /**
+     * Meses anteriores al primero que sí tiene venta.
+     * /ventas viene de la fecha más nueva a la más vieja: si la bajada se corta,
+     * se quedan junio–diciembre y enero–mayo salen en cero.
+     *
+     * @param  array<string, mixed>  $por
+     * @return array<int, int> meses 1–12 todavía no confirmados
+     */
+    protected function mesesPorRellenar(array $por): array
+    {
+        $tiene = array_fill(1, 12, false);
+        foreach ($por as $key => $item) {
+            if ($key === '_meta' || ! is_array($item)) {
+                continue;
+            }
+            for ($i = 0; $i < 12; $i++) {
+                if ((float) ($item['importe'][$i] ?? 0) != 0.0
+                    || (float) ($item['gasto'][$i] ?? 0) != 0.0
+                    || (float) ($item['importe_usd'][$i] ?? 0) != 0.0) {
+                    $tiene[$i + 1] = true;
+                }
+            }
+        }
+        $primero = null;
+        for ($m = 1; $m <= 12; $m++) {
+            if ($tiene[$m]) {
+                $primero = $m;
+                break;
+            }
+        }
+        if ($primero === null || $primero <= 1) {
+            return [];
+        }
+        $meta = is_array($por['_meta'] ?? null) ? $por['_meta'] : [];
+        $ya = array_map('intval', (array) ($meta['meses_ok'] ?? []));
+        $huecos = [];
+        for ($m = 1; $m < $primero; $m++) {
+            if (! in_array($m, $ya, true)) {
+                $huecos[] = $m;
+            }
+        }
+
+        return $huecos;
+    }
+
+    /**
+     * Baja cada mes vacío por su propio rango de fechas y lo escribe en el snapshot
+     * sin tocar los meses que ya tenían importe.
+     */
+    protected function rellenarMesesIniciales(PvVentaRealSnapshot $snap, string $empresa, string $cc, int $year): PvVentaRealSnapshot
+    {
+        $por = is_array($snap->por_cuenta) ? $snap->por_cuenta : [];
+        $huecos = $this->mesesPorRellenar($por);
+        if ($huecos === []) {
+            return $snap;
+        }
+
+        @set_time_limit(300);
+        $meta = is_array($por['_meta'] ?? null) ? $por['_meta'] : [];
+        $ok = array_map('intval', (array) ($meta['meses_ok'] ?? []));
+        foreach ($huecos as $mes) {
+            $desde = sprintf('%04d/%02d/01', $year, $mes);
+            $fin = (int) date('t', strtotime(sprintf('%04d-%02d-01', $year, $mes)));
+            $hasta = sprintf('%04d/%02d/%02d', $year, $mes, $fin);
+            $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
+                'CardCode' => $cc,
+                'fecha_desde' => $desde,
+                'fecha_hasta' => $hasta,
+            ], 40);
+            if (empty($pack['ok'])) {
+                continue;
+            }
+            $rows = is_array($pack['rows'] ?? null) ? $pack['rows'] : [];
+            $idx = $mes - 1;
+            $enMes = 0;
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $fecha = (string) ($row['DocDate'] ?? $row['Fecha'] ?? $row['fecha'] ?? $row['TaxDate'] ?? '');
+                if ($this->mesDeFecha($fecha) === $idx) {
+                    $enMes++;
+                }
+            }
+            if ($rows !== [] && $enMes === 0) {
+                continue;
+            }
+            $traido = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($rows, $year, $cc));
+            foreach ($traido as $cod => $hit) {
+                if (! is_array($hit)) {
+                    continue;
+                }
+                if (! isset($por[$cod]) || ! is_array($por[$cod])) {
+                    $por[$cod] = $hit;
+
+                    continue;
+                }
+                foreach (['gasto', 'importe', 'importe_usd'] as $field) {
+                    $serie = $por[$cod][$field] ?? [];
+                    if (! is_array($serie)) {
+                        $serie = [];
+                    }
+                    $serie = array_pad(array_slice(array_values($serie), 0, 12), 12, 0.0);
+                    $decimales = $field === 'gasto' ? 4 : 2;
+                    $serie[$idx] = round((float) ($hit[$field][$idx] ?? 0), $decimales);
+                    $por[$cod][$field] = $serie;
+                }
+                if (($por[$cod]['nombre'] ?? '') === '' && ! empty($hit['nombre'])) {
+                    $por[$cod]['nombre'] = (string) $hit['nombre'];
+                }
+            }
+            $ok[] = $mes;
+        }
+        $ok = array_values(array_unique($ok));
+        sort($ok);
+        $meta['meses_ok'] = $ok;
+        $por['_meta'] = $meta;
+        $snap->por_cuenta = $por;
+        $snap->synced_at = now();
+        $snap->save();
+        Cache::forget('pv.venta-real.v6.'.strtoupper(trim($empresa)).'.'.trim($cc).'.'.$year);
+
+        return $snap->refresh();
+    }
+
+    /**
+     * @param  mixed  $por
+     */
+    protected function ventaRealSnapshotTieneImportes($por): bool
+    {
+        if (! is_array($por)) {
+            return false;
+        }
+        foreach ($por as $key => $item) {
+            if ($key === '_meta' || ! is_array($item)) {
+                continue;
+            }
+            foreach (['importe', 'gasto', 'importe_usd'] as $field) {
+                foreach ((array) ($item[$field] ?? []) as $n) {
+                    if ((float) $n != 0.0) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  mixed  $por
+     */
+    protected function budgetCompletoDe($por): bool
+    {
+        return is_array($por)
+            && is_array($por['_meta'] ?? null)
+            && ! empty($por['_meta']['budget_completo']);
     }
 
     /**
@@ -4307,6 +4508,7 @@ class ProyeccionesVentasController extends Controller
         $meta = is_array($por['_meta'] ?? null) ? $por['_meta'] : [];
         $meta['budget_meses'] = array_values($meses);
         $meta['budget_at'] = now()->toDateTimeString();
+        $meta['budget_completo'] = true;
         $por['_meta'] = $meta;
 
         if (! $row->exists) {
@@ -4317,7 +4519,7 @@ class ProyeccionesVentasController extends Controller
         $row->synced_by = optional(auth()->user())->id;
         $row->save();
 
-        Cache::forget('pv.venta-real.v4.'.$empresa.'.'.$cc.'.'.$year);
+        Cache::forget('pv.venta-real.v6.'.$empresa.'.'.$cc.'.'.$year);
     }
 
     /**
@@ -4363,6 +4565,9 @@ class ProyeccionesVentasController extends Controller
         $nuevoMeta = is_array($nuevo['_meta'] ?? null) ? $nuevo['_meta'] : [];
         $nuevoMeta['budget_meses'] = $meta['budget_meses'] ?? [10, 11, 12];
         $nuevoMeta['budget_at'] = $meta['budget_at'];
+        if (! empty($meta['budget_completo'])) {
+            $nuevoMeta['budget_completo'] = true;
+        }
         $nuevo['_meta'] = $nuevoMeta;
 
         return $nuevo;
@@ -4370,6 +4575,7 @@ class ProyeccionesVentasController extends Controller
 
     /**
      * @param  array<string, mixed>  $porCuenta
+     * @return array<string, mixed>
      */
     protected function guardarVentaRealSnapshot(
         string $empresa,
@@ -4377,9 +4583,9 @@ class ProyeccionesVentasController extends Controller
         int $year,
         array $porCuenta,
         $userId = null
-    ): void {
+    ): array {
         if (! Schema::hasTable('tbl_pv_venta_real_snapshot') || $porCuenta === [] || ! $this->ventaRealSnapshotEsCompleto($porCuenta)) {
-            return;
+            return $porCuenta;
         }
 
         $row = PvVentaRealSnapshot::query()->firstOrNew([
@@ -4388,12 +4594,17 @@ class ProyeccionesVentasController extends Controller
             'anio' => $year,
         ]);
         $previo = is_array($row->por_cuenta) ? $row->por_cuenta : [];
+        if ($this->ventaRealSnapshotTieneImportes($previo) && ! $this->ventaRealSnapshotTieneImportes($porCuenta)) {
+            return $previo;
+        }
         $porCuenta = $this->conservarMesesBudget($previo, $porCuenta);
         $row->por_cuenta = $porCuenta;
         $row->origen = 'api';
         $row->synced_at = now();
         $row->synced_by = $userId;
         $row->save();
+
+        return $porCuenta;
     }
 
     /**
@@ -4508,7 +4719,7 @@ class ProyeccionesVentasController extends Controller
             $year = (int) date('Y');
         }
 
-        @set_time_limit(180);
+        @set_time_limit(300);
         $api = app(AutinApiClient::class);
         $pack = $api->ventasBudgetTodasPaginas([
             'Empresa' => $empresa,
@@ -5463,11 +5674,12 @@ class ProyeccionesVentasController extends Controller
      */
     protected function cargarGastoRealCentro(string $empresa, string $cc, int $year): array
     {
+        @set_time_limit(300);
         $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
             'CardCode' => $cc,
             'fecha_desde' => $year.'/01/01',
             'fecha_hasta' => $year.'/12/31',
-        ], 80);
+        ], 220);
 
         $porCuenta = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($pack['rows'] ?? [], $year, $cc));
         $ok = ! empty($pack['ok']);
@@ -6517,6 +6729,362 @@ class ProyeccionesVentasController extends Controller
                 ['empresa' => $empresa, 'codigo' => $codigo],
                 [
                     'nombre' => $nombre !== '' ? $nombre : $codigo,
+                    'anio' => $year,
+                    'origen' => $origen,
+                    'synced_at' => $now,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Productos ya conocidos (catálogo local, costos, asignaciones y proyecciones).
+     * Solo codigo/nombre/grupo/costo. Si $cliente va vacío, devuelve el catálogo de la empresa.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    protected function productosLocalesAsignacion(string $empresa, string $cliente = '', string $q = ''): array
+    {
+        $empresa = strtolower(trim($empresa));
+        $cliente = trim($cliente);
+        $q = trim($q);
+        $map = [];
+
+        $push = function (string $codigo, string $nombre, string $grupo = '', $costo = 0, string $moneda = 'MXN') use (&$map, $empresa, $q) {
+            $codigo = trim($codigo);
+            if ($codigo === '') {
+                return;
+            }
+            $nombre = trim($nombre) !== '' ? trim($nombre) : $codigo;
+            $grupo = trim($grupo);
+            if ($q !== '') {
+                $hay = mb_strtoupper($codigo.' '.$nombre.' '.$grupo);
+                if (mb_strpos($hay, mb_strtoupper($q)) === false) {
+                    return;
+                }
+            }
+            $key = strtoupper($codigo);
+            $costo = is_numeric($costo) ? (float) $costo : 0.0;
+            if (! isset($map[$key])) {
+                $map[$key] = [
+                    'codigo' => $codigo,
+                    'nombre' => $nombre,
+                    'empresa' => $empresa,
+                    'grupo' => $grupo,
+                    'grupo_id' => $grupo,
+                    'costo' => $costo,
+                    'moneda' => $moneda !== '' ? $moneda : 'MXN',
+                ];
+
+                return;
+            }
+            if ($map[$key]['nombre'] === $map[$key]['codigo'] && $nombre !== $codigo) {
+                $map[$key]['nombre'] = $nombre;
+            }
+            if ($map[$key]['grupo'] === '' && $grupo !== '') {
+                $map[$key]['grupo'] = $grupo;
+                $map[$key]['grupo_id'] = $grupo;
+            }
+            if ($costo > 0) {
+                $map[$key]['costo'] = $costo;
+            }
+        };
+
+        if (Schema::hasTable('tbl_pv_producto_cliente_catalogo')) {
+            $rows = PvProductoClienteCatalogo::query()
+                ->where('empresa', $empresa)
+                ->when($cliente !== '', function ($query) use ($cliente) {
+                    $query->where('cliente_codigo', $cliente);
+                })
+                ->orderBy('nombre')
+                ->limit(4000)
+                ->get(['codigo', 'nombre', 'grupo', 'costo']);
+            foreach ($rows as $row) {
+                $push((string) $row->codigo, (string) ($row->nombre ?? ''), (string) ($row->grupo ?? ''), $row->costo);
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_productos_costo')) {
+            $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
+            $query = DB::table('tbl_pv_productos_costo')->where('empresa', $empresa);
+            if ($cliente !== '' && $hasCard) {
+                $query->where('card_code', $cliente);
+            }
+            $cols = ['producto_codigo', 'producto_nombre'];
+            if (Schema::hasColumn('tbl_pv_productos_costo', 'costo_unitario')) {
+                $cols[] = 'costo_unitario';
+            }
+            if (Schema::hasColumn('tbl_pv_productos_costo', 'moneda')) {
+                $cols[] = 'moneda';
+            }
+            $rows = $query->select($cols)->distinct()->limit(4000)->get();
+            foreach ($rows as $row) {
+                $push(
+                    (string) ($row->producto_codigo ?? ''),
+                    (string) ($row->producto_nombre ?? ''),
+                    '',
+                    $row->costo_unitario ?? 0,
+                    (string) ($row->moneda ?? 'MXN')
+                );
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_asignacion_productos') && Schema::hasTable('tbl_pv_asignaciones')) {
+            $colCliente = Schema::hasColumn('tbl_pv_asignaciones', 'cliente_codigo') ? 'cliente_codigo' : 'centro_codigo';
+            $colProd = Schema::hasColumn('tbl_pv_asignacion_productos', 'producto_codigo') ? 'producto_codigo' : 'cuenta_codigo';
+            $colNom = Schema::hasColumn('tbl_pv_asignacion_productos', 'producto_nombre')
+                ? 'producto_nombre'
+                : (Schema::hasColumn('tbl_pv_asignacion_productos', 'cuenta_nombre') ? 'cuenta_nombre' : null);
+            $colLinea = Schema::hasColumn('tbl_pv_asignacion_productos', 'linea')
+                ? 'linea'
+                : (Schema::hasColumn('tbl_pv_asignacion_productos', 'agrupacion') ? 'agrupacion' : null);
+            $query = DB::table('tbl_pv_asignacion_productos as p')
+                ->join('tbl_pv_asignaciones as a', 'a.id', '=', 'p.asignacion_id')
+                ->where('a.empresa', $empresa);
+            if ($cliente !== '') {
+                $query->where('a.'.$colCliente, $cliente);
+            }
+            $sel = ['p.'.$colProd.' as producto_codigo'];
+            if ($colNom) {
+                $sel[] = 'p.'.$colNom.' as producto_nombre';
+            }
+            if ($colLinea) {
+                $sel[] = 'p.'.$colLinea.' as linea';
+            }
+            $rows = $query->select($sel)->distinct()->limit(3000)->get();
+            foreach ($rows as $row) {
+                $push(
+                    (string) ($row->producto_codigo ?? ''),
+                    (string) ($row->producto_nombre ?? ''),
+                    (string) ($row->linea ?? '')
+                );
+            }
+        }
+
+        if (Schema::hasTable('tbl_pv_proyecciones') && Schema::hasColumn('tbl_pv_proyecciones', 'producto_codigo')) {
+            $query = DB::table('tbl_pv_proyecciones')->where('empresa', $empresa);
+            if ($cliente !== '' && Schema::hasColumn('tbl_pv_proyecciones', 'cliente_codigo')) {
+                $query->where('cliente_codigo', $cliente);
+            }
+            $cols = ['producto_codigo'];
+            if (Schema::hasColumn('tbl_pv_proyecciones', 'producto_nombre')) {
+                $cols[] = 'producto_nombre';
+            }
+            $rows = $query->select($cols)->distinct()->limit(3000)->get();
+            foreach ($rows as $row) {
+                $push((string) ($row->producto_codigo ?? ''), (string) ($row->producto_nombre ?? ''));
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * Productos del cliente en ventas SAP (CardCode), sin bajar todo el año.
+     * Si el año del ciclo aún no tiene ventas, prueba hasta 3 años atrás.
+     *
+     * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarProductosSapAsignacion(string $empresa, string $cliente, int $year, string $q = ''): array
+    {
+        $empresa = strtolower(trim($empresa));
+        $cliente = trim($cliente);
+        $q = trim($q);
+        if ($cliente === '') {
+            return ['ok' => true, 'productos' => [], 'mensaje' => null];
+        }
+        if ($year < 2000) {
+            $year = (int) date('Y');
+        }
+
+        $cacheKey = 'pv.asig.prod.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente).'|'.mb_strtoupper($q));
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && ! empty($cached['productos'])) {
+            return $cached;
+        }
+
+        if ($q === '') {
+            $resolved = Cache::get($this->claveAnioVentas($empresa, $year));
+            if (is_numeric($resolved) && (int) $resolved !== $year) {
+                $pack = $this->cargarProductosSapAsignacionAnio($empresa, $cliente, (int) $resolved, '');
+                if (! empty($pack['productos'])) {
+                    $pack['mensaje'] = 'Mostrando productos con venta en '.$resolved.' (aún no hay en '.$year.')';
+                    Cache::put($cacheKey, $pack, 900);
+
+                    return $pack;
+                }
+            }
+        }
+
+        $last = null;
+        $hasta = max(2000, $year - 3);
+        for ($y = $year; $y >= $hasta; $y--) {
+            $pack = $this->cargarProductosSapAsignacionAnio($empresa, $cliente, $y, $q);
+            $last = $pack;
+            if (! empty($pack['productos'])) {
+                if ($q === '' && $y !== $year) {
+                    Cache::put($this->claveAnioVentas($empresa, $year), $y, 1800);
+                    $pack['mensaje'] = 'Mostrando productos con venta en '.$y.' (aún no hay en '.$year.')';
+                }
+                Cache::put($cacheKey, $pack, 900);
+
+                return $pack;
+            }
+            if (empty($pack['ok'])) {
+                break;
+            }
+        }
+
+        return $last ?? [
+            'ok' => false,
+            'productos' => [],
+            'mensaje' => 'Sin productos SAP',
+        ];
+    }
+
+    /**
+     * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
+     */
+    protected function cargarProductosSapAsignacionAnio(string $empresa, string $cliente, int $year, string $q = ''): array
+    {
+        $api = app(AutinApiClient::class);
+        $q = trim($q);
+        $pareceCodigo = $q !== '' && (bool) preg_match('/^[A-Za-z0-9._\-]{2,80}$/', $q);
+        $intentos = [['CardCode' => $cliente]];
+        if ($q !== '') {
+            $intentos = [];
+            if ($pareceCodigo) {
+                $intentos[] = ['CardCode' => $cliente, 'ItemCode' => $q];
+            }
+            $intentos[] = ['CardCode' => $cliente, 'ItemName' => $q];
+        }
+        $maxPages = $q === '' ? 3 : 1;
+        $perPage = $q === '' ? 200 : 80;
+
+        $map = [];
+        $ok = false;
+        $mensaje = null;
+        foreach ($this->empresasFiltroVentas($empresa) as $empFiltro) {
+            foreach ($intentos as $extra) {
+                $pack = $api->ventasTodasPaginas(array_merge([
+                    'year' => $year,
+                    'Empresa' => $empFiltro,
+                ], $extra), $maxPages, 2, $perPage);
+                if (empty($pack['ok'])) {
+                    if (! $ok) {
+                        $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
+                    }
+                    continue;
+                }
+                $ok = true;
+                foreach ($this->extraerProductosDeFilasVentas($pack['rows'] ?? [], $empresa, $cliente, $q) as $key => $row) {
+                    $map[$key] = $row;
+                }
+            }
+        }
+
+        $productos = array_values($map);
+
+        return [
+            'ok' => $ok,
+            'productos' => $productos,
+            'mensaje' => $ok
+                ? ($productos ? null : ($q !== ''
+                    ? 'Sin productos para “'.$q.'” en ventas '.$year.'.'
+                    : 'Este cliente no tiene productos en ventas '.$year.'.'))
+                : $mensaje,
+        ];
+    }
+
+    /**
+     * @param  array<int, mixed>  $rows
+     * @return array<string, array<string, mixed>>
+     */
+    protected function extraerProductosDeFilasVentas(array $rows, string $empresa, string $cliente = '', string $q = ''): array
+    {
+        $clienteKey = strtoupper(trim($cliente));
+        $q = trim($q);
+        $map = [];
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $card = trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? ''));
+            if ($clienteKey !== '' && $card !== '' && strtoupper($card) !== $clienteKey) {
+                continue;
+            }
+            $item = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
+            if ($item === '') {
+                continue;
+            }
+            $itemName = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? $row['Itemname'] ?? ''));
+            if ($q !== '') {
+                $hay = mb_strtoupper($item.' '.$itemName);
+                if (mb_strpos($hay, mb_strtoupper($q)) === false) {
+                    continue;
+                }
+            }
+            $linea = trim((string) ($row['U_LINEA_QV'] ?? $row['Linea'] ?? $row['linea'] ?? ''));
+            $key = strtoupper($item);
+            if (! isset($map[$key])) {
+                $map[$key] = [
+                    'codigo' => $item,
+                    'nombre' => $itemName !== '' ? $itemName : $item,
+                    'empresa' => $empresa,
+                    'grupo' => $linea,
+                    'grupo_id' => $linea,
+                    'costo' => $this->costoVenta($row),
+                    'moneda' => 'MXN',
+                ];
+            } else {
+                $costo = $this->costoVenta($row);
+                if ($costo > 0) {
+                    $map[$key]['costo'] = $costo;
+                }
+                if ($map[$key]['nombre'] === $item && $itemName !== '') {
+                    $map[$key]['nombre'] = $itemName;
+                }
+                if ($map[$key]['grupo'] === '' && $linea !== '') {
+                    $map[$key]['grupo'] = $linea;
+                    $map[$key]['grupo_id'] = $linea;
+                }
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $productos
+     */
+    protected function guardarProductosCatalogo(string $empresa, string $cliente, int $year, array $productos, string $origen = 'sap'): void
+    {
+        if (! Schema::hasTable('tbl_pv_producto_cliente_catalogo') || $productos === []) {
+            return;
+        }
+        $empresa = strtolower(trim($empresa));
+        $cliente = trim($cliente);
+        if ($cliente === '') {
+            return;
+        }
+        $now = now();
+        foreach ($productos as $row) {
+            $codigo = trim((string) ($row['codigo'] ?? ''));
+            if ($codigo === '') {
+                continue;
+            }
+            $nombre = trim((string) ($row['nombre'] ?? ''));
+            $grupo = trim((string) ($row['grupo'] ?? $row['grupo_id'] ?? ''));
+            PvProductoClienteCatalogo::query()->updateOrCreate(
+                [
+                    'empresa' => $empresa,
+                    'cliente_codigo' => $cliente,
+                    'codigo' => mb_substr($codigo, 0, 80),
+                ],
+                [
+                    'nombre' => mb_substr($nombre !== '' ? $nombre : $codigo, 0, 220),
+                    'grupo' => $grupo !== '' ? mb_substr($grupo, 0, 80) : null,
+                    'costo' => is_numeric($row['costo'] ?? null) ? (float) $row['costo'] : 0,
                     'anio' => $year,
                     'origen' => $origen,
                     'synced_at' => $now,

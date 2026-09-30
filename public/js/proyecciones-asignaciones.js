@@ -2129,7 +2129,8 @@
                     // hint suave en meta de productos si existe
                 }
             };
-            if (!opts.force && cacheCuentas[key]) {
+            var qBusca = String(opts.q || '').trim();
+            if (!opts.force && !qBusca && cacheCuentas[key]) {
                 apply(cacheCuentas[key], agrupaciones);
                 return;
             }
@@ -2138,6 +2139,8 @@
             url += todas
                 ? '&todas=1'
                 : ('&cliente=' + encodeURIComponent(cliente) + '&cc=' + encodeURIComponent(cliente));
+            if (qBusca.length >= 2) url += '&q=' + encodeURIComponent(qBusca);
+            if (opts.force) url += '&force=1';
             getJSONRetry(url).then(function (json) {
                 if (req !== ctaReq) return;
                 var rows = json.cuentas || [];
@@ -2145,7 +2148,7 @@
                     apply([], [], 'El catálogo está ocupado. Vuelve a elegir el cliente en un momento.');
                     return;
                 }
-                if (json.ok && rows.length) cacheCuentas[key] = rows;
+                if (json.ok && rows.length && !qBusca) cacheCuentas[key] = rows;
                 apply(rows, json.agrupaciones || [], json.mensaje);
             }).catch(function () {
                 apply([], [], 'No se pudieron cargar los productos');
