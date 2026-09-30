@@ -521,9 +521,8 @@
         return { map: map, usdMap: usdMap, nombres: nombres };
     }
 
-    function porTieneGastoUsd(por) {
+    function cacheTraeUsd(por) {
         var keys = Object.keys(por || {});
-        if (!keys.length) return true;
         for (var i = 0; i < keys.length; i++) {
             var row = por[keys[i]];
             if (row && row.gasto_usd && row.gasto_usd.length === 12) return true;
@@ -4003,6 +4002,9 @@
         rows.forEach(function (c) {
             if (c.empresa && emps.indexOf(c.empresa) === -1) emps.push(c.empresa);
         });
+        Object.keys(CC._anScopeRevision || {}).forEach(function (e) {
+            if (e && emps.indexOf(e) === -1) emps.push(e);
+        });
         emps.sort();
         if (emp && emp !== AN_EMP_TODAS && emps.indexOf(emp) === -1) emp = '';
         var empConcreta = empresaAnalisisConcreta(emp);
@@ -4228,6 +4230,7 @@
         CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
         var mon = document.getElementById('ctl-moneda');
         if (mon) mon.value = String(CC.state.currency || 'MXN').toUpperCase() === 'USD' ? 'USD' : 'MXN';
+        fillAnalisisFilters();
         if (CC._anCapturaCiclo !== String(CC.state.cicloCodigo || '')) {
             CC._anCapturaCiclo = String(CC.state.cicloCodigo || '');
             loadOverlaysForCycle().then(function () { CC.initAnalisis(); });
@@ -4249,13 +4252,18 @@
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).then(function (r) { return r.json(); }).then(function (json) {
                 var list = (json && json.asignaciones) || [];
+                recordarAsignacionesPropias(list);
                 CC.state.misAsignaciones = filasVisiblesRevision(list);
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
                 fillAnalisisFilters();
-                if (analisisTieneFiltro()) queueAnalisisGastos();
-                else renderAnalisis();
+                aplicarHerenciaRevision(ciclo, function () {
+                    CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
+                    CC._anAsigLoaded = true;
+                    CC._anAsigLoading = false;
+                    fillAnalisisFilters();
+                    if (analisisTieneFiltro()) queueAnalisisGastos();
+                    else renderAnalisis();
+                });
             }).catch(function () {
                 var list = CC.state.misAsignaciones || [];
                 CC.state.misAsignaciones = filasVisiblesRevision(list);
@@ -4358,7 +4366,8 @@
             if (!firma) return;
             CC.state.gastoReady = CC.state.gastoReady || {};
             var cachedPor = CC.state.gastoCache && CC.state.gastoCache[key];
-            if (CC.state.gastoReady[key] === firma && cachedPor && porTieneGastoUsd(cachedPor)) return;
+            var needUsd = captureIsUsd() && cachedPor && Object.keys(cachedPor).length && !cacheTraeUsd(cachedPor);
+            if (CC.state.gastoReady[key] === firma && cachedPor && Object.keys(cachedPor).length && !needUsd) return;
             pending.push(c);
         });
         if (!pending.length) {
@@ -4388,17 +4397,37 @@
                 var cuentas = cuentasAsignadasCentro(centro);
                 inflight += 1;
                 (function (c, key, firmaCentro, lista) {
-                    var done = false;
+                    var settled = false;
+                    var pidioUsd = false;
                     function guardar(por) {
-                        if (done || gen !== CC._anGastoGen) return;
-                        done = true;
-                        clearTimeout(timer);
+                        if (gen !== CC._anGastoGen) return;
+                        var incoming = por || {};
+                        var hasRows = Object.keys(incoming).length > 0;
+                        var prev = (CC.state.gastoCache && CC.state.gastoCache[key]) || {};
+                        if (settled) {
+                            if (!hasRows) return;
+                            if (Object.keys(prev).length && (cacheTraeUsd(prev) || !cacheTraeUsd(incoming))) return;
+                        }
+                        var first = !settled;
+                        settled = true;
+                        if (first) clearTimeout(timer);
                         CC.state.gastoCache = CC.state.gastoCache || {};
-                        CC.state.gastoCache[key] = por || {};
-                        rememberGastoMaps(key, por || {});
+                        CC.state.gastoCache[key] = incoming;
+                        rememberGastoMaps(key, incoming);
                         CC.state.gastoReady = CC.state.gastoReady || {};
                         CC.state.gastoReady[key] = firmaCentro;
-                        finishOne();
+                        if (first) finishOne();
+                        else renderAnalisis();
+                        if (!pidioUsd && captureIsUsd() && hasRows && !cacheTraeUsd(incoming)) {
+                            pidioUsd = true;
+                            var usdParams = new URLSearchParams(params);
+                            usdParams.set('refresh', '1');
+                            fetch(CC.state.gastoUrl + '?' + usdParams.toString(), {
+                                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                            }).then(function (res) { return res.json(); }).then(function (json) {
+                                guardar((json && json.por_cuenta) || {});
+                            }).catch(function () {});
+                        }
                     }
                     var params = new URLSearchParams();
                     params.set('empresa', c.empresa || '');
@@ -4407,7 +4436,7 @@
                     lista.forEach(function (cta) {
                         if (cta && cta.codigo) params.append('cuentas[]', cta.codigo);
                     });
-                    var timer = setTimeout(function () { guardar({}); }, 25000);
+                    var timer = setTimeout(function () { guardar({}); }, 90000);
                     fetch(CC.state.gastoUrl + '?' + params.toString(), {
                         headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
                     }).then(function (res) { return res.json(); }).then(function (json) {
@@ -4426,22 +4455,23 @@
             var listo = analisisGastoListo(c);
             var ctas = cuentasDeCentro(c);
             var st = statsDeCentro(c);
-            var gasto = listo ? (captureIsUsd() ? st.totGUsd : st.totG) : 0;
+            var usdOk = !captureIsUsd() || cacheTraeUsd(CC.state.gastoCache && CC.state.gastoCache[gastoCacheKey(c)]);
+            var gasto = (listo && usdOk) ? (captureIsUsd() ? st.totGUsd : st.totG) : 0;
             var ppto = mxnToCapture(st.totP);
             var filled = st.capturadas;
             var users = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             return Object.assign({}, c, {
                 gasto: gasto,
-                gastoListo: listo,
+                gastoListo: listo && usdOk,
                 ppto: ppto,
                 cuentas: ctas.length,
                 capturadas: filled,
                 avance: pct(filled, ctas.length || 1),
-                yoY: listo ? deltaPct(ppto, gasto) : 0,
-                over: listo && gasto > 0 && ppto > gasto * 1.1,
+                yoY: (listo && usdOk) ? deltaPct(ppto, gasto) : 0,
+                over: listo && usdOk && gasto > 0 && ppto > gasto * 1.1,
                 departamento: deptoDeCentro(c),
                 usuarios: users,
-                monthGasto: listo ? MONTHS.map(function (_, i) {
+                monthGasto: (listo && usdOk) ? MONTHS.map(function (_, i) {
                     return ctas.reduce(function (a, x) {
                         var serie = captureIsUsd() ? (x.gastoUsd || []) : (x.gasto || []);
                         return a + (Number(serie[i]) || 0);

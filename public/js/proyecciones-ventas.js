@@ -496,7 +496,8 @@
             || CC.state.cicloCodigo || '';
         var cicloNeedle = String(ciclo || '').toUpperCase();
         var code = String(c.codigo || '').trim();
-        var pool = (CC.state.misAsignaciones || []).filter(function (a) {
+        var fuente = CC.state.page === 'control' ? asignacionesCaptura(ciclo) : (CC.state.misAsignaciones || []);
+        var pool = fuente.filter(function (a) {
             var sameEmp = String(a.empresa || '').toLowerCase() === String(c.empresa || a.empresa || '').toLowerCase();
             var sameCiclo = !cicloNeedle || String(a.ciclo || '').toUpperCase() === cicloNeedle;
             return sameEmp && sameCiclo;
@@ -619,11 +620,53 @@
         return zeros12();
     }
 
-    /** Venta real del mes: USD = LineTotalUSD guardado; MXN = LineTotal. Sin tipo de cambio. */
+    /** Venta real del mes: USD = LineTotalUSD guardado; MXN = LineTotal. Sin tipo de cambio.
+     *  Budget, oct–dic: si gasto-real no trae el mes, usa ventas-budget (importe o uds × precio). */
     function importeMesVentaVista(cta, i) {
         if (!cta) return 0;
-        if (isUsdView()) return Number(usdSeriesOf(cta)[i]) || 0;
-        return Number((cta.importe && cta.importe[i]) || 0);
+        var sap = isUsdView()
+            ? (Number(usdSeriesOf(cta)[i]) || 0)
+            : (Number((cta.importe && cta.importe[i]) || 0));
+        if (sap) return sap;
+        var idx = Number(i);
+        if (!esBudgetTipo() || idx < 9 || idx > 11) return 0;
+        var hit = hitVentasBudget(cta);
+        if (hit) {
+            if (isUsdView()) {
+                var usd = Number(hit.importe_usd && hit.importe_usd[idx]);
+                if (usd) return usd;
+                var mxnUsd = Number(hit.importe && hit.importe[idx]);
+                if (mxnUsd) return toDisplayAmount(mxnUsd, idx);
+            } else {
+                var mxn = Number(hit.importe && hit.importe[idx]);
+                if (mxn) return mxn;
+            }
+        }
+        var qty = Number(pastQtyMes(cta, idx)) || 0;
+        var precio = Number(cta.precioLista) || 0;
+        if (!qty || !precio) return 0;
+        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var mxnAmt = qty * (mon === 'USD' ? precio * fxRate(idx) : precio);
+        return toDisplayAmount(mxnAmt, idx);
+    }
+
+    function hitVentasBudget(cta) {
+        if (!cta) return null;
+        var map = control._ventasBudgetRefMap || {};
+        var hit = map[cta.codigo]
+            || map[String(cta.codigo || '').toUpperCase()]
+            || map[codigoCuentaKey(cta.codigo)]
+            || null;
+        if (hit) return hit;
+        var emp = String(cta._empresa || (control.centro && control.centro.empresa) || '').toUpperCase();
+        var cc = String(cta._cliente || (control.centro && control.centro.codigo) || '').trim();
+        if (!emp || !cc) return null;
+        var bag = (CC._anVentasBudget || {})[emp + '|' + cc];
+        if (!bag || typeof bag !== 'object') return null;
+        return bag[cta.codigo]
+            || bag[String(cta.codigo || '').toUpperCase()]
+            || bag[codigoCuentaKey(cta.codigo)]
+            || null;
     }
 
     /** Total anual de venta real en la moneda de vista (suma mensual SAP). */
@@ -1851,6 +1894,10 @@
                     if (CC.state.completados[k]) CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
                 });
                 unscaleQtyBudgetsIfNeeded();
+                if (CC.state.page === 'analisis') {
+                    CC._budgetsBaseLoaded = true;
+                    return { applied: true, ciclo: ciclo };
+                }
                 return loadBudgetsBaseForSeed(gen, ciclo).then(function () {
                     return { applied: true, ciclo: ciclo };
                 });
@@ -1990,7 +2037,9 @@
             if (i >= 9 && i <= 11) {
                 var qRef = lookupVentasBudgetRefQty(cta, i);
                 if (qRef) return qRef;
-                return lookupAnalisisVentasBudgetRefQty(cta, i);
+                var qAn = lookupAnalisisVentasBudgetRefQty(cta, i);
+                if (qAn) return qAn;
+                return Number((cta && cta.gasto && cta.gasto[i]) || 0);
             }
             return Number((cta && cta.gasto && cta.gasto[monthIdx]) || 0);
         }
@@ -2119,6 +2168,7 @@
         control._ventasBudgetRefReq = key;
         var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
             '&cliente=' + encodeURIComponent(c.codigo || '') +
+            '&year=' + encodeURIComponent(CC.state.anioGasto || '') +
             '&meses=10,11,12';
         fetch(url + qs, {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -3788,6 +3838,51 @@
         });
     }
 
+    function clavesPermiso(a) {
+        var p = (a && a.permisos) || [];
+        return {
+            capturar: !!(a && (a.capturar || p.indexOf('capturar') !== -1)),
+            editar: !!(a && (a.editar || p.indexOf('editar') !== -1)),
+            revisar: !!(a && (a.revisar || p.indexOf('revisar') !== -1))
+        };
+    }
+
+    /** Revisar no entra a captura, aunque la fila también tenga Editar. */
+    function esAsignacionRevision(a) {
+        var k = clavesPermiso(a);
+        return k.revisar && !k.capturar;
+    }
+
+    function permisoCapturaOEditar(a) {
+        if (!a || esAsignacionRevision(a)) return false;
+        var k = clavesPermiso(a);
+        return k.capturar || k.editar;
+    }
+
+    function esAsignacionPropia(a) {
+        var uid = Number(CC.state.usuarioActualId || 0);
+        if (!uid) return true;
+        var owner = Number(a && a.user_id);
+        return !owner || owner === uid;
+    }
+
+    /**
+     * Captura lista empresas y clientes propios con Capturar o Editar.
+     * Sigue visible con el ciclo cerrado, para ver cuáles quedaron asignados.
+     * Las de revisión no entran.
+     */
+    function asignacionesCaptura(ciclo) {
+        return asignacionesDelCiclo(ciclo).filter(function (a) {
+            var code = codigoClienteAsig(a);
+            if (!code || isEmpresaCompleta(code)) return false;
+            return esAsignacionPropia(a) && permisoCapturaOEditar(a);
+        });
+    }
+
+    function fuenteAsignacionesControl(ciclo) {
+        return CC.state.page === 'control' ? asignacionesCaptura(ciclo) : asignacionesDelCiclo(ciclo);
+    }
+
     function centrosDesdeAsignaciones(list) {
         return centrosAgrupadosDesdeAsignaciones(list);
     }
@@ -3890,8 +3985,14 @@
         });
     }
 
+    function ciclosVisiblesEnCaptura() {
+        return ciclosDeMisAsignaciones().filter(function (c) {
+            return asignacionesCaptura(c.codigo).length;
+        });
+    }
+
     function cicloControlPreferido() {
-        var mine = ciclosAbiertosDeMisAsignaciones();
+        var mine = CC.state.page === 'control' ? ciclosVisiblesEnCaptura() : ciclosAbiertosDeMisAsignaciones();
         var ini = CC.state.cicloInicial || '';
         if (ini && mine.filter(function (c) { return c.codigo === ini; }).length) return ini;
         var ranked = mine.slice().sort(function (a, b) {
@@ -4209,9 +4310,10 @@
     }
 
     function asigsPorEmpresa(ciclo) {
-        var asigs = asignacionesDelCiclo(ciclo);
+        var asigs = fuenteAsignacionesControl(ciclo);
         var emps = {};
         asigs.forEach(function (a) {
+            if (CC.state.page === 'control' && isEmpresaCompleta(codigoClienteAsig(a))) return;
             var e = String(a.empresa || '').toUpperCase().trim();
             if (!e) return;
             (emps[e] = emps[e] || []).push(a);
@@ -4340,7 +4442,7 @@
             seenCc[code] = true;
             list.push(a);
         });
-        if (wide) {
+        if (wide && CC.state.page !== 'control') {
             var catalogo = clientesEmpresaDe(emp);
             if (!catalogo) {
                 ensureClientesEmpresa(emp);
@@ -4447,7 +4549,7 @@
     function renderCicloPicks() {
         var el = document.getElementById('ctl-ciclo');
         if (!el) return;
-        var ciclos = ciclosAbiertosDeMisAsignaciones();
+        var ciclos = CC.state.page === 'control' ? ciclosVisiblesEnCaptura() : ciclosAbiertosDeMisAsignaciones();
         var cur = String(el.value || '').trim();
         var selected = cur;
         var curOpen = ciclos.some(function (c) { return String(c.codigo) === cur; });
@@ -4503,7 +4605,7 @@
         if (cicloChanged) {
             CC._cicloUserPicked = true;
             applyPeriodFromCiclo(findCiclo(ciclo), ciclo);
-            CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
+            CC.state.centros = centrosDesdeAsignaciones(fuenteAsignacionesControl(ciclo));
             // Si la empresa ya no aplica en el ciclo nuevo, limpiarla (y el cliente).
             var empKeep = String(emp || (empEl && empEl.value) || '').toUpperCase().trim();
             var empsOk = Object.keys(asigsPorEmpresa(ciclo) || {}).map(function (k) {
@@ -4552,8 +4654,7 @@
 
         var empty = document.getElementById('ctl-empty');
         var work = document.getElementById('ctl-work');
-        var mineAll = CC.state.misAsignaciones || [];
-        if (!mineAll.length) {
+        if (!asignacionesCaptura('').length) {
             if (empty) empty.hidden = false;
             if (work) work.hidden = true;
             setCapturaEnabled(false);
@@ -4566,12 +4667,13 @@
         renderCicloPicks();
         syncVentasPasadasBtn();
         var ciclo = val('ctl-ciclo') || cicloControlPreferido();
+        if (ciclo && !asignacionesCaptura(ciclo).length) ciclo = cicloControlPreferido();
         if (cicloSel && ciclo) cicloSel.value = ciclo;
         CC.state.cicloCodigo = ciclo || '';
         // Evita que re-renders posteriores cambien el ciclo sin recargar presupuestos.
         if (ciclo) CC._cicloUserPicked = true;
         applyPeriodFromCiclo(findCiclo(ciclo), ciclo);
-        CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
+        CC.state.centros = centrosDesdeAsignaciones(asignacionesCaptura(ciclo));
 
         if (!CC._controlBound) {
             if (cicloSel) cicloSel.addEventListener('change', function () {
@@ -4731,13 +4833,13 @@
             return String(x.centro_codigo || '').trim() === code;
         })[0];
         if (!a) {
-            // Último recurso: buscar en todas las asignaciones del ciclo (por si empresa viene con otro casing).
-            a = asignacionesDelCiclo(ciclo || val('ctl-ciclo') || CC.state.cicloCodigo).filter(function (x) {
+            // Último recurso: buscar en las asignaciones del ciclo (por si empresa viene con otro casing).
+            a = fuenteAsignacionesControl(ciclo || val('ctl-ciclo') || CC.state.cicloCodigo).filter(function (x) {
                 return String(x.centro_codigo || '').trim() === code
                     && String(x.empresa || '').toUpperCase().trim() === e;
             })[0] || null;
         }
-        if (!a) {
+        if (!a && CC.state.page !== 'control') {
             a = asignacionesDelCiclo(ciclo || val('ctl-ciclo') || CC.state.cicloCodigo).filter(function (x) {
                 return isEmpresaCompleta(x.centro_codigo)
                     && String(x.empresa || '').toUpperCase().trim() === e;
@@ -4796,7 +4898,7 @@
         if (cicloNow && (String(CC.state.cicloCodigo || '') !== String(cicloNow) || periodCodigo.toUpperCase() !== String(cicloNow).toUpperCase())) {
             applyPeriodFromCiclo(findCiclo(cicloNow), cicloNow);
         }
-        CC.state.centros = centrosDesdeAsignaciones(asignacionesDelCiclo(cicloNow));
+        CC.state.centros = centrosDesdeAsignaciones(fuenteAsignacionesControl(cicloNow));
         control.centro = centroDesdeAsignacion(emp, codigo, cicloNow);
         if (!control.centro) {
             var tb = document.getElementById('ctl-tbody');
@@ -7490,6 +7592,8 @@
         CC._anAsigLoaded = false;
         CC._anAsigLoading = false;
         CC._anGastoTried = {};
+        CC._anVentasBudget = {};
+        CC._anVentasBudgetTried = {};
         CC._anGastoGen = (CC._anGastoGen || 0) + 1;
         CC._anGastoRunning = false;
         CC._anGastoLeft = 0;
@@ -7826,6 +7930,81 @@
         });
     }
 
+    /** El snapshot local ya trae unidades o importe en oct, nov o dic. */
+    function snapshotTieneUltimos3(c) {
+        var entry = gastoCacheEntry(gastoCacheKey(c));
+        if (!entry || !entry.por) return false;
+        var keys = Object.keys(entry.por);
+        for (var k = 0; k < keys.length; k++) {
+            var row = entry.por[keys[k]];
+            if (!row || typeof row !== 'object') continue;
+            var gasto = row.gasto || [];
+            var imp = row.importe || [];
+            var usd = row.importe_usd || [];
+            for (var i = 9; i <= 11; i++) {
+                if (Number(gasto[i]) || Number(imp[i]) || Number(usd[i])) return true;
+            }
+        }
+        return false;
+    }
+
+    /** Copia oct–dic de ventas-budget al caché de venta real de esta sesión. */
+    function aplicarVentasBudgetEnGasto(c, porArticulo) {
+        var cacheKey = gastoCacheKey(c);
+        var entry = gastoCacheEntry(cacheKey);
+        var por = {};
+        if (entry && entry.por) {
+            Object.keys(entry.por).forEach(function (k) {
+                por[k] = entry.por[k];
+            });
+        }
+        Object.keys(porArticulo || {}).forEach(function (k) {
+            var hit = porArticulo[k];
+            if (!hit) return;
+            var cod = String(hit.codigo || k || '').trim();
+            if (!cod || (hit.codigo && String(hit.codigo) !== String(k) && String(hit.codigo).toUpperCase() !== String(k).toUpperCase())) {
+                return;
+            }
+            var row = por[cod] && typeof por[cod] === 'object' ? Object.assign({}, por[cod]) : {
+                codigo: cod,
+                nombre: hit.nombre || '',
+                gasto: zeros12(),
+                importe: zeros12(),
+                importe_usd: zeros12()
+            };
+            function serie(src) {
+                var out = (src || []).slice(0, 12);
+                while (out.length < 12) out.push(0);
+                return out;
+            }
+            var gasto = serie(row.gasto);
+            var importe = serie(row.importe);
+            var usd = serie(row.importe_usd);
+            for (var i = 9; i <= 11; i++) {
+                var q = Number(hit.meses && hit.meses[i]) || 0;
+                var mx = Number(hit.importe && hit.importe[i]) || 0;
+                var us = Number(hit.importe_usd && hit.importe_usd[i]) || 0;
+                if (!Number(gasto[i]) && q) gasto[i] = q;
+                if (!Number(importe[i]) && mx) importe[i] = mx;
+                if (!Number(usd[i]) && us) usd[i] = us;
+            }
+            row.codigo = cod;
+            row.gasto = gasto;
+            row.importe = importe;
+            row.importe_usd = usd;
+            if (hit.nombre && !row.nombre) row.nombre = hit.nombre;
+            por[cod] = row;
+        });
+        rememberGastoCache(cacheKey, por, {
+            fuente: (entry && entry.meta && entry.meta.fuente) || 'snapshot',
+            synced_at: (entry && entry.meta && entry.meta.synced_at) || null,
+            year: CC.state.anioGasto || 2026,
+            mensaje: null
+        });
+        CC.state.gastoLookup = CC.state.gastoLookup || {};
+        CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
+    }
+
     /**
      * Oct–Dic (tipo Budget): carga /captura/ventas-budget por cliente filtrado
      * para rellenar estacionalidad cuando gasto-real aún no tiene esos meses.
@@ -7841,6 +8020,7 @@
         var list = (centros || []).filter(function (c) {
             var key = analisisVentasBudgetKey(c);
             if (!key || key === '|') return false;
+            if (snapshotTieneUltimos3(c)) return false;
             if (Object.prototype.hasOwnProperty.call(CC._anVentasBudget, key)) return false;
             if (CC._anVentasBudgetTried && CC._anVentasBudgetTried[key]) return false;
             return true;
@@ -7850,8 +8030,6 @@
             return;
         }
         CC._anVentasBudgetTried = CC._anVentasBudgetTried || {};
-        CC._anGastoPhase = 'budget';
-        paintAnalisisLoading();
         var left = list.length;
         var dirty = false;
         var concurrency = 3;
@@ -7873,8 +8051,10 @@
                 (function (c) {
                     var key = analisisVentasBudgetKey(c);
                     CC._anVentasBudgetTried[key] = true;
+                    var year = CC.state.anioGasto || 2026;
                     var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
                         '&cliente=' + encodeURIComponent(c.codigo || '') +
+                        '&year=' + encodeURIComponent(year) +
                         '&meses=10,11,12';
                     fetch(url + qs, {
                         headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -7887,7 +8067,9 @@
                         });
                     }).then(function (json) {
                         if (gen !== CC._anGastoGen) return;
-                        CC._anVentasBudget[key] = (json && json.por_articulo) || {};
+                        var porArt = (json && json.por_articulo) || {};
+                        CC._anVentasBudget[key] = porArt;
+                        aplicarVentasBudgetEnGasto(c, porArt);
                         dirty = true;
                     }).catch(function () {
                         if (gen !== CC._anGastoGen) return;
@@ -8159,7 +8341,10 @@
             clearLoading();
             if (silencioso && !analisisTieneFiltro()) return;
             soltarAnalisisBusy();
-            queuePreciosBackground();
+            loadAnalisisVentasBudget(centros, gen, function () {
+                if (gen !== CC._anGastoGen) return;
+                if (CC.state.page === 'analisis' && analisisTieneFiltro()) renderAnalisis();
+            });
         }
 
         if (!CC._anAsigLoaded) {
@@ -8171,9 +8356,14 @@
         }
 
         var batchUrl = CC.state.gastoBatchUrl || '/ProyeccionesVentas/api/gasto-real-batch';
-        var chunkSize = 20;
-        var chunkAt = 0;
-        var missingAll = [];
+        var chunkSize = 80;
+        var slices = [];
+        for (var cut = 0; cut < needGasto.length; cut += chunkSize) {
+            slices.push(needGasto.slice(cut, cut + chunkSize));
+        }
+        var sliceAt = 0;
+        var inflightChunks = 0;
+        var maxChunks = 3;
 
         function postChunk(slice) {
             return fetch(batchUrl, {
@@ -8196,33 +8386,37 @@
             });
         }
 
-        function nextChunk() {
-            if (gen !== CC._anGastoGen) return;
-            if (chunkAt >= needGasto.length) {
-                CC._anGastoPhase = missingAll.length ? 'sap' : '';
-                if (missingAll.length) {
-                    if (!silencioso) soltarAnalisisBusy();
-                    fetchGastoIndividual(missingAll, finishAll);
-                    return;
-                }
-                finishAll();
-                return;
-            }
-            var slice = needGasto.slice(chunkAt, chunkAt + chunkSize);
-            chunkAt += chunkSize;
-            postChunk(slice).then(function (json) {
-                if (gen !== CC._anGastoGen) return;
-                var miss = hydrateGastoBatch(json, slice) || [];
-                missingAll = missingAll.concat(miss);
-                setTimeout(nextChunk, 40);
-            }).catch(function () {
-                if (gen !== CC._anGastoGen) return;
-                missingAll = missingAll.concat(slice);
-                setTimeout(nextChunk, 40);
+        function markSinSnapshot(list) {
+            CC._anGastoTried = CC._anGastoTried || {};
+            (list || []).forEach(function (c) {
+                CC._anGastoTried[gastoCacheKey(c)] = true;
             });
         }
 
-        nextChunk();
+        function pumpChunks() {
+            if (gen !== CC._anGastoGen) return;
+            if (sliceAt >= slices.length && !inflightChunks) {
+                finishAll();
+                return;
+            }
+            while (inflightChunks < maxChunks && sliceAt < slices.length) {
+                inflightChunks += 1;
+                (function (slice) {
+                    postChunk(slice).then(function (json) {
+                        if (gen !== CC._anGastoGen) return;
+                        markSinSnapshot(hydrateGastoBatch(json, slice) || []);
+                    }).catch(function () {
+                        if (gen !== CC._anGastoGen) return;
+                        markSinSnapshot(slice);
+                    }).then(function () {
+                        inflightChunks -= 1;
+                        pumpChunks();
+                    });
+                })(slices[sliceAt++]);
+            }
+        }
+
+        pumpChunks();
         return;
     }
 
@@ -8273,9 +8467,9 @@
                 departamento: deptoDeCentro(c),
                 usuarios: users,
                 monthGasto: MONTHS.map(function (_, i) {
-                    return ctas.reduce(function (a, x) { return a + importeMesVentaVista(x, i); }, 0);
+                    return enriched.reduce(function (a, x) { return a + importeMesVentaVista(x, i); }, 0);
                 }),
-                productos: ctas.map(function (cta) {
+                productos: enriched.map(function (cta) {
                     return {
                         codigo: cta.codigo,
                         nombre: cta.nombre || cta.codigo,
@@ -10197,7 +10391,7 @@
         if (CC.state.page === 'detalle') CC.initDetalle();
         if (CC.state.page === 'analisis') CC.initAnalisis();
         if (CC.state.page === 'costos') initCostos();
-        if (CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis') refreshSap(boot.catalogoUrl);
+        if (CC.state.page === 'control' || CC.state.page === 'detalle') refreshSap(boot.catalogoUrl);
     };
 
     function refreshSap(url) {

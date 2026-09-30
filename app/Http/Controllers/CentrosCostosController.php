@@ -772,14 +772,18 @@ class CentrosCostosController extends Controller
         $cuentas = array_values(array_unique($cuentas));
         sort($cuentas);
 
-        $cacheKey = 'cc.gasto-real.v12.' . $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
+        $cacheSuffix = $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
+        $cacheKey = 'cc.gasto-real.v12.' . $cacheSuffix;
         $cached = Cache::get($cacheKey);
+        if (! $request->boolean('refresh') && (! is_array($cached) || empty($cached['ok']) || empty($cached['por_cuenta']))) {
+            $cached = Cache::get('cc.gasto-real.v11.' . $cacheSuffix);
+        }
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['por_cuenta'])) {
-            return response()->json($cached);
+            return response()->json($this->conMesesRecientes($cached, $empresa, $cc, $year));
         }
 
         try {
-            $payload = $this->cargarGastoRealCentro($empresa, $cc, $year, $cuentas);
+            $payload = $this->cargarGastoRealCentro($empresa, $cc, $year, $cuentas, $request->boolean('refresh'));
             if (! empty($payload['ok']) && ! empty($payload['completo']) && ! empty($payload['por_cuenta'])) {
                 Cache::put($cacheKey, $payload, 900);
             }
@@ -792,7 +796,77 @@ class CentrosCostosController extends Controller
             ], 200);
         }
 
-        return response()->json($payload);
+        return response()->json($this->conMesesRecientes($payload, $empresa, $cc, $year));
+    }
+
+    /**
+     * Oct–Dic salen de /gasto-real con fecha_desde/fecha_hasta.
+     * Si el año del reporte aún no llega a octubre, se usa el año anterior.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    protected function conMesesRecientes(array $payload, string $empresa, string $cc, int $year): array
+    {
+        $por = $payload['por_cuenta'] ?? null;
+        if (! is_array($por) || $por === [] || $cc === '') {
+            return $payload;
+        }
+
+        $fuente = $year;
+        if ($year === (int) date('Y') && (int) date('n') < 10) {
+            $fuente = $year - 1;
+        }
+        $cacheKey = 'cc.gasto-ond.v1.'.$empresa.'.'.$cc.'.'.$fuente;
+        $reciente = Cache::get($cacheKey);
+        if (! is_array($reciente)) {
+            $reciente = [];
+            try {
+                $res = app(AutinApiClient::class)->gastoRealTodasPaginas([
+                    'Empresa' => $empresa,
+                    'CC' => $cc,
+                    'year' => $fuente,
+                    'fecha_desde' => $fuente.'-10-01',
+                    'fecha_hasta' => $fuente.'-12-31',
+                    'GroupMask' => '6',
+                ], 12, 4);
+                if (! empty($res['ok'])) {
+                    foreach ($res['rows'] as $row) {
+                        if (is_array($row)) {
+                            $this->acumularGastoRealFila($reciente, $row, $empresa, $fuente, [], $cc);
+                        }
+                    }
+                }
+            } catch (Throwable $e) {
+                $reciente = [];
+            }
+            Cache::put($cacheKey, $reciente, 600);
+        }
+
+        foreach ($reciente as $key => $item) {
+            if (! is_array($item) || ! isset($item['gasto']) || ! is_array($item['gasto'])) {
+                continue;
+            }
+            if (! isset($por[$key]) || ! is_array($por[$key])) {
+                $por[$key] = [
+                    'codigo' => (string) ($item['codigo'] ?? $key),
+                    'nombre' => (string) ($item['nombre'] ?? ''),
+                    'gasto' => array_fill(0, 12, 0.0),
+                    'gasto_usd' => array_fill(0, 12, 0.0),
+                ];
+            }
+            if (! isset($por[$key]['gasto_usd']) || ! is_array($por[$key]['gasto_usd'])) {
+                $por[$key]['gasto_usd'] = array_fill(0, 12, 0.0);
+            }
+            for ($m = 9; $m <= 11; $m++) {
+                $por[$key]['gasto'][$m] = round((float) ($item['gasto'][$m] ?? 0), 2);
+                $por[$key]['gasto_usd'][$m] = round((float) ($item['gasto_usd'][$m] ?? 0), 2);
+            }
+        }
+
+        $payload['por_cuenta'] = $por;
+
+        return $payload;
     }
 
     public function captura(Request $request): JsonResponse
@@ -1423,7 +1497,7 @@ class CentrosCostosController extends Controller
      * @param  array<int, string>  $cuentas
      * @return array{ok: bool, year: int, por_cuenta: array<string, array<string, mixed>>|\stdClass, mensaje: string|null}
      */
-    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year, array $cuentas = []): array
+    protected function cargarGastoRealCentro(string $empresa, string $cc, int $year, array $cuentas = [], bool $refrescar = false): array
     {
         $porCuenta = [];
         $ok = false;
@@ -1438,7 +1512,7 @@ class CentrosCostosController extends Controller
         }
 
         if ($cc !== '') {
-            $indice = $this->indiceGastoPorCentro($empresa, $cc, $year);
+            $indice = $this->indiceGastoPorCentro($empresa, $cc, $year, ! $refrescar);
             if (empty($indice['ok'])) {
                 $mensaje = $indice['mensaje'] ?? 'Sin conexión a gasto real SAP';
             } else {
@@ -1475,10 +1549,13 @@ class CentrosCostosController extends Controller
      *
      * @return array{ok: bool, por_cuenta: array<string, array<string, mixed>>, mensaje: string|null}
      */
-    protected function indiceGastoPorCentro(string $empresa, string $cc, int $year): array
+    protected function indiceGastoPorCentro(string $empresa, string $cc, int $year, bool $permitirLegacy = true): array
     {
         $cacheKey = 'cc.gasto-indice.v2.' . $empresa . '.' . $cc . '.' . $year;
         $cached = Cache::get($cacheKey);
+        if (! is_array($cached) && $permitirLegacy) {
+            $cached = Cache::get('cc.gasto-indice.v1.' . $empresa . '.' . $cc . '.' . $year);
+        }
         if (is_array($cached)) {
             return ['ok' => true, 'por_cuenta' => $cached, 'mensaje' => null];
         }

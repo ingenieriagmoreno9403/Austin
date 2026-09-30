@@ -45,8 +45,8 @@
     <div id="ctl-empty" class="cc-panel" hidden>
         <div class="cc-empty" style="padding:2.2rem 1rem">
             <i class="fa-solid fa-user-lock"></i>
-            No tienes clientes asignados en ningún ciclo.
-            Pide que te asignen usuario, cliente, productos y permiso de captura.
+            No tienes clientes con permiso de capturar o editar.
+            Pide que te asignen usuario, cliente, productos y ese permiso. Sigue visible aunque el ciclo esté cerrado.
         </div>
     </div>
 

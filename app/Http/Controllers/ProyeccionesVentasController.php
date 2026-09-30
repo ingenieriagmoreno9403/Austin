@@ -45,6 +45,9 @@ class ProyeccionesVentasController extends Controller
     /** @var array<string, array<string, mixed>> */
     protected $pvIndiceVentasMemo = [];
 
+    /** @var array<string, \Illuminate\Support\Collection> */
+    protected $pvFilasCostoMemo = [];
+
     /** @var array<string, string> */
     protected $pvCicloEstadoCache = [];
 
@@ -2915,6 +2918,41 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * Una sola lectura indexada por año. Las dos vistas del maestro la reutilizan.
+     *
+     * @return \Illuminate\Support\Collection<int, PvProductoCosto>
+     */
+    protected function filasCostoMaestro(?string $empresa, ?int $anio)
+    {
+        $anio = $this->anioProyeccionCostos($anio);
+        $emp = $empresa ? strtoupper(trim($empresa)) : '';
+        $key = $emp.'|'.$anio;
+        if (array_key_exists($key, $this->pvFilasCostoMemo)) {
+            return $this->pvFilasCostoMemo[$key];
+        }
+        if (! Schema::hasTable('tbl_pv_productos_costo')) {
+            return $this->pvFilasCostoMemo[$key] = collect();
+        }
+
+        $q = PvProductoCosto::query();
+        if ($this->hasAnioCostos()) {
+            $q->where('anio', $anio);
+        }
+        if ($emp !== '') {
+            $q->where('empresa', $emp);
+        }
+        $cols = ['id', 'empresa', 'producto_codigo', 'costo_unitario', 'moneda', 'updated_at'];
+        if (Schema::hasColumn('tbl_pv_productos_costo', 'card_code')) {
+            $cols[] = 'card_code';
+        }
+        if (Schema::hasColumn('tbl_pv_productos_costo', 'mes')) {
+            $cols[] = 'mes';
+        }
+
+        return $this->pvFilasCostoMemo[$key] = $q->orderByDesc('updated_at')->orderByDesc('id')->get($cols);
+    }
+
+    /**
      * Maestro local de precios (1 valor “global” por Empresa+CardCode+ItemCode).
      * Preferencia: fila mes=0 (global explícito) → moda de meses 1–12 → último mes.
      * También indexa empresa|ItemCode e ItemCode.
@@ -2927,18 +2965,11 @@ class ProyeccionesVentasController extends Controller
             return [];
         }
         $anio = $this->anioProyeccionCostos($anio);
-        $q = PvProductoCosto::query();
-        if ($this->hasAnioCostos()) {
-            $q->where('anio', $anio);
-        }
-        if ($empresa) {
-            $q->whereRaw('UPPER(empresa) = ?', [strtoupper(trim($empresa))]);
-        }
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
 
         $groups = [];
-        $q->orderByDesc('updated_at')->orderByDesc('id')->get()
+        $this->filasCostoMaestro($empresa, $anio)
             ->each(function (PvProductoCosto $row) use (&$groups, $hasCard, $hasMes) {
                 $emp = strtoupper(trim((string) $row->empresa));
                 $cod = trim((string) $row->producto_codigo);
@@ -3068,20 +3099,11 @@ class ProyeccionesVentasController extends Controller
             return [];
         }
         $anio = $this->anioProyeccionCostos($anio);
-        $q = PvProductoCosto::query();
-        if ($this->hasAnioCostos()) {
-            $q->where('anio', $anio);
-        }
-        if ($empresa) {
-            $q->whereRaw('UPPER(empresa) = ?', [strtoupper(trim($empresa))]);
-        }
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
         if (! $hasMes) {
             return [];
         }
-
-        $q->orderByDesc('updated_at')->orderByDesc('id');
 
         $out = [];
         $put = static function (string $key, int $mesIdx, float $precio, string $moneda) use (&$out) {
@@ -3101,7 +3123,7 @@ class ProyeccionesVentasController extends Controller
             }
         };
 
-        $q->get()->each(function (PvProductoCosto $row) use ($put, $hasCard) {
+        $this->filasCostoMaestro($empresa, $anio)->each(function (PvProductoCosto $row) use ($put, $hasCard) {
             $emp = strtoupper(trim((string) $row->empresa));
             $cod = trim((string) $row->producto_codigo);
             if ($emp === '' || $cod === '') {
@@ -3589,7 +3611,7 @@ class ProyeccionesVentasController extends Controller
         $empresa = request('empresa');
         $userId = (int) request('user_id', 0);
         $q = PvAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
-            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)]);
+            ->where('ciclo_codigo', strtoupper($ciclo));
         if ($empresa) {
             $q->where('empresa', strtolower($empresa));
         }
@@ -3945,8 +3967,8 @@ class ProyeccionesVentasController extends Controller
         // 1) Snapshot local (evita ir a SAP en cada apertura de Captura).
         if (! $force && Schema::hasTable('tbl_pv_venta_real_snapshot')) {
             $snap = PvVentaRealSnapshot::query()
-                ->whereRaw('UPPER(empresa) = ?', [$empresa])
-                ->whereRaw('UPPER(cliente_codigo) = ?', [strtoupper($cc)])
+                ->where('empresa', $empresa)
+                ->where('cliente_codigo', $cc)
                 ->where('anio', $year)
                 ->first();
             if ($snap && $this->ventaRealSnapshotSirve($snap->por_cuenta)) {
@@ -4000,8 +4022,8 @@ class ProyeccionesVentasController extends Controller
             // Si falla la API pero hay snapshot viejo, úsalo.
             if (Schema::hasTable('tbl_pv_venta_real_snapshot')) {
                 $snap = PvVentaRealSnapshot::query()
-                    ->whereRaw('UPPER(empresa) = ?', [$empresa])
-                    ->whereRaw('UPPER(cliente_codigo) = ?', [strtoupper($cc)])
+                    ->where('empresa', $empresa)
+                    ->where('cliente_codigo', $cc)
                     ->where('anio', $year)
                     ->first();
                 if ($snap && is_array($snap->por_cuenta) && $snap->por_cuenta !== []) {
@@ -4093,26 +4115,20 @@ class ProyeccionesVentasController extends Controller
             ]);
         }
 
-        $empresas = array_values(array_unique(array_map(static function ($w) {
-            return $w['empresa'];
-        }, $wanted)));
-        $clientes = array_values(array_unique(array_map(static function ($w) {
-            return strtoupper($w['cc']);
-        }, $wanted)));
-
-        $rows = PvVentaRealSnapshot::query()
-            ->where('anio', $year)
-            ->where(function ($q) use ($empresas) {
-                foreach ($empresas as $e) {
-                    $q->orWhereRaw('UPPER(empresa) = ?', [$e]);
-                }
-            })
-            ->where(function ($q) use ($clientes) {
-                foreach (array_chunk($clientes, 200) as $chunk) {
-                    $q->orWhereIn(DB::raw('UPPER(cliente_codigo)'), $chunk);
-                }
-            })
-            ->get(['empresa', 'cliente_codigo', 'anio', 'por_cuenta', 'synced_at']);
+        $rows = collect();
+        foreach (array_chunk(array_values($wanted), 120) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '(?,?)'));
+            $bindings = [];
+            foreach ($chunk as $w) {
+                $bindings[] = $w['empresa'];
+                $bindings[] = $w['cc'];
+            }
+            $part = PvVentaRealSnapshot::query()
+                ->where('anio', $year)
+                ->whereRaw('(empresa, cliente_codigo) IN ('.$placeholders.')', $bindings)
+                ->get(['empresa', 'cliente_codigo', 'anio', 'por_cuenta', 'synced_at']);
+            $rows = $rows->concat($part);
+        }
 
         /** @var array<string, array<string, mixed>> $porCliente */
         $porCliente = [];
@@ -4209,6 +4225,150 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * Oct–Dic de /ventas-budget se guardan en el snapshot local.
+     * No pisan un mes que ya trae venta real.
+     *
+     * @param  array<string, array<string, mixed>>  $porArticulo
+     * @param  array<int, int>  $meses
+     */
+    protected function fusionarVentasBudgetEnSnapshot(string $empresa, string $cc, int $year, array $porArticulo, array $meses): void
+    {
+        if (! Schema::hasTable('tbl_pv_venta_real_snapshot') || $porArticulo === [] || $meses === []) {
+            return;
+        }
+
+        $idxs = [];
+        foreach ($meses as $m) {
+            $i = (int) $m - 1;
+            if ($i >= 0 && $i <= 11) {
+                $idxs[$i] = $i;
+            }
+        }
+        if ($idxs === []) {
+            return;
+        }
+
+        $empresa = strtoupper(trim($empresa));
+        $cc = trim($cc);
+        $row = PvVentaRealSnapshot::query()->firstOrNew([
+            'empresa' => $empresa,
+            'cliente_codigo' => $cc,
+            'anio' => $year,
+        ]);
+        $por = is_array($row->por_cuenta) ? $row->por_cuenta : [];
+
+        foreach ($porArticulo as $cod => $hit) {
+            if (! is_array($hit)) {
+                continue;
+            }
+            $codigo = trim((string) ($hit['codigo'] ?? $cod));
+            if ($codigo === '') {
+                continue;
+            }
+            if (! isset($por[$codigo]) || ! is_array($por[$codigo])) {
+                $por[$codigo] = [
+                    'codigo' => $codigo,
+                    'nombre' => (string) ($hit['nombre'] ?? ''),
+                    'gasto' => array_fill(0, 12, 0.0),
+                    'importe' => array_fill(0, 12, 0.0),
+                    'importe_usd' => array_fill(0, 12, 0.0),
+                ];
+            }
+            foreach (['gasto', 'importe', 'importe_usd'] as $field) {
+                $serie = $por[$codigo][$field] ?? [];
+                if (! is_array($serie)) {
+                    $serie = [];
+                }
+                $serie = array_slice(array_values($serie), 0, 12);
+                $por[$codigo][$field] = array_pad($serie, 12, 0.0);
+            }
+            if (($por[$codigo]['nombre'] ?? '') === '' && ! empty($hit['nombre'])) {
+                $por[$codigo]['nombre'] = (string) $hit['nombre'];
+            }
+            $qty = is_array($hit['meses'] ?? null) ? $hit['meses'] : [];
+            $mxn = is_array($hit['importe'] ?? null) ? $hit['importe'] : [];
+            $usd = is_array($hit['importe_usd'] ?? null) ? $hit['importe_usd'] : [];
+            foreach ($idxs as $i) {
+                $q = (float) ($qty[$i] ?? 0);
+                $mx = (float) ($mxn[$i] ?? 0);
+                $us = (float) ($usd[$i] ?? 0);
+                if ((float) $por[$codigo]['gasto'][$i] == 0.0 && $q > 0) {
+                    $por[$codigo]['gasto'][$i] = round($q, 4);
+                }
+                if ((float) $por[$codigo]['importe'][$i] == 0.0 && $mx > 0) {
+                    $por[$codigo]['importe'][$i] = round($mx, 2);
+                }
+                if ((float) $por[$codigo]['importe_usd'][$i] == 0.0 && $us > 0) {
+                    $por[$codigo]['importe_usd'][$i] = round($us, 2);
+                }
+            }
+        }
+
+        $meta = is_array($por['_meta'] ?? null) ? $por['_meta'] : [];
+        $meta['budget_meses'] = array_values($meses);
+        $meta['budget_at'] = now()->toDateTimeString();
+        $por['_meta'] = $meta;
+
+        if (! $row->exists) {
+            $row->origen = 'ventas-budget';
+        }
+        $row->por_cuenta = $por;
+        $row->synced_at = now();
+        $row->synced_by = optional(auth()->user())->id;
+        $row->save();
+
+        Cache::forget('pv.venta-real.v4.'.$empresa.'.'.$cc.'.'.$year);
+    }
+
+    /**
+     * Si una bajada de /ventas viene sin oct–dic, conserva lo ya guardado de ventas-budget.
+     *
+     * @param  array<string, mixed>  $prev
+     * @param  array<string, mixed>  $nuevo
+     * @return array<string, mixed>
+     */
+    protected function conservarMesesBudget(array $prev, array $nuevo): array
+    {
+        $meta = is_array($prev['_meta'] ?? null) ? $prev['_meta'] : [];
+        if (empty($meta['budget_at'])) {
+            return $nuevo;
+        }
+        $meses = is_array($meta['budget_meses'] ?? null) ? $meta['budget_meses'] : [10, 11, 12];
+        foreach ($prev as $cod => $item) {
+            if ($cod === '_meta' || ! is_array($item)) {
+                continue;
+            }
+            if (! isset($nuevo[$cod]) || ! is_array($nuevo[$cod])) {
+                $nuevo[$cod] = $item;
+
+                continue;
+            }
+            foreach ($meses as $m) {
+                $i = (int) $m - 1;
+                if ($i < 0 || $i > 11) {
+                    continue;
+                }
+                foreach (['gasto', 'importe', 'importe_usd'] as $field) {
+                    $viejo = $item[$field][$i] ?? 0;
+                    $actual = $nuevo[$cod][$field][$i] ?? 0;
+                    if (! is_array($nuevo[$cod][$field] ?? null)) {
+                        continue;
+                    }
+                    if ((float) $viejo != 0.0 && (float) $actual == 0.0) {
+                        $nuevo[$cod][$field][$i] = $viejo;
+                    }
+                }
+            }
+        }
+        $nuevoMeta = is_array($nuevo['_meta'] ?? null) ? $nuevo['_meta'] : [];
+        $nuevoMeta['budget_meses'] = $meta['budget_meses'] ?? [10, 11, 12];
+        $nuevoMeta['budget_at'] = $meta['budget_at'];
+        $nuevo['_meta'] = $nuevoMeta;
+
+        return $nuevo;
+    }
+
+    /**
      * @param  array<string, mixed>  $porCuenta
      */
     protected function guardarVentaRealSnapshot(
@@ -4227,6 +4387,8 @@ class ProyeccionesVentasController extends Controller
             'cliente_codigo' => trim($cc),
             'anio' => $year,
         ]);
+        $previo = is_array($row->por_cuenta) ? $row->por_cuenta : [];
+        $porCuenta = $this->conservarMesesBudget($previo, $porCuenta);
         $row->por_cuenta = $porCuenta;
         $row->origen = 'api';
         $row->synced_at = now();
@@ -4341,6 +4503,11 @@ class ProyeccionesVentasController extends Controller
             $meses = [10, 11, 12];
         }
 
+        $year = (int) $request->get('year', $request->get('anio', 0));
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+
         @set_time_limit(180);
         $api = app(AutinApiClient::class);
         $pack = $api->ventasBudgetTodasPaginas([
@@ -4396,7 +4563,9 @@ class ProyeccionesVentasController extends Controller
                 // Quantity may come as string
                 $qty = abs((float) ($row['Quantity'] ?? $row['quantity'] ?? 0));
             }
-            if ($qty <= 0) {
+            $importe = abs($this->importeVenta($row, ['LineTotal', 'linetotal', 'GTotal']));
+            $importeUsd = abs($this->importeVenta($row, ['LineTotalUSD', 'LineTotalUsd', 'LineTotalFC', 'TotalFrgn']));
+            if ($qty <= 0 && $importe <= 0 && $importeUsd <= 0) {
                 continue;
             }
             $nombre = trim((string) ($row['ItemName'] ?? $row['Dscription'] ?? ''));
@@ -4411,13 +4580,25 @@ class ProyeccionesVentasController extends Controller
                         'codigo' => $item,
                         'nombre' => $nombre,
                         'meses' => array_fill(0, 12, null),
+                        'importe' => array_fill(0, 12, null),
+                        'importe_usd' => array_fill(0, 12, null),
                         'total' => 0.0,
                     ];
                 }
                 $idx = $mesNum - 1;
-                $prev = $porArticulo[$k]['meses'][$idx];
-                $porArticulo[$k]['meses'][$idx] = round(($prev === null ? 0.0 : (float) $prev) + $qty, 4);
-                $porArticulo[$k]['total'] = round((float) $porArticulo[$k]['total'] + $qty, 4);
+                if ($qty > 0) {
+                    $prev = $porArticulo[$k]['meses'][$idx];
+                    $porArticulo[$k]['meses'][$idx] = round(($prev === null ? 0.0 : (float) $prev) + $qty, 4);
+                    $porArticulo[$k]['total'] = round((float) $porArticulo[$k]['total'] + $qty, 4);
+                }
+                if ($importe > 0) {
+                    $prevMx = $porArticulo[$k]['importe'][$idx];
+                    $porArticulo[$k]['importe'][$idx] = round(($prevMx === null ? 0.0 : (float) $prevMx) + $importe, 2);
+                }
+                if ($importeUsd > 0) {
+                    $prevUsd = $porArticulo[$k]['importe_usd'][$idx];
+                    $porArticulo[$k]['importe_usd'][$idx] = round(($prevUsd === null ? 0.0 : (float) $prevUsd) + $importeUsd, 2);
+                }
                 if ($nombre !== '' && ($porArticulo[$k]['nombre'] ?? '') === '') {
                     $porArticulo[$k]['nombre'] = $nombre;
                 }
@@ -4438,6 +4619,8 @@ class ProyeccionesVentasController extends Controller
         $mesesLabel = array_map(function ($m) use ($mesesNom) {
             return $mesesNom[$m] ?? (string) $m;
         }, $meses);
+
+        $this->fusionarVentasBudgetEnSnapshot($empresa, $card, $year, $limpias, $meses);
 
         return response()->json([
             'ok' => true,
@@ -4468,7 +4651,7 @@ class ProyeccionesVentasController extends Controller
         if (Schema::hasTable('tbl_pv_proyecciones')) {
             $hasDone = Schema::hasColumn('tbl_pv_proyecciones', 'completado');
             $hasPrecioMeses = Schema::hasColumn('tbl_pv_proyecciones', 'precio_meses');
-            PvPresupuesto::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (PvPresupuesto $row) use (&$budgets, &$completados, &$costos, &$ajustes, &$preciosMeses, $hasDone, $hasPrecioMeses) {
+            PvPresupuesto::query()->where('ciclo_codigo', $ciclo)->get()->each(function (PvPresupuesto $row) use (&$budgets, &$completados, &$costos, &$ajustes, &$preciosMeses, $hasDone, $hasPrecioMeses) {
                 $meses = $row->meses();
                 $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
                 $pm = $hasPrecioMeses ? $row->precioMeses() : array_fill(0, 12, null);
@@ -4486,7 +4669,7 @@ class ProyeccionesVentasController extends Controller
 
         $overlays = [];
         if (Schema::hasTable('tbl_pv_captura_clientes')) {
-            PvCapturaCentro::query()->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])->get()->each(function (PvCapturaCentro $row) use (&$overlays) {
+            PvCapturaCentro::query()->where('ciclo_codigo', $ciclo)->get()->each(function (PvCapturaCentro $row) use (&$overlays) {
                 $key = strtoupper(trim((string) $row->empresa)).'|'.trim((string) $row->centro_codigo);
                 $overlays[$key] = [
                     'estado' => $row->estado ?: 'en_proceso',
