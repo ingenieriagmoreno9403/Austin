@@ -5716,14 +5716,23 @@
         var dec = info.decimals != null ? info.decimals : 2;
         var showZero = !!info.showZero;
         var hasPrice = showZero || precio > 0;
+        var view = isUsdView() ? 'USD' : 'MXN';
         if (!hasPrice && !unidad) {
             return '<span class="cc-price-empty">—</span>';
         }
         var html = '';
         if (hasPrice) {
             html += '<div class="cc-price-amt">' + escapeHtml(moneyLista(precio, mon, null, dec)) + '</div>';
-            if (mon && mon !== (isUsdView() ? 'USD' : 'MXN')) {
-                html += '<div class="cc-price-src">' + escapeHtml(mon) + '</div>';
+            // Si la vista difiere de la moneda nativa, aclarar origen (no confundir con la moneda de vista).
+            if (mon && mon !== view) {
+                var nativoTxt = (mon === 'USD' ? 'US$' : '$') +
+                    Number(precio || 0).toLocaleString('es-MX', {
+                        minimumFractionDigits: dec,
+                        maximumFractionDigits: dec
+                    });
+                html += '<div class="cc-price-src" title="Moneda original del precio (SAP/maestro). El monto de arriba ya está en ' +
+                    escapeHtml(view) + ' con el TC de la vista.">' +
+                    escapeHtml('origen ' + mon + ' · nativo ' + nativoTxt) + '</div>';
             }
         } else {
             html += '<div class="cc-price-amt text-muted">Sin precio</div>';
