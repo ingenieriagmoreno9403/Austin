@@ -463,14 +463,14 @@
                     empresa: c.empresa
                 };
             });
-            if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, mapped);
             return mapped;
         }
         var revisionSinProductos = asig && !asig.capturar && (asig.revisar || ((asig.permisos || []).indexOf('revisar') !== -1));
         if (revisionSinProductos && (CC.state.page === 'control' || CC.state.page === 'detalle')) {
             return mergeCuentasAnalisis(c, []);
         }
-        if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, []);
+        // Análisis: solo productos asignados a captura. Sin lista, no se rellena con la venta real.
+        if (CC.state.page === 'analisis') return [];
         if (CC.state.page === 'control' || CC.state.page === 'detalle') return [];
         var all = CC.state.cuentas.filter(function (cta) {
             return !cta.empresa || !c.empresa || String(cta.empresa).toUpperCase() === String(c.empresa).toUpperCase();
@@ -725,31 +725,6 @@
         var total = 0;
         for (var i = 0; i < 12; i++) total += importeMesVentaVista(cta, i);
         return total;
-    }
-
-    /**
-     * Venta real del cliente completo, la misma suma que Ventas pasadas.
-     * Incluye productos vendidos que no están en la asignación.
-     * null si el snapshot todavía no está en caché.
-     */
-    function totalVentaSnapshotVista(c) {
-        if (!c) return null;
-        var hit = gastoCacheEntry(gastoCacheKey(c));
-        var por = hit && hit.por;
-        if (!por || typeof por !== 'object') return null;
-        var usd = isUsdView();
-        var total = 0;
-        var any = false;
-        Object.keys(por).forEach(function (k) {
-            if (k === '_meta') return;
-            var row = por[k];
-            if (!row || typeof row !== 'object' || Array.isArray(row)) return;
-            var serie = usd ? (row.importe_usd || row.importeUsd || []) : (row.importe || []);
-            if (!Array.isArray(serie)) return;
-            any = true;
-            for (var i = 0; i < 12; i++) total += Number(serie[i]) || 0;
-        });
-        return any ? total : null;
     }
 
     function gastoMensualDe(codigo, nombre, mapOpt, nombresOpt) {
@@ -5096,8 +5071,7 @@
         setText('kpi-ctl-avance', st.avance + '%');
         setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
         setText('ctl-pend-label', st.pendientes + (st.pendientes === 1 ? ' pendiente' : ' pendientes'));
-        var ventaSnap = totalVentaSnapshotVista(c);
-        setText('kpi-ctl-gasto', moneyGasto(ventaSnap != null ? ventaSnap : (st.totGVista != null ? st.totGVista : st.totG)));
+        setText('kpi-ctl-gasto', moneyGasto(st.totGVista != null ? st.totGVista : st.totG));
         setText('kpi-ctl-ppto', money(st.totP));
         setText('kpi-ctl-pend', st.pendientes);
         paintBarraProgreso('ctl-avance-wrap', 'ctl-avance-bar', st.avance, 'kpi-ctl-avance');
@@ -5235,9 +5209,7 @@
 
     function updateFormTotalsCliente(st) {
         st = st || (control.centro ? statsDeCentro(control.centro) : { totG: 0, totP: 0, totGVista: 0, totPVista: 0, capturadas: 0, total: 0, pendientes: 0, avance: 0 });
-        var ventaAsig = st.totGVista != null ? st.totGVista : st.totG;
-        var ventaSnap = control.centro ? totalVentaSnapshotVista(control.centro) : null;
-        var ventaVista = ventaSnap != null ? ventaSnap : ventaAsig;
+        var ventaVista = st.totGVista != null ? st.totGVista : st.totG;
         var proyVista = st.totPVista != null ? st.totPVista : st.totP;
         setText('ctl-form-gasto', moneyGasto(ventaVista));
         setText('ctl-form-ppto', moneyGasto(proyVista));
