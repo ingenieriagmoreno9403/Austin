@@ -4767,7 +4767,7 @@ class ProyeccionesVentasController extends Controller
 
         try {
             $payload = $this->cargarListasPreciosCliente($empresa, $cc, $year, $soloArticulos);
-            if (! empty($payload['ok'])) {
+            if (! empty($payload['ok']) && $this->listaPrecioCubreArticulos($payload['por_articulo'] ?? [], $soloArticulos)) {
                 Cache::put($cacheKey, $payload, 900);
             }
         } catch (Throwable $e) {
@@ -5811,6 +5811,136 @@ class ProyeccionesVentasController extends Controller
         ];
     }
 
+    protected function esItemCodeSap(string $codigo): bool
+    {
+        return (bool) preg_match('/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/u', $codigo);
+    }
+
+    /**
+     * Precio de lista > 0. Ignora un Precio en cero si otro campo trae el importe.
+     */
+    protected function precioPositivoLista(array $row): float
+    {
+        foreach (['Precio', 'Price', 'UnitPrice', 'PriceBefDi', 'PrecioLista', 'ListPrice'] as $k) {
+            if (! array_key_exists($k, $row) || $row[$k] === null || $row[$k] === '') {
+                continue;
+            }
+            $raw = $row[$k];
+            if (is_string($raw)) {
+                $raw = str_replace(['$', ' '], '', trim($raw));
+                if (str_contains($raw, ',') && str_contains($raw, '.')) {
+                    $raw = str_replace(',', '', $raw);
+                } elseif (str_contains($raw, ',') && ! str_contains($raw, '.')) {
+                    $raw = str_replace(',', '.', $raw);
+                }
+            }
+            if (is_numeric($raw) && (float) $raw > 0) {
+                return (float) $raw;
+            }
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * @param  array<int, mixed>  $rows
+     */
+    protected function listaPrecioTraeArticulo(array $rows, string $itemCode, string $cc): bool
+    {
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $codigo = trim((string) (
+                $row['CodigoArticulo']
+                ?? $row['Codigo de Articulo']
+                ?? $row['ItemCode']
+                ?? $row['Itemcode']
+                ?? ''
+            ));
+            if ($codigo === '' || strcasecmp($codigo, $itemCode) !== 0) {
+                continue;
+            }
+            $rowCard = trim((string) ($row['CodigoCliente'] ?? $row['CardCode'] ?? ''));
+            if ($cc !== '' && $rowCard !== '' && ! $this->mismoCentroCodigo($rowCard, $cc)) {
+                continue;
+            }
+            if ($this->precioPositivoLista($row) > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * La API filtra CodigoArticulo por prefijo: si la página 1 no trae el ítem exacto, sigue.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function paginasListaPrecioArticulo(AutinApiClient $api, string $empresa, string $cc, string $itemCode): array
+    {
+        $out = [];
+        for ($page = 2; $page <= 4; $page++) {
+            $res = $api->listaPreciosVenta([
+                'Empresa' => $empresa,
+                'CodigoCliente' => $cc,
+                'CodigoArticulo' => $itemCode,
+                'per_page' => 100,
+                'page' => $page,
+            ]);
+            if (empty($res['ok'])) {
+                break;
+            }
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+            $rows = $body['data'] ?? [];
+            if (! is_array($rows) || ! $rows) {
+                break;
+            }
+            foreach ($rows as $row) {
+                if (is_array($row)) {
+                    $out[] = $row;
+                }
+            }
+            if ($this->listaPrecioTraeArticulo($rows, $itemCode, $cc)) {
+                break;
+            }
+            $pag = $this->paginacionDe($body);
+            $last = (int) ($pag['last_page'] ?? 0);
+            if ($last > 0 && $page >= $last) {
+                break;
+            }
+            if ($last < 1 && count($rows) < 100) {
+                break;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array<string, mixed>  $porArticulo
+     * @param  array<int, string>  $articulos
+     */
+    protected function listaPrecioCubreArticulos(array $porArticulo, array $articulos): bool
+    {
+        if (! $articulos) {
+            return true;
+        }
+        foreach ($articulos as $item) {
+            $item = trim((string) $item);
+            if ($item === '') {
+                continue;
+            }
+            $hit = $porArticulo[$item] ?? $porArticulo[strtoupper($item)] ?? null;
+            if (! is_array($hit) || (float) ($hit['precio'] ?? 0) <= 0) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /**
      * @param  array<int, string>  $soloArticulos  Si viene, consulta por CodigoArticulo (evita paginar 15k+ filas).
      * @return array{ok: bool, empresa: string, cliente: string, por_articulo: array<string, array<string, mixed>>, mensaje: string|null, origen?: string}
@@ -5836,7 +5966,7 @@ class ProyeccionesVentasController extends Controller
                     ?? $row['CardCode']
                     ?? ''
                 ));
-                if ($ccNorm !== '' && $rowCard !== '' && strcasecmp($rowCard, $ccNorm) !== 0) {
+                if ($ccNorm !== '' && $rowCard !== '' && ! $this->mismoCentroCodigo($rowCard, $ccNorm)) {
                     continue;
                 }
                 $codigo = trim((string) (
@@ -5852,7 +5982,10 @@ class ProyeccionesVentasController extends Controller
                 if ($requireItem !== null && $requireItem !== '' && strcasecmp($codigo, $requireItem) !== 0) {
                     continue;
                 }
-                $precio = $this->numeroVenta($row, ['Precio', 'Price', 'UnitPrice', 'PriceBefDi']);
+                $precio = $this->precioPositivoLista($row);
+                if ($precio <= 0) {
+                    continue;
+                }
                 $moneda = strtoupper(trim((string) ($row['Moneda'] ?? $row['Currency'] ?? 'MXN')));
                 if ($moneda === '') {
                     $moneda = 'MXN';
@@ -5879,9 +6012,14 @@ class ProyeccionesVentasController extends Controller
                 $keys = array_unique(array_filter([
                     $codigo,
                     strtoupper($codigo),
-                    $this->codigoCuentaKey($codigo),
                 ]));
+                if (! $this->esItemCodeSap($codigo)) {
+                    $keys[] = $this->codigoCuentaKey($codigo);
+                }
                 foreach ($keys as $k) {
+                    if (isset($porArticulo[$k]) && (float) ($porArticulo[$k]['precio'] ?? 0) > 0) {
+                        continue;
+                    }
                     $porArticulo[$k] = $entry;
                 }
             }
@@ -5890,9 +6028,9 @@ class ProyeccionesVentasController extends Controller
         if ($soloArticulos) {
             $pendientes = [];
             foreach ($soloArticulos as $itemCode) {
-                $ck = 'pv.precio.row.'.strtoupper($empresa).'.'.substr(sha1(strtoupper($ccNorm).'|'.strtoupper($itemCode)), 0, 20);
+                $ck = 'pv.precio.row.v2.'.strtoupper($empresa).'.'.substr(sha1(strtoupper($ccNorm).'|'.strtoupper($itemCode)), 0, 20);
                 $hit = Cache::get($ck);
-                if (is_array($hit)) {
+                if (is_array($hit) && $this->listaPrecioTraeArticulo($hit, $itemCode, $ccNorm)) {
                     $ingestRows($hit, $itemCode);
                     $ok = true;
                     continue;
@@ -5913,7 +6051,14 @@ class ProyeccionesVentasController extends Controller
                 $porItem = is_array($packPrecios['por_item'] ?? null) ? $packPrecios['por_item'] : [];
                 foreach ($pendientes as $ck => $itemCode) {
                     $rows = $porItem[strtoupper($itemCode)] ?? [];
-                    if (! is_array($rows) || ! $rows) {
+                    if (! is_array($rows)) {
+                        $rows = [];
+                    }
+                    // Página 1 a veces trae solo el prefijo del código y no el artículo exacto.
+                    if ($rows && ! $this->listaPrecioTraeArticulo($rows, $itemCode, $ccNorm)) {
+                        $rows = array_merge($rows, $this->paginasListaPrecioArticulo($api, strtoupper($empresa), $ccNorm, $itemCode));
+                    }
+                    if (! $this->listaPrecioTraeArticulo($rows, $itemCode, $ccNorm)) {
                         continue;
                     }
                     Cache::put($ck, $rows, 900);

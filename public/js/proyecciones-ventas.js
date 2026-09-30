@@ -727,6 +727,31 @@
         return total;
     }
 
+    /**
+     * Venta real del cliente completo, la misma suma que Ventas pasadas.
+     * Incluye productos vendidos que no están en la asignación.
+     * null si el snapshot todavía no está en caché.
+     */
+    function totalVentaSnapshotVista(c) {
+        if (!c) return null;
+        var hit = gastoCacheEntry(gastoCacheKey(c));
+        var por = hit && hit.por;
+        if (!por || typeof por !== 'object') return null;
+        var usd = isUsdView();
+        var total = 0;
+        var any = false;
+        Object.keys(por).forEach(function (k) {
+            if (k === '_meta') return;
+            var row = por[k];
+            if (!row || typeof row !== 'object' || Array.isArray(row)) return;
+            var serie = usd ? (row.importe_usd || row.importeUsd || []) : (row.importe || []);
+            if (!Array.isArray(serie)) return;
+            any = true;
+            for (var i = 0; i < 12; i++) total += Number(serie[i]) || 0;
+        });
+        return any ? total : null;
+    }
+
     function gastoMensualDe(codigo, nombre, mapOpt, nombresOpt) {
         var map = mapOpt || control._gastoMap || {};
         var cod = String(codigo || '').trim();
@@ -1135,13 +1160,26 @@
         return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '');
     }
 
+    function preciosListaCargando() {
+        if (!control.centro || !control._preciosLoading) return false;
+        return control._preciosLoading === preciosCacheKey(control.centro);
+    }
+
     function lookupPrecioLista(codigo) {
         var map = control._preciosMap || {};
         if (!codigo) return null;
-        return map[String(codigo)]
-            || map[String(codigo).toUpperCase()]
-            || map[codigoCuentaKey(codigo)]
-            || null;
+        return precioListaEnMapa(map, codigo);
+    }
+
+    function precioListaEnMapa(map, codigo) {
+        if (!map || !codigo) return null;
+        var keys = [String(codigo), String(codigo).toUpperCase()];
+        if (!esItemCodeSap(codigo)) keys.push(codigoCuentaKey(codigo));
+        for (var i = 0; i < keys.length; i++) {
+            var hit = map[keys[i]];
+            if (hit && Number(hit.precio) > 0) return hit;
+        }
+        return null;
     }
 
     function mapaPreciosArticulo(porArticulo) {
@@ -1163,7 +1201,7 @@
             };
             map[codigo] = entry;
             map[codigo.toUpperCase()] = entry;
-            map[codigoCuentaKey(codigo)] = entry;
+            if (!esItemCodeSap(codigo)) map[codigoCuentaKey(codigo)] = entry;
         });
         return map;
     }
@@ -1193,6 +1231,7 @@
         if (!c || !CC.state.listasPreciosUrl) return;
         var key = preciosCacheKey(c);
         control._preciosReq = key;
+        control._preciosLoading = key;
         // No reutilizar caché de sesión incompleta: siempre pedir los productos del cliente.
         if (CC.state.preciosCache) delete CC.state.preciosCache[key];
         // Si ya hay maestro local de precios, no bloquear la UI con SAP (fallback en segundo plano).
@@ -1218,9 +1257,11 @@
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
             if (control._preciosReq !== key) return;
+            control._preciosLoading = '';
             applyPreciosMap((json && json.por_articulo) || {});
         }).catch(function () {
             if (control._preciosReq !== key) return;
+            control._preciosLoading = '';
             applyPreciosMap({});
         }).then(function () {
             if (!hasMaster) hideApiWait();
@@ -4125,10 +4166,7 @@
         if (!c || !codigo) return null;
         var own = CC.state.preciosCache && CC.state.preciosCache[preciosCacheKey(c)];
         if (own) {
-            return own[String(codigo)]
-                || own[String(codigo).toUpperCase()]
-                || own[codigoCuentaKey(codigo)]
-                || null;
+            return precioListaEnMapa(own, codigo);
         }
         if (control.centro
             && String(control.centro.codigo) === String(c.codigo)
@@ -5058,7 +5096,8 @@
         setText('kpi-ctl-avance', st.avance + '%');
         setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
         setText('ctl-pend-label', st.pendientes + (st.pendientes === 1 ? ' pendiente' : ' pendientes'));
-        setText('kpi-ctl-gasto', moneyGasto(st.totGVista != null ? st.totGVista : st.totG));
+        var ventaSnap = totalVentaSnapshotVista(c);
+        setText('kpi-ctl-gasto', moneyGasto(ventaSnap != null ? ventaSnap : (st.totGVista != null ? st.totGVista : st.totG)));
         setText('kpi-ctl-ppto', money(st.totP));
         setText('kpi-ctl-pend', st.pendientes);
         paintBarraProgreso('ctl-avance-wrap', 'ctl-avance-bar', st.avance, 'kpi-ctl-avance');
@@ -5196,7 +5235,9 @@
 
     function updateFormTotalsCliente(st) {
         st = st || (control.centro ? statsDeCentro(control.centro) : { totG: 0, totP: 0, totGVista: 0, totPVista: 0, capturadas: 0, total: 0, pendientes: 0, avance: 0 });
-        var ventaVista = st.totGVista != null ? st.totGVista : st.totG;
+        var ventaAsig = st.totGVista != null ? st.totGVista : st.totG;
+        var ventaSnap = control.centro ? totalVentaSnapshotVista(control.centro) : null;
+        var ventaVista = ventaSnap != null ? ventaSnap : ventaAsig;
         var proyVista = st.totPVista != null ? st.totPVista : st.totP;
         setText('ctl-form-gasto', moneyGasto(ventaVista));
         setText('ctl-form-ppto', moneyGasto(proyVista));
@@ -5523,23 +5564,6 @@
             if (!unidadNombre && lista.unidad_nombre) unidadNombre = String(lista.unidad_nombre).trim();
         }
 
-        // Sin fila en la lista del cliente: si sí se vendió, mostrar el precio de esa venta.
-        if (!(precio > 0) && cta) {
-            var venta = precioVentaPasadaInfo(cta);
-            if (venta && Number(venta.precio) > 0) {
-                var anioVenta = CC.state.anioGasto || '';
-                return {
-                    precio: Number(venta.precio),
-                    moneda: String(venta.moneda || mon || 'MXN').toUpperCase(),
-                    unidad: venta.unidad || unidad,
-                    unidadNombre: venta.unidadNombre || unidadNombre,
-                    decimals: 2,
-                    title: 'Precio de la venta ' + (anioVenta || '') +
-                        ' (no está en la lista SAP del cliente). ' + (venta.title || '')
-                };
-            }
-        }
-
         var title = 'Precio de lista SAP (ITM1 · lista del cliente)';
         if (listaNom || noLista) {
             title += ' · ' + (noLista ? ('#' + noLista + (listaNom ? ' ' : '')) : '') + listaNom;
@@ -5817,11 +5841,15 @@
                 '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
             '</td>' +
             '<td class="num cc-price-cell" data-precio-venta title="' +
-                escapeHtml(precioLista.title || 'Precio de lista SAP del cliente') + '">' +
+                escapeHtml(precioLista.precio
+                    ? (precioLista.title || 'Precio de lista SAP del cliente')
+                    : (preciosListaCargando() ? 'Consultando la lista de precios del cliente…' : (precioLista.title || 'Sin precio de lista'))) + '">' +
                 (precioLista.precio
                     ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(precioLista.precio, precioLista.moneda, null, 2)) + '</div>' +
                         (uomLabel ? '<div class="cc-price-uom" title="' + escapeHtml(cta.unidad || '') + '">' + escapeHtml(uomLabel) + '</div>' : ''))
-                    : '<span class="cc-price-empty">—</span>') +
+                    : (preciosListaCargando()
+                        ? '<span class="cc-price-empty">Cargando...</span>'
+                        : '<span class="cc-price-empty">—</span>')) +
             '</td>' +
             '<td class="num cc-sem-cell" data-uds-venta title="' +
                 escapeHtml('Total unidades vendidas en ' + anioPast +
