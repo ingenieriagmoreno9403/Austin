@@ -6288,7 +6288,7 @@
         var yyG = String(CC.state.anioGasto).slice(2);
         var yyP = String(CC.state.anioPresupuesto).slice(2);
         var head = '<tr><th class="sticky-col">Producto</th>' +
-            '<th class="num">Precio<span class="cc-th-past">venta ’' + yyG + '</span></th>' +
+            '<th class="num">Precio<span class="cc-th-past">lista SAP</span></th>' +
             '<th class="num">Venta ' + CC.state.anioGasto + '</th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. ’' + yyP + '</span></th>' +
             '<th class="num">Proy. ' + CC.state.anioPresupuesto + '</th>' +
@@ -6323,10 +6323,11 @@
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
-                    var pPast = precioVentaPasadaInfo(cta);
+                    // Mismo precio que la matriz (Precio de lista SAP · cliente); sin promedio de facturas.
+                    var pLista = precioListaSapInfo(cta);
                     html += '<td class="num cc-price-cell" title="' +
-                        escapeHtml(pPast.title || ('Precio unitario promedio de la venta ' + CC.state.anioGasto)) + '">' +
-                        precioInfoHtml(pPast) + '</td>';
+                        escapeHtml(pLista.title || ('Precio de lista SAP del cliente (misma fuente que la matriz)')) + '">' +
+                        precioInfoHtml(pLista) + '</td>';
                     html += '<td class="num" title="' + (isUsdView()
                         ? 'Suma de LineTotalUSD (SAP). No se convierte con el tipo de cambio.'
                         : 'Suma de LineTotal (SAP).') + '">' + moneyGasto(impG) + '</td>';
@@ -9730,7 +9731,12 @@
                 return;
             }
             var saveBtn = document.getElementById('pcm-save');
-            if (saveBtn) saveBtn.disabled = true;
+            var saveHtml = saveBtn ? saveBtn.innerHTML : '';
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.setAttribute('aria-busy', 'true');
+                saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Guardando…';
+            }
             var chain = Promise.resolve();
             var okCount = 0;
             jobs.forEach(function (payload) {
@@ -9755,7 +9761,11 @@
             }).catch(function (err) {
                 toast('error', 'No se guardó', err && err.message ? err.message : 'Error');
             }).then(function () {
-                if (saveBtn) saveBtn.disabled = false;
+                if (saveBtn) {
+                    saveBtn.disabled = false;
+                    saveBtn.removeAttribute('aria-busy');
+                    saveBtn.innerHTML = saveHtml || '<i class="fa-solid fa-check"></i> Guardar precios';
+                }
             });
         }
 
