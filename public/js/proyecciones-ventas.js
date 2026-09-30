@@ -1774,22 +1774,20 @@
                     entry.monedas[i] = entry.meses[i] != null ? moneda : null;
                 }
                 CC.state.costosMeses[keyCard] = entry;
-                // Global del maestro = moda (no el último mes).
+                // Global del maestro = moda (no el último mes). Respeta 0 explícito.
                 var moda = precioModaDeMeses(entry.meses);
-                if (json.precio_global != null && Number(json.precio_global) > 0) {
-                    moda = Number(json.precio_global);
+                if (json.precio_global != null && json.precio_global !== '') {
+                    moda = Number(json.precio_global) || 0;
                 }
-                if (moda > 0) {
-                    CC.state.costosMaster = CC.state.costosMaster || {};
-                    var masterEntry = {
-                        costo: moda,
-                        moneda: moneda,
-                        mes: null,
-                        card_code: cc || '',
-                        origen: 'maestro_local'
-                    };
-                    CC.state.costosMaster[keyCard] = masterEntry;
-                }
+                CC.state.costosMaster = CC.state.costosMaster || {};
+                CC.state.costosMaster[keyCard] = {
+                    costo: moda,
+                    moneda: moneda,
+                    mes: null,
+                    card_code: cc || '',
+                    origen: 'maestro_local',
+                    explicito: true
+                };
                 return json;
             });
         });
@@ -4102,11 +4100,12 @@
         var emp = String(empresa || '').toUpperCase();
         var card = String(cliente || '').trim();
         var cod = String(codigo || '').trim();
-        var hit = null;
+        // Con CardCode: solo la clave exacta. No heredar precio de otro cliente (EMP|Item).
         if (emp && card && cod) {
-            hit = map[emp + '|' + card + '|' + cod];
+            return map[emp + '|' + card + '|' + cod] || null;
         }
-        if (!hit && emp && cod) {
+        var hit = null;
+        if (emp && cod) {
             hit = map[emp + '|' + cod];
         }
         if (!hit) {
@@ -4160,16 +4159,19 @@
             var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
             var maestroMesesHit = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
             var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
-            var masterPrecio = (master && Number(master.costo)) || 0;
+            var hasMasterRow = !!master;
+            var masterPrecio = hasMasterRow ? (Number(master.costo) || 0) : 0;
             var masterMes = (master && Number(master.mes)) || 0;
-            // Precio de proyección: preferir maestro local (moda / mes=0) sobre lista SAP.
+            // PRECIO proy. local = solo precio global del maestro (Ventas/Costos). Nunca lista SAP.
             var precioListaSap = Number(lista.precio) || 0;
-            var precioLista = masterPrecio > 0 ? masterPrecio : precioListaSap;
+            var precioLista = hasMasterRow ? masterPrecio : 0;
             var precioMoneda = '';
-            if (masterPrecio > 0 && master && master.moneda) {
+            if (hasMasterRow && master && master.moneda) {
                 precioMoneda = String(master.moneda).toUpperCase();
+            } else if (lista.moneda) {
+                precioMoneda = String(lista.moneda).toUpperCase();
             } else {
-                precioMoneda = String(lista.moneda || '').toUpperCase() || '';
+                precioMoneda = 'MXN';
             }
             var precioMaestroMeses = (maestroMesesHit && maestroMesesHit.meses)
                 ? maestroMesesHit.meses.slice(0, 12)
@@ -4185,15 +4187,16 @@
                 precioLista: precioLista,
                 precioListaSap: precioListaSap,
                 precioListaSapMoneda: String(lista.moneda || '').toUpperCase() || '',
-                precioMoneda: precioMoneda,
+                precioMoneda: precioMoneda || 'MXN',
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
                 precioMaestroMeses: precioMaestroMeses,
                 precioLocalMes: masterMes > 0 ? masterMes : null,
+                tienePrecioMaestro: hasMasterRow,
                 unidad: String(lista.unidad || cta.unidad || '').trim(),
                 unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
-                listaPrecioNombre: masterPrecio > 0
+                listaPrecioNombre: hasMasterRow
                     ? 'Maestro local · global'
-                    : (lista.lista || ''),
+                    : '',
                 listaPrecioNombreSap: String(lista.lista || '').trim(),
                 listaPrecioNoSap: String(lista.no_lista || '').trim()
             });
@@ -4201,7 +4204,7 @@
             if (!enriched.unidadNombre && enriched.unidad) {
                 enriched.unidadNombre = nombreUnidadMedida(enriched.unidad);
             }
-            var costoLocal = Number(cta.costo) || snap || masterPrecio || 0;
+            var costoLocal = Number(cta.costo) || snap || (hasMasterRow ? masterPrecio : 0) || 0;
             enriched.costo = costoLocal;
             enriched.costoMoneda = (master && master.moneda) || 'MXN';
             enriched.importeProy = importeProyeccionMxn(enriched);
@@ -5655,18 +5658,20 @@
         return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
     }
 
-    /** Precio de lista / proyección: prioriza maestro local (global = moda / mes=0). */
+    /** Precio proy. local: solo precio global del maestro (Ventas/Costos). Si es 0, muestra 0. */
     function precioProyeccionInfo(cta) {
-        var fromLocal = (cta && cta.listaPrecioNombre && String(cta.listaPrecioNombre).indexOf('Maestro local') === 0);
+        var fromLocal = !!(cta && cta.tienePrecioMaestro);
+        var precio = fromLocal ? (Number(cta.precioLista) || 0) : 0;
         return {
-            precio: Number(cta && cta.precioLista) || 0,
+            precio: precio,
             moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN',
             unidad: String((cta && cta.unidad) || '').trim(),
             unidadNombre: String((cta && cta.unidadNombre) || '').trim(),
-            porMes: precioMesesVarian(cta),
+            porMes: fromLocal ? precioMesesVarian(cta) : false,
+            showZero: fromLocal,
             title: fromLocal
-                ? 'Precio local global (Precios de productos · moda / mes=0)'
-                : 'Precio de lista / proyección'
+                ? 'Precio global del maestro (Ventas/Costos · mes=0)'
+                : 'Sin precio global en el maestro para este Empresa+CardCode+Item'
         };
     }
 
@@ -5695,15 +5700,18 @@
 
     function precioInfoHtml(info) {
         info = info || {};
-        var precio = Number(info.precio) || 0;
+        var precio = Number(info.precio);
+        if (!isFinite(precio)) precio = 0;
         var mon = String(info.moneda || 'MXN').toUpperCase();
         var unidad = formatUnidadLabel(info.unidad, info.unidadNombre);
         var dec = info.decimals != null ? info.decimals : 2;
-        if (!precio && !unidad) {
+        var showZero = !!info.showZero;
+        var hasPrice = showZero || precio > 0;
+        if (!hasPrice && !unidad) {
             return '<span class="cc-price-empty">—</span>';
         }
         var html = '';
-        if (precio) {
+        if (hasPrice) {
             html += '<div class="cc-price-amt">' + escapeHtml(moneyLista(precio, mon, null, dec)) + '</div>';
             if (mon && mon !== (isUsdView() ? 'USD' : 'MXN')) {
                 html += '<div class="cc-price-src">' + escapeHtml(mon) + '</div>';
@@ -10220,14 +10228,117 @@
         var listaBtn = document.getElementById('pv-costos-import-lista');
         if (listaBtn) {
             var listaUrl = CC.state.costosImportListaUrl || (url + '/importar-lista-precios');
-            function payloadLista(preview) {
-                var emp = empSel ? String(empSel.value || '') : '';
-                return {
-                    empresa: emp,
-                    todas_empresas: !emp,
+            var EMPRESAS_LISTA = ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'];
+            function empresasListaTarget() {
+                var emp = empSel ? String(empSel.value || '').toUpperCase() : '';
+                if (emp) return [emp];
+                var fromBoot = (CC.state.empresasLocales || []).map(function (e) {
+                    return String(e.codigo || e.id || e.nombre || '').toUpperCase();
+                }).filter(Boolean);
+                var set = {};
+                (fromBoot.length ? fromBoot : EMPRESAS_LISTA).forEach(function (k) { set[k] = true; });
+                EMPRESAS_LISTA.forEach(function (k) { set[k] = true; });
+                return Object.keys(set);
+            }
+            function payloadListaEmp(preview, emp) {
+                var cliente = clienteEl ? String(clienteEl.value || '').trim() : '';
+                var itemcode = itemEl ? String(itemEl.value || '').trim() : '';
+                var payload = {
+                    empresa: emp || '',
+                    todas_empresas: false,
                     anio_proyeccion: costosAnio(),
                     preview: !!preview
                 };
+                // Respeta filtros de la pantalla (si no, reconsulta TODO IMSA y el guardado se cae/timeout).
+                if (cliente) payload.cliente = cliente;
+                if (itemcode) payload.itemcode = itemcode;
+                return payload;
+            }
+            function parseListaResp(r) {
+                return r.text().then(function (txt) {
+                    var json = null;
+                    try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                    if (!r.ok) {
+                        var msg = (json && json.message) || ('HTTP ' + r.status);
+                        if (r.status === 504 || r.status === 502 || /maximum execution|timeout/i.test(txt || '')) {
+                            msg = 'La consulta a SAP agotó el tiempo. Intenta de nuevo (puede tardar varios minutos por empresa).';
+                        }
+                        throw new Error(msg);
+                    }
+                    return json || {};
+                });
+            }
+            function mergeListaJson(acc, part, emp) {
+                if (!acc) {
+                    acc = {
+                        ok: true,
+                        preview: !!(part && part.preview),
+                        anio_proyeccion: (part && part.anio_proyeccion) || costosAnio(),
+                        afectados: [],
+                        afectados_total: 0,
+                        omitidos_sin_lista: 0,
+                        omitidos_sin_card: 0,
+                        clientes_consultados: 0,
+                        productos_unicos: 0,
+                        importados: 0,
+                        propagadas: 0,
+                        errores_clientes: 0,
+                        empresas_ok: [],
+                        empresas_error: []
+                    };
+                }
+                if (!part || part.ok === false) {
+                    acc.empresas_error.push(emp + ': ' + ((part && part.message) || 'error'));
+                    return acc;
+                }
+                acc.empresas_ok.push(emp);
+                acc.afectados = (acc.afectados || []).concat((part.afectados || []).slice(0, 80));
+                acc.afectados_total += Number(part.afectados_total || 0) || 0;
+                acc.omitidos_sin_lista += Number(part.omitidos_sin_lista || 0) || 0;
+                acc.omitidos_sin_card += Number(part.omitidos_sin_card || 0) || 0;
+                acc.clientes_consultados += Number(part.clientes_consultados || 0) || 0;
+                acc.productos_unicos += Number(part.productos_unicos || 0) || 0;
+                acc.importados += Number(part.importados || 0) || 0;
+                acc.propagadas += Number(part.propagadas || 0) || 0;
+                acc.errores_clientes += Number(part.errores_clientes || 0) || 0;
+                return acc;
+            }
+            function consultarListaPorEmpresas(preview, onProgress) {
+                var empresas = empresasListaTarget();
+                var i = 0;
+                var acc = null;
+                function next() {
+                    if (i >= empresas.length) {
+                        if (acc) {
+                            var nEmp = (acc.empresas_ok || []).length;
+                            acc.message = preview
+                                ? ('Vista previa: ' + (acc.afectados_total || 0) + ' producto(s) con precio en lista SAP'
+                                    + (nEmp > 1 ? (' · ' + nEmp + ' empresas') : '')
+                                    + (acc.omitidos_sin_card ? (' · ' + acc.omitidos_sin_card + ' sin CardCode') : '')
+                                    + '.')
+                                : ('Precio global actualizado en ' + (acc.importados || 0) + ' producto(s)'
+                                    + (nEmp > 1 ? (' · ' + nEmp + ' empresas') : '') + '.');
+                            if ((acc.empresas_error || []).length) {
+                                acc.message += ' Avisos: ' + acc.empresas_error.slice(0, 3).join('; ');
+                            }
+                        }
+                        return Promise.resolve(acc || { ok: true, afectados_total: 0, afectados: [], message: 'Sin datos.' });
+                    }
+                    var emp = empresas[i++];
+                    if (typeof onProgress === 'function') onProgress(emp, i, empresas.length);
+                    return fetch(listaUrl, {
+                        method: 'POST',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify(payloadListaEmp(preview, emp))
+                    }).then(parseListaResp).then(function (json) {
+                        acc = mergeListaJson(acc, json, emp);
+                        return next();
+                    }).catch(function (err) {
+                        acc = mergeListaJson(acc, { ok: false, message: err && err.message ? err.message : 'Error' }, emp);
+                        return next();
+                    });
+                }
+                return next();
             }
             function htmlListaGlobal(json) {
                 var list = (json && json.afectados) || [];
@@ -10236,9 +10347,14 @@
                 var html = '<div style="text-align:left;font-size:.88rem">' +
                     '<p style="margin:0 0 .6rem">Se actualizará solo el <b>precio global</b> (mes = 0) desde la <b>lista de precios SAP</b> ' +
                     'de cada cliente, en la proyección <b>' + escapeHtml(String(anioProy)) + '</b>. ' +
-                    'Los precios por mes no se tocan. Solo productos de tu maestro.</p>' +
+                    'Los precios por mes no se tocan. Solo productos de tu maestro' +
+                    (json.omitidos_sin_card ? (' (filas sin CardCode no se pueden sincronizar)') : '') +
+                    '.</p>' +
                     '<p style="margin:0 0 .75rem"><b>' + total + '</b> producto(s)' +
                     (json.omitidos_sin_lista ? (' · <span style="color:#b45309">' + json.omitidos_sin_lista + ' sin precio en lista</span>') : '') +
+                    (json.omitidos_sin_card ? (' · <span style="color:#b45309">' + json.omitidos_sin_card + ' sin CardCode</span>') : '') +
+                    (json.clientes_consultados ? (' · ' + json.clientes_consultados + ' cliente(s)') : '') +
+                    ((json.empresas_ok && json.empresas_ok.length > 1) ? (' · empresas: ' + json.empresas_ok.join(', ')) : '') +
                     '</p>';
                 if (!list.length) {
                     html += '<p class="text-muted" style="margin:0">Ningún producto coincide con la lista de precios.</p></div>';
@@ -10277,20 +10393,67 @@
                 html += '</div></div>';
                 return html;
             }
-            function ejecutarLista() {
+            function ejecutarLista(afectadosPreview) {
                 listaBtn.disabled = true;
-                if (hint) hint.textContent = 'Actualizando precio global desde lista…';
-                return fetch(listaUrl, {
-                    method: 'POST',
-                    headers: apiJsonHeaders(),
-                    body: JSON.stringify(payloadLista(false))
-                }).then(function (r) {
-                    return r.json().then(function (json) {
-                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo actualizar');
-                        return json;
+                if (hint) hint.textContent = 'Guardando precios en el maestro…';
+                var emp = empSel ? String(empSel.value || '').toUpperCase() : (empresasListaTarget()[0] || '');
+                var list = Array.isArray(afectadosPreview) ? afectadosPreview : [];
+                // Guarda lo del preview (sin reconsultar SAP).
+                if (list.length) {
+                    return fetch(listaUrl, {
+                        method: 'POST',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify({
+                            empresa: emp,
+                            todas_empresas: false,
+                            anio_proyeccion: costosAnio(),
+                            preview: false,
+                            afectados: list.map(function (p) {
+                                return {
+                                    empresa: p.empresa || emp,
+                                    card_code: p.card_code || '',
+                                    cliente: p.cliente || '',
+                                    item_code: p.item_code || '',
+                                    producto: p.producto || '',
+                                    precio: Number(p.precio) || 0,
+                                    moneda: p.moneda || 'MXN'
+                                };
+                            })
+                        })
+                    }).then(parseListaResp).then(function (json) {
+                        var n = Number(json && json.importados) || 0;
+                        if (n < 1) {
+                            var failMsg = (json && json.message) || 'No se guardó ningún precio.';
+                            toast('error', 'No se guardó', failMsg);
+                            if (hint) hint.textContent = failMsg;
+                            return;
+                        }
+                        toast('success', 'Lista de precios', json.message || ('Guardados ' + n + ' producto(s).'));
+                        if (hint) hint.textContent = '';
+                        load();
+                    }).catch(function (err) {
+                        toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+                        if (hint) hint.textContent = 'Error al guardar desde lista';
+                    }).then(function () {
+                        listaBtn.disabled = false;
                     });
+                }
+                // Fallback: reconsultar API (mismo filtro de pantalla).
+                return consultarListaPorEmpresas(false, function (e, idx, totalEmp) {
+                    if (hint) hint.textContent = 'Guardando ' + e + ' (' + idx + '/' + totalEmp + ')…';
                 }).then(function (json) {
-                    toast('success', 'Lista de precios', json.message || 'Precio global actualizado.');
+                    var n = Number(json && json.importados) || 0;
+                    var errs = (json && json.empresas_error) || [];
+                    if (n < 1) {
+                        var failMsg = (errs.length ? errs.join('; ') : '') ||
+                            (json && json.message) ||
+                            'No se guardó ningún precio. Revisa permisos o vuelve a intentar.';
+                        toast('error', 'No se guardó', failMsg);
+                        if (hint) hint.textContent = failMsg.length > 90 ? (failMsg.slice(0, 87) + '…') : failMsg;
+                        return;
+                    }
+                    toast('success', 'Lista de precios', (json && json.message) || ('Precio global actualizado en ' + n + ' producto(s).'));
+                    if (hint) hint.textContent = '';
                     load();
                 }).catch(function (err) {
                     toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
@@ -10301,20 +10464,22 @@
             }
             listaBtn.addEventListener('click', function () {
                 listaBtn.disabled = true;
-                if (hint) hint.textContent = 'Consultando listas de precios…';
-                fetch(listaUrl, {
-                    method: 'POST',
-                    headers: apiJsonHeaders(),
-                    body: JSON.stringify(payloadLista(true))
-                }).then(function (r) {
-                    return r.json().then(function (json) {
-                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar listas');
-                        return json;
-                    });
+                var targets = empresasListaTarget();
+                var clienteFiltro = clienteEl ? String(clienteEl.value || '').trim() : '';
+                if (hint) {
+                    hint.textContent = targets.length > 1
+                        ? ('Consultando listas por empresa (1/' + targets.length + ')…')
+                        : (clienteFiltro
+                            ? ('Consultando lista SAP de ' + clienteFiltro + '…')
+                            : 'Consultando listas de precios…');
+                }
+                consultarListaPorEmpresas(true, function (emp, idx, totalEmp) {
+                    if (hint) hint.textContent = 'Consultando ' + emp + ' (' + idx + '/' + totalEmp + ')…';
                 }).then(function (json) {
                     listaBtn.disabled = false;
                     if (hint) hint.textContent = '';
                     var total = Number(json.afectados_total || (json.afectados && json.afectados.length) || 0) || 0;
+                    var afectadosPreview = (json && json.afectados) ? json.afectados.slice() : [];
                     if (!total) {
                         if (window.Swal) {
                             Swal.fire({
@@ -10328,29 +10493,40 @@
                         }
                         return;
                     }
+                    if (afectadosPreview.length < total) {
+                        toast('warning', 'Vista parcial', 'Se muestran ' + afectadosPreview.length + ' de ' + total +
+                            '. Filtra por CardCode para guardar el lote completo con seguridad.');
+                    }
+                    var filtroTxt = clienteFiltro
+                        ? ('<p style="margin:0 0 .75rem;color:#b45309">Filtro activo: <b>' + escapeHtml(clienteFiltro) + '</b>. Solo se actualizarán filas de ese cliente.</p>')
+                        : '<p style="margin:0 0 .75rem;color:#b45309">Sin filtro de cliente: conviene filtrar por CardCode (ej. D139) antes de guardar.</p>';
                     if (window.Swal) {
                         return Swal.fire({
                             icon: 'question',
-                            title: '¿Actualizar precio global?',
-                            html: htmlListaGlobal(json),
+                            title: '¿Guardar precio global?',
+                            html: filtroTxt + htmlListaGlobal(json),
                             width: '46rem',
                             showCancelButton: true,
                             focusCancel: true,
-                            confirmButtonText: 'Sí, actualizar ' + total + ' producto(s)',
+                            confirmButtonText: 'Sí, guardar ' + Math.min(total, afectadosPreview.length) + ' producto(s)',
                             cancelButtonText: 'Cancelar',
                             confirmButtonColor: '#0a0a0a',
                             cancelButtonColor: '#6b7280'
                         }).then(function (res) {
-                            if (res && res.isConfirmed) ejecutarLista();
+                            if (res && res.isConfirmed) return ejecutarLista(afectadosPreview);
                         });
                     }
-                    if (window.confirm((json.message || '') + '\n\n¿Deseas continuar?')) {
-                        ejecutarLista();
+                    if (window.confirm((json.message || '') + '\n\n¿Deseas guardar estos precios?')) {
+                        return ejecutarLista(afectadosPreview);
                     }
                 }).catch(function (err) {
                     listaBtn.disabled = false;
-                    toast('error', 'No se consultó', err && err.message ? err.message : 'Error');
-                    if (hint) hint.textContent = 'Error al consultar listas';
+                    var msg = (err && err.message) ? String(err.message) : 'Error al consultar listas';
+                    if (/timeout|timed out|network|failed to fetch|aborterror/i.test(msg)) {
+                        msg = 'La consulta a SAP agotó el tiempo. Filtra por CardCode (ej. D139) e inténtalo de nuevo.';
+                    }
+                    toast('error', 'No se consultó', msg);
+                    if (hint) hint.textContent = msg.length > 90 ? (msg.slice(0, 87) + '…') : msg;
                 });
             });
         }
