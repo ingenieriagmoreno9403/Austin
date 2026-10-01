@@ -641,7 +641,10 @@ class CentrosCostosController extends Controller
 
     public function destroyAsignacion(string $ciclo, int $id): JsonResponse
     {
-        $asig = CcAsignacion::query()->where('ciclo_codigo', $ciclo)->where('id', $id)->first();
+        $asig = CcAsignacion::query()
+            ->where('id', $id)
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
+            ->first();
         if (! $asig) {
             return response()->json(['message' => 'Asignación no encontrada'], 404);
         }

@@ -1322,7 +1322,15 @@
     }
 
     CCAsig.initWizard = function (cfg) {
+        cfg = cfg || {};
+        if (!cfg.ciclo) {
+            var app = document.getElementById('cc-app');
+            cfg.ciclo = (app && app.getAttribute('data-ciclo'))
+                || (window.CC && CC.state && CC.state.cicloCodigo)
+                || '';
+        }
         CCAsig.cfg = cfg;
+        CCAsig.ciclo = cfg.ciclo || CCAsig.ciclo || '';
         csrf = cfg.csrf || csrf;
         var userSel = document.getElementById('asig-user');
         var userQ = document.getElementById('asig-user-q');
@@ -1658,20 +1666,45 @@
             });
         }
 
-        function quitarFila(id, emp, codigo) {
-            var i = findSavedIndex(emp, codigo);
-            if (i < 0) return;
-            var row = saved[i];
-            saved.splice(i, 1);
+        function pintarAsignaciones() {
             renderResumen();
             renderEmpresaCards();
             markEmpresaCard(cfg.empresa);
             fillCentros(ccQ ? ccQ.value : '');
+        }
+
+        function quitarFila(id, emp, codigo) {
+            var i = findSavedIndex(emp, codigo);
+            if (i < 0 && id) {
+                for (var j = 0; j < saved.length; j++) {
+                    if (String(saved[j].id) === String(id)) { i = j; break; }
+                }
+            }
+            if (i < 0) return;
+            var row = saved[i];
+            saved.splice(i, 1);
+            pintarAsignaciones();
             if (isTempId(id) || isTempId(row.id)) return;
-            fetch('/AdminCentros/' + encodeURIComponent(cfg.ciclo) + '/asignaciones/' + row.id, {
+            var ciclo = cfg.ciclo || CCAsig.ciclo || '';
+            fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones/' + encodeURIComponent(row.id), {
                 method: 'DELETE',
                 headers: { 'X-CSRF-TOKEN': csrf, Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).catch(function () { /* la fila ya salió de la tabla */ });
+            }).then(function (r) {
+                if (r.ok) return null;
+                return r.json().catch(function () { return {}; }).then(function (j) {
+                    throw new Error((j && j.message) || 'No se pudo quitar la asignación.');
+                });
+            }).catch(function (err) {
+                saved.splice(Math.min(i, saved.length), 0, row);
+                pintarAsignaciones();
+                if (window.Swal) {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'No se pudo quitar',
+                        text: (err && err.message) || 'No se pudo eliminar la asignación.'
+                    });
+                }
+            });
         }
 
         function loadSaved() {

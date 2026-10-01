@@ -486,7 +486,7 @@
             var emp = String(r.empresa || '').toLowerCase();
             if (emp) empSet[emp] = true;
             if (emp && r.centro_codigo) ccSet[emp + '|' + String(r.centro_codigo)] = true;
-            if (isPrincipal(r) && r.user_id) userSet[String(r.user_id)] = true;
+            if (r.user_id) userSet[String(r.user_id)] = true;
         });
         var empDone = Object.keys(empSet).length;
         var empTot = (CCAsig._empresas && CCAsig._empresas.length) ? CCAsig._empresas.length : 4;
@@ -505,7 +505,7 @@
     }
 
     function filasCaptura() {
-        return (CCAsig._rows || []).filter(isPrincipal).slice().sort(function (a, b) {
+        return (CCAsig._rows || []).slice().sort(function (a, b) {
             var ua = String(a.usuario || '').toLowerCase();
             var ub = String(b.usuario || '').toLowerCase();
             if (ua !== ub) return ua < ub ? -1 : 1;
@@ -558,7 +558,7 @@
         if (meta) {
             if (!total) meta.textContent = '';
             else if (filtrando) meta.textContent = rows.length + ' de ' + total;
-            else meta.textContent = total + (total === 1 ? ' asignación de captura' : ' asignaciones de captura');
+            else meta.textContent = total + (total === 1 ? ' asignación' : ' asignaciones');
         }
         if (!tb) return;
         if (!rows.length) {
@@ -586,16 +586,17 @@
                     '<span class="cc-asig-group-n">' + n + (n === 1 ? ' cliente' : ' clientes') + '</span>' +
                     '</div></td></tr>');
             }
-            var nRev = extrasDe(r).length;
+            var nRev = isPrincipal(r) ? extrasDe(r).length : 0;
             var revHint = nRev
                 ? '<div class="text-muted" style="font-size:.72rem;margin-top:.25rem">' + nRev + (nRev === 1 ? ' revisor en Permisos' : ' revisores en Permisos') + '</div>'
                 : '';
+            var rol = isPrincipal(r) ? 'Captura' : 'Revisión';
             var prodCell = isEmpresaCompleta(r.centro_codigo)
                 ? 'De los usuarios'
                 : String((r.cuentas || []).length);
             html.push('<tr data-id="' + r.id + '">' +
                 '<td><div class="fw-semibold">' + escapeHtml(r.usuario) + '</div>' +
-                '<div class="text-muted" style="font-size:.75rem">Captura</div></td>' +
+                '<div class="text-muted" style="font-size:.75rem">' + rol + '</div></td>' +
                 '<td>' + String(r.empresa || '').toUpperCase() + '</td>' +
                 '<td>' + escapeHtml(etiquetaCentro(r.centro_codigo, r.centro_nombre)) + '</td>' +
                 '<td>' + escapeHtml(prodCell) + '</td>' +
@@ -1319,7 +1320,15 @@
     }
 
     CCAsig.initWizard = function (cfg) {
+        cfg = cfg || {};
+        if (!cfg.ciclo) {
+            var app = document.getElementById('cc-app');
+            cfg.ciclo = (app && app.getAttribute('data-ciclo'))
+                || (window.CC && CC.state && CC.state.cicloCodigo)
+                || '';
+        }
         CCAsig.cfg = cfg;
+        CCAsig.ciclo = cfg.ciclo || CCAsig.ciclo || '';
         csrf = cfg.csrf || csrf;
         var userSel = document.getElementById('asig-user');
         var userQ = document.getElementById('asig-user-q');
@@ -1714,20 +1723,45 @@
             });
         }
 
-        function quitarFila(id, emp, codigo) {
-            var i = findSavedIndex(emp, codigo);
-            if (i < 0) return;
-            var row = saved[i];
-            saved.splice(i, 1);
+        function pintarAsignaciones() {
             renderResumen();
             renderEmpresaCards();
             markEmpresaCard(cfg.empresa);
             fillCentros(ccQ ? ccQ.value : '');
+        }
+
+        function quitarFila(id, emp, codigo) {
+            var i = findSavedIndex(emp, codigo);
+            if (i < 0 && id) {
+                for (var j = 0; j < saved.length; j++) {
+                    if (String(saved[j].id) === String(id)) { i = j; break; }
+                }
+            }
+            if (i < 0) return;
+            var row = saved[i];
+            saved.splice(i, 1);
+            pintarAsignaciones();
             if (isTempId(id) || isTempId(row.id)) return;
-            fetch('/Ventas/Asignaciones/' + encodeURIComponent(cfg.ciclo) + '/asignaciones/' + row.id, {
+            var ciclo = cfg.ciclo || CCAsig.ciclo || '';
+            fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones/' + encodeURIComponent(row.id), {
                 method: 'DELETE',
                 headers: { 'X-CSRF-TOKEN': csrf, Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).catch(function () { /* la fila ya salió de la tabla */ });
+            }).then(function (r) {
+                if (r.ok) return null;
+                return r.json().catch(function () { return {}; }).then(function (j) {
+                    throw new Error((j && j.message) || 'No se pudo quitar la asignación.');
+                });
+            }).catch(function (err) {
+                saved.splice(Math.min(i, saved.length), 0, row);
+                pintarAsignaciones();
+                if (window.Swal) {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'No se pudo quitar',
+                        text: (err && err.message) || 'No se pudo eliminar la asignación.'
+                    });
+                }
+            });
         }
 
         function loadSaved() {
