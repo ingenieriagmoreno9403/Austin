@@ -29,7 +29,8 @@
         loadSeq: 0,
         creating: false,
         named: false,
-        renaming: false
+        renaming: false,
+        savingNombre: false
     };
 
     function getJSON(url) {
@@ -526,12 +527,49 @@
             return;
         }
         if (state.renaming) {
+            if (state.editingId) {
+                guardarSoloNombre(nom);
+                return;
+            }
             state.renaming = false;
             setEditorTitle();
             renderGrupos();
             return;
         }
         confirmNombre();
+    }
+
+    function guardarSoloNombre(nom) {
+        if (state.savingNombre || !state.editingId) return;
+        var actual = state.grupos.filter(function (x) { return Number(x.id) === Number(state.editingId); })[0];
+        if (actual && String(actual.nombre || '').trim() === nom) {
+            state.renaming = false;
+            setEditorTitle();
+            renderGrupos();
+            return;
+        }
+        state.savingNombre = true;
+        var btn = document.querySelector('#grp-list [data-confirmar-nombre]');
+        if (btn) btn.disabled = true;
+        sendJSON('/CentrosCostos/api/grupos/' + state.editingId, 'PUT', { nombre: nom }).then(function (json) {
+            var saved = json.grupo;
+            if (!saved || !saved.id) throw new Error(json.message || 'No se recibió el grupo guardado.');
+            state.nombre = saved.nombre || nom;
+            state.renaming = false;
+            state.grupos = state.grupos.map(function (row) {
+                return Number(row.id) === Number(saved.id) ? saved : row;
+            });
+            rememberGrupos(state.empresa, state.grupos);
+            setEditorTitle();
+            toast('success', 'Nombre actualizado', saved.nombre || nom);
+        }).catch(function (err) {
+            toast('error', 'No se guardó el nombre', err && err.message ? err.message : 'Error de red');
+            focusNombre(true);
+        }).then(function () {
+            state.savingNombre = false;
+            var again = document.querySelector('#grp-list [data-confirmar-nombre]');
+            if (again) again.disabled = false;
+        });
     }
 
     function startRename() {
