@@ -43,8 +43,8 @@ return [
         'username' => env('AUTIN_API_USER'),
         'password' => env('AUTIN_API_PASSWORD'),
         'default_db' => env('AUTIN_API_DEFAULT_DB') ?: 'austin',
-        'timeout' => (float) (env('AUTIN_API_TIMEOUT') ?: 30),
-        'connect_timeout' => (float) (env('AUTIN_API_CONNECT_TIMEOUT') ?: 10),
+        'timeout' => (float) (env('AUTIN_API_TIMEOUT') ?: 300),
+        'connect_timeout' => (float) (env('AUTIN_API_CONNECT_TIMEOUT') ?: 30),
     ],
 
 ];
