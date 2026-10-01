@@ -63,7 +63,7 @@
     @include('CentrosCostos.partials.nav')
 
     <div class="cc-panel">
-        <div class="cc-filters cc-filters-asig">
+        <div class="cc-filters cc-filters-asig cc-filters-buscar">
             <div class="cc-filter-field">
                 <label for="an-empresa">Empresa</label>
                 <select id="an-empresa" class="cc-select cc-select-search">
@@ -74,15 +74,23 @@
             <div class="cc-filter-field">
                 <label for="an-centro">Centro de costos</label>
                 <select id="an-centro" class="cc-select cc-select-search">
-                    <option value="">Seleccionar</option>
+                    <option value="">Todos los centros</option>
                 </select>
             </div>
             <div class="cc-filter-field">
                 <label for="an-user">Usuario</label>
                 <select id="an-user" class="cc-select cc-select-search">
-                    <option value="">Seleccionar</option>
+                    <option value="">Todos los usuarios</option>
                 </select>
             </div>
+            <div class="cc-filter-field cc-filter-go">
+                <button type="button" class="cc-btn cc-btn-ink" id="an-buscar">
+                    <i class="fa-solid fa-magnifying-glass"></i> Buscar
+                </button>
+                <button type="button" class="cc-btn" id="an-cancelar" disabled>Cancelar</button>
+                <button type="button" class="cc-btn" id="an-sap">Actualizar de SAP</button>
+            </div>
+            <p id="an-sap-status" class="cc-filter-note"></p>
         </div>
     </div>
 
@@ -98,7 +106,7 @@
     <div id="an-empty" class="cc-panel">
         <div class="cc-empty" style="padding:2.2rem 1rem">
             <i class="fa-solid fa-filter" id="an-empty-icon"></i>
-            <div id="an-empty-msg">Selecciona una empresa, o Todas, para ver el análisis.</div>
+            <div id="an-empty-msg">Elige empresa, centro o usuario y pulsa Buscar.</div>
         </div>
     </div>
 
@@ -128,7 +136,7 @@
     <div class="cc-split">
         <div class="cc-panel">
             <div class="cc-panel-head">
-                <h3 id="an-chart-emp-title"><i class="fa-solid fa-chart-column"></i> Gasto {{ $bootstrap['anioGasto'] }} vs presupuesto {{ $bootstrap['anioPresupuesto'] }}</h3>
+                <h3 id="an-chart-emp-title"><i class="fa-solid fa-chart-column"></i> Gasto {{ $bootstrap['anioGasto'] }} Ene–Sep vs presupuesto {{ $bootstrap['anioPresupuesto'] }}</h3>
             </div>
             <div class="cc-chart"><canvas id="chart-empresas"></canvas></div>
         </div>
@@ -139,14 +147,14 @@
                     <input id="an-heat-q" class="cc-input cc-heat-search" type="search" placeholder="Buscar empresa o centro…" aria-label="Buscar en estacionalidad">
                 </div>
             </div>
-            <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Gasto {{ $bootstrap['anioGasto'] }} · por empresa</p>
+            <p class="text-muted mb-2" style="font-size:.82rem" id="an-heat-label">Gasto {{ $bootstrap['anioGasto'] }} Ene–Sep · por empresa</p>
             <div class="cc-heat-scroll">
                 <div class="cc-heat-stack" id="an-heat"></div>
                 <div class="cc-heat-empty" id="an-heat-empty" hidden>Sin coincidencias</div>
             </div>
             <div class="cc-heat-months is-labeled" id="an-heat-months"></div>
             <div class="cc-legend">
-                <span>Ene → Dic · intensidad = gasto real · elige una empresa para ver centros</span>
+                <span>Ene → Sep · intensidad = gasto real · octubre a diciembre no entran · elige una empresa para ver centros</span>
             </div>
         </div>
     </div>
@@ -167,7 +175,7 @@
                         <th>Usuario</th>
                         <th>Estado</th>
                         <th>Capturado</th>
-                        <th class="num" id="an-th-gasto">Gasto {{ $bootstrap['anioGasto'] }}</th>
+                        <th class="num" id="an-th-gasto">Gasto {{ $bootstrap['anioGasto'] }} · Ene–Sep</th>
                         <th class="num" id="an-th-ppto">Ppto {{ $bootstrap['anioPresupuesto'] }}</th>
                         <th class="num">Δ %</th>
                         <th>Límite</th>

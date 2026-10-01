@@ -101,7 +101,7 @@
                 </div>
                 <div class="cc-nav-stats">
                     <div class="cc-nav-stat">
-                        <small>Gasto {{ $bootstrap['anioGasto'] }}</small>
+                        <small>Gasto {{ $bootstrap['anioGasto'] }} · Ene–Sep</small>
                         <strong id="kpi-ctl-gasto">—</strong>
                     </div>
                     <div class="cc-nav-stat">
@@ -139,7 +139,7 @@
                         </div>
                         <div class="cc-cta-compare">
                             <div class="cc-cta-compare-card">
-                                <small>Se gastó {{ $bootstrap['anioGasto'] }}</small>
+                                <small>Se gastó {{ $bootstrap['anioGasto'] }} · Ene–Sep</small>
                                 <strong id="ctl-form-gasto">—</strong>
                                 <span>Real del año anterior</span>
                             </div>
@@ -180,6 +180,10 @@
                                 <button type="button" class="cc-btn" id="ctl-completar">
                                     <i class="fa-solid fa-check"></i> Completado
                                 </button>
+                                <button type="button" class="cc-btn" id="ctl-sap">
+                                    <i class="fa-solid fa-rotate"></i> Actualizar de SAP
+                                </button>
+                                <p id="ctl-sap-status" class="text-muted mb-0" style="font-size:.72rem;text-align:center"></p>
                             </div>
                         </div>
                     </div>
@@ -221,7 +225,7 @@
                 </table>
             </div>
             <div class="cc-sticky-totales">
-                <div>Total gasto {{ $bootstrap['anioGasto'] }} <strong id="ctl-tot-gasto">—</strong></div>
+                <div>Total gasto {{ $bootstrap['anioGasto'] }} · Ene–Sep <strong id="ctl-tot-gasto">—</strong></div>
                 <div>Total ppto {{ $bootstrap['anioPresupuesto'] }} <strong id="ctl-tot-ppto">—</strong></div>
                 <div>Cuentas pendientes <strong id="ctl-pend">—</strong></div>
             </div>
@@ -230,7 +234,7 @@
         <div class="cc-panel cc-captura-chart">
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-chart-column"></i> Contraste mes a mes</h3>
-                <span class="text-muted" style="font-size:.78rem" id="ctl-chart-hint">Gasto {{ $bootstrap['anioGasto'] }} vs presupuesto {{ $bootstrap['anioPresupuesto'] }}</span>
+                <span class="text-muted" style="font-size:.78rem" id="ctl-chart-hint">Gasto {{ $bootstrap['anioGasto'] }} Ene–Sep vs presupuesto {{ $bootstrap['anioPresupuesto'] }}</span>
             </div>
             <div class="cc-chart"><canvas id="chart-control"></canvas></div>
         </div>

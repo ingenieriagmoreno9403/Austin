@@ -132,12 +132,13 @@ class AutinApiClient
      * Recorre páginas de /gasto-real (tope 500 por página).
      *
      * @param  array<string, mixed>  $filters
+     * @param  array{ok: bool, status: int, body: array|null, message: string|null}|null  $primera
      * @return array{ok: bool, message: string|null, rows: array<int, array<string, mixed>>}
      */
-    public function gastoRealTodasPaginas(array $filters, int $maxPages = 40, int $concurrency = 6): array
+    public function gastoRealTodasPaginas(array $filters, int $maxPages = 40, int $concurrency = 6, ?array $primera = null): array
     {
         $filters['per_page'] = 500;
-        $first = $this->gastoReal(array_merge($filters, ['page' => 1]));
+        $first = $primera ?? $this->gastoReal(array_merge($filters, ['page' => 1]));
         if (empty($first['ok'])) {
             return [
                 'ok' => false,
@@ -184,6 +185,218 @@ class AutinApiClient
         $pool->promise()->wait();
 
         return ['ok' => true, 'message' => null, 'rows' => array_merge($rows, $extra)];
+    }
+
+    /**
+     * Gasto del año de una empresa, solo si cabe en pocas páginas.
+     * Si el libro es más grande, no descarga nada: el llamador pide centro por centro.
+     *
+     * @return array{ok: bool, truncated: bool, rows: array<int, array<string, mixed>>, message: string|null, last_page?: int}
+     */
+    public function gastoRealEmpresaSiCabe(string $empresa, int $year, int $maxPages = 12, int $concurrency = 8): array
+    {
+        $filters = [
+            'Empresa' => $empresa,
+            'year' => $year,
+            'fecha_desde' => $year.'-01-01',
+            'fecha_hasta' => $year.'-12-31',
+            'GroupMask' => '6',
+            'per_page' => 500,
+        ];
+        $first = $this->gastoReal(array_merge($filters, ['page' => 1]));
+        if (empty($first['ok'])) {
+            return [
+                'ok' => false,
+                'truncated' => false,
+                'rows' => [],
+                'message' => $first['message'] ?? 'Sin conexión a gasto real SAP',
+            ];
+        }
+
+        $body = is_array($first['body'] ?? null) ? $first['body'] : [];
+        $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
+        $last = (int) ($meta['last_page'] ?? $body['last_page'] ?? 1);
+        if ($last < 1) {
+            $last = 1;
+        }
+        if ($last > max(1, $maxPages)) {
+            return [
+                'ok' => true,
+                'truncated' => true,
+                'rows' => [],
+                'last_page' => $last,
+                'message' => null,
+            ];
+        }
+
+        $all = $this->gastoRealTodasPaginas($filters, $maxPages, $concurrency, $first);
+
+        return [
+            'ok' => ! empty($all['ok']),
+            'truncated' => false,
+            'rows' => $all['rows'] ?? [],
+            'last_page' => $last,
+            'message' => $all['message'] ?? null,
+        ];
+    }
+
+    /**
+     * Varios centros de una empresa en paralelo (una consulta por centro, no por cuenta).
+     *
+     * @param  array<int, string>  $ccs
+     * @return array{ok: bool, message: string|null, por_cc: array<string, array<int, array<string, mixed>>>, failed: array<int, string>}
+     */
+    public function gastoRealPorCentros(string $empresa, int $year, array $ccs, int $maxPages = 40, int $concurrency = 8): array
+    {
+        $ccs = array_values(array_unique(array_filter(array_map('trim', $ccs))));
+        if (! $ccs) {
+            return ['ok' => true, 'message' => null, 'por_cc' => [], 'failed' => []];
+        }
+
+        $base = [
+            'Empresa' => $empresa,
+            'year' => $year,
+            'fecha_desde' => $year.'-01-01',
+            'fecha_hasta' => $year.'-12-31',
+            'GroupMask' => '6',
+            'per_page' => 500,
+        ];
+        $url = $this->baseUrl.'/gasto-real';
+        $porCc = [];
+        $lastByCc = [];
+        $failed = [];
+        $message = null;
+
+        $take = function ($response, $cc) use (&$porCc, &$lastByCc, &$failed, $maxPages) {
+            $status = method_exists($response, 'getStatusCode') ? $response->getStatusCode() : 0;
+            if ($status !== 200) {
+                $failed[$cc] = $cc;
+
+                return;
+            }
+            unset($failed[$cc]);
+            $json = json_decode((string) $response->getBody(), true);
+            $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+            foreach ($data as $row) {
+                if (is_array($row)) {
+                    $porCc[$cc][] = $row;
+                }
+            }
+            $meta = is_array($json['meta'] ?? null) ? $json['meta'] : [];
+            $last = (int) ($meta['last_page'] ?? 1);
+            $lastByCc[$cc] = min(max(1, $last), max(1, $maxPages));
+        };
+
+        $runPool = function (callable $requests) use ($concurrency, $take, &$message, &$failed) {
+            $pool = new Pool($this->client, $requests(), [
+                'concurrency' => max(1, $concurrency),
+                'fulfilled' => function ($response, $cc) use ($take) {
+                    $take($response, $cc);
+                },
+                'rejected' => function ($reason, $cc) use (&$failed, &$message) {
+                    $failed[$cc] = (string) $cc;
+                    $message = $message ?: ('No se pudo conectar con AutinApi: '.$reason);
+                },
+            ]);
+            $pool->promise()->wait();
+        };
+
+        $runPool(function () use ($url, $base, $ccs) {
+            foreach ($ccs as $cc) {
+                $query = array_filter(array_merge($base, ['CC' => $cc, 'page' => 1]), static function ($value) {
+                    return $value !== null && $value !== '';
+                });
+                yield $cc => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        });
+
+        if ($failed) {
+            $retry = $failed;
+            $runPool(function () use ($url, $base, $retry) {
+                foreach ($retry as $cc) {
+                    $query = array_filter(array_merge($base, ['CC' => $cc, 'page' => 1]), static function ($value) {
+                        return $value !== null && $value !== '';
+                    });
+                    yield $cc => new Request('GET', $url.'?'.http_build_query($query));
+                }
+            });
+        }
+
+        $pageReqs = function () use ($url, $base, $lastByCc) {
+            foreach ($lastByCc as $cc => $last) {
+                for ($page = 2; $page <= (int) $last; $page++) {
+                    $query = array_filter(array_merge($base, ['CC' => $cc, 'page' => $page]), static function ($value) {
+                        return $value !== null && $value !== '';
+                    });
+                    yield $cc."\n".$page => new Request('GET', $url.'?'.http_build_query($query));
+                }
+            }
+        };
+        $pageFailed = [];
+        $poolPages = new Pool($this->client, $pageReqs(), [
+            'concurrency' => max(1, $concurrency),
+            'fulfilled' => function ($response, $key) use (&$porCc, &$pageFailed) {
+                $cc = explode("\n", (string) $key, 2)[0];
+                if ($response->getStatusCode() !== 200) {
+                    $pageFailed[$key] = $cc;
+
+                    return;
+                }
+                unset($pageFailed[$key]);
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                foreach ($data as $row) {
+                    if (is_array($row)) {
+                        $porCc[$cc][] = $row;
+                    }
+                }
+            },
+            'rejected' => function ($reason, $key) use (&$pageFailed, &$message) {
+                $cc = explode("\n", (string) $key, 2)[0];
+                $pageFailed[$key] = $cc;
+                $message = $message ?: ('No se pudo conectar con AutinApi: '.$reason);
+            },
+        ]);
+        $poolPages->promise()->wait();
+
+        if ($pageFailed) {
+            $retryPages = function () use ($pageReqs, $pageFailed) {
+                foreach ($pageReqs() as $key => $request) {
+                    if (isset($pageFailed[$key])) {
+                        yield $key => $request;
+                    }
+                }
+            };
+            $still = $pageFailed;
+            $poolRetry = new Pool($this->client, $retryPages(), [
+                'concurrency' => max(1, $concurrency),
+                'fulfilled' => function ($response, $key) use (&$porCc, &$still) {
+                    $cc = explode("\n", (string) $key, 2)[0];
+                    if ($response->getStatusCode() !== 200) {
+                        return;
+                    }
+                    unset($still[$key]);
+                    $json = json_decode((string) $response->getBody(), true);
+                    $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                    foreach ($data as $row) {
+                        if (is_array($row)) {
+                            $porCc[$cc][] = $row;
+                        }
+                    }
+                },
+            ]);
+            $poolRetry->promise()->wait();
+            foreach ($still as $cc) {
+                $failed[$cc] = $cc;
+            }
+        }
+
+        return [
+            'ok' => $failed === [] || $porCc !== [],
+            'message' => $failed === [] ? null : ($message ?: 'Sin conexión a gasto real SAP'),
+            'por_cc' => $porCc,
+            'failed' => array_values(array_unique(array_filter($failed))),
+        ];
     }
 
     /**

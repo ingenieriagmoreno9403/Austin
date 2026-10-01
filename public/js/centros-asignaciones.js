@@ -258,9 +258,168 @@
         bindFiltrosTabla();
         bindModalesAsig();
         bindImportarUsuarios();
+        bindActualizarSapCiclo();
         loadEmpresasKpi();
         reloadTabla();
     };
+
+    function bindActualizarSapCiclo() {
+        var btn = document.getElementById('ciclo-sap');
+        if (!btn || btn.dataset.bound) return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', actualizarGastoCiclo);
+    }
+
+    function gruposSapDeAsignaciones(rows) {
+        var grupos = {};
+        (rows || []).forEach(function (row) {
+            var emp = String(row.empresa || '').trim();
+            var cc = String(row.centro_codigo || '').trim().toUpperCase();
+            if (!emp || !cc || cc === 'SIN_CC' || cc === 'EMPRESA') return;
+            var key = emp.toUpperCase();
+            if (!grupos[key]) grupos[key] = { empresa: emp, centros: [] };
+            if (!grupos[key].centros.some(function (c) { return c.cc === cc; })) {
+                grupos[key].centros.push({ empresa: emp, cc: cc });
+            }
+        });
+        return Object.keys(grupos).sort().map(function (k) { return grupos[k]; });
+    }
+
+    function pintarProgresoSap(hecho, total, texto) {
+        var box = document.getElementById('ciclo-sap-box');
+        var label = document.getElementById('ciclo-sap-label');
+        var pctEl = document.getElementById('ciclo-sap-pct');
+        var bar = document.getElementById('ciclo-sap-bar');
+        var pct = total ? Math.round((hecho / total) * 100) : 0;
+        if (box) box.hidden = false;
+        if (label) label.textContent = texto || '';
+        if (pctEl) pctEl.textContent = pct + '%';
+        if (bar) bar.style.width = pct + '%';
+    }
+
+    function cicloCodigoPagina() {
+        if (CCAsig.ciclo) return CCAsig.ciclo;
+        if (window.CC && CC.state && CC.state.cicloCodigo) return CC.state.cicloCodigo;
+        var el = document.getElementById('period-codigo');
+        return el ? String(el.textContent || '').trim() : '';
+    }
+
+    function anioGastoPagina() {
+        var year = (window.CC && CC.state && (CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia))) || '';
+        if (!year) {
+            var ref = document.getElementById('period-anio-ref');
+            year = ref ? parseInt(ref.textContent, 10) : 0;
+        }
+        return year;
+    }
+
+    function filasSapEnPantalla() {
+        var rows = (CCAsig._rows || []).slice();
+        if (rows.length) return rows;
+        var out = [];
+        document.querySelectorAll('#asig-tbody tr[data-cc]').forEach(function (tr) {
+            out.push({
+                empresa: tr.getAttribute('data-empresa') || '',
+                centro_codigo: tr.getAttribute('data-cc') || ''
+            });
+        });
+        return out;
+    }
+
+    function actualizarGastoCiclo() {
+        if (CCAsig._sapCorriendo) return;
+        var btn = document.getElementById('ciclo-sap');
+        var ciclo = cicloCodigoPagina();
+        var enPantalla = filasSapEnPantalla();
+        if (enPantalla.length) {
+            correrActualizacionSap(enPantalla, btn);
+            return;
+        }
+        pintarProgresoSap(0, 1, 'Leyendo centros del ciclo…');
+        if (btn) btn.disabled = true;
+        getJSON('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones').then(function (json) {
+            CCAsig._rows = (json && json.asignaciones) || [];
+            correrActualizacionSap(CCAsig._rows, btn);
+        }).catch(function () {
+            if (btn) btn.disabled = false;
+            pintarProgresoSap(0, 1, 'No se pudieron leer las asignaciones del ciclo.');
+        });
+    }
+
+    function correrActualizacionSap(rows, btn) {
+        var year = anioGastoPagina();
+        var grupos = gruposSapDeAsignaciones(rows);
+        if (!grupos.length) {
+            if (btn) btn.disabled = false;
+            pintarProgresoSap(0, 1, rows.length
+                ? 'Esas asignaciones no tienen un centro de costo de SAP.'
+                : 'No se encontraron centros en este ciclo.');
+            return;
+        }
+        if (!year) {
+            if (btn) btn.disabled = false;
+            pintarProgresoSap(0, 1, 'Falta el año del gasto de este ciclo.');
+            return;
+        }
+        CCAsig._sapCorriendo = true;
+        if (btn) btn.disabled = true;
+        var i = 0;
+        var fallidas = [];
+        function terminar() {
+            CCAsig._sapCorriendo = false;
+            if (btn) btn.disabled = false;
+            var ok = !fallidas.length;
+            pintarProgresoSap(grupos.length, grupos.length, ok ? 'Gasto actualizado.' : 'Actualización terminada con avisos.');
+            var aviso = window.Swal
+                ? Swal.fire({
+                    icon: ok ? 'success' : 'warning',
+                    title: ok ? 'Gasto actualizado' : 'Actualización terminada',
+                    text: ok
+                        ? 'La copia local ya tiene el gasto de SAP.'
+                        : ('No se pudo actualizar: ' + fallidas.join(', ') + '.')
+                })
+                : Promise.resolve();
+            aviso.then(function () {
+                window.location.reload();
+            });
+        }
+        function paso() {
+            if (i >= grupos.length) {
+                terminar();
+                return;
+            }
+            var g = grupos[i];
+            pintarProgresoSap(i, grupos.length, 'Actualizando ' + g.empresa + ' (' + (i + 1) + ' de ' + grupos.length + ')…');
+            fetch('/CentrosCostos/api/gasto-real/sincronizar', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                    'X-CSRF-TOKEN': csrf,
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: JSON.stringify({
+                    year: year,
+                    centros: g.centros
+                })
+            }).then(function (res) {
+                return res.json().then(function (json) {
+                    if (!res.ok) throw new Error((json && json.message) || 'No se pudo actualizar');
+                    return json;
+                });
+            }).then(function () {
+                i += 1;
+                pintarProgresoSap(i, grupos.length, i >= grupos.length ? 'Gasto actualizado.' : ('Actualizando ' + g.empresa + '…'));
+                paso();
+            }).catch(function () {
+                fallidas.push(g.empresa);
+                i += 1;
+                pintarProgresoSap(i, grupos.length, 'No se pudo actualizar ' + g.empresa + '. Sigo con la siguiente.');
+                paso();
+            });
+        }
+        paso();
+    }
 
     function loadEmpresasKpi() {
         getJSON('/CentrosCostos/api/empresas?ciclo=' + encodeURIComponent(CCAsig.ciclo || '')).then(function (json) {
@@ -605,7 +764,7 @@
             var revHint = nRev
                 ? '<div class="text-muted" style="font-size:.72rem;margin-top:.25rem">' + nRev + (nRev === 1 ? ' revisor en Permisos' : ' revisores en Permisos') + '</div>'
                 : '';
-            html.push('<tr data-id="' + r.id + '">' +
+            html.push('<tr data-id="' + r.id + '" data-empresa="' + escapeHtml(r.empresa || '') + '" data-cc="' + escapeHtml(r.centro_codigo || '') + '">' +
                 '<td><div class="fw-semibold">' + escapeHtml(r.usuario) + '</div>' +
                 '<div class="text-muted" style="font-size:.75rem">Captura</div></td>' +
                 '<td>' + String(r.empresa || '').toUpperCase() + '</td>' +
@@ -1262,7 +1421,7 @@
             var target = isPrincipal(CCAsig._activo) ? CCAsig._activo : principalDe(CCAsig._activo);
             sendJSON(asigUrl(target.id), 'PUT', { cuentas: cuentas }).then(function () {
                 hideModal('modalAsigEditar');
-                toast('success', 'Cuentas actualizadas');
+                toast('success', 'Cuentas actualizadas', 'El gasto nuevo se guarda en la copia local.');
                 reloadTabla();
             }).catch(function (err) {
                 toast('error', 'No se guardó', err.message);
@@ -2372,6 +2531,9 @@
                     var savedRow = (res.json && res.json.asignacion) ? res.json.asignacion : local;
                     savedRow.pending = false;
                     upsertSaved(savedRow);
+                    if (res.json && res.json.snapshot) {
+                        toast('info', 'Gasto del centro', 'Se está guardando en la copia local.');
+                    }
                     renderResumen();
                     renderEmpresaCards();
                     markEmpresaCard(cfg.empresa);

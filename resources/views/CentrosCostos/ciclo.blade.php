@@ -47,6 +47,9 @@
             </div>
             <span class="cc-badge cc-banner-fx" id="period-fx">—</span>
             <div class="cc-banner-actions">
+                <button type="button" class="cc-btn" id="ciclo-sap">
+                    <i class="fa-solid fa-rotate"></i> Actualizar de SAP
+                </button>
                 <button type="button" class="cc-btn" onclick="CC.showModal('modalPeriodo')">
                     <i class="fa-solid fa-pen"></i> Editar
                 </button>
@@ -54,6 +57,13 @@
                     <i class="fa-solid fa-trash"></i> Eliminar
                 </button>
             </div>
+        </div>
+        <div class="cc-banner-sap" id="ciclo-sap-box" hidden>
+            <div class="cc-banner-sap-top">
+                <span id="ciclo-sap-label">Preparando…</span>
+                <span id="ciclo-sap-pct">0%</span>
+            </div>
+            <div class="cc-sap-progress" aria-hidden="true"><span id="ciclo-sap-bar"></span></div>
         </div>
     </div>
 
