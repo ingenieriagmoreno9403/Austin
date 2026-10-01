@@ -1265,6 +1265,8 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::put('/ProyeccionesVentas/api/costos/meses', [ProyeccionesVentasController::class, 'guardarCostosMeses'])->name('pv.api.costos.meses');
     Route::post('/ProyeccionesVentas/api/costos/importar-api', [ProyeccionesVentasController::class, 'importarCostosDesdeApi'])->name('pv.api.costos.import');
     Route::post('/ProyeccionesVentas/api/costos/importar-lista-precios', [ProyeccionesVentasController::class, 'importarCostosDesdeListaPrecios'])->name('pv.api.costos.import_lista');
+    Route::get('/ProyeccionesVentas/api/costos/vacios', [ProyeccionesVentasController::class, 'listarCostosVacios'])->name('pv.api.costos.vacios');
+    Route::post('/ProyeccionesVentas/api/costos/rellenar-vacios-lote', [ProyeccionesVentasController::class, 'rellenarCostosVaciosLote'])->name('pv.api.costos.rellenar_vacios_lote');
     Route::post('/ProyeccionesVentas/api/costos/actualizar-desde-api', [ProyeccionesVentasController::class, 'actualizarCostoDesdeApi'])->name('pv.api.costos.actualizar_api');
     Route::get('/ProyeccionesVentas/api/costos/plantilla', [ProyeccionesVentasController::class, 'plantillaCostos'])->name('pv.api.costos.plantilla');
     Route::post('/ProyeccionesVentas/api/costos/importar-excel', [ProyeccionesVentasController::class, 'importarCostosExcel'])->name('pv.api.costos.import_excel');

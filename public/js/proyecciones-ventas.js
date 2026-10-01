@@ -10598,21 +10598,32 @@
 
         var cerosBtn = document.getElementById('pv-costos-rellenar-ceros');
         if (cerosBtn) {
-            var listaUrlCeros = CC.state.costosImportListaUrl || (url + '/importar-lista-precios');
+            var vaciosUrl = CC.state.costosVaciosUrl || (url + '/vacios');
+            var loteUrl = CC.state.costosRellenarVaciosLoteUrl || (url + '/rellenar-vacios-lote');
             var cerosEmpEl = document.getElementById('pv-ceros-empresa');
             var cerosAnioLabel = document.getElementById('pv-ceros-anio-label');
             var cerosHint = document.getElementById('pv-ceros-hint');
             var cerosEjecutar = document.getElementById('pv-ceros-ejecutar');
+            var cerosCancelar = document.getElementById('pv-ceros-cancelar');
+            var cerosProgWrap = document.getElementById('pv-ceros-progress-wrap');
+            var cerosProgLabel = document.getElementById('pv-ceros-progress-label');
+            var cerosProgPct = document.getElementById('pv-ceros-progress-pct');
+            var cerosProgBar = document.getElementById('pv-ceros-progress-bar');
+            var cerosProgDetail = document.getElementById('pv-ceros-progress-detail');
             var cerosBusy = false;
+            var cerosAbort = false;
 
             function openCerosModal() {
+                cerosAbort = false;
                 if (cerosAnioLabel) cerosAnioLabel.textContent = 'Proy. ' + costosAnio();
                 if (cerosEmpEl) {
                     var empFiltro = empSel ? String(empSel.value || '').toUpperCase() : '';
                     if (empFiltro) cerosEmpEl.value = empFiltro;
                 }
+                if (cerosProgWrap) cerosProgWrap.style.display = 'none';
+                if (cerosProgBar) cerosProgBar.style.width = '0%';
                 if (cerosHint) {
-                    cerosHint.textContent = 'Puede tardar varios minutos si hay muchos clientes.';
+                    cerosHint.textContent = 'Se procesa un CardCode por request para evitar timeouts.';
                 }
                 showModal('modalPvRellenarCeros');
             }
@@ -10624,7 +10635,7 @@
                     if (!r.ok) {
                         var msg = (json && json.message) || ('HTTP ' + r.status);
                         if (r.status === 504 || r.status === 502 || /maximum execution|timeout/i.test(txt || '')) {
-                            msg = 'La consulta a SAP agotó el tiempo. Intenta de nuevo; puede tardar varios minutos.';
+                            msg = 'Timeout en este cliente. Se puede continuar con el siguiente.';
                         }
                         throw new Error(msg);
                     }
@@ -10632,77 +10643,102 @@
                 });
             }
 
-            function htmlCerosPreview(json, emp) {
-                var list = (json && json.afectados) || [];
-                var total = Number((json && json.afectados_total) || list.length) || 0;
-                var anioProy = (json && json.anio_proyeccion) || costosAnio();
-                var html = '<div style="text-align:left;font-size:.88rem">' +
-                    '<p style="margin:0 0 .6rem">Empresa <b>' + escapeHtml(emp) + '</b> · proyección <b>' +
-                    escapeHtml(String(anioProy)) + '</b>. Solo filas con Precio global en <b>$0</b>; ' +
-                    'se guarda el precio de lista SAP. No se tocan precios ya capturados ni Ene–Dic.</p>' +
-                    '<p style="margin:0 0 .75rem"><b>' + total + '</b> producto(s) a rellenar' +
-                    (json.omitidos_sin_lista ? (' · <span style="color:#b45309">' + json.omitidos_sin_lista + ' sin precio en lista</span>') : '') +
-                    (json.omitidos_sin_card ? (' · <span style="color:#b45309">' + json.omitidos_sin_card + ' sin CardCode</span>') : '') +
-                    (json.clientes_consultados ? (' · ' + json.clientes_consultados + ' cliente(s)') : '') +
-                    '</p>';
-                if (!list.length) {
-                    html += '<p class="text-muted" style="margin:0">Ningún producto en $0 coincidió con la lista SAP.</p></div>';
-                    return html;
+            function setCerosProgress(idx, total, card, extra) {
+                var pct = total > 0 ? Math.round((idx / total) * 100) : 0;
+                if (cerosProgWrap) cerosProgWrap.style.display = '';
+                if (cerosProgLabel) {
+                    cerosProgLabel.textContent = card
+                        ? ('Cliente ' + idx + '/' + total + ' · ' + card)
+                        : ('Preparando…');
                 }
-                html += '<div style="max-height:260px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:.5rem .65rem;background:#fafafa">';
-                html += '<table style="width:100%;border-collapse:collapse;font-size:.78rem"><thead><tr>' +
-                    '<th style="text-align:left;padding:.25rem">Cliente</th>' +
-                    '<th style="text-align:left;padding:.25rem">Producto</th>' +
-                    '<th style="text-align:right;padding:.25rem">Lista</th>' +
-                    '</tr></thead><tbody>';
-                list.slice(0, 80).forEach(function (p) {
-                    var cliente = (p.card_code || '') + (p.cliente ? (' · ' + p.cliente) : '');
-                    var prod = (p.item_code || '') + (p.producto && p.producto !== p.item_code ? (' · ' + p.producto) : '');
-                    var mon = String(p.moneda || 'MXN').toUpperCase();
-                    var v = Number(p.precio) || 0;
-                    var fmt = (mon === 'USD' ? 'US$' : '$') + v.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                    html += '<tr style="border-top:1px solid #eee">' +
-                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(cliente) + '</td>' +
-                        '<td style="padding:.3rem .25rem;vertical-align:top">' + escapeHtml(prod) + '</td>' +
-                        '<td style="padding:.3rem .25rem;vertical-align:top;text-align:right;font-weight:600">' + escapeHtml(fmt) +
-                        ' <span class="text-muted">' + escapeHtml(mon) + '</span></td></tr>';
-                });
-                html += '</tbody></table>';
-                if (total > 80) {
-                    html += '<div class="text-muted" style="margin-top:.45rem;font-size:.75rem">… y ' + (total - 80) + ' más</div>';
-                }
-                html += '</div></div>';
-                return html;
+                if (cerosProgPct) cerosProgPct.textContent = pct + '%';
+                if (cerosProgBar) cerosProgBar.style.width = pct + '%';
+                if (cerosProgDetail) cerosProgDetail.textContent = extra || '';
+                if (hint) hint.textContent = extra || ('Rellenando $0… ' + pct + '%');
             }
 
-            function guardarCeros(emp, list) {
-                return fetch(listaUrlCeros, {
-                    method: 'POST',
-                    headers: apiJsonHeaders(),
-                    body: JSON.stringify({
-                        empresa: emp,
-                        todas_empresas: false,
-                        solo_vacios: true,
-                        anio_proyeccion: costosAnio(),
-                        preview: false,
-                        afectados: (list || []).map(function (p) {
-                            return {
-                                empresa: p.empresa || emp,
-                                card_code: p.card_code || '',
-                                cliente: p.cliente || '',
-                                item_code: p.item_code || '',
-                                producto: p.producto || '',
-                                precio: Number(p.precio) || 0,
-                                moneda: p.moneda || 'MXN'
-                            };
+            function procesarLotesPorCliente(emp, clientes) {
+                var i = 0;
+                var totalCli = clientes.length;
+                var importados = 0;
+                var omitidos = 0;
+                var errores = [];
+                var okCli = 0;
+
+                function next() {
+                    if (cerosAbort) {
+                        return Promise.resolve({
+                            aborted: true,
+                            importados: importados,
+                            omitidos_sin_lista: omitidos,
+                            errores: errores,
+                            clientes_ok: okCli,
+                            clientes_total: totalCli
+                        });
+                    }
+                    if (i >= totalCli) {
+                        return Promise.resolve({
+                            aborted: false,
+                            importados: importados,
+                            omitidos_sin_lista: omitidos,
+                            errores: errores,
+                            clientes_ok: okCli,
+                            clientes_total: totalCli
+                        });
+                    }
+                    var cli = clientes[i++];
+                    var card = String(cli.card_code || '').trim();
+                    var items = Array.isArray(cli.items) ? cli.items : [];
+                    setCerosProgress(i, totalCli, card,
+                        'Actualizados: ' + importados +
+                        (omitidos ? (' · sin lista: ' + omitidos) : '') +
+                        (errores.length ? (' · errores: ' + errores.length) : ''));
+                    if (cerosHint) {
+                        cerosHint.textContent = 'Consultando SAP · ' + card +
+                            (cli.cliente ? (' · ' + cli.cliente) : '') +
+                            ' (' + items.length + ' ítem(s) en $0)…';
+                    }
+
+                    return fetch(loteUrl, {
+                        method: 'POST',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify({
+                            empresa: emp,
+                            card_code: card,
+                            cliente: cli.cliente || '',
+                            anio_proyeccion: costosAnio(),
+                            items: items.map(function (it) {
+                                return {
+                                    item_code: it.item_code || it.codigo || '',
+                                    producto: it.producto || '',
+                                    moneda: it.moneda || 'MXN'
+                                };
+                            })
                         })
-                    })
-                }).then(parseCerosResp);
+                    }).then(parseCerosResp).then(function (json) {
+                        okCli++;
+                        importados += Number(json.importados) || 0;
+                        omitidos += Number(json.omitidos_sin_lista) || 0;
+                        return next();
+                    }).catch(function (err) {
+                        errores.push(card + ': ' + (err && err.message ? err.message : 'Error'));
+                        // Continúa con el siguiente cliente aunque falle uno.
+                        return next();
+                    });
+                }
+
+                return next();
             }
 
             cerosBtn.addEventListener('click', function () {
                 openCerosModal();
             });
+
+            if (cerosCancelar) {
+                cerosCancelar.addEventListener('click', function () {
+                    if (cerosBusy) cerosAbort = true;
+                });
+            }
 
             if (cerosEjecutar) {
                 cerosEjecutar.addEventListener('click', function () {
@@ -10713,79 +10749,98 @@
                         return;
                     }
                     cerosBusy = true;
+                    cerosAbort = false;
                     cerosEjecutar.disabled = true;
                     cerosBtn.disabled = true;
+                    if (cerosEmpEl) cerosEmpEl.disabled = true;
                     var prevHtml = cerosEjecutar.innerHTML;
-                    cerosEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Consultando…';
-                    if (cerosHint) cerosHint.textContent = 'Consultando lista SAP de ' + emp + ' (solo $0)…';
-                    if (hint) hint.textContent = 'Rellenando $0 de ' + emp + '…';
+                    cerosEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Armando JSON…';
+                    setCerosProgress(0, 1, '', 'Leyendo maestro local (solo $0)…');
+                    if (cerosHint) cerosHint.textContent = 'Armando JSON local de ' + emp + '…';
 
-                    fetch(listaUrlCeros, {
-                        method: 'POST',
-                        headers: apiJsonHeaders(),
-                        body: JSON.stringify({
-                            empresa: emp,
-                            todas_empresas: false,
-                            solo_vacios: true,
-                            anio_proyeccion: costosAnio(),
-                            preview: true
-                        })
+                    var qs = '?empresa=' + encodeURIComponent(emp) +
+                        '&anio_proyeccion=' + encodeURIComponent(String(costosAnio()));
+
+                    fetch(vaciosUrl + qs, {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
                     }).then(parseCerosResp).then(function (json) {
-                        var total = Number(json.afectados_total || (json.afectados && json.afectados.length) || 0) || 0;
-                        var afectadosPreview = (json && json.afectados) ? json.afectados.slice() : [];
-                        if (!total) {
+                        var clientes = (json && json.clientes) || [];
+                        var total = Number(json.total) || 0;
+                        var sinCard = Number(json.sin_card) || 0;
+                        if (!clientes.length) {
                             if (window.Swal) {
                                 Swal.fire({
                                     icon: 'info',
-                                    title: 'Sin coincidencias',
-                                    text: json.message || ('No hay productos en $0 de ' + emp + ' con precio en lista SAP.'),
+                                    title: 'Nada que rellenar',
+                                    text: json.message || ('No hay productos en $0 con CardCode en ' + emp + '.'),
                                     confirmButtonColor: '#0a0a0a'
                                 });
                             } else {
-                                window.alert(json.message || 'Sin coincidencias.');
+                                window.alert(json.message || 'Nada que rellenar.');
                             }
                             return null;
                         }
+                        var askHtml = '<div style="text-align:left;font-size:.9rem">' +
+                            '<p style="margin:0 0 .5rem">Empresa <b>' + escapeHtml(emp) + '</b> · proyección <b>' +
+                            escapeHtml(String(costosAnio())) + '</b>.</p>' +
+                            '<p style="margin:0 0 .5rem"><b>' + total + '</b> producto(s) en $0 · <b>' +
+                            clientes.length + '</b> cliente(s) a consultar en SAP.</p>' +
+                            (sinCard ? ('<p style="margin:0;color:#b45309">' + sinCard +
+                                ' sin CardCode se omiten.</p>') : '') +
+                            '<p style="margin:.65rem 0 0;color:#71717a;font-size:.82rem">Se actualizará un CardCode a la vez. Puedes cancelar; lo ya guardado se conserva.</p></div>';
+
                         var ask = window.Swal
                             ? Swal.fire({
                                 icon: 'question',
                                 title: '¿Rellenar precios en $0?',
-                                html: htmlCerosPreview(json, emp),
-                                width: '46rem',
+                                html: askHtml,
+                                width: '36rem',
                                 showCancelButton: true,
                                 focusCancel: true,
-                                confirmButtonText: 'Sí, guardar ' + Math.min(total, afectadosPreview.length),
+                                confirmButtonText: 'Sí, procesar ' + clientes.length + ' cliente(s)',
                                 cancelButtonText: 'Cancelar',
                                 confirmButtonColor: '#0a0a0a',
                                 cancelButtonColor: '#6b7280'
                             }).then(function (res) { return !!(res && res.isConfirmed); })
-                            : Promise.resolve(window.confirm((json.message || '') + '\n\n¿Guardar estos precios?'));
+                            : Promise.resolve(window.confirm((json.message || '') + '\n\n¿Continuar?'));
+
                         return ask.then(function (ok) {
                             if (!ok) return null;
-                            if (cerosHint) cerosHint.textContent = 'Guardando en el maestro local…';
-                            if (hint) hint.textContent = 'Guardando precios $0 de ' + emp + '…';
-                            cerosEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Guardando…';
-                            return guardarCeros(emp, afectadosPreview);
+                            cerosEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Procesando…';
+                            return procesarLotesPorCliente(emp, clientes);
                         });
-                    }).then(function (saved) {
-                        if (!saved) return;
-                        var n = Number(saved.importados) || 0;
-                        if (n < 1) {
-                            toast('error', 'No se guardó', saved.message || 'No se guardó ningún precio.');
-                            return;
+                    }).then(function (res) {
+                        if (!res) return;
+                        var n = Number(res.importados) || 0;
+                        var msg = (res.aborted ? 'Detenido. ' : '') +
+                            n + ' producto(s) actualizado(s)' +
+                            ' · ' + (res.clientes_ok || 0) + '/' + (res.clientes_total || 0) + ' cliente(s)' +
+                            (res.omitidos_sin_lista ? (' · ' + res.omitidos_sin_lista + ' sin lista SAP') : '') +
+                            ((res.errores && res.errores.length) ? (' · ' + res.errores.length + ' con error') : '');
+                        if (n > 0) {
+                            toast('success', res.aborted ? 'Parcial' : 'Precios rellenados', msg);
+                            if (empSel) empSel.value = emp;
+                            load();
+                        } else if (res.errores && res.errores.length) {
+                            toast('error', 'No se rellenó', res.errores.slice(0, 2).join('; '));
+                        } else {
+                            toast('info', 'Sin cambios', msg || 'Ningún precio se actualizó (sin match en lista SAP).');
                         }
-                        toast('success', 'Precios rellenados', saved.message || ('Actualizados ' + n + ' producto(s).'));
-                        hideModal('modalPvRellenarCeros');
-                        if (empSel && !empSel.value) empSel.value = emp;
-                        load();
+                        if (!res.aborted && n > 0) {
+                            hideModal('modalPvRellenarCeros');
+                        }
                     }).catch(function (err) {
                         toast('error', 'No se rellenó', err && err.message ? err.message : 'Error');
                     }).then(function () {
                         cerosBusy = false;
+                        cerosAbort = false;
                         cerosEjecutar.disabled = false;
                         cerosBtn.disabled = false;
+                        if (cerosEmpEl) cerosEmpEl.disabled = false;
                         cerosEjecutar.innerHTML = prevHtml || '<i class="fa-solid fa-cloud-arrow-down"></i> Consultar y rellenar';
-                        if (cerosHint) cerosHint.textContent = 'Puede tardar varios minutos si hay muchos clientes.';
+                        if (cerosHint) {
+                            cerosHint.textContent = 'Se procesa un CardCode por request para evitar timeouts.';
+                        }
                         if (hint) hint.textContent = '';
                     });
                 });
@@ -10885,6 +10940,8 @@
         CC.state.costosPlantillaUrl = boot.costosPlantillaUrl || '/ProyeccionesVentas/api/costos/plantilla';
         CC.state.costosImportExcelUrl = boot.costosImportExcelUrl || '/ProyeccionesVentas/api/costos/importar-excel';
         CC.state.costosImportListaUrl = boot.costosImportListaUrl || '/ProyeccionesVentas/api/costos/importar-lista-precios';
+        CC.state.costosVaciosUrl = boot.costosVaciosUrl || '/ProyeccionesVentas/api/costos/vacios';
+        CC.state.costosRellenarVaciosLoteUrl = boot.costosRellenarVaciosLoteUrl || '/ProyeccionesVentas/api/costos/rellenar-vacios-lote';
         CC.state.costosHistorialUrl = boot.costosHistorialUrl || '/ProyeccionesVentas/api/costos/historial';
         CC.state.puedeEditarCostos = boot.hasOwnProperty('puedeEditarCostos')
             ? !!boot.puedeEditarCostos

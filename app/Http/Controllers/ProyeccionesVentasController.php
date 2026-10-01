@@ -107,6 +107,8 @@ class ProyeccionesVentasController extends Controller
             'costosPlantillaUrl' => route('pv.api.costos.plantilla'),
             'costosImportExcelUrl' => route('pv.api.costos.import_excel'),
             'costosImportListaUrl' => route('pv.api.costos.import_lista'),
+            'costosVaciosUrl' => route('pv.api.costos.vacios'),
+            'costosRellenarVaciosLoteUrl' => route('pv.api.costos.rellenar_vacios_lote'),
             'costosHistorialUrl' => route('pv.api.costos.historial'),
             'puedeEditarCostos' => $this->puedeEditarPreciosVentas(),
         ]);
@@ -2605,6 +2607,283 @@ class ProyeccionesVentasController extends Controller
                     .($propagadasTot ? (' · '.$propagadasTot.' proyección(es) abiertas') : '')
                     .$sinCardTxt.$errTxt.'.'),
         ]);
+    }
+
+    /**
+     * Lista local (sin SAP) de productos con Precio global = 0 para una empresa/proyección.
+     * Agrupa por CardCode para procesar lotes en el front.
+     */
+    public function listarCostosVacios(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_pv_productos_costo')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
+        }
+
+        $empresa = strtoupper(trim((string) $request->get('empresa', '')));
+        if ($empresa === '') {
+            return response()->json(['message' => 'Indica la empresa.'], 422);
+        }
+        $anioProy = $this->anioProyeccionCostos((int) $request->get('anio', $request->get('anio_proyeccion', 0)));
+        $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
+        $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
+        $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasAnio = $this->hasAnioCostos();
+
+        $q = PvProductoCosto::query()->whereRaw('UPPER(empresa) = ?', [$empresa]);
+        if ($hasAnio) {
+            $q->where('anio', $anioProy);
+        }
+        if ($hasMes) {
+            $q->where('mes', 0);
+        }
+        $q->where(function ($w) {
+            $w->whereNull('costo_unitario')->orWhere('costo_unitario', '<=', 0);
+        });
+
+        $productos = [];
+        $sinCard = 0;
+        /** @var array<string, array{card_code: string, cliente: string, items: array<int, array<string, mixed>>}> $porCliente */
+        $porCliente = [];
+
+        $q->orderBy('id')->chunk(1000, function ($chunk) use (&$productos, &$porCliente, &$sinCard, $hasCard, $hasCardName, $empresa) {
+            foreach ($chunk as $row) {
+                $card = $hasCard ? trim((string) ($row->card_code ?? '')) : '';
+                $item = trim((string) $row->producto_codigo);
+                if ($item === '') {
+                    continue;
+                }
+                $cliente = $hasCardName ? trim((string) ($row->card_name ?? '')) : '';
+                $entry = [
+                    'empresa' => $empresa,
+                    'card_code' => $card,
+                    'cliente' => $cliente,
+                    'item_code' => $item,
+                    'producto' => trim((string) ($row->producto_nombre ?: $item)),
+                    'moneda' => strtoupper((string) ($row->moneda ?: 'MXN')) ?: 'MXN',
+                    'precio_actual' => (float) $row->costo_unitario,
+                ];
+                $productos[] = $entry;
+                if ($card === '') {
+                    $sinCard++;
+                    continue;
+                }
+                if (! isset($porCliente[$card])) {
+                    $porCliente[$card] = [
+                        'card_code' => $card,
+                        'cliente' => $cliente,
+                        'items' => [],
+                    ];
+                }
+                if ($cliente !== '' && ($porCliente[$card]['cliente'] ?? '') === '') {
+                    $porCliente[$card]['cliente'] = $cliente;
+                }
+                $porCliente[$card]['items'][] = [
+                    'item_code' => $item,
+                    'producto' => $entry['producto'],
+                    'moneda' => $entry['moneda'],
+                ];
+            }
+        });
+
+        $clientes = array_values($porCliente);
+        usort($clientes, static function ($a, $b) {
+            return strcasecmp((string) ($a['card_code'] ?? ''), (string) ($b['card_code'] ?? ''));
+        });
+
+        return response()->json([
+            'ok' => true,
+            'empresa' => $empresa,
+            'anio_proyeccion' => $anioProy,
+            'total' => count($productos),
+            'sin_card' => $sinCard,
+            'clientes_total' => count($clientes),
+            'clientes' => $clientes,
+            'message' => count($productos)
+                ? ('Hay '.count($productos).' producto(s) con Precio global en $0 en '.$empresa
+                    .' · '.count($clientes).' cliente(s)'
+                    .($sinCard ? (' · '.$sinCard.' sin CardCode') : '').'.')
+                : ('No hay productos con Precio global en $0 para '.$empresa.' / proyección '.$anioProy.'.'),
+        ]);
+    }
+
+    /**
+     * Rellena Precio global ($0) de UN CardCode: consulta lista SAP y guarda local.
+     * Pensado para ejecutarse en serie desde el front (un cliente por request).
+     */
+    public function rellenarCostosVaciosLote(Request $request): JsonResponse
+    {
+        if ($deny = $this->denyUnlessPuedeEditarPrecios()) {
+            return $deny;
+        }
+        if (! Schema::hasTable('tbl_pv_productos_costo')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
+        }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(120);
+        }
+
+        $data = $request->validate([
+            'empresa' => 'required|string|max:40',
+            'card_code' => 'required|string|max:40',
+            'cliente' => 'nullable|string|max:180',
+            'anio_proyeccion' => 'nullable|integer|min:2000|max:2100',
+            'items' => 'nullable|array|max:2000',
+            'items.*.item_code' => 'required_with:items|string|max:80',
+            'items.*.producto' => 'nullable|string|max:180',
+            'items.*.moneda' => 'nullable|string|max:10',
+        ]);
+
+        $empresa = strtoupper(trim($data['empresa']));
+        $card = trim($data['card_code']);
+        $cliente = trim((string) ($data['cliente'] ?? ''));
+        $anioProy = $this->anioProyeccionCostos((int) ($data['anio_proyeccion'] ?? 0));
+        $userId = optional($request->user())->id;
+
+        $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
+        $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
+        $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasAnio = $this->hasAnioCostos();
+
+        /** @var array<string, array{item_code: string, producto: string, moneda: string}> $locales */
+        $locales = [];
+        if (! empty($data['items']) && is_array($data['items'])) {
+            foreach ($data['items'] as $it) {
+                if (! is_array($it)) {
+                    continue;
+                }
+                $item = trim((string) ($it['item_code'] ?? ''));
+                if ($item === '') {
+                    continue;
+                }
+                $locales[strtoupper($item)] = [
+                    'item_code' => $item,
+                    'producto' => trim((string) ($it['producto'] ?? $item)),
+                    'moneda' => strtoupper(trim((string) ($it['moneda'] ?? 'MXN'))) ?: 'MXN',
+                ];
+            }
+        }
+
+        if (! $locales) {
+            $q = PvProductoCosto::query()->whereRaw('UPPER(empresa) = ?', [$empresa]);
+            if ($hasAnio) {
+                $q->where('anio', $anioProy);
+            }
+            if ($hasCard) {
+                $q->where('card_code', $card);
+            }
+            if ($hasMes) {
+                $q->where('mes', 0);
+            }
+            $q->where(function ($w) {
+                $w->whereNull('costo_unitario')->orWhere('costo_unitario', '<=', 0);
+            });
+            foreach ($q->get(['producto_codigo', 'producto_nombre', 'moneda', 'card_name']) as $row) {
+                $item = trim((string) $row->producto_codigo);
+                if ($item === '') {
+                    continue;
+                }
+                if ($cliente === '' && $hasCardName) {
+                    $cliente = trim((string) ($row->card_name ?? ''));
+                }
+                $locales[strtoupper($item)] = [
+                    'item_code' => $item,
+                    'producto' => trim((string) ($row->producto_nombre ?: $item)),
+                    'moneda' => strtoupper((string) ($row->moneda ?: 'MXN')) ?: 'MXN',
+                ];
+            }
+        }
+
+        if (! $locales) {
+            return response()->json([
+                'ok' => true,
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'importados' => 0,
+                'omitidos_sin_lista' => 0,
+                'pendientes' => 0,
+                'message' => 'Sin productos en $0 para '.$card.'.',
+            ]);
+        }
+
+        $items = array_values(array_map(static function ($l) {
+            return $l['item_code'];
+        }, $locales));
+
+        try {
+            $pack = $this->cargarListasPreciosCliente($empresa, $card, $anioProy, $items, false);
+        } catch (Throwable $e) {
+            return response()->json([
+                'ok' => false,
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'message' => 'Error SAP: '.$e->getMessage(),
+            ], 422);
+        }
+        if (empty($pack['ok'])) {
+            return response()->json([
+                'ok' => false,
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'message' => $pack['mensaje'] ?? 'Sin conexión a listaPreciosventa',
+            ], 422);
+        }
+
+        $porArt = is_array($pack['por_articulo'] ?? null) ? $pack['por_articulo'] : [];
+        $afectados = [];
+        $omitidosSinLista = 0;
+        foreach ($locales as $key => $local) {
+            $item = $local['item_code'];
+            $lista = $porArt[$item] ?? $porArt[$key] ?? $porArt[$this->codigoCuentaKey($item)] ?? null;
+            if (! is_array($lista) || (float) ($lista['precio'] ?? 0) <= 0) {
+                $omitidosSinLista++;
+                continue;
+            }
+            $precio = round((float) $lista['precio'], 4);
+            $moneda = strtoupper(trim((string) ($lista['moneda'] ?? $local['moneda'] ?? 'MXN'))) ?: 'MXN';
+            if (! in_array($moneda, ['MXN', 'USD'], true)) {
+                $moneda = 'MXN';
+            }
+            $nombreLista = trim((string) ($lista['nombre'] ?? ''));
+            $afectados[] = [
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'cliente' => $cliente,
+                'item_code' => $item,
+                'producto' => $nombreLista !== '' ? $nombreLista : $local['producto'],
+                'precio' => $precio,
+                'moneda' => $moneda,
+            ];
+        }
+
+        if (! $afectados) {
+            return response()->json([
+                'ok' => true,
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'cliente' => $cliente,
+                'pendientes' => count($locales),
+                'importados' => 0,
+                'omitidos_sin_lista' => $omitidosSinLista,
+                'message' => 'Ningún ítem de '.$card.' tiene precio en lista SAP.',
+            ]);
+        }
+
+        $resp = $this->aplicarAfectadosDesdeListaPrecios($afectados, $anioProy, $userId, true);
+        $body = $resp->getData(true);
+        if (! is_array($body)) {
+            $body = [];
+        }
+        $body['ok'] = true;
+        $body['empresa'] = $empresa;
+        $body['card_code'] = $card;
+        $body['cliente'] = $cliente;
+        $body['pendientes'] = count($locales);
+        $body['omitidos_sin_lista'] = $omitidosSinLista;
+        if (empty($body['message'])) {
+            $body['message'] = 'Lote '.$card.': '.((int) ($body['importados'] ?? 0)).' actualizado(s).';
+        }
+
+        return response()->json($body, $resp->getStatusCode());
     }
 
     /**

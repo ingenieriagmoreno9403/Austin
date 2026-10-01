@@ -306,9 +306,9 @@
             </div>
             <div class="modal-body">
                 <p style="font-size:.88rem;margin-bottom:.85rem">
-                    Elige la <b>empresa</b>. Se tomarán del maestro local los productos con Precio global
-                    en <b>$0</b>, se buscará su precio en <code>listaPreciosventa</code> y se guardará localmente.
-                    No se modifican precios ya capturados ni los meses Ene–Dic.
+                    Elige la <b>empresa</b>. Primero se arma un JSON local de productos con Precio global
+                    en <b>$0</b> y luego se actualiza <b>cliente por cliente</b> (CardCode) contra
+                    <code>listaPreciosventa</code>. No se modifican precios ya capturados ni los meses Ene–Dic.
                 </p>
                 <div class="mb-3">
                     <label class="form-label" for="pv-ceros-empresa">Empresa</label>
@@ -324,12 +324,22 @@
                     <label class="form-label">Proyección</label>
                     <div class="fw-semibold" id="pv-ceros-anio-label">—</div>
                 </div>
+                <div class="mb-2" id="pv-ceros-progress-wrap" style="display:none">
+                    <div class="d-flex justify-content-between" style="font-size:.78rem;margin-bottom:.35rem">
+                        <span id="pv-ceros-progress-label">—</span>
+                        <span id="pv-ceros-progress-pct">0%</span>
+                    </div>
+                    <div style="height:.55rem;background:#e5e7eb;border-radius:999px;overflow:hidden">
+                        <div id="pv-ceros-progress-bar" style="height:100%;width:0%;background:#0a0a0a;transition:width .2s ease"></div>
+                    </div>
+                    <div class="text-muted mt-2" style="font-size:.75rem" id="pv-ceros-progress-detail"></div>
+                </div>
                 <div class="text-muted" style="font-size:.78rem" id="pv-ceros-hint">
-                    Puede tardar varios minutos si hay muchos clientes.
+                    Se procesa un CardCode por request para evitar timeouts.
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="cc-btn" data-bs-dismiss="modal" id="pv-ceros-cancelar">Cancelar</button>
                 <button type="button" class="cc-btn cc-btn-ink" id="pv-ceros-ejecutar">
                     <i class="fa-solid fa-cloud-arrow-down"></i> Consultar y rellenar
                 </button>
