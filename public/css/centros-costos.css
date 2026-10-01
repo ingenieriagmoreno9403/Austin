@@ -3208,6 +3208,10 @@
     height: 420px;
     max-height: 420px;
 }
+.cc-grupos-list .cc-cc-item > span:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+}
 .cc-grupos-list .cc-cc-item .cc-cc-name {
     color: var(--cc-ink);
     font-weight: 700;
@@ -3267,6 +3271,10 @@
 .cc-grupos-inline-name {
     flex: 1 1 auto;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
 }
 .cc-grupos-list .cc-cc-item.cc-grupos-nombre-row {
     align-items: center;

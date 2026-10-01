@@ -458,22 +458,6 @@
             byCode = null;
         }
         if (byCode && byCode.length === 12) return byCode.slice();
-        var nk = nombreCuentaKey(nombre);
-        if (!nk) return zeros12();
-        var compact = nk.replace(/\s+/g, '');
-        var hit = map['n:' + nk] || map['nc:' + compact] || map[nk] || map[compact];
-        if (!hit || hit.length !== 12) {
-            var list = control._gastoNombres && (!mapOpt || mapOpt === control._gastoMap)
-                ? control._gastoNombres
-                : nombresDesdeMapa(map);
-            for (var i = 0; i < list.length; i++) {
-                if (nombresGastoCompatibles(nk, list[i].key)) {
-                    hit = list[i].gasto;
-                    break;
-                }
-            }
-        }
-        if (hit && hit.length === 12) return hit.slice();
         return zeros12();
     }
 
@@ -592,19 +576,14 @@
         paintDetalleHeader();
     }
 
-    function nombreGastoCargado(nombre) {
-        var nk = nombreCuentaKey(nombre);
-        if (!nk) return false;
-        var map = control._gastoMap || {};
-        var hit = map['n:' + nk] || map[nk] || map['nc:' + nk.replace(/\s+/g, '')];
-        return !!(hit && hit.length === 12);
-    }
-
     function gastoDeCuentaCargado(cta) {
         var map = control._gastoMap || {};
-        var ck = codigoCuentaKey(cta && cta.codigo);
-        if (ck && map['c:' + ck] && map['c:' + ck].length === 12) return true;
-        return nombreGastoCargado(cta && cta.nombre);
+        var claves = clavesCuentaLookup(cta && cta.codigo);
+        for (var i = 0; i < claves.length; i++) {
+            var serie = map['c:' + claves[i]] || map[claves[i]];
+            if (serie && serie.length === 12) return true;
+        }
+        return false;
     }
 
     function gastoCentroListo(c) {

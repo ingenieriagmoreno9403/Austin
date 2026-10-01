@@ -155,26 +155,69 @@
         return map;
     }
 
+    function ctaNameKey(nombre) {
+        return String(nombre || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    function indexCatalogo(catalog) {
+        var byCode = {};
+        var byName = {};
+        (catalog || []).forEach(function (c) {
+            var k = ctaNorm(c.codigo);
+            if (k && !byCode[k]) byCode[k] = c;
+            var n = ctaNameKey(c.nombre);
+            if (!n) return;
+            if (!byName[n]) byName[n] = [];
+            byName[n].push(c);
+        });
+        return { byCode: byCode, byName: byName };
+    }
+
+    function cuentaDeGrupo(fromG, index) {
+        var code = ctaNorm((fromG && (fromG.codigo || fromG.cuenta_codigo)) || '');
+        if (code && index.byCode[code]) return index.byCode[code];
+        var n = ctaNameKey(fromG && (fromG.nombre || fromG.cuenta_nombre));
+        var hits = (n && index.byName[n]) || [];
+        if (hits.length === 1) return hits[0];
+        var conCodigo = hits.filter(function (c) { return !!ctaNorm(c.codigo); });
+        if (conCodigo.length === 1) return conCodigo[0];
+        return null;
+    }
+
     function filterRowsByGrupo(rows, map) {
         if (!map) return rows || [];
-        return (rows || []).filter(function (c) {
-            return !!map[ctaNorm(c.codigo)];
+        var index = indexCatalogo(rows);
+        var out = [];
+        var seen = {};
+        Object.keys(map).forEach(function (k) {
+            var fromG = map[k];
+            var hit = cuentaDeGrupo(fromG, index);
+            var row = hit || {
+                codigo: (fromG && (fromG.codigo || fromG.cuenta_codigo)) || '',
+                nombre: (fromG && (fromG.nombre || fromG.cuenta_nombre)) || '',
+                grupo: (fromG && (fromG.agrupacion || fromG.grupo)) || '',
+                grupo_id: (fromG && fromG.grupo_id) || ''
+            };
+            var key = ctaNorm(row.codigo) || ('n:' + ctaNameKey(row.nombre));
+            if (!row.codigo || seen[key]) return;
+            seen[key] = true;
+            out.push(row);
         });
+        return out;
     }
 
     function mergeGrupoCuentas(selected, map, catalog, keyFn) {
         if (!selected || !map) return;
-        var byCode = {};
-        (catalog || []).forEach(function (c) {
-            var k = ctaNorm(c.codigo);
-            if (k) byCode[k] = c;
-        });
+        var index = indexCatalogo(catalog);
         Object.keys(map).forEach(function (k) {
             var fromG = map[k];
-            var fromCat = byCode[k];
+            var fromCat = cuentaDeGrupo(fromG, index);
             var codigo = (fromCat && fromCat.codigo) || (fromG && (fromG.codigo || fromG.cuenta_codigo)) || '';
             if (!codigo) return;
             var storeKey = keyFn ? keyFn(codigo) : String(codigo);
+            var raw = (fromG && (fromG.codigo || fromG.cuenta_codigo)) || '';
+            var rawKey = raw ? (keyFn ? keyFn(raw) : String(raw)) : '';
+            if (rawKey && rawKey !== storeKey) delete selected[rawKey];
             selected[storeKey] = {
                 codigo: codigo,
                 nombre: (fromCat && fromCat.nombre) || (fromG && (fromG.nombre || fromG.cuenta_nombre)) || '',
@@ -844,7 +887,9 @@
         if (!box) return;
         var mask = String(CCAsig._editMask || '');
         var grupoMap = grupoCuentaMap(CCAsig._editGrupos || [], CCAsig._editGrupo || '');
-        var rows = filterRowsByGrupo(CCAsig._editCuentas || [], grupoMap).filter(function (c) {
+        var base = grupoMap ? (CCAsig._editCuentasAll || CCAsig._editCuentas || []) : (CCAsig._editCuentas || []);
+        var rows = filterRowsByGrupo(base, grupoMap).filter(function (c) {
+            if (grupoMap && mask && String(c.grupo_id || '') && String(c.grupo_id) !== mask) return false;
             return ((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || '') + ' ' + (c.grupo || '') + ' ' + (c.grupo_id || '')).toLowerCase().indexOf(q) !== -1;
         });
         if (!rows.length) {
@@ -2015,6 +2060,10 @@
                 if (groups && groups.length) agrupaciones = groups;
                 fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
                 fillGrupoUi('asig-cta-grupo', grupos, ctaGrupo, setCtaGrupo);
+                if (ctaGrupo) {
+                    var mapGrupo = grupoCuentaMap(grupos, ctaGrupo);
+                    if (mapGrupo) mergeGrupoCuentas(ctaSelected, mapGrupo, cacheCuentas[cfg.empresa] || cuentas, normCode);
+                }
                 if (ctaMask) {
                     setCtaMask(ctaMask);
                     return;
@@ -2050,7 +2099,9 @@
             }
             var mask = String(ctaMask || '');
             var grupoMap = grupoCuentaMap(grupos, ctaGrupo);
-            var rows = filterRowsByGrupo(cuentas, grupoMap).filter(function (c) {
+            var base = grupoMap ? (cacheCuentas[cfg.empresa] || cuentas) : cuentas;
+            var rows = filterRowsByGrupo(base, grupoMap).filter(function (c) {
+                if (grupoMap && mask && String(c.grupo_id || '') && String(c.grupo_id) !== mask) return false;
                 return ((c.codigo || '') + ' ' + ctaPretty(c.codigo) + ' ' + (c.nombre || '') + ' ' + (c.grupo || '') + ' ' + (c.grupo_id || '')).toLowerCase().indexOf(q) !== -1;
             });
             if (!rows.length) {

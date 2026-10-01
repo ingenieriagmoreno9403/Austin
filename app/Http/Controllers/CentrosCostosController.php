@@ -746,7 +746,7 @@ class CentrosCostosController extends Controller
 
     public function gastoReal(Request $request): JsonResponse
     {
-        @set_time_limit(120);
+        @set_time_limit(180);
         $empresa = strtoupper(trim((string) $request->get('empresa', '')));
         $cc = trim((string) $request->get('cc', $request->get('CC', '')));
         $year = (int) $request->get('year', $request->get('anio', 0));
@@ -773,11 +773,8 @@ class CentrosCostosController extends Controller
         sort($cuentas);
 
         $cacheSuffix = $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
-        $cacheKey = 'cc.gasto-real.v12.' . $cacheSuffix;
+        $cacheKey = 'cc.gasto-real.v14.' . $cacheSuffix;
         $cached = Cache::get($cacheKey);
-        if (! $request->boolean('refresh') && (! is_array($cached) || empty($cached['ok']) || empty($cached['por_cuenta']))) {
-            $cached = Cache::get('cc.gasto-real.v11.' . $cacheSuffix);
-        }
         if (is_array($cached) && ! empty($cached['ok']) && ! empty($cached['por_cuenta'])) {
             return response()->json($this->conMesesRecientes($cached, $empresa, $cc, $year));
         }
@@ -800,14 +797,17 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * Oct–Dic salen de /gasto-real con fecha_desde/fecha_hasta.
-     * Si el año del reporte aún no llega a octubre, se usa el año anterior.
+     * Oct–Dic aparte, desactivado.
+     * Captura y análisis se quedan con el gasto del año completo (ene–dic).
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     protected function conMesesRecientes(array $payload, string $empresa, string $cc, int $year): array
     {
+        return $payload;
+
+        /*
         $por = $payload['por_cuenta'] ?? null;
         if (! is_array($por) || $por === [] || $cc === '') {
             return $payload;
@@ -867,6 +867,7 @@ class CentrosCostosController extends Controller
         $payload['por_cuenta'] = $por;
 
         return $payload;
+        */
     }
 
     public function captura(Request $request): JsonResponse
@@ -1511,7 +1512,30 @@ class CentrosCostosController extends Controller
             }
         }
 
-        if ($cc !== '') {
+        if ($cc !== '' && $pedido) {
+            $api = app(AutinApiClient::class);
+            $res = $api->gastoRealPorCuentas($empresa, $year, array_values($pedido), 12, 4, $cc, '6');
+            if (empty($res['ok']) && empty($res['rows'])) {
+                $mensaje = $res['message'] ?? 'Sin conexión a gasto real SAP';
+            } else {
+                $ok = true;
+                $todo = [];
+                foreach ($res['rows'] ?? [] as $row) {
+                    if (is_array($row)) {
+                        $this->acumularGastoRealFila($todo, $row, $empresa, $year, array_keys($pedido), $cc);
+                    }
+                }
+                foreach ($pedido as $ck => $cuenta) {
+                    $hit = $this->gastoDesdeIndice($todo, $ck);
+                    $porCuenta[$ck] = $hit ?: [
+                        'codigo' => $cuenta,
+                        'nombre' => '',
+                        'gasto' => array_fill(0, 12, 0.0),
+                        'gasto_usd' => array_fill(0, 12, 0.0),
+                    ];
+                }
+            }
+        } elseif ($cc !== '') {
             $indice = $this->indiceGastoPorCentro($empresa, $cc, $year, ! $refrescar);
             if (empty($indice['ok'])) {
                 $mensaje = $indice['mensaje'] ?? 'Sin conexión a gasto real SAP';
@@ -1551,11 +1575,8 @@ class CentrosCostosController extends Controller
      */
     protected function indiceGastoPorCentro(string $empresa, string $cc, int $year, bool $permitirLegacy = true): array
     {
-        $cacheKey = 'cc.gasto-indice.v2.' . $empresa . '.' . $cc . '.' . $year;
-        $cached = Cache::get($cacheKey);
-        if (! is_array($cached) && $permitirLegacy) {
-            $cached = Cache::get('cc.gasto-indice.v1.' . $empresa . '.' . $cc . '.' . $year);
-        }
+        $cacheKey = 'cc.gasto-indice.v3.' . $empresa . '.' . $cc . '.' . $year;
+        $cached = $permitirLegacy ? Cache::get($cacheKey) : null;
         if (is_array($cached)) {
             return ['ok' => true, 'por_cuenta' => $cached, 'mensaje' => null];
         }
@@ -1568,7 +1589,7 @@ class CentrosCostosController extends Controller
             'fecha_desde' => $year . '-01-01',
             'fecha_hasta' => $year . '-12-31',
             'GroupMask' => '6',
-        ], 4, 6);
+        ], 40, 6);
 
         if (empty($res['ok'])) {
             return [
@@ -1680,7 +1701,7 @@ class CentrosCostosController extends Controller
         }
 
         $rowCc = $this->campoFila($row, ['CC', 'PrcCode', 'OcrCode', 'ProfitCode', 'centro', 'Centro']);
-        if ($cc !== '' && $rowCc !== '' && ! $this->mismoCentroSap($rowCc, $cc)) {
+        if ($cc !== '' && ! $this->mismoCentroSap($rowCc, $cc)) {
             return;
         }
 
