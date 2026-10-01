@@ -120,6 +120,20 @@
         return String(CC.state.currency || 'MXN').toUpperCase() === 'USD';
     }
 
+    /**
+     * SAP B1 manda la moneda local como "$" o "##" (pesos), no como USD.
+     * Solo un código explícito de dólar se trata como USD.
+     */
+    function canonMoneda(raw) {
+        var m = String(raw || '').toUpperCase().replace(/[\s.]/g, '');
+        if (m === 'USD' || m === 'US$' || m === 'U$S' || m === 'U$D' || m === 'US'
+            || m === 'DLLS' || m === 'DLL' || m === 'DOLAR' || m === 'DOLARES'
+            || m === 'DOLLAR' || m === 'DOLLARS') {
+            return 'USD';
+        }
+        return 'MXN';
+    }
+
     /** Valor guardado (base MXN) → lo que se muestra según moneda. Solo importes. */
     function toDisplayAmount(n, monthIdx) {
         var val = Number(n);
@@ -670,14 +684,19 @@
         return zeros12();
     }
 
-    /** Venta real del mes: USD = LineTotalUSD guardado; MXN = LineTotal. Sin tipo de cambio.
+    /** Venta real del mes en la moneda de vista.
+     *  USD: LineTotalUSD de SAP, o LineTotal MXN ÷ TC si SAP no trae dólares.
      *  Budget, oct–dic: si gasto-real no trae el mes, usa ventas-budget (importe o uds × precio). */
     function importeMesVentaVista(cta, i) {
         if (!cta) return 0;
-        var sap = isUsdView()
-            ? (Number(usdSeriesOf(cta)[i]) || 0)
-            : (Number((cta.importe && cta.importe[i]) || 0));
-        if (sap) return sap;
+        var mxnSap = Number((cta.importe && cta.importe[i]) || 0);
+        var usdSap = Number(usdSeriesOf(cta)[i]) || 0;
+        if (isUsdView()) {
+            if (usdSap) return usdSap;
+            if (mxnSap) return toDisplayAmount(mxnSap, i);
+        } else if (mxnSap) {
+            return mxnSap;
+        }
         var idx = Number(i);
         if (!esBudgetTipo() || idx < 9 || idx > 11) return 0;
         var hit = hitVentasBudget(cta);
@@ -695,7 +714,7 @@
         var qty = Number(pastQtyMes(cta, idx)) || 0;
         var precio = Number(cta.precioLista) || 0;
         if (!qty || !precio) return 0;
-        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var mon = canonMoneda(cta.precioMoneda || 'MXN');
         var mxnAmt = qty * (mon === 'USD' ? precio * fxRate(idx) : precio);
         return toDisplayAmount(mxnAmt, idx);
     }
@@ -1168,7 +1187,7 @@
                 codigo: codigo,
                 nombre: row.nombre || '',
                 precio: Number(row.precio) || 0,
-                moneda: String(row.moneda || 'MXN').toUpperCase(),
+                moneda: canonMoneda(row.moneda || 'MXN'),
                 unidad: String(row.unidad || '').trim(),
                 unidad_nombre: String(row.unidad_nombre || '').trim(),
                 lista: row.lista || '',
@@ -1744,7 +1763,7 @@
         var cta = ((control && control._allCtas) || []).filter(function (x) {
             return String(x.codigo) === String(cuenta);
         })[0];
-        var moneda = String(opts.moneda || (cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var moneda = canonMoneda(opts.moneda || (cta && cta.precioMoneda) || 'MXN');
         var nombre = opts.nombre || (cta && cta.nombre) || cuenta;
         var cardName = opts.card_name || (control.centro && control.centro.nombre) || '';
         return fetch(url, {
@@ -3458,7 +3477,7 @@
         var sub = document.getElementById('pm-sub');
         if (sub) sub.textContent = labelNombreCodigo(cta.nombre, cta.codigo);
         var base = Number(cta.precioLista) || 0;
-        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var mon = canonMoneda(cta.precioMoneda || 'MXN');
         var baseEl = document.getElementById('pm-base');
         if (baseEl) baseEl.value = base > 0 ? base.toFixed(2) : '';
         var baseHint = document.getElementById('pm-base-hint');
@@ -3595,7 +3614,7 @@
             })[0];
             save.disabled = true;
             Promise.resolve(persistPrecioMesesProducto(c.empresa, c.codigo, codigo, meses, {
-                moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase(),
+                moneda: canonMoneda((cta && cta.precioMoneda) || 'MXN'),
                 nombre: (cta && cta.nombre) || codigo,
                 card_name: (c && c.nombre) || ''
             })).then(function (json) {
@@ -3719,7 +3738,6 @@
     /** Venta real ya en la moneda de vista (LineTotal o LineTotalUSD). */
     function totGastoCentroVista(c, ctas) {
         return (ctas || cuentasEnriquecidas(c)).reduce(function (a, cta) {
-            if (cta.importeVentaVista != null) return a + Number(cta.importeVentaVista || 0);
             return a + importeVentaVista(cta);
         }, 0);
     }
@@ -4167,9 +4185,9 @@
             var precioLista = hasMasterRow ? masterPrecio : 0;
             var precioMoneda = '';
             if (hasMasterRow && master && master.moneda) {
-                precioMoneda = String(master.moneda).toUpperCase();
+                precioMoneda = canonMoneda(master.moneda);
             } else if (lista.moneda) {
-                precioMoneda = String(lista.moneda).toUpperCase();
+                precioMoneda = canonMoneda(lista.moneda);
             } else {
                 precioMoneda = 'MXN';
             }
@@ -4186,7 +4204,7 @@
                 costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
                 precioLista: precioLista,
                 precioListaSap: precioListaSap,
-                precioListaSapMoneda: String(lista.moneda || '').toUpperCase() || '',
+                precioListaSapMoneda: lista.moneda ? canonMoneda(lista.moneda) : '',
                 precioMoneda: precioMoneda || 'MXN',
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
                 precioMaestroMeses: precioMaestroMeses,
@@ -4346,7 +4364,7 @@
             return;
         }
         var totG = ctas.reduce(function (a, x) {
-            return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+            return a + importeVentaVista(x);
         }, 0);
         var totP = ctas.reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
         var pend = ctas.filter(ctaPendiente).length;
@@ -4785,6 +4803,7 @@
             document.getElementById('ctl-moneda').addEventListener('change', function () {
                 CC.state.currency = this.value;
                 saveJSON(SK.currency, CC.state.currency);
+                if (control.centro) control._allCtas = cuentasEnriquecidas(control.centro);
                 paintFxBadge();
                 renderCapturaForm();
                 renderControlTable();
@@ -4883,6 +4902,7 @@
             mon.addEventListener('change', function () {
                 CC.state.currency = this.value || 'MXN';
                 saveJSON(SK.currency, CC.state.currency);
+                if (control.centro) control._allCtas = cuentasEnriquecidas(control.centro);
                 paintFxBadge();
                 paintDetalleHeader();
                 renderDetalleTable();
@@ -5075,7 +5095,7 @@
         setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
         setText('ctl-pend-label', st.pendientes + (st.pendientes === 1 ? ' pendiente' : ' pendientes'));
         setText('kpi-ctl-gasto', moneyGasto(st.totGVista != null ? st.totGVista : st.totG));
-        setText('kpi-ctl-ppto', money(st.totP));
+        setText('kpi-ctl-ppto', moneyGasto(st.totPVista != null ? st.totPVista : st.totP));
         setText('kpi-ctl-pend', st.pendientes);
         paintBarraProgreso('ctl-avance-wrap', 'ctl-avance-bar', st.avance, 'kpi-ctl-avance');
         setText('ctl-nav-pend-n', st.pendientes);
@@ -5318,7 +5338,7 @@
             updateFormTotalsCliente();
             return;
         }
-        var ventaVista = cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+        var ventaVista = importeVentaVista(cta);
         var proyVista = importeProyeccionVista(cta);
         setText('ctl-form-gasto', moneyGasto(ventaVista));
         setText('ctl-form-ppto', moneyGasto(proyVista));
@@ -5377,7 +5397,7 @@
     /** Precio de lista (moneda nativa) → monto en la moneda de vista. Usa TC del mes si se indica. */
     function precioListaEnVista(precio, monedaNativa, monthIdx) {
         var amount = Number(precio) || 0;
-        var src = String(monedaNativa || 'MXN').toUpperCase();
+        var src = canonMoneda(monedaNativa);
         var view = isUsdView() ? 'USD' : 'MXN';
         if (src === view) return amount;
         var tc = fxRate(monthIdx);
@@ -5444,7 +5464,7 @@
         }
         var precio = Number(cta.precioLista) || 0;
         if (!qty || !precio) return 0;
-        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var mon = canonMoneda(cta.precioMoneda || 'MXN');
         return qty * (mon === 'USD' ? precio * fxRate(i) : precio);
     }
 
@@ -5474,7 +5494,7 @@
         if (!uds) return 0;
         var precio = precioUnitarioMes(cta, i);
         if (precio > 0) {
-            var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            var mon = canonMoneda(cta.precioMoneda || 'MXN');
             var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
             return uds * precioMxn;
         }
@@ -5523,7 +5543,7 @@
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
         var precio = Number(cta && cta.precioListaSap) || 0;
-        var mon = String((cta && cta.precioListaSapMoneda) || (cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var mon = canonMoneda((cta && cta.precioListaSapMoneda) || (cta && cta.precioMoneda) || 'MXN');
         var listaNom = String((cta && cta.listaPrecioNombreSap) || '').trim();
         var noLista = String((cta && cta.listaPrecioNoSap) || '').trim();
 
@@ -5532,7 +5552,7 @@
             var c = control.centro;
             var lista = (c ? listaPrecioDeCentro(c, cta.codigo) : null) || lookupPrecioLista(cta.codigo) || {};
             precio = Number(lista.precio) || 0;
-            if (lista.moneda) mon = String(lista.moneda).toUpperCase() || mon;
+            if (lista.moneda) mon = canonMoneda(lista.moneda);
             if (lista.lista) listaNom = String(lista.lista).trim();
             if (lista.no_lista) noLista = String(lista.no_lista).trim();
             if (!unidad && lista.unidad) unidad = String(lista.unidad).trim();
@@ -5557,7 +5577,7 @@
     function precioVentaAnioRef(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
-        var mon = String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var mon = canonMoneda((cta && cta.precioMoneda) || 'MXN');
         var anio = CC.state.anioGasto || '';
 
         var local = Number(cta && cta.precioLista) || 0;
@@ -5664,7 +5684,7 @@
         var precio = fromLocal ? (Number(cta.precioLista) || 0) : 0;
         return {
             precio: precio,
-            moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN',
+            moneda: canonMoneda((cta && cta.precioMoneda) || 'MXN'),
             unidad: String((cta && cta.unidad) || '').trim(),
             unidadNombre: String((cta && cta.unidadNombre) || '').trim(),
             porMes: fromLocal ? precioMesesVarian(cta) : false,
@@ -5711,7 +5731,7 @@
         info = info || {};
         var precio = Number(info.precio);
         if (!isFinite(precio)) precio = 0;
-        var mon = String(info.moneda || 'MXN').toUpperCase();
+        var mon = canonMoneda(info.moneda || 'MXN');
         var unidad = formatUnidadLabel(info.unidad, info.unidadNombre);
         var dec = info.decimals != null ? info.decimals : 2;
         var showZero = !!info.showZero;
@@ -5804,7 +5824,7 @@
             var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
             var pMes = precioUnitarioMes(cta, i);
             var pCustom = precioMesEsDistinto(cta, i);
-            var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            var mon = canonMoneda(cta.precioMoneda || 'MXN');
             var pastCap = pastQtyCaption();
             cells += '<td class="' + pCls + '">' +
                 '<div class="cc-matrix-month">' +
@@ -5843,8 +5863,7 @@
                     ? (precioLista.title || 'Precio de lista SAP del cliente')
                     : (preciosListaCargando() ? 'Consultando la lista de precios del cliente…' : (precioLista.title || 'Sin precio de lista'))) + '">' +
                 (precioLista.precio
-                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(precioLista.precio, precioLista.moneda, null, 2)) + '</div>' +
-                        (uomLabel ? '<div class="cc-price-uom" title="' + escapeHtml(cta.unidad || '') + '">' + escapeHtml(uomLabel) + '</div>' : ''))
+                    ? precioInfoHtml(precioLista)
                     : (preciosListaCargando()
                         ? '<span class="cc-price-empty">Cargando...</span>'
                         : '<span class="cc-price-empty">—</span>')) +
@@ -6083,7 +6102,7 @@
                     var tag = wrap.querySelector('.cc-month-price-tag');
                     var pMes = precioUnitarioMes(cta, i);
                     var pCustom = precioMesEsDistinto(cta, i);
-                    var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+                    var mon = canonMoneda(cta.precioMoneda || 'MXN');
                     if (pMes > 0) {
                         if (!tag) {
                             tag = document.createElement('div');
@@ -6301,7 +6320,7 @@
         var hideGroups = opts.scope === 'cuenta' && control.cuenta && ctas.length <= 1;
         Object.keys(groups).forEach(function (g) {
             var gTotG = groups[g].reduce(function (a, x) {
-                return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+                return a + importeVentaVista(x);
             }, 0);
             var gTotP = groups[g].reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
             var closed = !!closedMap[g];
@@ -6315,7 +6334,7 @@
             }
             if (!closed || hideGroups) {
                 groups[g].forEach(function (cta) {
-                    var impG = cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+                    var impG = importeVentaVista(cta);
                     var impP = importeProyeccionVista(cta);
                     // Δ% en la misma moneda que se muestra (evita mezclar LineTotal MXN vs proy×TC).
                     var d = deltaPct(impP, impG);
@@ -6373,7 +6392,7 @@
             var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             ctas.forEach(function (cta) {
-                sumG += cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+                sumG += importeVentaVista(cta);
                 sumP += importeProyeccionVista(cta);
                 for (var mi = 0; mi < 12; mi++) {
                     mesG[mi] += Number(importeMesVentaVista(cta, mi)) || 0;

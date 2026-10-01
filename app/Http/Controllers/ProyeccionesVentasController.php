@@ -4961,7 +4961,7 @@ class ProyeccionesVentasController extends Controller
             return trim((string) $v);
         }, $soloArticulos))));
 
-        $cacheKey = 'pv.listaPreciosventa.' . $empresa . '.' . $cc;
+        $cacheKey = 'pv.listaPreciosventa.v2.' . $empresa . '.' . $cc;
         if ($soloArticulos) {
             $norm = array_map(static fn ($v) => strtoupper($v), $soloArticulos);
             sort($norm);
@@ -6029,6 +6029,20 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * SAP B1 guarda la moneda local como "$" o "##". Eso es pesos, no dólares.
+     */
+    protected function normalizarMonedaLista($raw): string
+    {
+        $m = strtoupper(trim((string) $raw));
+        $m = str_replace([' ', '.'], '', $m);
+        if (in_array($m, ['USD', 'US$', 'U$S', 'U$D', 'US', 'DLLS', 'DLL', 'DOLAR', 'DOLARES', 'DOLLAR', 'DOLLARS'], true)) {
+            return 'USD';
+        }
+
+        return 'MXN';
+    }
+
+    /**
      * Precio de lista > 0. Ignora un Precio en cero si otro campo trae el importe.
      */
     protected function precioPositivoLista(array $row): float
@@ -6198,10 +6212,7 @@ class ProyeccionesVentasController extends Controller
                 if ($precio <= 0) {
                     continue;
                 }
-                $moneda = strtoupper(trim((string) ($row['Moneda'] ?? $row['Currency'] ?? 'MXN')));
-                if ($moneda === '') {
-                    $moneda = 'MXN';
-                }
+                $moneda = $this->normalizarMonedaLista($row['Moneda'] ?? $row['Currency'] ?? '');
                 $unidad = trim((string) (
                     $row['Unidad']
                     ?? $row['SalPackMsr']
