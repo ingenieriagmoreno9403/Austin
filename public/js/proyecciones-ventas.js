@@ -5706,7 +5706,11 @@
             PR: 'Par',
             SET: 'Juego',
             PZA: 'Pieza',
-            PZ: 'Pieza'
+            PZ: 'Pieza',
+            E48: 'Servicio',
+            ACT: 'Actividad',
+            H87: 'Pieza',
+            XBX: 'Caja'
         };
         var up = code.toUpperCase();
         if (aliases[up]) return aliases[up];

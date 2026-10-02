@@ -6875,6 +6875,11 @@ class ProyeccionesVentasController extends Controller
             'SET' => 'Juego',
             'PZA' => 'Pieza',
             'PZ' => 'Pieza',
+            // SAT / CFDI: E48 = Unidad de servicio
+            'E48' => 'Servicio',
+            'ACT' => 'Actividad',
+            'H87' => 'Pieza',
+            'XBX' => 'Caja',
         ];
     }
 
@@ -6890,32 +6895,32 @@ class ProyeccionesVentasController extends Controller
             return $cache;
         }
         $cache = [];
-        foreach ($this->aliasUnidadesSap() as $code => $nombre) {
-            $cache[strtoupper((string) $code)] = $nombre;
-        }
-        if (! Schema::hasTable('tblunidadesmedida')) {
-            return $cache;
-        }
-        $cols = ['nombre'];
-        if (Schema::hasColumn('tblunidadesmedida', 'abreviacion')) {
-            $cols[] = 'abreviacion';
-        }
-        if (Schema::hasColumn('tblunidadesmedida', 'c_unidad_medida')) {
-            $cols[] = 'c_unidad_medida';
-        }
-        foreach (DB::table('tblunidadesmedida')->get($cols) as $row) {
-            $nombre = trim((string) ($row->nombre ?? ''));
-            if ($nombre === '') {
-                continue;
+        if (Schema::hasTable('tblunidadesmedida')) {
+            $cols = ['nombre'];
+            if (Schema::hasColumn('tblunidadesmedida', 'abreviacion')) {
+                $cols[] = 'abreviacion';
             }
-            foreach (['abreviacion', 'c_unidad_medida', 'nombre'] as $field) {
-                $code = trim((string) ($row->{$field} ?? ''));
-                if ($code === '') {
+            if (Schema::hasColumn('tblunidadesmedida', 'c_unidad_medida')) {
+                $cols[] = 'c_unidad_medida';
+            }
+            foreach (DB::table('tblunidadesmedida')->get($cols) as $row) {
+                $nombre = trim((string) ($row->nombre ?? ''));
+                if ($nombre === '') {
                     continue;
                 }
-                $cache[strtoupper($code)] = $nombre;
-                $cache[$code] = $nombre;
+                foreach (['abreviacion', 'c_unidad_medida', 'nombre'] as $field) {
+                    $code = trim((string) ($row->{$field} ?? ''));
+                    if ($code === '') {
+                        continue;
+                    }
+                    $cache[strtoupper($code)] = $nombre;
+                    $cache[$code] = $nombre;
+                }
             }
+        }
+        // Alias SAP / SAT ganan sobre catálogo local incompleto (p. ej. E48 → Servicio).
+        foreach ($this->aliasUnidadesSap() as $code => $nombre) {
+            $cache[strtoupper((string) $code)] = $nombre;
         }
 
         return $cache;
