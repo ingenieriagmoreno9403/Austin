@@ -139,7 +139,7 @@ class CcGastoRealSnapshot
      *
      * @param  array<string, array<string, array<string, mixed>>>  $mapa
      */
-    public function guardarMapa(string $empresa, int $year, array $mapa, string $origen, ?int $userId, bool $completa): void
+    public function guardarMapa(string $empresa, int $year, array $mapa, string $origen, ?int $userId, bool $completa, bool $conservarUltimosMeses = false): void
     {
         if (! $this->disponible() || $mapa === []) {
             if ($completa && $this->disponible()) {
@@ -153,6 +153,7 @@ class CcGastoRealSnapshot
         $ahora = now();
         $snapRows = [];
         $ccRows = [];
+        $previos = $conservarUltimosMeses ? $this->ultimosMesesGuardados($empresa, $year, array_keys($centros)) : [];
         foreach ($centros as $cc => $por) {
             $cuentas = $this->cuentasCanonicas($por);
             $ccRows[] = [
@@ -167,7 +168,15 @@ class CcGastoRealSnapshot
             ];
             foreach ($cuentas as $codigo => $item) {
                 $visible = trim((string) ($item['codigo'] ?? $codigo));
-                $snapRows[] = $this->filaSnap($empresa, $year, $cc, $visible !== '' ? $visible : (string) $codigo, $item, $origen, $userId, $ahora);
+                $fila = $this->filaSnap($empresa, $year, $cc, $visible !== '' ? $visible : (string) $codigo, $item, $origen, $userId, $ahora);
+                $clave = $cc.'|'.$this->digitos($visible !== '' ? $visible : (string) $codigo);
+                if (isset($previos[$clave])) {
+                    foreach (['10', '11', '12'] as $suf) {
+                        $fila['mes_'.$suf] = $previos[$clave]['mes_'.$suf];
+                        $fila['usd_'.$suf] = $previos[$clave]['usd_'.$suf];
+                    }
+                }
+                $snapRows[] = $fila;
             }
         }
 
@@ -257,24 +266,44 @@ class CcGastoRealSnapshot
             ->where('empresa', $empresa)
             ->where('anio', $year)
             ->where('centro_codigo', $cc)
-            ->get(['id', 'cuenta_codigo']);
+            ->get();
+        $conservar = null;
         foreach ($existentes as $row) {
             $d = $this->digitos((string) $row->cuenta_codigo);
             $alt = ltrim($d !== '' ? $d : (string) $row->cuenta_codigo, '0');
             if ($alt !== '' && $alt === $needle) {
                 $borrar[] = $row->id;
                 $codigos[] = (string) $row->cuenta_codigo;
+                if ($conservar === null) {
+                    $conservar = $row;
+                }
             }
         }
         $codigos = array_values(array_unique(array_filter($codigos)));
+        foreach (['gasto', 'gasto_usd'] as $campo) {
+            if (! isset($item[$campo]) || ! is_array($item[$campo])) {
+                continue;
+            }
+            $serie = array_values($item[$campo]);
+            for ($i = 9; $i < 12; $i++) {
+                $serie[$i] = 0.0;
+            }
+            $item[$campo] = $serie;
+        }
         $visible = trim((string) ($item['codigo'] ?? $cuenta));
         $snapRow = $this->filaSnap($empresa, $year, $cc, $visible !== '' ? $visible : $cuenta, $item, 'api', $userId, $ahora);
+        if ($conservar) {
+            foreach (['10', '11', '12'] as $suf) {
+                $snapRow['mes_'.$suf] = round((float) ($conservar->{'mes_'.$suf} ?? 0), 2);
+                $snapRow['usd_'.$suf] = round((float) ($conservar->{'usd_'.$suf} ?? 0), 2);
+            }
+        }
 
         $sap = [];
         foreach ($filas as $fila) {
             $mes = (int) ($fila['mes'] ?? 0);
             $cta = trim((string) ($fila['cuenta'] ?? ''));
-            if ($mes < 1 || $mes > 12 || $cta === '') {
+            if ($mes < 1 || $mes > 9 || $cta === '') {
                 continue;
             }
             $fecha = $fila['fecha'] ?? null;
@@ -309,6 +338,7 @@ class CcGastoRealSnapshot
                     ->where('anio', $year)
                     ->where('centro_codigo', $cc)
                     ->whereIn('cuenta_codigo', $codigos)
+                    ->where('mes', '<=', 9)
                     ->delete();
                 foreach (array_chunk($sap, 300) as $chunk) {
                     DB::table('tbl_cc_gasto_real_sap')->insert($chunk);
@@ -368,11 +398,13 @@ class CcGastoRealSnapshot
         }
 
         $empresa = strtoupper(trim($empresa));
+        $mapa = $this->anularMesesPosteriores($mapa);
         if ($mapa !== []) {
-            $this->guardarMapa($empresa, $year, $mapa, 'api', $userId, false);
+            $this->guardarMapa($empresa, $year, $mapa, 'api', $userId, false, true);
         }
+        $filas = $this->filasHastaMes($filas, 9);
         if ($filas !== [] && Schema::hasTable('tbl_cc_gasto_real_sap')) {
-            $this->reemplazarFilasSap($empresa, $year, $filas, $userId, false);
+            $this->reemplazarFilasSap($empresa, $year, $filas, $userId, false, 9);
         }
 
         $filasN = Schema::hasTable('tbl_cc_gasto_real_sap')
@@ -405,13 +437,10 @@ class CcGastoRealSnapshot
             return false;
         }
 
-        $guardadas = $this->firmaSerieCentro($this->cuentasGuardadas($empresa, $year, $cc));
-        $nuevas = $this->firmaSerieCentro($this->cuentasCanonicas($por));
-        if (! hash_equals($guardadas, $nuevas)) {
-            return false;
-        }
+        $guardadas = $this->firmaSerieCentro($this->cuentasGuardadas($empresa, $year, $cc), 9);
+        $nuevas = $this->firmaSerieCentro($this->cuentasCanonicas($por), 9);
 
-        return hash_equals($this->firmaMovimientos($filas), $this->firmaMovimientosGuardados($empresa, $year, $cc));
+        return hash_equals($guardadas, $nuevas);
     }
 
     public function firmaGuardada(string $empresa, int $year): ?string
@@ -447,12 +476,12 @@ class CcGastoRealSnapshot
     /**
      * @param  array<string, array<string, mixed>>  $cuentas
      */
-    protected function firmaSerieCentro(array $cuentas): string
+    protected function firmaSerieCentro(array $cuentas, int $meses = 12): string
     {
         ksort($cuentas);
         $plain = [];
         foreach ($cuentas as $ck => $item) {
-            $plain[] = $ck.'|'.$this->serieFirma($item['gasto'] ?? []).'|'.$this->serieFirma($item['gasto_usd'] ?? []);
+            $plain[] = $ck.'|'.$this->serieFirma($item['gasto'] ?? [], $meses).'|'.$this->serieFirma($item['gasto_usd'] ?? [], $meses);
         }
 
         return hash('sha256', implode("\n", $plain));
@@ -502,6 +531,10 @@ class CcGastoRealSnapshot
             if (strlen($fecha) >= 10) {
                 $fecha = substr($fecha, 0, 10);
             }
+            $mes = (int) ($fila['mes'] ?? 0);
+            if ($mes < 1 || $mes > 9) {
+                continue;
+            }
             $plain[] = implode('|', [
                 $this->digitos((string) ($fila['cuenta'] ?? '')),
                 (int) ($fila['mes'] ?? 0),
@@ -525,6 +558,7 @@ class CcGastoRealSnapshot
             ->where('empresa', $empresa)
             ->where('anio', $year)
             ->where('centro_codigo', $cc)
+            ->where('mes', '<=', 9)
             ->get(['cuenta_codigo', 'mes', 'fecha', 'importe', 'importe_usd']);
         foreach ($rows as $row) {
             $filas[] = [
@@ -785,7 +819,7 @@ class CcGastoRealSnapshot
     /**
      * @param  array<int, array<string, mixed>>  $filas
      */
-    protected function reemplazarFilasSap(string $empresa, int $year, array $filas, ?int $userId, bool $completa): void
+    protected function reemplazarFilasSap(string $empresa, int $year, array $filas, ?int $userId, bool $completa, ?int $mesMax = null): void
     {
         $ahora = now();
         $sap = [];
@@ -796,6 +830,9 @@ class CcGastoRealSnapshot
             $mes = (int) ($fila['mes'] ?? 0);
             $anio = (int) ($fila['anio'] ?? $year);
             if ($centro === '' || $cuenta === '' || $mes < 1 || $mes > 12 || $anio !== $year) {
+                continue;
+            }
+            if ($mesMax !== null && $mes > $mesMax) {
                 continue;
             }
             $centros[$centro] = $centro;
@@ -820,10 +857,13 @@ class CcGastoRealSnapshot
             ];
         }
 
-        DB::transaction(function () use ($empresa, $year, $sap, $centros, $completa) {
+        DB::transaction(function () use ($empresa, $year, $sap, $centros, $completa, $mesMax) {
             $q = DB::table('tbl_cc_gasto_real_sap')->where('empresa', $empresa)->where('anio', $year);
             if (! $completa && $centros) {
                 $q->whereIn('centro_codigo', array_values($centros));
+            }
+            if ($mesMax !== null) {
+                $q->where('mes', '<=', $mesMax);
             }
             $q->delete();
             foreach (array_chunk($sap, 300) as $chunk) {
@@ -853,12 +893,84 @@ class CcGastoRealSnapshot
     }
 
     /**
+     * @param  array<string, array<string, array<string, mixed>>>  $mapa
+     * @return array<string, array<string, array<string, mixed>>>
+     */
+    protected function anularMesesPosteriores(array $mapa): array
+    {
+        foreach ($mapa as $cc => $por) {
+            if (! is_array($por)) {
+                continue;
+            }
+            foreach ($por as $ck => $item) {
+                if (! is_array($item)) {
+                    continue;
+                }
+                foreach (['gasto', 'gasto_usd'] as $campo) {
+                    if (! isset($item[$campo]) || ! is_array($item[$campo])) {
+                        continue;
+                    }
+                    $serie = array_values($item[$campo]);
+                    for ($i = 9; $i < 12; $i++) {
+                        $serie[$i] = 0.0;
+                    }
+                    $item[$campo] = $serie;
+                }
+                $mapa[$cc][$ck] = $item;
+            }
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $filas
+     * @return array<int, array<string, mixed>>
+     */
+    protected function filasHastaMes(array $filas, int $mesMax): array
+    {
+        return array_values(array_filter($filas, function ($fila) use ($mesMax) {
+            return is_array($fila) && (int) ($fila['mes'] ?? 0) >= 1 && (int) ($fila['mes'] ?? 0) <= $mesMax;
+        }));
+    }
+
+    /**
+     * @param  array<int, string>  $centros
+     * @return array<string, array<string, float>>
+     */
+    protected function ultimosMesesGuardados(string $empresa, int $year, array $centros): array
+    {
+        if (! $centros) {
+            return [];
+        }
+        $out = [];
+        $rows = DB::table('tbl_cc_gasto_real_snap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->whereIn('centro_codigo', $centros)
+            ->get();
+        foreach ($rows as $row) {
+            $cc = strtoupper(trim((string) $row->centro_codigo));
+            $clave = $cc.'|'.$this->digitos((string) $row->cuenta_codigo);
+            $guardado = [];
+            foreach (['10', '11', '12'] as $suf) {
+                $guardado['mes_'.$suf] = round((float) ($row->{'mes_'.$suf} ?? 0), 2);
+                $guardado['usd_'.$suf] = round((float) ($row->{'usd_'.$suf} ?? 0), 2);
+            }
+            $out[$clave] = $guardado;
+        }
+
+        return $out;
+    }
+
+    /**
      * @param  array<int, mixed>  $serie
      */
-    protected function serieFirma(array $serie): string
+    protected function serieFirma(array $serie, int $meses = 12): string
     {
         $out = [];
-        for ($i = 0; $i < 12; $i++) {
+        $meses = max(1, min(12, $meses));
+        for ($i = 0; $i < $meses; $i++) {
             $out[] = number_format(round((float) ($serie[$i] ?? 0), 2), 2, '.', '');
         }
 

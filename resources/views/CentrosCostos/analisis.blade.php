@@ -159,7 +159,7 @@
             </div>
             <div class="cc-heat-months is-labeled" id="an-heat-months"></div>
             <div class="cc-legend">
-                <span>Ene → Sep · intensidad = gasto real · octubre a diciembre no entran · elige una empresa para ver centros</span>
+                <span>Ene → Sep · intensidad = gasto real · elige una empresa para ver centros</span>
             </div>
         </div>
     </div>
