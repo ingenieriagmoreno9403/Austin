@@ -56,7 +56,7 @@
                     <option value="USD">USD</option>
                 </select>
             </label>
-            <a class="cc-btn" href="{{ route('centros.control', ['vista' => 'visor']) }}"><i class="fa-solid fa-pen-to-square"></i> Ir a captura</a>
+            <button type="button" class="cc-btn" id="an-sap"><i class="fa-solid fa-rotate"></i> Actualizar de SAP</button>
         </div>
     </div>
 
@@ -87,8 +87,13 @@
                 <button type="button" class="cc-btn cc-btn-ink" id="an-buscar">
                     <i class="fa-solid fa-magnifying-glass"></i> Buscar
                 </button>
+                <button type="button" class="cc-btn" id="an-refrescar">
+                    <i class="fa-solid fa-arrows-rotate"></i> Refrescar
+                </button>
+                <button type="button" class="cc-btn" id="an-limpiar">
+                    <i class="fa-solid fa-eraser"></i> Limpiar
+                </button>
                 <button type="button" class="cc-btn" id="an-cancelar" disabled>Cancelar</button>
-                <button type="button" class="cc-btn" id="an-sap">Actualizar de SAP</button>
             </div>
             <p id="an-sap-status" class="cc-filter-note"></p>
         </div>

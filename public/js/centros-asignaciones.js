@@ -270,9 +270,11 @@
         btn.addEventListener('click', abrirModalSap);
         var go = document.getElementById('ciclo-sap-go');
         var cancel = document.getElementById('ciclo-sap-cancelar');
+        var reintento = document.getElementById('ciclo-sap-reintentar');
         var sel = document.getElementById('ciclo-sap-empresa');
         if (go) go.addEventListener('click', empezarActualizacionSap);
         if (cancel) cancel.addEventListener('click', function () { CCAsig._sapParar = true; });
+        if (reintento) reintento.addEventListener('click', reintentarFallosSap);
         if (sel) sel.addEventListener('change', pintarMetaSap);
     }
 
@@ -366,6 +368,7 @@
         var sel = document.getElementById('ciclo-sap-empresa');
         var fallos = document.getElementById('ciclo-sap-fallos');
         if (fallos) fallos.innerHTML = '';
+        habilitarReintentosSap(false);
         pintarProgresoSap(0, 1, '');
         if (sel) {
             var html = '<option value="">Seleccionar empresa</option>';
@@ -400,6 +403,8 @@
         var list = document.getElementById('ciclo-sap-fallos');
         if (!list) return;
         var li = document.createElement('li');
+        li.setAttribute('data-empresa', c.empresa || '');
+        li.setAttribute('data-cc', c.cc || '');
         var span = document.createElement('span');
         var btn = document.createElement('button');
         span.textContent = c.cc + (texto ? ' — ' + texto : '');
@@ -419,6 +424,42 @@
         document.querySelectorAll('#ciclo-sap-fallos .cc-sap-reintento').forEach(function (btn) {
             btn.disabled = !on;
         });
+        var todos = document.getElementById('ciclo-sap-reintentar');
+        var n = document.querySelectorAll('#ciclo-sap-fallos li').length;
+        if (todos) {
+            todos.hidden = n < 1;
+            todos.disabled = !on || n < 1;
+        }
+    }
+
+    function cerrarIntentoSap(c, li, span, pack) {
+        var estado = pack && pack.json && pack.json.estado;
+        if (pack && pack.ok && gastoListo(estado)) {
+            if (statsSap().fallidos > 0) statsSap().fallidos -= 1;
+            if (estado === 'registrado') statsSap().registrados += 1;
+            else if (estado === 'actualizado') statsSap().actualizados += 1;
+            else statsSap().sinCambio += 1;
+            pintarContadoresSap();
+            if (li && li.parentNode) li.remove();
+            return true;
+        }
+        if (span) span.textContent = c.cc + ' — ' + ((pack && pack.json && (pack.json.mensaje || pack.json.message)) || 'No se pudo guardar');
+        return false;
+    }
+
+    function avisarSiNoQuedanFallos() {
+        if (document.querySelector('#ciclo-sap-fallos li')) return false;
+        pintarProgresoSap(1, 1, 'Listo.');
+        habilitarReintentosSap(false);
+        var aviso = window.Swal
+            ? Swal.fire({
+                icon: 'success',
+                title: 'Gasto actualizado',
+                text: 'Los centros que faltaban ya quedaron guardados.'
+            })
+            : Promise.resolve();
+        aviso.then(function () { window.location.reload(); });
+        return true;
     }
 
     function correrCentroSap(c, year, corrida, onTexto) {
@@ -502,35 +543,15 @@
             pintarProgresoSap(0, 1, texto);
             span.textContent = c.cc + ' — ' + texto;
         }).then(function (pack) {
-            var estado = pack && pack.json && pack.json.estado;
             CCAsig._sapCorriendo = false;
             CCAsig._sapParar = false;
             marcarControlesSap(false);
-            if (pack && pack.ok && gastoListo(estado)) {
-                if (statsSap().fallidos > 0) statsSap().fallidos -= 1;
-                if (estado === 'registrado') statsSap().registrados += 1;
-                else if (estado === 'actualizado') statsSap().actualizados += 1;
-                else statsSap().sinCambio += 1;
-                pintarContadoresSap();
-                li.remove();
-                if (!document.querySelector('#ciclo-sap-fallos li')) {
-                    pintarProgresoSap(1, 1, 'Listo.');
-                    var aviso = window.Swal
-                        ? Swal.fire({
-                            icon: 'success',
-                            title: 'Gasto actualizado',
-                            text: 'Los centros que faltaban ya quedaron guardados.'
-                        })
-                        : Promise.resolve();
-                    aviso.then(function () { window.location.reload(); });
-                    return;
-                }
-                habilitarReintentosSap(true);
-                pintarProgresoSap(1, 1, c.cc + ' quedó guardado.');
-                return;
-            }
-            span.textContent = c.cc + ' — ' + ((pack && pack.json && (pack.json.mensaje || pack.json.message)) || 'No se pudo guardar');
+            cerrarIntentoSap(c, li, span, pack);
+            if (avisarSiNoQuedanFallos()) return;
             habilitarReintentosSap(true);
+            if (pack && pack.ok && gastoListo(pack.json && pack.json.estado)) {
+                pintarProgresoSap(1, 1, c.cc + ' quedó guardado.');
+            }
         }).catch(function (err) {
             CCAsig._sapCorriendo = false;
             CCAsig._sapParar = false;
@@ -538,6 +559,65 @@
             habilitarReintentosSap(true);
             span.textContent = c.cc + ' — ' + ((err && err.message === 'pausa') ? 'pausado' : 'Se cortó antes de guardar el archivo');
         });
+    }
+
+    function reintentarFallosSap() {
+        if (CCAsig._sapCorriendo) return;
+        var year = anioGastoPagina();
+        var items = Array.prototype.slice.call(document.querySelectorAll('#ciclo-sap-fallos li'));
+        if (!year || !items.length) return;
+        CCAsig._sapCorriendo = true;
+        CCAsig._sapParar = false;
+        marcarControlesSap(true);
+        habilitarReintentosSap(false);
+        var i = 0;
+        function paso() {
+            var pausado = !!CCAsig._sapParar;
+            if (pausado || i >= items.length) {
+                CCAsig._sapCorriendo = false;
+                CCAsig._sapParar = false;
+                marcarControlesSap(false);
+                if (avisarSiNoQuedanFallos()) return;
+                habilitarReintentosSap(true);
+                pintarProgresoSap(i, items.length, pausado ? 'Reintento pausado.' : 'Listo.');
+                return;
+            }
+            var li = items[i];
+            if (!li.parentNode) {
+                i += 1;
+                paso();
+                return;
+            }
+            var c = {
+                empresa: li.getAttribute('data-empresa') || '',
+                cc: li.getAttribute('data-cc') || ''
+            };
+            var span = li.querySelector('span');
+            if (span) span.textContent = c.cc + ' — actualizando…';
+            pintarProgresoSap(i, items.length, 'Reintentando ' + c.cc + ' (' + (i + 1) + ' de ' + items.length + ')…');
+            correrCentroSap(c, year, 'f' + Date.now().toString(36) + i, function (texto) {
+                pintarProgresoSap(i, items.length, texto + ' (' + (i + 1) + ' de ' + items.length + ')');
+                if (span) span.textContent = c.cc + ' — ' + texto;
+            }).then(function (pack) {
+                cerrarIntentoSap(c, li, span, pack);
+                i += 1;
+                paso();
+            }).catch(function (err) {
+                if (err && err.message === 'pausa') {
+                    if (span) span.textContent = c.cc + ' — pausado';
+                    CCAsig._sapCorriendo = false;
+                    CCAsig._sapParar = false;
+                    marcarControlesSap(false);
+                    habilitarReintentosSap(true);
+                    pintarProgresoSap(i, items.length, 'Reintento pausado.');
+                    return;
+                }
+                if (span) span.textContent = c.cc + ' — Se cortó antes de guardar el archivo';
+                i += 1;
+                paso();
+            });
+        }
+        paso();
     }
 
     function cicloCodigoPagina() {
@@ -587,6 +667,7 @@
         pintarContadoresSap();
         var fallos = document.getElementById('ciclo-sap-fallos');
         if (fallos) fallos.innerHTML = '';
+        habilitarReintentosSap(false);
         marcarControlesSap(true);
         var corrida = 'c' + Date.now().toString(36);
         var i = 0;

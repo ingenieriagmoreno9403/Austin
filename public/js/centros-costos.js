@@ -4522,6 +4522,10 @@
             }
             var buscarBtn = document.getElementById('an-buscar');
             if (buscarBtn) buscarBtn.addEventListener('click', buscarAnalisis);
+            var refrescarBtn = document.getElementById('an-refrescar');
+            if (refrescarBtn) refrescarBtn.addEventListener('click', refrescarAnalisis);
+            var limpiarBtn = document.getElementById('an-limpiar');
+            if (limpiarBtn) limpiarBtn.addEventListener('click', limpiarFiltrosAnalisis);
             var cancelBtn = document.getElementById('an-cancelar');
             if (cancelBtn) cancelBtn.addEventListener('click', cancelarAnalisis);
             var sapBtn = document.getElementById('an-sap');
@@ -4694,11 +4698,20 @@
             : '<i class="fa-solid fa-magnifying-glass"></i> Buscar';
     }
 
+    function etiquetaSap(btn, texto) {
+        if (!btn) return;
+        btn.innerHTML = '<i class="fa-solid fa-rotate"></i> ' + (texto || 'Actualizar de SAP');
+    }
+
     function controlesAnalisis(buscando) {
         var buscar = document.getElementById('an-buscar');
+        var refrescar = document.getElementById('an-refrescar');
+        var limpiar = document.getElementById('an-limpiar');
         var cancelar = document.getElementById('an-cancelar');
         var sap = document.getElementById('an-sap');
         if (buscar) buscar.disabled = !!buscando;
+        if (refrescar) refrescar.disabled = !!buscando;
+        if (limpiar) limpiar.disabled = !!buscando;
         if (sap) sap.disabled = !!buscando;
         if (cancelar) cancelar.disabled = !buscando;
     }
@@ -4732,6 +4745,40 @@
         queueAnalisisGastos();
     }
 
+    function refrescarAnalisis() {
+        buscarAnalisis();
+    }
+
+    function setAnalisisSelect(el, value) {
+        if (!el) return;
+        el.value = value;
+        if (window.jQuery && jQuery.fn && jQuery.fn.select2 && jQuery(el).hasClass('select2-hidden-accessible')) {
+            jQuery(el).val(value).trigger('change.select2');
+        }
+    }
+
+    function limpiarFiltrosAnalisis() {
+        if (CC._anCargandoSap) return;
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        if (CC._anBuscarAbort) {
+            try { CC._anBuscarAbort.abort(); } catch (e) {}
+            CC._anBuscarAbort = null;
+        }
+        hideAnalisisBusy();
+        controlesAnalisis(false);
+        etiquetaBuscar(document.getElementById('an-buscar'), '');
+        CC._anFillingFilters = true;
+        setAnalisisSelect(document.getElementById('an-empresa'), '');
+        setAnalisisSelect(document.getElementById('an-centro'), '');
+        setAnalisisSelect(document.getElementById('an-user'), '');
+        CC._anFillingFilters = false;
+        CC._anVistaConfirmada = false;
+        var status = document.getElementById('an-sap-status');
+        if (status) status.textContent = '';
+        fillAnalisisFilters();
+        renderAnalisis();
+    }
+
     function cancelarAnalisis() {
         CC._anGastoGen = (CC._anGastoGen || 0) + 1;
         CC._anSapParar = true;
@@ -4743,8 +4790,7 @@
         hideAnalisisBusy();
         controlesAnalisis(false);
         etiquetaBuscar(document.getElementById('an-buscar'), '');
-        var sap = document.getElementById('an-sap');
-        if (sap) sap.textContent = 'Actualizar de SAP';
+        etiquetaSap(document.getElementById('an-sap'));
         var status = document.getElementById('an-sap-status');
         if (status) status.textContent = 'Búsqueda en pausa.';
     }
@@ -4762,12 +4808,12 @@
         CC._anCargandoSap = true;
         CC._anSapParar = false;
         controlesAnalisis(true);
-        if (sap) sap.textContent = 'Actualizando…';
+        etiquetaSap(sap, 'Actualizando…');
         var i = 0;
         function terminar(msg) {
             CC._anCargandoSap = false;
             controlesAnalisis(false);
-            if (sap) sap.textContent = 'Actualizar de SAP';
+            etiquetaSap(sap);
             if (status && msg) status.textContent = msg;
             if (CC._anVistaConfirmada) {
                 limpiarCacheGasto(centrosObjetivoAnalisis());

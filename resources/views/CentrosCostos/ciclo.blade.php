@@ -214,6 +214,9 @@
             </div>
             <div class="cc-modal-actions">
                 <button type="button" class="cc-btn" id="ciclo-sap-cancelar" disabled>Cancelar</button>
+                <button type="button" class="cc-btn" id="ciclo-sap-reintentar" hidden>
+                    <i class="fa-solid fa-rotate"></i> Reintentar las que fallaron
+                </button>
                 <button type="button" class="cc-btn cc-btn-ink" id="ciclo-sap-go" disabled>
                     <i class="fa-solid fa-rotate"></i> Actualizar esta empresa
                 </button>

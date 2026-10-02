@@ -484,9 +484,6 @@
     letter-spacing: 0;
     font-size: 0.84rem;
 }
-.cc-filters-buscar .cc-filter-go #an-sap {
-    margin-left: 0.35rem;
-}
 .cc-filters-buscar .cc-filter-note {
     grid-column: 1 / -1;
     margin: 0;
