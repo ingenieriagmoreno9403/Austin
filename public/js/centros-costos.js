@@ -896,6 +896,7 @@
             CC._ctlLocalCargando = false;
             centros.forEach(function (c) { marcarGastoInflight(c, -1); });
             pintarGastoLocalControl();
+            if (CC.state.page === 'detalle') maybeHideDetalleBusy();
         }).catch(function () {
             CC._ctlLocalCargando = false;
             CC._ctlLocalFirma = '';
@@ -908,6 +909,7 @@
             if (CC.state.page === 'detalle') {
                 renderDetalleTable();
                 renderDetalleChart();
+                maybeHideDetalleBusy();
             }
         });
     }
@@ -2797,6 +2799,7 @@
     };
 
     CC.initDetalle = function () {
+        if (!control.centro) showDetalleBusy();
         if (!CC._asigLoaded) {
             fetch('/CentrosCostos/api/mis-asignaciones', {
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -2838,14 +2841,46 @@
         control.scopeTabla = 'centro';
         control.chartVerTodas = false;
         bindScopeToggles();
+        CC._detalleLoads = (CC._detalleLoads || 0) + 1;
+        var token = CC._detalleLoads;
         loadOverlaysForCycle().then(function () {
-            loadControlCentro();
-            paintDetalleHeader();
-            renderDetalleTable();
-            renderDetalleChart();
-            paintScopeHints();
-        });
+            try {
+                loadControlCentro();
+                paintDetalleHeader();
+                renderDetalleTable();
+                renderDetalleChart();
+                paintScopeHints();
+            } finally {
+                endDetalleLoad(token);
+            }
+        }, function () { endDetalleLoad(token); });
     };
+
+    function showDetalleBusy() {
+        var stage = document.getElementById('cc-detalle-stage');
+        if (stage) stage.classList.remove('is-ready');
+        var busy = document.getElementById('det-busy');
+        if (busy) busy.setAttribute('aria-hidden', 'false');
+    }
+
+    function hideDetalleBusy() {
+        var stage = document.getElementById('cc-detalle-stage');
+        if (stage) stage.classList.add('is-ready');
+        var busy = document.getElementById('det-busy');
+        if (busy) busy.setAttribute('aria-hidden', 'true');
+    }
+
+    function endDetalleLoad(token) {
+        if (token !== CC._detalleLoads) return;
+        maybeHideDetalleBusy();
+    }
+
+    function maybeHideDetalleBusy() {
+        if (!document.getElementById('cc-detalle-stage')) return;
+        if (CC._sapRefreshPending && !control.centro) return;
+        if (control.centro && (gastoInflight(control.centro) || (CC._ctlLocalCargando && !gastoCentroListo(control.centro)))) return;
+        hideDetalleBusy();
+    }
 
     function bindDetalleCurrency() {
         var mon = document.getElementById('ctl-moneda');
@@ -5315,6 +5350,41 @@
             }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin coincidencias</div></td></tr>';
         }
 
+        var tf = document.getElementById('an-tfoot');
+        if (tf) {
+            if (!tableRows.length) {
+                tf.innerHTML = '';
+            } else {
+                var sumGasto = 0;
+                var sumPpto = 0;
+                var sumCap = 0;
+                var sumCtas = 0;
+                var gastoPend = false;
+                tableRows.forEach(function (c) {
+                    sumCap += Number(c.capturadas) || 0;
+                    sumCtas += Number(c.cuentas) || 0;
+                    sumPpto += Number(c.ppto) || 0;
+                    if (c.gastoListo) sumGasto += Number(c.gasto) || 0;
+                    else gastoPend = true;
+                });
+                var avTot = pct(sumCap, sumCtas);
+                var yoyTot = gastoPend ? null : deltaPct(sumPpto, sumGasto);
+                var nCentros = tableRows.length;
+                var gastoFoot = gastoPend
+                    ? (tableRows.some(function (c) { return c.gastoListo; }) ? (moneyVista(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm'))
+                    : moneyVista(sumGasto);
+                var deltaFoot = yoyTot == null ? htmlCargando('sm') : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
+                tf.innerHTML = '<tr>' +
+                    '<td colspan="4">Totales · ' + nCentros + (nCentros === 1 ? ' centro' : ' centros') + '</td>' +
+                    '<td><div class="d-flex justify-content-between"><span>' + sumCap + '/' + sumCtas + '</span><span>' + avTot + '%</span></div></td>' +
+                    '<td class="num">' + gastoFoot + '</td>' +
+                    '<td class="num">' + moneyVista(sumPpto) + '</td>' +
+                    '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + deltaFoot + '</td>' +
+                    '<td colspan="2"></td>' +
+                    '</tr>';
+            }
+        }
+
         var empKeys = Object.keys(byEmp);
         drawBar('chart-empresas', empKeys, [
             { label: 'Gasto ' + gYear + ' Ene–Sep', data: empKeys.map(function (e) { return byEmp[e].gasto; }), backgroundColor: '#0a0a0a' },
@@ -5589,10 +5659,15 @@
 
     function refreshSap(url) {
         if (!url) return;
+        if (CC.state.page === 'detalle') CC._sapRefreshPending = true;
         fetch(url + '?per_page=120', {
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (data) {
-            if (!data) return;
+            CC._sapRefreshPending = false;
+            if (!data) {
+                if (CC.state.page === 'detalle') maybeHideDetalleBusy();
+                return;
+            }
             var lock = CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis';
             if (!lock && !(data.centros || []).length) return;
             mergeSap(Object.assign({}, data, { sapOk: !!data.sapOk }), { lockCentros: lock });
@@ -5604,7 +5679,10 @@
             if (CC.state.page === 'control') CC.initControl();
             if (CC.state.page === 'detalle') CC.initDetalle();
             if (CC.state.page === 'analisis') CC.initAnalisis();
-        }).catch(function () { /* se queda el catálogo local */ });
+        }).catch(function () {
+            CC._sapRefreshPending = false;
+            if (CC.state.page === 'detalle') maybeHideDetalleBusy();
+        });
     }
 
     window.CC = CC;

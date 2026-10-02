@@ -3269,6 +3269,21 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     color: #fff;
     border-color: var(--cc-ink);
 }
+.cc-detalle-stage {
+    position: relative;
+    min-height: 320px;
+}
+.cc-detalle-stage > .cc-busy-overlay {
+    opacity: 1;
+    visibility: visible;
+    background: var(--cc-page);
+    z-index: 6;
+}
+.cc-detalle-stage.is-ready > .cc-busy-overlay {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
 .cc-detalle-facts {
     display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
