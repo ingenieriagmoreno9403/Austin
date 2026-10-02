@@ -30,7 +30,9 @@
     }
     .sap-badge.global { background: #fdf4ff; color: #a21caf; }
     .sap-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82rem; word-break: break-all; }
-    .sap-table-wrap { overflow-x: auto; max-height: 62vh; }
+    .sap-table-wrap { overflow: visible; }
+    .sap-panel .dt-buttons { display: flex; flex-wrap: wrap; gap: .35rem; }
+    .sap-panel .dt-buttons .btn { margin: 0; }
     .sap-table thead th {
         position: sticky; top: 0; background: #f8fafc; z-index: 1;
         font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; color: #64748b;
@@ -42,13 +44,6 @@
         padding: .2rem .55rem; font-size: .75rem; cursor: pointer;
     }
     .sap-copy:hover { background: #e2e8f0; }
-    .sap-search { position: relative; flex: 1 1 280px; min-width: 240px; max-width: 440px; }
-    .sap-search i {
-        position: absolute; left: .75rem; top: 50%; transform: translateY(-50%);
-        color: #94a3b8; pointer-events: none;
-    }
-    .sap-search input { padding-left: 2.15rem; }
-    mark.sap-hit { background: #fef08a; color: inherit; padding: 0 .12rem; border-radius: 3px; }
     .sap-totals {
         margin-top: .9rem; padding: .9rem 1rem; border-radius: 12px;
         background: #f8fafc; border: 1px solid rgba(17, 24, 39, .08);
@@ -403,14 +398,7 @@
                 <h5 class="mb-0" id="sapTitle">Resultados</h5>
                 <div class="sap-meta" id="sapMeta">Selecciona alcance y catálogo, luego consulta.</div>
             </div>
-            <div class="sap-search">
-                <i class="fas fa-search"></i>
-                <input type="search" id="sapSearch" class="form-control form-control-sm" placeholder="Buscar coincidencias en los resultados" autocomplete="off" disabled>
-            </div>
             <div class="d-flex gap-2">
-                <button type="button" class="btn btn-sm btn-outline-success" id="sapExcel" disabled title="Descarga en Excel todos los registros de esta consulta">
-                    <i class="fas fa-file-excel me-1"></i> Excel
-                </button>
                 <button type="button" class="btn btn-sm btn-outline-primary" id="sapPrev" disabled>Anterior</button>
                 <button type="button" class="btn btn-sm btn-outline-primary" id="sapNext" disabled>Siguiente</button>
             </div>
@@ -442,7 +430,6 @@
     let loadedRows = [];
     let loadedKeys = [];
     let tableJob = 0;
-    let excelJob = 0;
     let totalsJob = 0;
     let totalsAbort = null;
     let grand = null;
@@ -599,20 +586,10 @@
             .replace(/"/g, '&quot;');
     }
 
-    function fold(value) {
-        return String(value || '')
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '');
-    }
-
-    function highlight(value, query) {
-        const raw = value === null || value === undefined ? '' : String(value);
-        const safe = escapeHtml(raw);
-        const q = String(query || '').trim();
-        if (!q) return safe;
-        const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return safe.replace(new RegExp('(' + pattern + ')', 'ig'), '<mark class="sap-hit">$1</mark>');
+    function cellText(value) {
+        if (value === null || value === undefined) return '';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
     }
 
     function parseAmount(value) {
@@ -657,31 +634,64 @@
         return withDecimal > 0;
     }
 
-    function visibleRows() {
-        const query = fold(document.getElementById('sapSearch').value.trim());
-        if (!query) return loadedRows.slice();
-        return loadedRows.filter(function (row) {
-            return loadedKeys.some(function (key) {
-                return fold(row[key]).indexOf(query) !== -1;
-            });
+    function destroyResultsTable() {
+        const el = document.getElementById('sapTable');
+        if (!el || !window.jQuery || !jQuery.fn.DataTable || !jQuery.fn.DataTable.isDataTable(el)) return;
+        jQuery(el).DataTable().destroy();
+    }
+
+    function initResultsTable() {
+        if (!window.jQuery || !jQuery.fn.DataTable || !loadedRows.length) return;
+        const title = document.getElementById('sapTitle').textContent || 'Resultados';
+        const button = function (extend, icon, label, extra) {
+            return Object.assign({
+                extend: extend,
+                text: '<i class="' + icon + '"></i>',
+                titleAttr: label,
+                title: title,
+                className: 'btn btn-sm btn-outline-secondary'
+            }, extra || {});
+        };
+        jQuery('#sapTable').DataTable({
+            paging: false,
+            searching: true,
+            info: false,
+            ordering: true,
+            order: [],
+            scrollX: true,
+            scrollY: '55vh',
+            scrollCollapse: true,
+            autoWidth: false,
+            language: { url: 'https://cdn.datatables.net/plug-ins/1.13.7/i18n/es-ES.json' },
+            layout: {
+                topStart: {
+                    buttons: [
+                        button('copy', 'fa-regular fa-copy', 'Copiar'),
+                        button('excel', 'fa-regular fa-file-excel', 'Excel', { className: 'btn btn-sm btn-outline-success' }),
+                        button('csv', 'fa-solid fa-file-csv', 'CSV'),
+                        button('pdf', 'fa-regular fa-file-pdf', 'PDF', { orientation: 'landscape', pageSize: 'A3', className: 'btn btn-sm btn-outline-danger' }),
+                        button('print', 'fa-solid fa-print', 'Imprimir'),
+                        button('colvis', 'fa-solid fa-table-columns', 'Columnas', { title: undefined, className: 'btn btn-sm btn-outline-primary' })
+                    ]
+                },
+                topEnd: 'search'
+            }
         });
     }
 
-    function paintRows(rows, query) {
+    function paintRows() {
+        destroyResultsTable();
         const tbody = document.getElementById('sapTbody');
         if (!loadedRows.length) {
             tbody.innerHTML = '<tr><td class="text-muted py-4">Sin resultados.</td></tr>';
             return;
         }
-        if (!rows.length) {
-            tbody.innerHTML = '<tr><td class="text-muted py-4" colspan="' + loadedKeys.length + '">Sin coincidencias para «' + escapeHtml(query) + '».</td></tr>';
-            return;
-        }
-        tbody.innerHTML = rows.map(function (row) {
+        tbody.innerHTML = loadedRows.map(function (row) {
             return '<tr>' + loadedKeys.map(function (key) {
-                return '<td>' + highlight(row[key], query) + '</td>';
+                return '<td>' + escapeHtml(cellText(row[key])) + '</td>';
             }).join('') + '</tr>';
         }).join('');
+        initResultsTable();
     }
 
     function totalsChips(totals) {
@@ -797,12 +807,8 @@
         }
     }
 
-    function applyResultView() {
-        const query = document.getElementById('sapSearch').value.trim();
-        paintRows(visibleRows(), query);
-    }
-
     function renderTable(payload) {
+        destroyResultsTable();
         const thead = document.getElementById('sapThead');
         const data = Array.isArray(payload.data) ? payload.data : [];
         const meta = payload.meta || {};
@@ -828,21 +834,17 @@
         document.getElementById('sapPrev').disabled = !meta.current_page || meta.current_page <= 1;
         document.getElementById('sapNext').disabled = !meta.last_page || meta.current_page >= meta.last_page;
 
-        const search = document.getElementById('sapSearch');
-        search.value = '';
-        search.disabled = data.length === 0;
-        document.getElementById('sapExcel').disabled = data.length === 0;
         loadedRows = data;
         loadedKeys = data.length ? Object.keys(data[0]) : [];
 
         if (!data.length) {
             thead.innerHTML = '';
-            applyResultView();
+            paintRows();
             return;
         }
 
         thead.innerHTML = loadedKeys.map(function (k) { return '<th>' + escapeHtml(k) + '</th>'; }).join('');
-        applyResultView();
+        paintRows();
     }
 
     async function fetchJson(url, signal) {
@@ -865,10 +867,6 @@
     async function loadData(options) {
         const refreshTotals = !options || options.refreshTotals !== false;
         const job = ++tableJob;
-        excelJob += 1;
-        const excelBtn = document.getElementById('sapExcel');
-        excelBtn.disabled = true;
-        excelBtn.innerHTML = '<i class="fas fa-file-excel me-1"></i> Excel';
         const built = buildRequest();
         const sumasUrl = refreshTotals ? buildSumasUrl() : '';
         const btn = document.getElementById('sapBtnLoad');
@@ -891,9 +889,7 @@
             if (job !== tableJob) return;
             loadedRows = [];
             loadedKeys = [];
-            document.getElementById('sapSearch').value = '';
-            document.getElementById('sapSearch').disabled = true;
-            document.getElementById('sapExcel').disabled = true;
+            destroyResultsTable();
             if (refreshTotals) {
                 if (totalsAbort) totalsAbort.abort();
                 grand = null;
@@ -912,345 +908,6 @@
         }
     }
 
-    function xmlEscape(value) {
-        return String(value)
-            .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    }
-
-    function sheetName() {
-        const resource = document.getElementById('sapResource').value || 'Resultados';
-        return resource.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31) || 'Resultados';
-    }
-
-    function colName(index) {
-        let n = index + 1;
-        let name = '';
-        while (n > 0) {
-            const rem = (n - 1) % 26;
-            name = String.fromCharCode(65 + rem) + name;
-            n = Math.floor((n - 1) / 26);
-        }
-        return name;
-    }
-
-    function cellXml(value, ref, header) {
-        const style = header ? ' s="1"' : '';
-        if (!header && value !== null && value !== undefined && value !== '' && typeof value !== 'object') {
-            const compact = String(value).trim().replace(/,/g, '');
-            if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(compact)) {
-                return '<c r="' + ref + '"' + style + '><v>' + compact + '</v></c>';
-            }
-        }
-        let text = '';
-        if (value !== null && value !== undefined && value !== '') {
-            text = typeof value === 'object' ? JSON.stringify(value) : String(value);
-        }
-        const preserve = /^\s|\s$/.test(text) ? ' xml:space="preserve"' : '';
-        return '<c r="' + ref + '"' + style + ' t="inlineStr"><is><t' + preserve + '>' + xmlEscape(text) + '</t></is></c>';
-    }
-
-    function worksheetXml(keys, rows) {
-        const lines = [];
-        lines.push('<row r="1">' + keys.map(function (key, index) {
-            return cellXml(key, colName(index) + '1', true);
-        }).join('') + '</row>');
-        rows.forEach(function (row, rowIndex) {
-            const excelRow = rowIndex + 2;
-            lines.push('<row r="' + excelRow + '">' + keys.map(function (key, index) {
-                return cellXml(row[key], colName(index) + excelRow, false);
-            }).join('') + '</row>');
-        });
-        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
-            + lines.join('')
-            + '</sheetData></worksheet>';
-    }
-
-    const CRC_TABLE = (function () {
-        const table = new Uint32Array(256);
-        for (let n = 0; n < 256; n++) {
-            let c = n;
-            for (let k = 0; k < 8; k++) {
-                c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-            }
-            table[n] = c >>> 0;
-        }
-        return table;
-    })();
-
-    function crc32(bytes) {
-        let crc = 0xFFFFFFFF;
-        for (let i = 0; i < bytes.length; i++) {
-            crc = CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
-        }
-        return (crc ^ 0xFFFFFFFF) >>> 0;
-    }
-
-    function u16(n) {
-        return new Uint8Array([n & 255, (n >> 8) & 255]);
-    }
-
-    function u32(n) {
-        n = n >>> 0;
-        return new Uint8Array([n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255]);
-    }
-
-    function concatBytes(parts) {
-        let length = 0;
-        parts.forEach(function (part) { length += part.length; });
-        const out = new Uint8Array(length);
-        let offset = 0;
-        parts.forEach(function (part) {
-            out.set(part, offset);
-            offset += part.length;
-        });
-        return out;
-    }
-
-    function zipStore(files) {
-        const now = new Date();
-        const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
-        const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
-        const encoder = new TextEncoder();
-        const locals = [];
-        const centrals = [];
-        let offset = 0;
-
-        files.forEach(function (file) {
-            const name = encoder.encode(file.name);
-            const data = encoder.encode(file.data);
-            const crc = crc32(data);
-            const local = concatBytes([
-                u32(0x04034b50), u16(20), u16(0), u16(0),
-                u16(dosTime), u16(dosDate), u32(crc),
-                u32(data.length), u32(data.length),
-                u16(name.length), u16(0), name, data
-            ]);
-            locals.push(local);
-            centrals.push(concatBytes([
-                u32(0x02014b50), u16(20), u16(20), u16(0), u16(0),
-                u16(dosTime), u16(dosDate), u32(crc),
-                u32(data.length), u32(data.length),
-                u16(name.length), u16(0), u16(0), u16(0), u16(0),
-                u32(0), u32(offset), name
-            ]));
-            offset += local.length;
-        });
-
-        const central = concatBytes(centrals);
-        const end = concatBytes([
-            u32(0x06054b50), u16(0), u16(0),
-            u16(files.length), u16(files.length),
-            u32(central.length), u32(offset), u16(0)
-        ]);
-        return concatBytes(locals.concat([central, end]));
-    }
-
-    function buildWorkbook(keys, rows) {
-        const name = xmlEscape(sheetName());
-        const files = [
-            {
-                name: '[Content_Types].xml',
-                data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                    + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                    + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-                    + '<Default Extension="xml" ContentType="application/xml"/>'
-                    + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-                    + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-                    + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
-                    + '</Types>'
-            },
-            {
-                name: '_rels/.rels',
-                data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                    + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
-                    + '</Relationships>'
-            },
-            {
-                name: 'xl/workbook.xml',
-                data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                    + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-                    + '<sheets><sheet name="' + name + '" sheetId="1" r:id="rId1"/></sheets></workbook>'
-            },
-            {
-                name: 'xl/_rels/workbook.xml.rels',
-                data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                    + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
-                    + '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
-                    + '</Relationships>'
-            },
-            {
-                name: 'xl/styles.xml',
-                data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                    + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-                    + '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>'
-                    + '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
-                    + '<fill><patternFill patternType="solid"><fgColor rgb="FF111827"/></patternFill></fill></fills>'
-                    + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
-                    + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-                    + '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
-                    + '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs>'
-                    + '</styleSheet>'
-            },
-            { name: 'xl/worksheets/sheet1.xml', data: worksheetXml(keys, rows) }
-        ];
-        const bytes = zipStore(files);
-        return new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    }
-
-    function downloadBlob(filename, blob) {
-        const link = document.createElement('a');
-        const url = URL.createObjectURL(blob);
-        link.href = url;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
-    }
-
-    function excelFilename() {
-        const scope = document.getElementById('sapScope').value || 'catalogo';
-        const resource = document.getElementById('sapResource').value || 'resultados';
-        const now = new Date();
-        const pad = function (n) { return String(n).padStart(2, '0'); };
-        const stamp = now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate());
-        return 'autin-' + scope + '-' + resource + '-' + stamp + '.xlsx';
-    }
-
-    function rowKeys(rows) {
-        const keys = [];
-        const seen = {};
-        rows.forEach(function (row) {
-            if (!row || typeof row !== 'object') return;
-            Object.keys(row).forEach(function (key) {
-                if (!seen[key]) {
-                    seen[key] = true;
-                    keys.push(key);
-                }
-            });
-        });
-        return keys;
-    }
-
-    async function fetchPage(page, perPage) {
-        let lastError = null;
-        for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-                return await fetchJson(buildRequest(page, perPage));
-            } catch (err) {
-                lastError = err;
-            }
-        }
-        throw lastError || new Error('No se pudo leer la página ' + page);
-    }
-
-    async function mapPool(items, limit, worker) {
-        const results = new Array(items.length);
-        let cursor = 0;
-        async function run() {
-            while (cursor < items.length) {
-                const index = cursor;
-                cursor += 1;
-                results[index] = await worker(items[index], index);
-            }
-        }
-        const workers = [];
-        const size = Math.min(limit, items.length);
-        for (let i = 0; i < size; i++) workers.push(run());
-        await Promise.all(workers);
-        return results;
-    }
-
-    async function fetchAllRows(onProgress) {
-        const maxRows = 65000;
-        let perPage = 200;
-        let first;
-        try {
-            first = await fetchPage(1, perPage);
-        } catch (err) {
-            perPage = 80;
-            first = await fetchPage(1, perPage);
-        }
-
-        const firstRows = Array.isArray(first.data) ? first.data : [];
-        const meta = first.meta || {};
-        let last = parseInt(meta.last_page || 1, 10);
-        if (!last || last < 1) last = 1;
-        const total = meta.total != null ? meta.total : firstRows.length;
-        const maxPages = Math.max(1, Math.ceil(maxRows / perPage));
-        const capped = last > maxPages;
-        if (capped) last = maxPages;
-
-        const pages = [];
-        for (let page = 2; page <= last; page++) pages.push(page);
-        let done = 1;
-        onProgress(done, last);
-
-        const chunks = await mapPool(pages, 3, async function (page) {
-            const json = await fetchPage(page, perPage);
-            done += 1;
-            onProgress(done, last);
-            return Array.isArray(json.data) ? json.data : [];
-        });
-
-        const rows = firstRows.slice();
-        chunks.forEach(function (chunk) {
-            chunk.forEach(function (row) {
-                if (row && typeof row === 'object') rows.push(row);
-            });
-        });
-
-        return {
-            rows: rows.slice(0, maxRows),
-            total: total,
-            truncated: capped || (total > rows.length && last >= maxPages)
-        };
-    }
-
-    async function downloadExcel() {
-        const btn = document.getElementById('sapExcel');
-        if (btn.disabled) return;
-        const job = ++excelJob;
-        const label = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Preparando…';
-
-        try {
-            const packed = await fetchAllRows(function (done, last) {
-                if (job !== excelJob) return;
-                btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> ' + done + '/' + last;
-            });
-            if (job !== excelJob) return;
-            if (!packed.rows.length) {
-                alert('No hay registros para descargar.');
-                return;
-            }
-            const keys = rowKeys(packed.rows);
-            downloadBlob(excelFilename(), buildWorkbook(keys, packed.rows));
-            if (packed.truncated) {
-                alert('El archivo incluye ' + formatCount(packed.rows.length) + ' de ' + formatCount(packed.total) + ' registros. Acota los filtros para descargar el resto.');
-            }
-        } catch (err) {
-            if (job !== excelJob) return;
-            alert(err.message || 'No se pudo generar el Excel');
-        } finally {
-            if (job === excelJob) {
-                btn.disabled = loadedRows.length === 0;
-                btn.innerHTML = label;
-            }
-        }
-    }
-
-    document.getElementById('sapExcel').addEventListener('click', downloadExcel);
-
-    document.getElementById('sapSearch').addEventListener('input', applyResultView);
 
     document.getElementById('sapFilterForm').addEventListener('submit', function (e) {
         e.preventDefault();

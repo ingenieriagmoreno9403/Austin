@@ -316,12 +316,18 @@
                         </li>
                     @else
                         <li class="sidebar-item">
+                            <?php
+                                $partesNombreMenu = preg_split('/\s+/u', trim((string) Auth::user()->name), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+                                $inicialesMenu = mb_strtoupper(
+                                    mb_substr($partesNombreMenu[0] ?? '?', 0, 1, 'UTF-8')
+                                    . (count($partesNombreMenu) > 1
+                                        ? mb_substr($partesNombreMenu[count($partesNombreMenu) - 1], 0, 1, 'UTF-8')
+                                        : ''),
+                                    'UTF-8'
+                                );
+                            ?>
                             <a href="#" class="sidebar-link sidebar-link--profile">
-                                @if(file_exists(public_path('Images/Perfil/' . Auth::user()->nombre_foto)) && Auth::user()->nombre_foto)
-                                    <img src="{{ asset('Images/Perfil/' . Auth::user()->nombre_foto) }}" alt="">
-                                @else
-                                    <img src="{{ asset('Images/Perfil/0.png') }}" alt="">
-                                @endif
+                                <span class="sidebar-avatar" aria-hidden="true">{{ $inicialesMenu }}</span>
                                 <span>{{ Auth::user()->name }}</span>
                             </a>
                         </li>

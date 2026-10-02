@@ -1076,6 +1076,322 @@ class CentrosCostosController extends Controller
         ]);
     }
 
+    public function sincronizarGastoCentro(Request $request): JsonResponse
+    {
+        @ignore_user_abort(true);
+        @set_time_limit(0);
+        $pedido = $this->pedidoGastoCentro($request);
+        if ($pedido instanceof JsonResponse) {
+            return $pedido;
+        }
+        [$empresa, $cc, $year, $corrida] = $pedido;
+
+        $snap = app(CcGastoRealSnapshot::class);
+        if (! $snap->disponible()) {
+            return response()->json(['ok' => false, 'estado' => 'fallo', 'mensaje' => 'La copia local no está disponible.'], 200);
+        }
+
+        if ($request->boolean('desde_json')) {
+            return $this->insertarGastoCentroDesdeJson($empresa, $year, $cc, $corrida, $snap);
+        }
+
+        $this->escribirEstadoJsonGasto($empresa, $year, $cc, [
+            'corrida' => $corrida,
+            'listo' => false,
+            'insertado' => false,
+            'estado' => 'descargando',
+            'cuentas' => 0,
+            'mensaje' => null,
+        ]);
+
+        try {
+            $remoto = $this->mapaGastoPorCentros($empresa, $year, [$cc], true);
+        } catch (Throwable $e) {
+            return $this->recuperarGastoCentroDesdeJson($empresa, $year, $cc, $corrida, $snap, 'SAP no respondió para este centro.');
+        }
+
+        $mapa = is_array($remoto['mapa'] ?? null) ? $remoto['mapa'] : [];
+        if (! isset($mapa[$cc]) || empty($remoto['ok'])) {
+            return $this->recuperarGastoCentroDesdeJson($empresa, $year, $cc, $corrida, $snap, 'SAP no devolvió este centro.');
+        }
+
+        $filas = $this->filasGastoSapDesdeRegistros(is_array($remoto['rows'] ?? null) ? $remoto['rows'] : [], $empresa, $year);
+        if (! $this->guardarJsonGastoCentro($empresa, $year, $cc, [$cc => $mapa[$cc]], $filas, $corrida)) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'mensaje' => 'No se pudo escribir el archivo de este centro.',
+            ], 200);
+        }
+
+        return $this->insertarGastoCentroDesdeJson($empresa, $year, $cc, $corrida, $snap);
+    }
+
+    public function estadoJsonGastoCentro(Request $request): JsonResponse
+    {
+        $pedido = $this->pedidoGastoCentro($request);
+        if ($pedido instanceof JsonResponse) {
+            return $pedido;
+        }
+        [$empresa, $cc, $year] = $pedido;
+        $estado = $this->leerEstadoJsonGasto($empresa, $year, $cc);
+
+        return response()->json(array_merge([
+            'ok' => true,
+            'empresa' => $empresa,
+            'cc' => $cc,
+            'year' => $year,
+            'corrida' => '',
+            'listo' => false,
+            'insertado' => false,
+            'estado' => '',
+            'cuentas' => 0,
+            'mensaje' => null,
+        ], $estado));
+    }
+
+    /**
+     * @return array{0: string, 1: string, 2: int, 3: string}|JsonResponse
+     */
+    protected function pedidoGastoCentro(Request $request)
+    {
+        $empresa = strtoupper(trim((string) $request->input('empresa', '')));
+        $cc = strtoupper(trim((string) $request->input('cc', '')));
+        $year = (int) $request->input('year', $request->input('anio', 0));
+        $corrida = preg_replace('/[^A-Za-z0-9_-]/', '', (string) $request->input('corrida', ''));
+        $alias = ['ABSA' => 'AUSTIN'];
+        if (isset($alias[$empresa])) {
+            $empresa = $alias[$empresa];
+        }
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+        if ($empresa === '' || $cc === '' || $cc === 'SIN_CC' || $cc === 'EMPRESA') {
+            return response()->json(['ok' => false, 'estado' => 'fallo', 'mensaje' => 'Falta la empresa o el centro.'], 422);
+        }
+        if (! preg_match('/^[A-Z0-9._-]{1,40}$/', $empresa) || ! preg_match('/^[A-Z0-9._-]{1,40}$/', $cc)) {
+            return response()->json(['ok' => false, 'estado' => 'fallo', 'mensaje' => 'La empresa o el centro no se pueden guardar en archivo.'], 422);
+        }
+
+        return [$empresa, $cc, $year, $corrida];
+    }
+
+    protected function carpetaJsonGasto(string $empresa, int $year): string
+    {
+        $dir = storage_path('app/cc-gasto-sap/'.$empresa.'/'.$year);
+        if (! is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        return $dir;
+    }
+
+    protected function rutaJsonGastoCentro(string $empresa, int $year, string $cc, bool $estado = false): string
+    {
+        return $this->carpetaJsonGasto($empresa, $year).'/'.$cc.($estado ? '.estado.json' : '.json');
+    }
+
+    /**
+     * @param  array<string, mixed>  $estado
+     */
+    protected function escribirEstadoJsonGasto(string $empresa, int $year, string $cc, array $estado): void
+    {
+        $path = $this->rutaJsonGastoCentro($empresa, $year, $cc, true);
+        $estado['empresa'] = $empresa;
+        $estado['cc'] = $cc;
+        $estado['year'] = $year;
+        $estado['actualizado_en'] = now()->toIso8601String();
+        $json = json_encode($estado, JSON_UNESCAPED_UNICODE);
+        if ($json !== false) {
+            @file_put_contents($path, $json, LOCK_EX);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function leerEstadoJsonGasto(string $empresa, int $year, string $cc): array
+    {
+        $path = $this->rutaJsonGastoCentro($empresa, $year, $cc, true);
+        if (! is_file($path)) {
+            return [];
+        }
+        $data = json_decode((string) @file_get_contents($path), true);
+
+        return is_array($data) ? $data : [];
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $mapa
+     * @param  array<int, array<string, mixed>>  $filas
+     */
+    protected function guardarJsonGastoCentro(string $empresa, int $year, string $cc, array $mapa, array $filas, string $corrida): bool
+    {
+        $path = $this->rutaJsonGastoCentro($empresa, $year, $cc);
+        $json = json_encode([
+            'empresa' => $empresa,
+            'anio' => $year,
+            'cc' => $cc,
+            'corrida' => $corrida,
+            'mapa' => $mapa,
+            'filas' => $filas,
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            return false;
+        }
+        $tmp = $path.'.tmp';
+        if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
+            return false;
+        }
+        if (is_file($path)) {
+            @unlink($path);
+        }
+        if (! @rename($tmp, $path)) {
+            $ok = @file_put_contents($path, $json, LOCK_EX) !== false;
+            @unlink($tmp);
+            if (! $ok) {
+                return false;
+            }
+        }
+        $this->escribirEstadoJsonGasto($empresa, $year, $cc, [
+            'corrida' => $corrida,
+            'listo' => true,
+            'insertado' => false,
+            'estado' => 'archivo',
+            'cuentas' => 0,
+            'mensaje' => null,
+        ]);
+
+        return true;
+    }
+
+    protected function insertarGastoCentroDesdeJson(string $empresa, int $year, string $cc, string $corrida, CcGastoRealSnapshot $snap): JsonResponse
+    {
+        $estado = $this->leerEstadoJsonGasto($empresa, $year, $cc);
+        if ($corrida !== '' && (string) ($estado['corrida'] ?? '') !== $corrida) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'mensaje' => 'El archivo de este centro todavía no está listo.',
+            ], 200);
+        }
+        if (empty($estado['listo'])) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'mensaje' => 'Todavía no hay archivo de este centro.',
+            ], 200);
+        }
+        if (! empty($estado['insertado']) && in_array((string) ($estado['estado'] ?? ''), ['registrado', 'actualizado'], true)) {
+            return response()->json([
+                'ok' => true,
+                'estado' => (string) $estado['estado'],
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'year' => $year,
+                'cuentas' => (int) ($estado['cuentas'] ?? 0),
+                'origen' => 'json',
+                'mensaje' => null,
+            ]);
+        }
+
+        $path = $this->rutaJsonGastoCentro($empresa, $year, $cc);
+        $data = json_decode((string) @file_get_contents($path), true);
+        $mapa = is_array($data['mapa'] ?? null) ? $data['mapa'] : [];
+        $filas = is_array($data['filas'] ?? null) ? $data['filas'] : [];
+        if (! isset($mapa[$cc]) || ! is_array($mapa[$cc])) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'mensaje' => 'El archivo de este centro no se puede leer.',
+            ], 200);
+        }
+
+        $existia = DB::table('tbl_cc_gasto_real_cc')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->exists();
+        try {
+            $snap->fusionarCentro($empresa, $year, [$cc => $mapa[$cc]], $filas, auth()->id());
+        } catch (Throwable $e) {
+            $this->escribirEstadoJsonGasto($empresa, $year, $cc, [
+                'corrida' => $corrida !== '' ? $corrida : (string) ($estado['corrida'] ?? ''),
+                'listo' => true,
+                'insertado' => false,
+                'estado' => 'archivo',
+                'cuentas' => 0,
+                'mensaje' => 'No se pudo insertar desde el archivo.',
+            ]);
+
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'mensaje' => 'No se pudo insertar desde el archivo.',
+            ], 200);
+        }
+
+        $marca = $existia ? 'actualizado' : 'registrado';
+        $cuentas = (int) DB::table('tbl_cc_gasto_real_snap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->count();
+        $this->escribirEstadoJsonGasto($empresa, $year, $cc, [
+            'corrida' => $corrida !== '' ? $corrida : (string) ($estado['corrida'] ?? ''),
+            'listo' => true,
+            'insertado' => true,
+            'estado' => $marca,
+            'cuentas' => $cuentas,
+            'mensaje' => null,
+        ]);
+
+        return response()->json([
+            'ok' => true,
+            'estado' => $marca,
+            'empresa' => $empresa,
+            'cc' => $cc,
+            'year' => $year,
+            'cuentas' => $cuentas,
+            'origen' => 'json',
+            'mensaje' => null,
+        ]);
+    }
+
+    protected function recuperarGastoCentroDesdeJson(string $empresa, int $year, string $cc, string $corrida, CcGastoRealSnapshot $snap, string $mensaje): JsonResponse
+    {
+        $estado = $this->leerEstadoJsonGasto($empresa, $year, $cc);
+        if (! empty($estado['listo']) && (string) ($estado['corrida'] ?? '') === $corrida) {
+            return $this->insertarGastoCentroDesdeJson($empresa, $year, $cc, $corrida, $snap);
+        }
+        $this->escribirEstadoJsonGasto($empresa, $year, $cc, [
+            'corrida' => $corrida,
+            'listo' => false,
+            'insertado' => false,
+            'estado' => 'fallo',
+            'cuentas' => 0,
+            'mensaje' => $mensaje,
+        ]);
+
+        return response()->json([
+            'ok' => false,
+            'estado' => 'fallo',
+            'empresa' => $empresa,
+            'cc' => $cc,
+            'mensaje' => $mensaje,
+        ], 200);
+    }
+
     public function actualizarGastoCuenta(Request $request): JsonResponse
     {
         @set_time_limit(120);

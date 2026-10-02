@@ -58,13 +58,6 @@
                 </button>
             </div>
         </div>
-        <div class="cc-banner-sap" id="ciclo-sap-box" hidden>
-            <div class="cc-banner-sap-top">
-                <span id="ciclo-sap-label">Preparando…</span>
-                <span id="ciclo-sap-pct">0%</span>
-            </div>
-            <div class="cc-sap-progress" aria-hidden="true"><span id="ciclo-sap-bar"></span></div>
-        </div>
     </div>
 
     <div class="cc-kpis" id="asig-kpis">
@@ -177,6 +170,51 @@
                 </button>
             </div>
         </form>
+    </div>
+</div>
+
+<div class="modal fade cc-modal" id="modalCicloSap" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Actualizar gasto de SAP</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar" id="ciclo-sap-x"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted mb-3" style="font-size:.85rem">
+                    Elige una empresa. Cada centro se guarda en un archivo y de ahí se inserta. Si la conexión se corta, sigue con lo que ya quedó escrito.
+                </p>
+                <label class="cc-filter-field" for="ciclo-sap-empresa">Empresa
+                    <select id="ciclo-sap-empresa" class="cc-select" aria-label="Empresa a actualizar">
+                        <option value="">Seleccionar empresa</option>
+                    </select>
+                </label>
+                <p id="ciclo-sap-meta" class="text-muted" style="font-size:.8rem;margin:.75rem 0 1rem">Todavía no hay una empresa elegida.</p>
+                <div class="cc-sap-counts" aria-live="polite">
+                    <div>
+                        <strong id="ciclo-sap-reg">0</strong>
+                        <span>Registrados</span>
+                    </div>
+                    <div>
+                        <strong id="ciclo-sap-act">0</strong>
+                        <span>Actualizados</span>
+                    </div>
+                    <div>
+                        <strong id="ciclo-sap-fail">0</strong>
+                        <span>Fallaron</span>
+                    </div>
+                </div>
+                <div class="cc-progress" aria-hidden="true"><span id="ciclo-sap-bar"></span></div>
+                <p id="ciclo-sap-label" class="text-muted" style="font-size:.8rem;margin-top:.55rem"></p>
+                <ul id="ciclo-sap-fallos" class="cc-sap-fallos"></ul>
+            </div>
+            <div class="cc-modal-actions">
+                <button type="button" class="cc-btn" id="ciclo-sap-cancelar" disabled>Cancelar</button>
+                <button type="button" class="cc-btn cc-btn-ink" id="ciclo-sap-go" disabled>
+                    <i class="fa-solid fa-rotate"></i> Actualizar esta empresa
+                </button>
+            </div>
+        </div>
     </div>
 </div>
 @endsection
