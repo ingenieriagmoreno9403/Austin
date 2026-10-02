@@ -1005,7 +1005,11 @@ class CentrosCostosController extends Controller
         $porCentro = [];
         foreach ($grupos as $empresa => $lista) {
             try {
-                $mapa = $this->mapaGastoCopia($empresa, $year);
+                $ccs = [];
+                foreach ($lista as $item) {
+                    $ccs[] = (string) ($item['cc'] ?? '');
+                }
+                $mapa = $this->mapaGastoCopia($empresa, $year, $ccs);
             } catch (Throwable $e) {
                 $mapa = [];
             }
@@ -2466,7 +2470,7 @@ class CentrosCostosController extends Controller
      */
     protected function gastoRealDesdeCopia(string $empresa, string $cc, int $year, array $cuentas): ?array
     {
-        $mapa = $this->mapaGastoCopia($empresa, $year);
+        $mapa = $this->mapaGastoCopia($empresa, $year, [$cc]);
         $todo = $this->porCuentaDeIndiceEmpresa($mapa, $cc);
         if ($todo === []) {
             return null;
@@ -2565,13 +2569,15 @@ class CentrosCostosController extends Controller
      *
      * @return array<string, array<string, array<string, mixed>>>
      */
-    protected function mapaGastoCopia(string $empresa, int $year): array
+    protected function mapaGastoCopia(string $empresa, int $year, array $centros = []): array
     {
         $snap = app(CcGastoRealSnapshot::class);
         if (! $snap->disponible()) {
             return [];
         }
-        $mapa = $snap->mapa($empresa, $year);
+        $mapa = $centros === []
+            ? $snap->mapa($empresa, $year)
+            : $snap->mapaDeCentros($empresa, $year, $centros);
         if ($mapa !== [] || $snap->cubreEmpresa($empresa, $year)) {
             $this->gastoCopiaEmpresas[$empresa] = true;
         }

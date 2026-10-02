@@ -26,8 +26,6 @@
         </div>
     </div>
 
-    @include('CentrosCostos.partials.nav')
-
     <div class="cc-banner">
         <div>
             <strong>Ciclo para presupuestar</strong>

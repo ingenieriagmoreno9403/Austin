@@ -82,16 +82,44 @@ class CcGastoRealSnapshot
      */
     public function mapa(string $empresa, int $year): array
     {
+        return $this->mapaDeCentros($empresa, $year, null);
+    }
+
+    /**
+     * Gasto de unos centros. null lee la empresa completa.
+     * Usa el índice (empresa, anio, centro_codigo, cuenta_codigo).
+     *
+     * @param  array<int, string>|null  $centros
+     * @return array<string, array<string, array<string, mixed>>>
+     */
+    public function mapaDeCentros(string $empresa, int $year, ?array $centros): array
+    {
         if (! $this->disponible()) {
             return [];
         }
 
-        $porCc = [];
-        $rows = DB::table('tbl_cc_gasto_real_snap')
+        $q = DB::table('tbl_cc_gasto_real_snap')
             ->where('empresa', $empresa)
-            ->where('anio', $year)
-            ->get();
+            ->where('anio', $year);
 
+        if ($centros !== null) {
+            $codigos = $this->codigosCentroEnCopia($empresa, $year, $centros);
+            if ($codigos === []) {
+                return [];
+            }
+            $q->whereIn('centro_codigo', $codigos);
+        }
+
+        return $this->armarMapa($q->get());
+    }
+
+    /**
+     * @param  iterable<int, object>  $rows
+     * @return array<string, array<string, array<string, mixed>>>
+     */
+    protected function armarMapa($rows): array
+    {
+        $porCc = [];
         foreach ($rows as $row) {
             $cc = strtoupper(trim((string) $row->centro_codigo));
             $codigo = trim((string) $row->cuenta_codigo);
@@ -132,6 +160,58 @@ class CcGastoRealSnapshot
         }
 
         return $porCc + $extra;
+    }
+
+    /**
+     * Códigos tal como están guardados, incluyendo el que solo coincide sin ceros a la izquierda.
+     *
+     * @param  array<int, string>  $centros
+     * @return array<int, string>
+     */
+    protected function codigosCentroEnCopia(string $empresa, int $year, array $centros): array
+    {
+        $pedidos = [];
+        foreach ($centros as $cc) {
+            $cc = strtoupper(trim((string) $cc));
+            if ($cc !== '') {
+                $pedidos[$cc] = $cc;
+            }
+        }
+        if ($pedidos === []) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($this->centrosPresentes($empresa, $year) as $guardado) {
+            $guardado = strtoupper(trim($guardado));
+            if ($guardado === '') {
+                continue;
+            }
+            foreach ($pedidos as $pedido) {
+                if ($this->mismoCentro($guardado, $pedido)) {
+                    $out[$guardado] = $guardado;
+                    break;
+                }
+            }
+        }
+
+        return array_values($out);
+    }
+
+    protected function mismoCentro(string $a, string $b): bool
+    {
+        $a = strtoupper(trim($a));
+        $b = strtoupper(trim($b));
+        if ($a === '' || $b === '') {
+            return false;
+        }
+        if ($a === $b) {
+            return true;
+        }
+        $na = ltrim($a, '0');
+        $nb = ltrim($b, '0');
+
+        return $na !== '' && $na === $nb;
     }
 
     /**

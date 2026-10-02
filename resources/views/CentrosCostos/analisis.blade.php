@@ -60,8 +60,6 @@
         </div>
     </div>
 
-    @include('CentrosCostos.partials.nav')
-
     <div class="cc-panel">
         <div class="cc-filters cc-filters-asig cc-filters-buscar">
             <div class="cc-filter-field">

@@ -87,11 +87,17 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem 1rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     margin-bottom: 1rem;
 }
 .cc-toolbar .cc-subnav {
     margin-bottom: 0;
+    flex-shrink: 0;
+}
+.cc-toolbar .cc-header-actions {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
 }
 .cc-header-actions {
     display: flex;
@@ -844,6 +850,34 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     padding: 0.7rem 0.7rem;
     white-space: nowrap;
 }
+.cc-captura-results .cc-table th.cc-col-total,
+.cc-captura-results .cc-table td.cc-col-total {
+    font-weight: 700;
+    border-left: 1px solid var(--cc-line);
+    background: #fafafa;
+}
+.cc-captura-results .cc-table tbody tr:hover td.cc-col-total { background: #f4f4f5; }
+.cc-captura-results .cc-table tbody tr.cc-group-row td.cc-col-total,
+.cc-captura-results .cc-table tbody tr.cc-group-row:hover td.cc-col-total { background: #f4f4f5; }
+.cc-captura-results .cc-table tfoot td {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    background: #f4f4f5;
+    font-weight: 700;
+    border-top: 1px solid var(--cc-line);
+    border-bottom: 0;
+    padding: 0.7rem 0.7rem;
+    white-space: nowrap;
+}
+.cc-captura-results .cc-table tfoot td.sticky-col {
+    z-index: 3;
+    background: #f4f4f5;
+}
+.cc-captura-results .cc-table tfoot td.cc-col-total { background: #e4e4e7; }
+.cc-captura-results .cc-table tfoot .num {
+    font-family: 'Space Grotesk', sans-serif;
+}
 .cc-table tbody tr:hover { background: #fafafa; }
 .cc-table tbody tr.cc-asig-group td {
     background: #f4f4f5;
@@ -1266,6 +1300,13 @@ body > .select2-container--open:has(.cc-select-search-drop) {
 .cc-table tbody tr.is-done:hover td.sticky-col,
 .cc-table tbody tr.is-pending:hover td.sticky-col { background: #fafafa; }
 .cc-table tbody tr.is-new:hover td.sticky-col { background: #ececef; }
+.cc-captura-results .cc-table tbody tr.is-done td.cc-col-total,
+.cc-captura-results .cc-table tbody tr.is-pending td.cc-col-total,
+.cc-captura-results .cc-table tbody tr.is-new td.cc-col-total { background: #fafafa; }
+.cc-captura-results .cc-table tbody tr.is-done:hover td.cc-col-total,
+.cc-captura-results .cc-table tbody tr.is-pending:hover td.cc-col-total,
+.cc-captura-results .cc-table tbody tr.is-editing td.cc-col-total { background: #f4f4f5; }
+.cc-captura-results .cc-table tbody tr.is-new:hover td.cc-col-total { background: #ececef; }
 .cc-split { display: grid; grid-template-columns: 1.15fr .85fr; gap: 0.9rem; }
 @media (max-width: 1100px) { .cc-split { grid-template-columns: 1fr; } }
 
@@ -2059,6 +2100,7 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     .cc-filters,
     .cc-filters-asig { grid-template-columns: 1fr; }
     .cc-header-logo { height: 48px; }
+    .cc-toolbar { flex-wrap: wrap; }
 }
 
 .cc-header-ciclo {

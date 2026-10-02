@@ -56,6 +56,7 @@
             <table class="cc-table">
                 <thead id="det-thead"></thead>
                 <tbody id="det-tbody" class="is-readonly is-selectable"></tbody>
+                <tfoot id="det-tfoot"></tfoot>
             </table>
         </div>
         <div class="cc-sticky-totales">
