@@ -200,6 +200,10 @@
                         <span>Actualizados</span>
                     </div>
                     <div>
+                        <strong id="ciclo-sap-igual">0</strong>
+                        <span>Sin cambio</span>
+                    </div>
+                    <div>
                         <strong id="ciclo-sap-fail">0</strong>
                         <span>Fallaron</span>
                     </div>

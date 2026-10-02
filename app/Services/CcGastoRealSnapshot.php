@@ -386,6 +386,34 @@ class CcGastoRealSnapshot
         Cache::forget('cc.gasto-emp.v4.'.$empresa.'.'.$year);
     }
 
+    /**
+     * El centro ya guardado trae las mismas cuentas y los mismos meses.
+     *
+     * @param  array<string, array<string, mixed>>  $por
+     * @param  array<int, array<string, mixed>>  $filas
+     */
+    public function centroIgual(string $empresa, int $year, string $cc, array $por, array $filas): bool
+    {
+        $empresa = strtoupper(trim($empresa));
+        $cc = strtoupper(trim($cc));
+        $existe = DB::table('tbl_cc_gasto_real_cc')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->exists();
+        if (! $existe) {
+            return false;
+        }
+
+        $guardadas = $this->firmaSerieCentro($this->cuentasGuardadas($empresa, $year, $cc));
+        $nuevas = $this->firmaSerieCentro($this->cuentasCanonicas($por));
+        if (! hash_equals($guardadas, $nuevas)) {
+            return false;
+        }
+
+        return hash_equals($this->firmaMovimientos($filas), $this->firmaMovimientosGuardados($empresa, $year, $cc));
+    }
+
     public function firmaGuardada(string $empresa, int $year): ?string
     {
         if (! Schema::hasTable('tbl_cc_gasto_real_carga') || ! Schema::hasColumn('tbl_cc_gasto_real_carga', 'firma')) {
@@ -414,6 +442,101 @@ class CcGastoRealSnapshot
         sort($plain);
 
         return hash('sha256', implode("\n", $plain).'|'.$filas);
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $cuentas
+     */
+    protected function firmaSerieCentro(array $cuentas): string
+    {
+        ksort($cuentas);
+        $plain = [];
+        foreach ($cuentas as $ck => $item) {
+            $plain[] = $ck.'|'.$this->serieFirma($item['gasto'] ?? []).'|'.$this->serieFirma($item['gasto_usd'] ?? []);
+        }
+
+        return hash('sha256', implode("\n", $plain));
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    protected function cuentasGuardadas(string $empresa, int $year, string $cc): array
+    {
+        $por = [];
+        $rows = DB::table('tbl_cc_gasto_real_snap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->get();
+        foreach ($rows as $row) {
+            $gasto = [];
+            $usd = [];
+            for ($i = 1; $i <= 12; $i++) {
+                $suf = str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                $gasto[] = round((float) ($row->{'mes_'.$suf} ?? 0), 2);
+                $usd[] = round((float) ($row->{'usd_'.$suf} ?? 0), 2);
+            }
+            $codigo = trim((string) $row->cuenta_codigo);
+            $por[$codigo] = [
+                'codigo' => $codigo,
+                'gasto' => $gasto,
+                'gasto_usd' => $usd,
+            ];
+        }
+
+        return $this->cuentasCanonicas($por);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $filas
+     */
+    protected function firmaMovimientos(array $filas): string
+    {
+        $plain = [];
+        foreach ($filas as $fila) {
+            if (! is_array($fila)) {
+                continue;
+            }
+            $fecha = (string) ($fila['fecha'] ?? '');
+            if (strlen($fecha) >= 10) {
+                $fecha = substr($fecha, 0, 10);
+            }
+            $plain[] = implode('|', [
+                $this->digitos((string) ($fila['cuenta'] ?? '')),
+                (int) ($fila['mes'] ?? 0),
+                $fecha,
+                number_format(round((float) ($fila['importe'] ?? 0), 2), 2, '.', ''),
+                number_format(round((float) ($fila['importe_usd'] ?? 0), 2), 2, '.', ''),
+            ]);
+        }
+        sort($plain);
+
+        return hash('sha256', implode("\n", $plain));
+    }
+
+    protected function firmaMovimientosGuardados(string $empresa, int $year, string $cc): string
+    {
+        if (! Schema::hasTable('tbl_cc_gasto_real_sap')) {
+            return $this->firmaMovimientos([]);
+        }
+        $filas = [];
+        $rows = DB::table('tbl_cc_gasto_real_sap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->get(['cuenta_codigo', 'mes', 'fecha', 'importe', 'importe_usd']);
+        foreach ($rows as $row) {
+            $filas[] = [
+                'cuenta' => (string) $row->cuenta_codigo,
+                'mes' => (int) $row->mes,
+                'fecha' => $row->fecha ? (string) $row->fecha : '',
+                'importe' => (float) $row->importe,
+                'importe_usd' => (float) $row->importe_usd,
+            ];
+        }
+
+        return $this->firmaMovimientos($filas);
     }
 
     /**

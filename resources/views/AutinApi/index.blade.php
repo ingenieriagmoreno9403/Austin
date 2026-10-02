@@ -32,6 +32,19 @@
     .sap-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82rem; word-break: break-all; }
     .sap-table-wrap { overflow: visible; }
     .sap-panel .dt-buttons { display: flex; flex-wrap: wrap; gap: .35rem; }
+    .sap-panel .dt-buttons .buttons-colvis,
+    .sap-panel .dt-buttons .buttons-colvis.btn-secondary {
+        background: #f8fafc !important;
+        color: #475569 !important;
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 8px !important;
+        box-shadow: none !important;
+    }
+    .sap-panel .dt-buttons .buttons-colvis:hover,
+    .sap-panel .dt-buttons .buttons-colvis.btn-secondary:hover {
+        background: #f1f5f9 !important;
+        color: #334155 !important;
+    }
     .sap-panel .dt-buttons .btn { margin: 0; }
     .sap-table thead th {
         position: sticky; top: 0; background: #f8fafc; z-index: 1;
@@ -666,12 +679,12 @@
             layout: {
                 topStart: {
                     buttons: [
-                        button('copy', 'fa-regular fa-copy', 'Copiar'),
-                        button('excel', 'fa-regular fa-file-excel', 'Excel', { className: 'btn btn-sm btn-outline-success' }),
-                        button('csv', 'fa-solid fa-file-csv', 'CSV'),
-                        button('pdf', 'fa-regular fa-file-pdf', 'PDF', { orientation: 'landscape', pageSize: 'A3', className: 'btn btn-sm btn-outline-danger' }),
-                        button('print', 'fa-solid fa-print', 'Imprimir'),
-                        button('colvis', 'fa-solid fa-table-columns', 'Columnas', { title: undefined, className: 'btn btn-sm btn-outline-primary' })
+                        button('copy', 'fa-regular fa-copy', 'Copiar', { className: 'btn btn-sm btn-tool-copy push' }),
+                        button('excel', 'fa-regular fa-file-excel', 'Excel', { className: 'btn btn-sm btn-tool-excel push' }),
+                        button('csv', 'fa-solid fa-file-csv', 'CSV', { className: 'btn btn-sm btn-tool-excel push' }),
+                        button('pdf', 'fa-regular fa-file-pdf', 'PDF', { orientation: 'landscape', pageSize: 'A3', className: 'btn btn-sm btn-tool-pdf push' }),
+                        button('print', 'fa-solid fa-print', 'Imprimir', { className: 'btn btn-sm btn-tool-print push' }),
+                        button('colvis', 'fa-solid fa-table-columns', 'Columnas', { title: undefined, className: 'btn btn-sm btn-tool-copy push' })
                     ]
                 },
                 topEnd: 'search'

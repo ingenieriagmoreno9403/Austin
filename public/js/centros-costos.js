@@ -2947,10 +2947,10 @@
         var gastoListoKpi = gastoCentroListo(c);
         var kpiGasto = document.getElementById('kpi-ctl-gasto');
         if (kpiGasto) {
-            kpiGasto.textContent = gastoListoKpi ? moneyGasto(st.totG) : 'Cargando...';
+            kpiGasto.textContent = gastoListoKpi ? money(st.totG) : 'Cargando...';
             kpiGasto.classList.toggle('is-loading', !gastoListoKpi);
         } else {
-            setText('kpi-ctl-gasto', gastoListoKpi ? moneyGasto(st.totG) : 'Cargando...');
+            setText('kpi-ctl-gasto', gastoListoKpi ? money(st.totG) : 'Cargando...');
         }
         setText('kpi-ctl-ppto', money(st.totP));
         setText('kpi-ctl-pend', st.pendientes);

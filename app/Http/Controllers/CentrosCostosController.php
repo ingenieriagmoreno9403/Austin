@@ -1288,7 +1288,7 @@ class CentrosCostosController extends Controller
                 'mensaje' => 'Todavía no hay archivo de este centro.',
             ], 200);
         }
-        if (! empty($estado['insertado']) && in_array((string) ($estado['estado'] ?? ''), ['registrado', 'actualizado'], true)) {
+        if (! empty($estado['insertado']) && in_array((string) ($estado['estado'] ?? ''), ['registrado', 'actualizado', 'sin_cambio'], true)) {
             return response()->json([
                 'ok' => true,
                 'estado' => (string) $estado['estado'],
@@ -1320,6 +1320,32 @@ class CentrosCostosController extends Controller
             ->where('anio', $year)
             ->where('centro_codigo', $cc)
             ->exists();
+        if ($existia && $snap->centroIgual($empresa, $year, $cc, $mapa[$cc], $filas)) {
+            $cuentas = (int) DB::table('tbl_cc_gasto_real_snap')
+                ->where('empresa', $empresa)
+                ->where('anio', $year)
+                ->where('centro_codigo', $cc)
+                ->count();
+            $this->escribirEstadoJsonGasto($empresa, $year, $cc, [
+                'corrida' => $corrida !== '' ? $corrida : (string) ($estado['corrida'] ?? ''),
+                'listo' => true,
+                'insertado' => true,
+                'estado' => 'sin_cambio',
+                'cuentas' => $cuentas,
+                'mensaje' => null,
+            ]);
+
+            return response()->json([
+                'ok' => true,
+                'estado' => 'sin_cambio',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'year' => $year,
+                'cuentas' => $cuentas,
+                'origen' => 'json',
+                'mensaje' => null,
+            ]);
+        }
         try {
             $snap->fusionarCentro($empresa, $year, [$cc => $mapa[$cc]], $filas, auth()->id());
         } catch (Throwable $e) {

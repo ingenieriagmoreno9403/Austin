@@ -299,8 +299,12 @@
         if (bar) bar.style.width = pct + '%';
     }
 
+    function gastoListo(estado) {
+        return estado === 'registrado' || estado === 'actualizado' || estado === 'sin_cambio';
+    }
+
     function statsSap() {
-        if (!CCAsig._sapStats) CCAsig._sapStats = { registrados: 0, actualizados: 0, fallidos: 0 };
+        if (!CCAsig._sapStats) CCAsig._sapStats = { registrados: 0, actualizados: 0, sinCambio: 0, fallidos: 0 };
         return CCAsig._sapStats;
     }
 
@@ -308,9 +312,11 @@
         var s = statsSap();
         var reg = document.getElementById('ciclo-sap-reg');
         var act = document.getElementById('ciclo-sap-act');
+        var igual = document.getElementById('ciclo-sap-igual');
         var fail = document.getElementById('ciclo-sap-fail');
         if (reg) reg.textContent = String(s.registrados);
         if (act) act.textContent = String(s.actualizados);
+        if (igual) igual.textContent = String(s.sinCambio || 0);
         if (fail) fail.textContent = String(s.fallidos);
     }
 
@@ -355,7 +361,7 @@
 
     function prepararModalSap(rows) {
         CCAsig._sapGrupos = gruposSapDeAsignaciones(rows);
-        CCAsig._sapStats = { registrados: 0, actualizados: 0, fallidos: 0 };
+        CCAsig._sapStats = { registrados: 0, actualizados: 0, sinCambio: 0, fallidos: 0 };
         pintarContadoresSap();
         var sel = document.getElementById('ciclo-sap-empresa');
         var fallos = document.getElementById('ciclo-sap-fallos');
@@ -447,7 +453,7 @@
                 + '&corrida=' + encodeURIComponent(corrida);
             return getJSON(url).catch(function () { return {}; }).then(function (json) {
                 var misma = json && json.corrida === corrida;
-                if (misma && json.insertado && (json.estado === 'registrado' || json.estado === 'actualizado')) {
+                if (misma && json.insertado && gastoListo(json.estado)) {
                     return { ok: true, json: json };
                 }
                 if (misma && json.estado === 'fallo' && !json.listo) {
@@ -472,7 +478,7 @@
         }
         return postCentro(false).then(function (pack) {
             var estado = pack.json && pack.json.estado;
-            if (pack.ok && (estado === 'registrado' || estado === 'actualizado')) return pack;
+            if (pack.ok && gastoListo(estado)) return pack;
             if (estado === 'fallo') return pack;
             return esperarArchivo(60, 0, 0);
         }).catch(function (err) {
@@ -500,10 +506,11 @@
             CCAsig._sapCorriendo = false;
             CCAsig._sapParar = false;
             marcarControlesSap(false);
-            if (pack && pack.ok && (estado === 'registrado' || estado === 'actualizado')) {
+            if (pack && pack.ok && gastoListo(estado)) {
                 if (statsSap().fallidos > 0) statsSap().fallidos -= 1;
                 if (estado === 'registrado') statsSap().registrados += 1;
-                else statsSap().actualizados += 1;
+                else if (estado === 'actualizado') statsSap().actualizados += 1;
+                else statsSap().sinCambio += 1;
                 pintarContadoresSap();
                 li.remove();
                 if (!document.querySelector('#ciclo-sap-fallos li')) {
@@ -576,7 +583,7 @@
         }
         CCAsig._sapCorriendo = true;
         CCAsig._sapParar = false;
-        CCAsig._sapStats = { registrados: 0, actualizados: 0, fallidos: 0 };
+        CCAsig._sapStats = { registrados: 0, actualizados: 0, sinCambio: 0, fallidos: 0 };
         pintarContadoresSap();
         var fallos = document.getElementById('ciclo-sap-fallos');
         if (fallos) fallos.innerHTML = '';
@@ -588,7 +595,8 @@
             var estado = pack.json && pack.json.estado;
             if (pack.ok && estado === 'registrado') statsSap().registrados += 1;
             else if (pack.ok && estado === 'actualizado') statsSap().actualizados += 1;
-                else anotarFalloSap(c, (pack.json && (pack.json.mensaje || pack.json.message)) || 'No se pudo guardar');
+            else if (pack.ok && estado === 'sin_cambio') statsSap().sinCambio += 1;
+            else anotarFalloSap(c, (pack.json && (pack.json.mensaje || pack.json.message)) || 'No se pudo guardar');
             pintarContadoresSap();
         }
         function terminar(pausado) {
@@ -602,7 +610,7 @@
                 ? Swal.fire({
                     icon: s.fallidos ? 'warning' : 'success',
                     title: pausado ? 'Actualización pausada' : 'Gasto actualizado',
-                    html: '<p style="margin:0">' + s.registrados + ' registrados<br>' + s.actualizados + ' actualizados<br>' + s.fallidos + ' fallaron'
+                    html: '<p style="margin:0">' + s.registrados + ' registrados<br>' + s.actualizados + ' actualizados<br>' + (s.sinCambio || 0) + ' sin cambio<br>' + s.fallidos + ' fallaron'
                         + (s.fallidos ? '<br><br>Cada centro de la lista tiene un botón para intentarlo de nuevo.' : '') + '</p>'
                 })
                 : Promise.resolve();
