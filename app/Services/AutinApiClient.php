@@ -741,6 +741,18 @@ class AutinApiClient
     }
 
     /**
+     * Productos vendidos agregados por cliente (ene–sep por defecto).
+     * Filtros: CardCode, Empresa, year, mes_desde, mes_hasta.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, status: int, body: array|null, message: string|null}
+     */
+    public function verificarProductosVendidosAnioPasado(array $filters = []): array
+    {
+        return $this->request('GET', 'VerificarProductosVendidosAnioPasado', $filters);
+    }
+
+    /**
      * Lista de precios de venta (OCRD + OPLN + ITM1 + OITM).
      * Filtros: Empresa, CodigoCliente, CodigoArticulo, NoLista, Moneda, per_page, page.
      *

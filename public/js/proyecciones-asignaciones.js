@@ -61,6 +61,17 @@
         return out || s.replace(/\D+/g, '').replace(/^0+/, '') || s;
     }
 
+    function formatUdsAsig(n) {
+        if (n == null || n === '') return null;
+        var v = Number(n);
+        if (!isFinite(v)) return null;
+        var abs = Math.abs(v);
+        var txt = abs.toLocaleString('es-MX', {
+            maximumFractionDigits: abs % 1 === 0 ? 0 : 2
+        });
+        return (v < 0 ? '-' : '') + txt + ' uds';
+    }
+
     function ctaNorm(codigo) {
         return ctaPretty(codigo).replace(/\s+/g, '').toLowerCase();
     }
@@ -898,10 +909,17 @@
         var sel = CCAsig._editSelected || {};
         box.innerHTML = '<div class="cc-cta-group">' + rows.map(function (c) {
                     var on = !!sel[String(c.codigo)];
+                    var rawUds = (c.unidades != null ? c.unidades : c.uds);
+                    var uds = formatUdsAsig(rawUds);
+                    var udsHtml = (rawUds != null && rawUds !== '')
+                        ? ('<span class="cc-cta-qty" title="Total unidades vendidas en el año">' +
+                            escapeHtml(uds != null ? uds : '0 uds') + '</span>')
+                        : '';
                     return '<label class="cc-cta-item"><input type="checkbox" data-edit-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                         ' data-nombre="' + escapeHtml(c.nombre || '') + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
                         ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + (on ? ' checked' : '') + '>' +
                         '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
+                        udsHtml +
                         '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                 }).join('') + '</div>';
         var todas = document.getElementById('asig-edit-todas');
@@ -2165,8 +2183,15 @@
             };
             var qBusca = String(opts.q || '').trim();
             if (!opts.force && !qBusca && cacheCuentas[key]) {
-                apply(cacheCuentas[key], agrupaciones);
-                return;
+                var cachedRows = cacheCuentas[key] || [];
+                var cacheConUds = cachedRows.some(function (r) {
+                    return r && (r.unidades != null || r.uds != null);
+                });
+                if (cacheConUds) {
+                    apply(cachedRows, agrupaciones);
+                    return;
+                }
+                delete cacheCuentas[key];
             }
             var url = '/ProyeccionesVentas/api/asignacion/productos?empresa=' + encodeURIComponent(cfg.empresa) +
                 '&year=' + encodeURIComponent(year);
@@ -2208,12 +2233,21 @@
                         var checked = ctaSelected[normCode(c.codigo)] ? ' checked' : '';
                         var costo = Number(c.costo || c.precio || 0) || 0;
                         var moneda = String(c.costo_moneda || c.moneda || 'MXN').toUpperCase();
+                        var rawUds = (c.unidades != null ? c.unidades : c.uds);
+                        var uds = formatUdsAsig(rawUds);
+                        var udsHtml = (rawUds != null && rawUds !== '')
+                            ? ('<span class="cc-cta-qty" title="Total unidades vendidas en el año">' +
+                                escapeHtml(uds != null ? uds : '0 uds') + '</span>')
+                            : '';
                         return '<label class="cc-cta-item"><input type="checkbox" data-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                             ' data-nombre="' + escapeHtml(c.nombre) + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
                             ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' +
                             ' data-costo="' + escapeHtml(String(costo)) + '"' +
-                            ' data-moneda="' + escapeHtml(moneda) + '"' + checked + '>' +
+                            ' data-moneda="' + escapeHtml(moneda) + '"' +
+                            ' data-unidades="' + escapeHtml(String(Number(rawUds) || 0)) + '"' +
+                            checked + '>' +
                             '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
+                            udsHtml +
                             '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                     }).join('') + '</div>';
             var boxes = box.querySelectorAll('[data-cta]');

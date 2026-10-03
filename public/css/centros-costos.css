@@ -1709,7 +1709,23 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     flex-shrink: 0;
 }
 .cc-cta-item:has(input:checked) .cc-cta-code { background: #d1fae5; }
-.cc-cta-name { color: var(--cc-muted); font-size: 0.8rem; font-weight: 500; }
+.cc-cta-name { color: var(--cc-muted); font-size: 0.8rem; font-weight: 500; flex: 1; min-width: 0; }
+.cc-cta-qty {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-weight: 700;
+    font-size: 0.76rem;
+    color: #0a0a0a;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    background: #eef2ff;
+    border-radius: 6px;
+    padding: 0.12rem 0.45rem;
+}
+.cc-cta-item:has(input:checked) .cc-cta-qty {
+    color: #047857;
+    background: #d1fae5;
+}
 .cc-cta-group { padding: 0; margin-bottom: 0.45rem; }
 .cc-cta-mask-h {
     display: flex;

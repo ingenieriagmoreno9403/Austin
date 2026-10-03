@@ -95,6 +95,14 @@ class AutinApiController extends Controller
                 'descripcion' => 'Listas de precios SAP. Filtros: Empresa (ej. IMSA), CodigoCliente (ej. D136), per_page, page.',
             ],
             [
+                'grupo' => 'Global (todas las empresas)',
+                'method' => 'GET',
+                'path' => '/VerificarProductosVendidosAnioPasado',
+                'proxy' => $proxyBaseUrl . '/VerificarProductosVendidosAnioPasado',
+                'remoto' => $apiBaseUrl . '/VerificarProductosVendidosAnioPasado',
+                'descripcion' => 'Productos vendidos agregados por cliente (ene–sep). Filtros: CardCode, Empresa, year.',
+            ],
+            [
                 'grupo' => 'Por empresa',
                 'method' => 'GET',
                 'path' => '/{database}/catalogos',
@@ -234,6 +242,13 @@ class AutinApiController extends Controller
     public function listasPrecios(Request $request, AutinApiClient $api): JsonResponse
     {
         $result = $api->listasPrecios($request->except(['_token']));
+
+        return $this->jsonFromApi($result);
+    }
+
+    public function verificarProductosVendidosAnioPasado(Request $request, AutinApiClient $api): JsonResponse
+    {
+        $result = $api->verificarProductosVendidosAnioPasado($request->except(['_token']));
 
         return $this->jsonFromApi($result);
     }
