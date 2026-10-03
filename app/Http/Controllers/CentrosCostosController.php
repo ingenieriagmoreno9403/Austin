@@ -681,8 +681,8 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * Al asignar un centro, guarda o actualiza su gasto en la copia local
-     * después de responder, para no frenar la pantalla.
+     * Al asignar, agrega a la copia local las cuentas nuevas y actualiza las que ya estaban.
+     * Corre después de responder, para no frenar la pantalla.
      *
      * @param  array<int, mixed>  $cuentas
      */
@@ -717,6 +717,9 @@ class CentrosCostosController extends Controller
     }
 
     /**
+     * Baja el gasto del centro y lo escribe en la copia local:
+     * las cuentas que no estaban se agregan y las que ya estaban se actualizan.
+     *
      * @param  array<int, string>  $cuentas
      */
     protected function asegurarSnapshotAsignacion(string $ciclo, string $empresa, string $centro, array $cuentas, ?int $userId): void
@@ -726,48 +729,160 @@ class CentrosCostosController extends Controller
             return;
         }
         $year = $this->anioGastoCiclo($ciclo);
-        $presentes = $snap->centrosPresentes($empresa, $year);
-        $centroSnap = $this->centroSnapshotDe($centro, $presentes);
-        $cc = $centroSnap ?: strtoupper(trim($centro));
-        if ($centroSnap !== null && $this->cuentasFueraDeSnapshot($empresa, $year, $cc, $cuentas) === []) {
+        $asignado = strtoupper(trim($centro));
+        $destinos = $this->centrosSnapshotDe($asignado, $snap->centrosPresentes($empresa, $year));
+        if ($destinos === []) {
+            $destinos = [$asignado];
+        }
+
+        $codigos = [];
+        foreach ($cuentas as $cuenta) {
+            $cuenta = trim((string) $cuenta);
+            if ($cuenta === '') {
+                continue;
+            }
+            $clave = $this->codigoCuentaKey($cuenta);
+            $codigos[$clave !== '' ? $clave : $cuenta] = $cuenta;
+        }
+        $codigos = array_values($codigos);
+
+        $pedido = array_values(array_unique(array_merge([$asignado], $destinos)));
+        $remoto = $this->mapaGastoPorCentros($empresa, $year, $pedido, true);
+        $ok = ! empty($remoto['ok']);
+        $por = [];
+        $filas = [];
+        if ($ok) {
+            foreach ($pedido as $codigoCc) {
+                foreach ($this->porCuentaDeIndiceEmpresa($remoto['mapa'] ?? [], $codigoCc) as $k => $item) {
+                    if (! isset($por[$k]) && is_array($item)) {
+                        $por[$k] = $item;
+                    }
+                }
+            }
+            $filas = $this->filasGastoSapDesdeRegistros(is_array($remoto['rows'] ?? null) ? $remoto['rows'] : [], $empresa, $year);
+        }
+
+        if ($codigos === []) {
+            if (! $ok || $por === []) {
+                return;
+            }
+            foreach ($destinos as $destino) {
+                $filasCentro = [];
+                foreach ($filas as $fila) {
+                    if (! is_array($fila)) {
+                        continue;
+                    }
+                    $fila['centro'] = $destino;
+                    $filasCentro[] = $fila;
+                }
+                $snap->fusionarCentro($empresa, $year, [$destino => $por], $filasCentro, $userId);
+            }
+
             return;
         }
 
-        $remoto = $this->mapaGastoPorCentros($empresa, $year, [$cc], true);
-        if (empty($remoto['ok'])) {
-            return;
-        }
-        $snap->fusionarCentro(
-            $empresa,
-            $year,
-            $remoto['mapa'],
-            $this->filasGastoSapDesdeRegistros($remoto['rows'], $empresa, $year),
-            $userId
-        );
-
-        $cc = $this->centroSnapshotDe($cc, $snap->centrosPresentes($empresa, $year)) ?: $cc;
-        foreach ($this->cuentasFueraDeSnapshot($empresa, $year, $cc, $cuentas) as $cuenta) {
-            $snap->reemplazarCuenta($empresa, $year, $cc, $cuenta, [
-                'codigo' => $cuenta,
-                'nombre' => '',
-                'gasto' => array_fill(0, 12, 0.0),
-                'gasto_usd' => array_fill(0, 12, 0.0),
-            ], [], $userId);
+        foreach ($destinos as $destino) {
+            $lista = $ok ? $codigos : $this->cuentasFueraDeSnapshot($empresa, $year, $destino, $codigos);
+            if ($lista === []) {
+                continue;
+            }
+            $paquetes = [];
+            foreach ($lista as $cuenta) {
+                $paquetes[] = [
+                    'cuenta' => $cuenta,
+                    'item' => $ok ? $this->itemGastoAsignado($por, $cuenta) : $this->itemGastoVacio($cuenta),
+                    'filas' => $ok ? $this->filasGastoDeCuenta($filas, $cuenta, $pedido) : [],
+                ];
+            }
+            $snap->aplicarCuentas($empresa, $year, $destino, $paquetes, $userId);
         }
     }
 
     /**
-     * @param  array<int, string>  $presentes
+     * @param  array<string, array<string, mixed>>  $por
+     * @return array<string, mixed>
      */
-    protected function centroSnapshotDe(string $centro, array $presentes): ?string
+    protected function itemGastoAsignado(array $por, string $cuenta): array
     {
+        $ck = $this->codigoCuentaKey($cuenta);
+        $hit = $ck !== '' ? $this->gastoDesdeIndice($por, $ck) : null;
+        if (! is_array($hit)) {
+            return $this->itemGastoVacio($cuenta);
+        }
+        $hit['codigo'] = $cuenta;
+        if (! isset($hit['gasto']) || ! is_array($hit['gasto'])) {
+            $hit['gasto'] = array_fill(0, 12, 0.0);
+        }
+        if (! isset($hit['gasto_usd']) || ! is_array($hit['gasto_usd'])) {
+            $hit['gasto_usd'] = array_fill(0, 12, 0.0);
+        }
+
+        return $hit;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function itemGastoVacio(string $cuenta): array
+    {
+        return [
+            'codigo' => $cuenta,
+            'nombre' => '',
+            'gasto' => array_fill(0, 12, 0.0),
+            'gasto_usd' => array_fill(0, 12, 0.0),
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $filas
+     * @param  array<int, string>  $centros
+     * @return array<int, array<string, mixed>>
+     */
+    protected function filasGastoDeCuenta(array $filas, string $cuenta, array $centros): array
+    {
+        $ck = $this->codigoCuentaKey($cuenta);
+        if ($ck === '') {
+            return [];
+        }
+        $out = [];
+        foreach ($filas as $fila) {
+            if (! is_array($fila) || $this->codigoCuentaKey((string) ($fila['cuenta'] ?? '')) !== $ck) {
+                continue;
+            }
+            $centroFila = trim((string) ($fila['centro'] ?? ''));
+            if ($centroFila !== '') {
+                $coincide = false;
+                foreach ($centros as $centro) {
+                    if ($this->mismoCentroSap($centroFila, (string) $centro)) {
+                        $coincide = true;
+                        break;
+                    }
+                }
+                if (! $coincide) {
+                    continue;
+                }
+            }
+            $out[] = $fila;
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array<int, string>  $presentes
+     * @return array<int, string>
+     */
+    protected function centrosSnapshotDe(string $centro, array $presentes): array
+    {
+        $out = [];
         foreach ($presentes as $item) {
-            if ($this->mismoCentroSap($centro, (string) $item)) {
-                return strtoupper(trim((string) $item));
+            $item = strtoupper(trim((string) $item));
+            if ($item !== '' && $this->mismoCentroSap($centro, $item)) {
+                $out[$item] = $item;
             }
         }
 
-        return null;
+        return array_values($out);
     }
 
     protected function anioGastoCiclo(string $ciclo): int
