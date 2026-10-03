@@ -4034,15 +4034,21 @@ class ProyeccionesVentasController extends Controller
         }
 
         try {
-            $map = $this->productosLocalesAsignacion($empresa, $todas ? '' : $cliente, $q);
-            $fuente = 'local';
+            $map = [];
+            $fuente = 'sap';
             $mensaje = null;
 
-            $needsSap = $force
-                || ($q !== '' && mb_strlen($q) >= 2)
-                || count($map) < 3;
-
-            if ($needsSap && ! $todas) {
+            if ($todas) {
+                // “Ver todos”: catálogo local de la empresa (no es lista de ventas del cliente).
+                $map = $this->productosLocalesAsignacion($empresa, '', $q);
+                $fuente = 'local';
+                if ($map === []) {
+                    $mensaje = 'Para ver todos los productos usa el buscador, o desactiva “Ver todos” y elige un cliente.';
+                } else {
+                    $mensaje = 'Catálogo local de la empresa. Usa el buscador para afinar.';
+                }
+            } else {
+                // Cliente concreto: solo productos con venta en SAP. Sin fallback local.
                 $sap = $this->cargarProductosSapAsignacion($empresa, $cliente, $year, $q);
                 if (! empty($sap['productos'])) {
                     $this->guardarProductosCatalogo($empresa, $cliente, $year, $sap['productos'], $q !== '' ? 'sap_busca' : 'sap');
@@ -4055,14 +4061,16 @@ class ProyeccionesVentasController extends Controller
                     }
                     $fuente = 'sap';
                     $mensaje = $sap['mensaje'];
-                } elseif ($map === [] && ! empty($sap['mensaje'])) {
-                    $mensaje = $sap['mensaje'];
-                }
-            } elseif ($needsSap && $todas) {
-                if ($map === []) {
-                    $mensaje = 'Para ver todos los productos usa el buscador, o desactiva “Ver todos” y elige un cliente.';
                 } else {
-                    $mensaje = 'Catálogo local de la empresa. Usa el buscador para afinar.';
+                    $map = [];
+                    $fuente = 'sap';
+                    if (! empty($sap['ok'])) {
+                        $mensaje = $q !== ''
+                            ? ('No se encontraron ventas para “'.$q.'” en este cliente ('.date('Y').' ene–sep).')
+                            : ('No se encontraron ventas para este cliente ('.date('Y').' ene–sep).');
+                    } else {
+                        $mensaje = $sap['mensaje'] ?? ('No se encontraron ventas para este cliente ('.date('Y').' ene–sep).');
+                    }
                 }
             }
 
@@ -4072,17 +4080,17 @@ class ProyeccionesVentasController extends Controller
                     ?: strcasecmp((string) ($a['codigo'] ?? ''), (string) ($b['codigo'] ?? ''));
             });
 
-            if ($productos && $mensaje === null && $fuente === 'local') {
+            if ($todas && $productos && $mensaje === null) {
                 $mensaje = 'Catálogo local. Si falta alguno, escribe en el buscador de productos.';
             }
             if (! $productos && $mensaje === null) {
-                $mensaje = $q !== ''
-                    ? 'Sin productos para “'.$q.'”.'
-                    : 'Sin productos para este cliente en '.$year.'.';
+                $mensaje = $todas
+                    ? ($q !== '' ? 'Sin productos para “'.$q.'”.' : 'Sin productos en el catálogo.')
+                    : 'No se encontraron ventas para este cliente.';
             }
 
             return response()->json([
-                'ok' => $productos !== [] || $fuente === 'local',
+                'ok' => true,
                 'cuentas' => $productos,
                 'agrupaciones' => [],
                 'mensaje' => $mensaje,
@@ -7791,8 +7799,8 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Productos del cliente en ventas SAP (CardCode), sin bajar todo el año.
-     * Si el año del ciclo aún no tiene ventas, prueba hasta 3 años atrás.
+     * Productos del cliente en ventas SAP (CardCode).
+     * Solo año en curso, enero–septiembre (sin retroceder a años anteriores).
      *
      * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
      */
@@ -7804,60 +7812,43 @@ class ProyeccionesVentasController extends Controller
         if ($cliente === '') {
             return ['ok' => true, 'productos' => [], 'mensaje' => null];
         }
-        if ($year < 2000) {
-            $year = (int) date('Y');
-        }
 
-        $cacheKey = 'pv.asig.prod.'.$empresa.'.'.$year.'.'.md5(strtoupper($cliente).'|'.mb_strtoupper($q));
+        // Siempre año calendario actual, ene–sep (no el año del ciclo ni años pasados).
+        $year = (int) date('Y');
+        $fechaDesde = sprintf('%04d/01/01', $year);
+        $fechaHasta = sprintf('%04d/09/30', $year);
+
+        $cacheKey = 'pv.asig.prod.v5.'.$empresa.'.'.$year.'.ene-sep.'.md5(strtoupper($cliente).'|'.mb_strtoupper($q));
         $cached = Cache::get($cacheKey);
-        if (is_array($cached) && ! empty($cached['productos'])) {
+        if (is_array($cached) && array_key_exists('productos', $cached)) {
             return $cached;
         }
 
-        if ($q === '') {
-            $resolved = Cache::get($this->claveAnioVentas($empresa, $year));
-            if (is_numeric($resolved) && (int) $resolved !== $year) {
-                $pack = $this->cargarProductosSapAsignacionAnio($empresa, $cliente, (int) $resolved, '');
-                if (! empty($pack['productos'])) {
-                    $pack['mensaje'] = 'Mostrando productos con venta en '.$resolved.' (aún no hay en '.$year.')';
-                    Cache::put($cacheKey, $pack, 900);
-
-                    return $pack;
-                }
-            }
+        $pack = $this->cargarProductosSapAsignacionAnio($empresa, $cliente, $year, $q, $fechaDesde, $fechaHasta);
+        if (! empty($pack['productos'])) {
+            $pack['mensaje'] = $pack['mensaje'] ?: ('Ventas '.$year.' · ene–sep');
+        } elseif (! empty($pack['ok'])) {
+            $pack['mensaje'] = $q !== ''
+                ? ('No se encontraron ventas para “'.$q.'” en '.$year.' (ene–sep).')
+                : ('No se encontraron ventas para este cliente en '.$year.' (ene–sep).');
         }
 
-        $last = null;
-        $hasta = max(2000, $year - 3);
-        for ($y = $year; $y >= $hasta; $y--) {
-            $pack = $this->cargarProductosSapAsignacionAnio($empresa, $cliente, $y, $q);
-            $last = $pack;
-            if (! empty($pack['productos'])) {
-                if ($q === '' && $y !== $year) {
-                    Cache::put($this->claveAnioVentas($empresa, $year), $y, 1800);
-                    $pack['mensaje'] = 'Mostrando productos con venta en '.$y.' (aún no hay en '.$year.')';
-                }
-                Cache::put($cacheKey, $pack, 900);
+        Cache::put($cacheKey, $pack, 900);
 
-                return $pack;
-            }
-            if (empty($pack['ok'])) {
-                break;
-            }
-        }
-
-        return $last ?? [
-            'ok' => false,
-            'productos' => [],
-            'mensaje' => 'Sin productos SAP',
-        ];
+        return $pack;
     }
 
     /**
      * @return array{ok: bool, productos: array<int, array<string, mixed>>, mensaje: string|null}
      */
-    protected function cargarProductosSapAsignacionAnio(string $empresa, string $cliente, int $year, string $q = ''): array
-    {
+    protected function cargarProductosSapAsignacionAnio(
+        string $empresa,
+        string $cliente,
+        int $year,
+        string $q = '',
+        ?string $fechaDesde = null,
+        ?string $fechaHasta = null
+    ): array {
         $api = app(AutinApiClient::class);
         $q = trim($q);
         $pareceCodigo = $q !== '' && (bool) preg_match('/^[A-Za-z0-9._\-]{2,80}$/', $q);
@@ -7869,19 +7860,36 @@ class ProyeccionesVentasController extends Controller
             }
             $intentos[] = ['CardCode' => $cliente, 'ItemName' => $q];
         }
-        $maxPages = $q === '' ? 3 : 1;
-        $perPage = $q === '' ? 200 : 80;
+        $maxPages = $q === '' ? 40 : 5;
+        $perPage = $q === '' ? 200 : 100;
+
+        $base = [
+            'year' => $year,
+        ];
+        if ($fechaDesde) {
+            $base['fecha_desde'] = $fechaDesde;
+        }
+        if ($fechaHasta) {
+            $base['fecha_hasta'] = $fechaHasta;
+        }
 
         $map = [];
         $ok = false;
         $mensaje = null;
         foreach ($this->empresasFiltroVentas($empresa) as $empFiltro) {
             foreach ($intentos as $extra) {
-                $pack = $api->ventasTodasPaginas(array_merge([
-                    'year' => $year,
+                $pack = $api->ventasTodasPaginas(array_merge($base, [
                     'Empresa' => $empFiltro,
                 ], $extra), $maxPages, 2, $perPage);
                 if (empty($pack['ok'])) {
+                    // Con filtro de fechas a veces la API marca incompleto pero sí trae filas útiles.
+                    if (! empty($pack['rows'])) {
+                        $ok = true;
+                        foreach ($this->extraerProductosDeFilasVentas($pack['rows'] ?? [], $empresa, $cliente, $q) as $key => $row) {
+                            $map[$key] = $row;
+                        }
+                        continue;
+                    }
                     if (! $ok) {
                         $mensaje = $pack['message'] ?? 'Sin conexión a ventas SAP';
                     }
@@ -7895,14 +7903,15 @@ class ProyeccionesVentasController extends Controller
         }
 
         $productos = array_values($map);
+        $rango = ($fechaDesde && $fechaHasta) ? ' (ene–sep)' : '';
 
         return [
             'ok' => $ok,
             'productos' => $productos,
             'mensaje' => $ok
                 ? ($productos ? null : ($q !== ''
-                    ? 'Sin productos para “'.$q.'” en ventas '.$year.'.'
-                    : 'Este cliente no tiene productos en ventas '.$year.'.'))
+                    ? 'Sin productos para “'.$q.'” en ventas '.$year.$rango.'.'
+                    : 'Este cliente no tiene productos en ventas '.$year.$rango.'.'))
                 : $mensaje,
         ];
     }
@@ -7936,6 +7945,11 @@ class ProyeccionesVentasController extends Controller
                 }
             }
             $linea = trim((string) ($row['U_LINEA_QV'] ?? $row['Linea'] ?? $row['linea'] ?? ''));
+            // Total unidades del año (valor absoluto por línea para no anular NC).
+            $qty = abs($this->cantidadVenta($row));
+            if ($qty == 0.0) {
+                $qty = abs($this->numeroVenta($row, ['Quantity', 'Cantidad', 'Qty', 'quantity', 'SalPackUn']));
+            }
             $key = strtoupper($item);
             if (! isset($map[$key])) {
                 $map[$key] = [
@@ -7946,8 +7960,10 @@ class ProyeccionesVentasController extends Controller
                     'grupo_id' => $linea,
                     'costo' => $this->costoVenta($row),
                     'moneda' => 'MXN',
+                    'unidades' => round($qty, 4),
                 ];
             } else {
+                $map[$key]['unidades'] = round(((float) ($map[$key]['unidades'] ?? 0)) + $qty, 4);
                 $costo = $this->costoVenta($row);
                 if ($costo > 0) {
                     $map[$key]['costo'] = $costo;
