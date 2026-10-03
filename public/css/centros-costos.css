@@ -925,6 +925,25 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     color: #3f3f46;
     cursor: pointer;
 }
+.cc-col-users {
+    white-space: nowrap;
+    width: 1%;
+}
+.cc-user-stack {
+    gap: 0;
+    cursor: help;
+    border-bottom: 0;
+}
+.cc-user-stack .cc-avatar + .cc-avatar {
+    margin-left: -8px;
+    box-shadow: 0 0 0 2px #fff;
+}
+.cc-avatar-more {
+    background: #a1a1aa;
+    color: #fff;
+    border: 0;
+    font-size: 0.62rem;
+}
 .cc-group-totals {
     white-space: nowrap;
 }
@@ -1318,6 +1337,37 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     align-items: center;
     gap: 0.4rem;
 }
+.cc-user-more {
+    font-weight: 700;
+    color: #3f3f46;
+    cursor: help;
+    border-bottom: 1px dashed #a1a1aa;
+}
+.cc-user-more:hover,
+.cc-user-more:focus {
+    color: var(--cc-ink);
+    outline: none;
+}
+.cc-user-stack.cc-user-more,
+.cc-user-stack.cc-user-more:hover,
+.cc-user-stack.cc-user-more:focus {
+    border-bottom: 0;
+    color: inherit;
+}
+.cc-user-tip {
+    position: fixed;
+    z-index: 80;
+    max-width: 260px;
+    padding: 0.4rem 0.65rem;
+    background: #0a0a0a;
+    color: #fff;
+    border-radius: 8px;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+    pointer-events: none;
+}
+.cc-user-tip[hidden] { display: none !important; }
 .cc-avatar {
     width: 26px; height: 26px; border-radius: 50%;
     background: var(--cc-ink); color: #fff;
