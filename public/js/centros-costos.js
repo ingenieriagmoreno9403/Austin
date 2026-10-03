@@ -2169,28 +2169,86 @@
         return String(codigo || '').replace(/\s+/g, '').toUpperCase() === 'EMPRESA';
     }
 
+    /** 0006 y 6 son el mismo centro. La clave no lleva ceros a la izquierda. */
+    function claveCentro(codigo) {
+        var s = String(codigo || '').trim().toUpperCase();
+        if (!s || isEmpresaCompleta(s) || s === 'SIN_CC') return s;
+        var stripped = s.replace(/^0+/, '');
+        return stripped || s;
+    }
+
     function asigPuedeRevisar(a) {
         return !!(a && (a.revisar || ((a.permisos || []).indexOf('revisar') !== -1)));
     }
 
-    function recordarAsignacionesPropias(list) {
-        if (!CC._asigPropias) CC._asigPropias = (list || []).slice();
+    function filasDelUsuarioActual(list) {
+        var uid = Number(CC.state.usuarioActualId || 0);
+        if (!uid) return (list || []).slice();
+        return (list || []).filter(function (a) {
+            return Number(a.user_id) === uid;
+        });
     }
 
-    /** Empresas, centros y cuentas que el usuario actual puede revisar. */
+    function recordarAsignacionesPropias(list) {
+        if (!CC._asigPropias) CC._asigPropias = filasDelUsuarioActual(list);
+    }
+
+    function indiceAsignaciones(list) {
+        var byId = {};
+        function put(rows) {
+            (rows || []).forEach(function (a) {
+                if (a && a.id != null) byId[Number(a.id)] = a;
+            });
+        }
+        put(CC._anAsigTodas);
+        put(list);
+        return byId;
+    }
+
+    /** parent_id ata la revisión a una persona. Sin ese vínculo, el centro o la empresa siguen abiertos. */
+    function vinculoRevision(a, byId) {
+        if (!a || a.es_principal !== false) return null;
+        var pid = Number(a.parent_id || 0);
+        if (!pid) return null;
+        var p = byId[pid];
+        if (!p) return null;
+        var uid = Number(p.user_id || 0);
+        if (!uid || uid === Number(a.user_id)) return null;
+        return uid;
+    }
+
+    function anotarUsuario(slot, userId) {
+        if (!slot || slot.usuarios === null) return;
+        if (!userId) {
+            slot.usuarios = null;
+            return;
+        }
+        if (!slot.usuarios) slot.usuarios = {};
+        slot.usuarios[String(userId)] = true;
+    }
+
+    function usuarioEnRegla(usuarios, a) {
+        if (usuarios == null) return true;
+        return !!usuarios[String(a && a.user_id)];
+    }
+
+    /** Empresas, centros, cuentas y, si aplica, la persona ligada que el usuario actual puede revisar. */
     function alcanceRevisionPropio(list) {
         var uid = Number(CC.state.usuarioActualId || 0);
+        var byId = indiceAsignaciones(list);
         var scope = {};
         (list || []).forEach(function (a) {
             if (!uid || Number(a.user_id) !== uid) return;
             if (!asigPuedeRevisar(a)) return;
             var e = String(a.empresa || '').toUpperCase().trim();
             if (!e) return;
-            if (!scope[e]) scope[e] = { wide: false, todasEmpresa: false, cuentasEmpresa: [], centros: {} };
+            if (!scope[e]) scope[e] = { wide: false, todasEmpresa: false, cuentasEmpresa: [], usuarios: undefined, centros: {} };
+            var ligadoA = vinculoRevision(a, byId);
             var code = String(a.centro_codigo || '').trim();
             var cuentas = (a.cuentas || []).map(function (c) { return String(c.codigo || '').trim(); }).filter(Boolean);
             if (isEmpresaCompleta(code)) {
                 scope[e].wide = true;
+                anotarUsuario(scope[e], ligadoA);
                 if (!cuentas.length) scope[e].todasEmpresa = true;
                 else cuentas.forEach(function (c) {
                     if (scope[e].cuentasEmpresa.indexOf(c) === -1) scope[e].cuentasEmpresa.push(c);
@@ -2198,8 +2256,10 @@
                 return;
             }
             if (!code) return;
-            if (!scope[e].centros[code]) scope[e].centros[code] = { todas: false, cuentas: [] };
-            var slot = scope[e].centros[code];
+            var ck = claveCentro(code);
+            if (!scope[e].centros[ck]) scope[e].centros[ck] = { todas: false, cuentas: [], usuarios: undefined };
+            var slot = scope[e].centros[ck];
+            anotarUsuario(slot, ligadoA);
             if (!cuentas.length) slot.todas = true;
             else cuentas.forEach(function (c) {
                 if (slot.cuentas.indexOf(c) === -1) slot.cuentas.push(c);
@@ -2223,12 +2283,21 @@
             if (!rule) return;
             var code = String(a.centro_codigo || '').trim();
             if (!code || isEmpresaCompleta(code)) return;
+            var ck = claveCentro(code);
             var permitidas = null;
             if (rule.wide) {
-                if (!rule.todasEmpresa) permitidas = rule.cuentasEmpresa || [];
+                var amplio = rule.centros[ck];
+                if (amplio && amplio.usuarios) {
+                    if (!usuarioEnRegla(amplio.usuarios, a)) return;
+                    if (!amplio.todas) permitidas = amplio.cuentas;
+                } else if (!usuarioEnRegla(rule.usuarios, a)) {
+                    return;
+                } else if (!rule.todasEmpresa) {
+                    permitidas = rule.cuentasEmpresa || [];
+                }
             } else {
-                var slot = rule.centros[code];
-                if (!slot) return;
+                var slot = rule.centros[ck];
+                if (!slot || !usuarioEnRegla(slot.usuarios, a)) return;
                 if (!slot.todas) permitidas = slot.cuentas;
             }
             var cuentas = filtrarCuentasAlcance(a.cuentas, permitidas);
@@ -2266,7 +2335,7 @@
 
     function aplicarHerenciaRevision(ciclo, luego) {
         var key = String(ciclo || '');
-        var propias = CC._asigPropias || CC.state.misAsignaciones || [];
+        var propias = filasDelUsuarioActual(CC._asigPropias || CC.state.misAsignaciones || []);
         if (!key || !revisionNecesitaHerencia(propias, key) || CC._revHerenciaCiclo === key) {
             if (luego) luego();
             return;
@@ -2279,6 +2348,7 @@
             cache: 'no-store'
         }).then(function (r) { return r.json(); }).then(function (json) {
             if (herenciaGen !== (CC._anAsigGen || 0)) return;
+            if (json && json.asignaciones) CC._anAsigTodas = json.asignaciones;
             var scope = alcanceRevisionPropio(propias);
             var uid = Number(CC.state.usuarioActualId || 0);
             var extras = filasCubiertasPorRevision(json.asignaciones || [], scope).filter(function (a) {
@@ -2309,7 +2379,7 @@
             var emp = String(a.empresa || '').toUpperCase();
             var code = String(a.centro_codigo || '').trim();
             if (!emp || !code || isEmpresaCompleta(code)) return;
-            var k = emp + '|' + code;
+            var k = emp + '|' + claveCentro(code);
             if (!map[k]) {
                 map[k] = {
                     codigo: a.centro_codigo,
@@ -4710,7 +4780,7 @@
     }
 
     function centroAnalisisKey(c) {
-        return String(c.empresa || '') + '|' + String(c.codigo || '');
+        return String(c.empresa || '').toUpperCase() + '|' + claveCentro(c.codigo);
     }
 
     function fillSelectKeep(el, items, valueKey, labelKey, extra) {
@@ -4730,6 +4800,9 @@
         }
         paintAnalisisYears();
         CC._anVistaConfirmada = false;
+        CC._asigPropias = null;
+        CC._anAsigTodas = null;
+        CC._revHerenciaCiclo = '';
         CC._anCapturaCiclo = null;
         CC._anAsigLoaded = false;
         CC._anAsigLoading = false;
@@ -4828,12 +4901,15 @@
             }).then(function (r) { return r.json(); }).then(function (json) {
                 if (asigGen !== CC._anAsigGen) return;
                 var list = (json && json.asignaciones) || [];
+                CC._anAsigTodas = list;
                 recordarAsignacionesPropias(list);
                 CC.state.misAsignaciones = filasVisiblesRevision(list);
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 fillAnalisisFilters();
                 aplicarHerenciaRevision(ciclo, function () {
                     if (asigGen !== CC._anAsigGen) return;
+                    var base = (CC._anAsigTodas && CC._anAsigTodas.length) ? CC._anAsigTodas : (CC.state.misAsignaciones || []);
+                    CC.state.misAsignaciones = filasVisiblesRevision(base);
                     CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                     CC._anAsigLoaded = true;
                     CC._anAsigLoading = false;
@@ -5026,6 +5102,7 @@
         CC.state.gastoUsdLookup = {};
         CC.state.gastoReady = {};
         CC._asigPropias = null;
+        CC._anAsigTodas = null;
         CC._revHerenciaCiclo = '';
         CC._revHerenciaLoading = '';
         CC._anAsigLoaded = false;

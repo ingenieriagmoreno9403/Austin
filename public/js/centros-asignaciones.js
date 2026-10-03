@@ -785,7 +785,7 @@
         CCAsig._filtrosBound = true;
         var qEl = document.getElementById('asig-q');
         if (qEl) qEl.addEventListener('input', renderTablaFiltrada);
-        ['asig-q-empresa', 'asig-q-usuario', 'asig-q-centro'].forEach(function (id) {
+        ['asig-q-empresa', 'asig-q-usuario', 'asig-q-centro', 'asig-q-permiso'].forEach(function (id) {
             var el = document.getElementById(id);
             if (!el) return;
             el.addEventListener('change', function () {
@@ -816,6 +816,11 @@
         return userOptionKey(r) === key;
     }
 
+    function filaTienePermiso(r, clave) {
+        if (!clave) return true;
+        return (r.permisos || []).some(function (p) { return String(p) === String(clave); });
+    }
+
     function opcionSigue(items, value) {
         if (!value) return '';
         for (var i = 0; i < items.length; i++) {
@@ -838,7 +843,8 @@
         var empEl = document.getElementById('asig-q-empresa');
         var userEl = document.getElementById('asig-q-usuario');
         var ccEl = document.getElementById('asig-q-centro');
-        if (!empEl && !userEl && !ccEl) return;
+        var permEl = document.getElementById('asig-q-permiso');
+        if (!empEl && !userEl && !ccEl && !permEl) return;
 
         var all = filasCaptura();
         var emp = empEl ? empEl.value : '';
@@ -886,9 +892,16 @@
         centros.sort(function (a, b) { return a.label.localeCompare(b.label, 'es'); });
         cc = opcionSigue(centros, cc);
 
+        var perm = permEl ? permEl.value : '';
+        var permisos = catalogoPermisos().map(function (p) {
+            return { value: String(p.clave), label: p.nombre || p.clave };
+        }).filter(function (p) { return p.value; });
+        perm = opcionSigue(permisos, perm);
+
         fillSelectFiltro(empEl, emps, '<option value="">Todas las empresas</option>', emp);
         fillSelectFiltro(userEl, users, '<option value="">Todos los usuarios</option>', user);
         fillSelectFiltro(ccEl, centros, '<option value="">Todos los centros</option>', cc);
+        fillSelectFiltro(permEl, permisos, '<option value="">Todos los permisos</option>', perm);
     }
 
     function isPrincipal(r) {
@@ -909,9 +922,140 @@
         return list.filter(isPrincipal)[0] || list[0] || row;
     }
 
+    function esCaptura(r) {
+        return (r.permisos || []).indexOf('capturar') !== -1;
+    }
+
+    function etiquetaTipoAsignacion(r) {
+        return esCaptura(r) ? 'Captura' : 'Revisión';
+    }
+
+    function textoCuentasAsignadas(r) {
+        var n = (r.cuentas || []).length;
+        if (n) return String(n);
+        return 'Todas';
+    }
+
+    function esAccesoDeUsuario(r) {
+        if (!r || esCaptura(r)) return false;
+        var pid = Number(r.parent_id || 0);
+        if (!pid) return false;
+        if (!(r.es_principal === false || r.es_principal === 0 || r.es_principal === '0')) return false;
+        if (isEmpresaCompleta(r.centro_codigo)) return false;
+        if (!(r.cuentas || []).length) return false;
+        return true;
+    }
+
+    function nombreCentroDe(r) {
+        var code = String((r && r.centro_codigo) || '').trim();
+        var nom = String((r && r.centro_nombre) || '').trim();
+        if (nom && nom !== code) return nom;
+        var emp = String((r && r.empresa) || '').toLowerCase();
+        var found = '';
+        (CCAsig._rows || []).some(function (x) {
+            if (String(x.empresa || '').toLowerCase() !== emp) return false;
+            if (String(x.centro_codigo || '').trim() !== code) return false;
+            var n = String(x.centro_nombre || '').trim();
+            if (!n || n === code) return false;
+            found = n;
+            return true;
+        });
+        return found || nom;
+    }
+
+    function esRevisionDeTodoElCentro(r) {
+        if (!r || esCaptura(r) || esAccesoDeUsuario(r)) return false;
+        if (isEmpresaCompleta(r.centro_codigo)) return false;
+        var perms = r.permisos || [];
+        if (perms.indexOf('revisar') === -1 && perms.indexOf('editar') === -1) return false;
+        return !(r.cuentas || []).length;
+    }
+
+    function personaDe(x) {
+        var nom = String((x && x.usuario) || '').trim();
+        var mail = String((x && x.email) || '').trim();
+        if (!nom || !mail) {
+            var u = catalogoUsuarios().filter(function (c) {
+                return String(c.id) === String(x && x.user_id);
+            })[0];
+            if (u) {
+                if (!nom) nom = String(u.nombre || '').trim();
+                if (!mail) mail = String(u.email || '').trim();
+            }
+        }
+        return { nombre: nom, email: mail };
+    }
+
+    function revisoresTodoElCentro(row) {
+        if (!row || !esCaptura(row)) return [];
+        var emp = String(row.empresa || '').toLowerCase();
+        var code = String(row.centro_codigo || '').trim();
+        var uid = Number(row.user_id || 0);
+        return (CCAsig._rows || []).filter(function (x) {
+            if (!esRevisionDeTodoElCentro(x)) return false;
+            if (Number(x.user_id) === uid) return false;
+            if (String(x.empresa || '').toLowerCase() !== emp) return false;
+            return String(x.centro_codigo || '').trim() === code;
+        });
+    }
+
+    function leyendaAccesos(row) {
+        var revisores = [];
+        var editores = [];
+        var vistos = {};
+        function sumar(x) {
+            var id = String(x.user_id || x.usuario || '');
+            if (!id || vistos[id] || Number(x.user_id) === Number(row.user_id)) return;
+            vistos[id] = true;
+            var perms = x.permisos || [];
+            var nom = personaDe(x).nombre;
+            if (perms.indexOf('revisar') !== -1) revisores.push(nom);
+            if (perms.indexOf('editar') !== -1) editores.push(nom);
+        }
+        extrasDe(row).forEach(function (x) {
+            if (esAccesoDeUsuario(x)) sumar(x);
+        });
+        if (esCaptura(row)) {
+            var emp = String(row.empresa || '').toLowerCase();
+            var code = String(row.centro_codigo || '').trim();
+            (CCAsig._rows || []).forEach(function (x) {
+                if (!esRevisionDeTodoElCentro(x)) return;
+                if (String(x.empresa || '').toLowerCase() !== emp) return;
+                if (String(x.centro_codigo || '').trim() !== code) return;
+                sumar(x);
+            });
+        }
+        function linea(n, uno, varios, nombres) {
+            if (!n) return '';
+            var txt = n + ' ' + (n === 1 ? uno : varios);
+            return '<span title="' + escapeHtml(nombres.filter(Boolean).join(', ')) + '">' + escapeHtml(txt) + '</span>';
+        }
+        var html = linea(revisores.length, 'revisor', 'revisores', revisores) +
+            linea(editores.length, 'editor', 'editores', editores);
+        if (!html) return '';
+        return '<div class="cc-asig-leyenda">' + html + '</div>';
+    }
+
+    function asignacionDueno(row) {
+        if (!row) return row;
+        if (isPrincipal(row) || esCaptura(row)) return row;
+        var pid = Number(row.parent_id || 0);
+        if (pid) {
+            var padre = (CCAsig._rows || []).filter(function (r) { return Number(r.id) === pid; })[0];
+            if (padre) return padre;
+        }
+        return principalDe(row);
+    }
+
     function extrasDe(row) {
-        var p = principalDe(row);
-        return delCentro(row).filter(function (r) { return Number(r.id) !== Number(p.id); });
+        var p = asignacionDueno(row);
+        var pid = Number(p && p.id);
+        if (!pid) return [];
+        return (CCAsig._rows || []).filter(function (r) {
+            if (Number(r.id) === pid) return false;
+            if (isPrincipal(r) || esCaptura(r)) return false;
+            return Number(r.parent_id || 0) === pid;
+        });
     }
 
     function catalogoPermisos() {
@@ -983,7 +1127,9 @@
     }
 
     function filasCaptura() {
-        return (CCAsig._rows || []).slice().sort(function (a, b) {
+        return (CCAsig._rows || []).filter(function (r) {
+            return !esAccesoDeUsuario(r);
+        }).slice().sort(function (a, b) {
             var ua = String(a.usuario || '').toLowerCase();
             var ub = String(b.usuario || '').toLowerCase();
             if (ua !== ub) return ua < ub ? -1 : 1;
@@ -1018,14 +1164,16 @@
         var qEmp = filtroVal('asig-q-empresa');
         var qUser = filtroVal('asig-q-usuario');
         var qCc = filtroVal('asig-q-centro');
+        var qPerm = filtroVal('asig-q-permiso');
         var rows = all.filter(function (r) {
             if (q && !matchQuery(textoFila(r), q)) return false;
             if (qEmp && String(r.empresa || '').toLowerCase() !== qEmp.toLowerCase()) return false;
             if (qUser && !filaTieneUsuario(r, qUser)) return false;
             if (qCc && centroFiltroKey(r) !== qCc) return false;
+            if (qPerm && !filaTienePermiso(r, qPerm)) return false;
             return true;
         });
-        renderTabla(rows, CCAsig.ciclo, all.length, q || qEmp || qUser || qCc);
+        renderTabla(rows, CCAsig.ciclo, all.length, q || qEmp || qUser || qCc || qPerm);
     }
 
     function renderTabla(rows, ciclo, total, filtrando) {
@@ -1062,17 +1210,18 @@
                     '<span class="cc-asig-group-n">' + n + (n === 1 ? ' centro' : ' centros') + '</span>' +
                     '</div></td></tr>');
             }
+            var revision = !esCaptura(r);
             html.push('<tr data-id="' + r.id + '" data-empresa="' + escapeHtml(r.empresa || '') + '" data-cc="' + escapeHtml(r.centro_codigo || '') + '">' +
                 '<td><div class="fw-semibold">' + escapeHtml(r.usuario) + '</div>' +
-                '<div class="text-muted" style="font-size:.75rem">' + (isPrincipal(r) ? 'Captura' : 'Acceso') + '</div></td>' +
+                '<div class="text-muted" style="font-size:.75rem">' + etiquetaTipoAsignacion(r) + '</div></td>' +
                 '<td>' + String(r.empresa || '').toUpperCase() + '</td>' +
-                '<td>' + escapeHtml(etiquetaCentro(r.centro_codigo, r.centro_nombre)) + '</td>' +
-                '<td>' + (r.cuentas || []).length + '</td>' +
-                '<td>' + permBadges(r.permisos) + '</td>' +
+                '<td>' + escapeHtml(etiquetaCentro(r.centro_codigo, nombreCentroDe(r))) + '</td>' +
+                '<td>' + textoCuentasAsignadas(r) + '</td>' +
+                '<td><div class="cc-asig-perm">' + permBadges(r.permisos) + leyendaAccesos(r) + '</div></td>' +
                 '<td><div class="cc-row-actions">' +
                     '<button type="button" class="cc-icon-btn" data-act="ver" title="Ver"><i class="fa-solid fa-eye"></i></button>' +
-                    '<button type="button" class="cc-icon-btn" data-act="editar" title="Editar"><i class="fa-solid fa-pen"></i></button>' +
-                    '<button type="button" class="cc-icon-btn" data-act="permisos" title="Permisos"><i class="fa-solid fa-user-lock"></i></button>' +
+                    '<button type="button" class="cc-icon-btn" data-act="editar" title="' + (revision ? 'No aplica en revisión' : 'Editar') + '"' + (revision ? ' disabled' : '') + '><i class="fa-solid fa-pen"></i></button>' +
+                    '<button type="button" class="cc-icon-btn" data-act="permisos" title="' + (revision ? 'No aplica en revisión' : 'Permisos') + '"' + (revision ? ' disabled' : '') + '><i class="fa-solid fa-user-lock"></i></button>' +
                     '<button type="button" class="cc-icon-btn is-danger" data-act="del" title="Quitar"><i class="fa-solid fa-trash"></i></button>' +
                 '</div></td>' +
                 '</tr>');
@@ -1085,8 +1234,8 @@
                 if (!row) return;
                 var act = btn.getAttribute('data-act');
                 if (act === 'ver') openVer(row);
-                if (act === 'editar') openEditar(row);
-                if (act === 'permisos') openPermisos(row);
+                if (act === 'editar' && esCaptura(row)) openEditar(row);
+                if (act === 'permisos' && esCaptura(row)) openPermisos(row);
                 if (act === 'del') eliminarAsignacion(row);
             });
         });
@@ -1184,8 +1333,8 @@
 
     function openVer(row) {
         CCAsig._activo = row;
-        var p = principalDe(row);
-        var extras = extrasDe(row);
+        var p = asignacionDueno(row);
+        var extras = extrasDe(row).concat(revisoresTodoElCentro(row));
         var title = document.getElementById('asig-ver-title');
         if (title) title.textContent = 'Ver · ' + etiquetaCentro(row.centro_codigo, row.centro_nombre);
         var cuentas = (p.cuentas || row.cuentas || []).map(function (c) {
@@ -1193,9 +1342,11 @@
         }).join('') || '<li class="text-muted">Sin cuentas</li>';
         var extrasHtml = extras.length
             ? extras.map(function (x) {
+                var persona = personaDe(x);
+                var nota = esRevisionDeTodoElCentro(x) ? ' · Todo el centro' : '';
                 return '<div class="cc-user" style="margin-bottom:.35rem">' +
-                    '<span class="cc-avatar">' + initials(x.usuario) + '</span>' +
-                    '<span>' + escapeHtml(x.usuario) + ' · ' + permBadges(x.permisos) + '</span></div>';
+                    '<span class="cc-avatar">' + initials(persona.nombre) + '</span>' +
+                    '<span>' + escapeHtml(persona.nombre || '—') + nota + ' · ' + permBadges(x.permisos) + '</span></div>';
             }).join('')
             : '<span class="text-muted">Nadie más tiene acceso.</span>';
         document.getElementById('asig-ver-body').innerHTML =
@@ -1208,6 +1359,11 @@
             '<div class="cc-form-kicker">Cuentas</div>' +
             '<ul class="cc-ver-cuentas">' + cuentas + '</ul>' +
             '<div class="cc-form-kicker">Otros usuarios</div>' + extrasHtml;
+        var revision = !esCaptura(row);
+        var verEdit = document.getElementById('asig-ver-editar');
+        var verPerm = document.getElementById('asig-ver-permisos');
+        if (verEdit) verEdit.disabled = revision;
+        if (verPerm) verPerm.disabled = revision;
         showModal('modalAsigVer');
     }
 
@@ -1217,7 +1373,7 @@
 
     function openEditarNow(row) {
         CCAsig._activo = row;
-        var p = principalDe(row);
+        var p = asignacionDueno(row);
         var title = document.getElementById('asig-edit-title');
         var sub = document.getElementById('asig-edit-sub');
         if (title) title.textContent = 'Editar cuentas · ' + etiquetaCentro(row.centro_codigo, row.centro_nombre);
@@ -1268,7 +1424,7 @@
             CCAsig._cuentasCache[key] = json.cuentas || [];
             apply(CCAsig._cuentasCache[key], json.agrupaciones || []);
         }).catch(function () {
-            apply((principalDe(CCAsig._activo).cuentas) || [], []);
+            apply((asignacionDueno(CCAsig._activo).cuentas) || [], []);
         });
     }
 
@@ -1402,15 +1558,29 @@
 
     function openPermisosNow(row) {
         CCAsig._activo = row;
-        var p = principalDe(row);
+        var p = asignacionDueno(row);
         CCAsig._permPrincipal = p;
-        CCAsig._accesos = extrasDe(row).map(function (x) {
+        CCAsig._accesos = extrasDe(row).filter(function (x) {
+            return esAccesoDeUsuario(x);
+        }).map(function (x) {
+            var persona = personaDe(x);
             return {
                 id: x.id,
                 user_id: x.user_id,
-                usuario: x.usuario,
-                email: x.email,
+                usuario: persona.nombre,
+                email: persona.email,
                 permisos: (x.permisos || []).slice()
+            };
+        });
+        CCAsig._revisoresCentro = revisoresTodoElCentro(p).map(function (x) {
+            var persona = personaDe(x);
+            return {
+                id: x.id,
+                user_id: x.user_id,
+                usuario: persona.nombre,
+                email: persona.email,
+                permisos: (x.permisos || []).slice(),
+                todoCentro: true
             };
         });
         CCAsig._accPick = null;
@@ -1422,7 +1592,8 @@
         if (av) av.textContent = initials(p.usuario);
         if (nom) nom.textContent = p.usuario || '—';
         if (mail) mail.textContent = p.email || '';
-        document.getElementById('asig-perm-principal').innerHTML = permChecksHtml('perm-principal', p.permisos);
+        var permGrid = document.getElementById('asig-perm-principal');
+        if (permGrid) permGrid.innerHTML = permChecksHtml('perm-principal', p.permisos);
         var q = document.getElementById('asig-acc-q');
         if (q) q.value = '';
         var addBox = document.getElementById('asig-acc-add-box');
@@ -1440,15 +1611,18 @@
         var taken = {};
         taken[String(p.user_id)] = true;
         (CCAsig._accesos || []).forEach(function (a) { taken[String(a.user_id)] = true; });
+        (CCAsig._revisoresCentro || []).forEach(function (a) { taken[String(a.user_id)] = true; });
         var rows = catalogoUsuarios().filter(function (u) {
             if (taken[String(u.id)]) return false;
             if (!q) return true;
             return (u.nombre + ' ' + (u.email || '')).toLowerCase().indexOf(q) !== -1;
         }).slice(0, 40);
         if (!q) {
-            list.innerHTML = '<div class="cc-empty">Escribe para buscar a quién dar acceso.</div>';
+            list.hidden = true;
+            list.innerHTML = '';
             return;
         }
+        list.hidden = false;
         if (!rows.length) {
             list.innerHTML = '<div class="cc-empty">Sin coincidencias</div>';
             return;
@@ -1480,23 +1654,32 @@
         var q = document.getElementById('asig-acc-q');
         if (q) q.value = u.nombre;
         var list = document.getElementById('asig-acc-pick');
-        if (list) list.innerHTML = '';
+        if (list) {
+            list.innerHTML = '';
+            list.hidden = true;
+        }
     }
 
     function renderAccesos() {
         var tb = document.getElementById('asig-acc-tbody');
         if (!tb) return;
-        var rows = CCAsig._accesos || [];
+        var propios = CCAsig._accesos || [];
+        var delCentroRev = CCAsig._revisoresCentro || [];
+        var rows = propios.concat(delCentroRev);
         if (!rows.length) {
-            tb.innerHTML = '<tr><td colspan="3"><div class="cc-empty">Nadie más tiene acceso a este centro.</div></td></tr>';
+            tb.innerHTML = '<tr><td colspan="3"><div class="cc-empty">Nadie más tiene acceso a este usuario.</div></td></tr>';
             return;
         }
         tb.innerHTML = rows.map(function (a, i) {
+            var quitar = a.todoCentro
+                ? ''
+                : '<button type="button" class="cc-icon-btn is-danger" data-acc-del="' + i + '" title="Quitar acceso"><i class="fa-solid fa-xmark"></i></button>';
+            var nota = a.todoCentro ? '<div class="text-muted" style="font-size:.75rem">Revisa todo el centro</div>' : '';
             return '<tr>' +
-                '<td><div class="fw-semibold">' + escapeHtml(a.usuario) + '</div>' +
-                '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(a.email || '') + '</div></td>' +
+                '<td><div class="fw-semibold">' + escapeHtml(a.usuario || '—') + '</div>' +
+                '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(a.email || '') + '</div>' + nota + '</td>' +
                 '<td>' + permBadges(a.permisos) + '</td>' +
-                '<td><button type="button" class="cc-icon-btn is-danger" data-acc-del="' + i + '" title="Quitar acceso"><i class="fa-solid fa-xmark"></i></button></td>' +
+                '<td>' + quitar + '</td>' +
                 '</tr>';
         }).join('');
         tb.querySelectorAll('[data-acc-del]').forEach(function (btn) {
@@ -1511,13 +1694,14 @@
     function eliminarAsignacion(row) {
         var extras = extrasDe(row);
         var esP = isPrincipal(row);
-        var text = esP && extras.length
-            ? 'También se quitará el acceso de ' + extras.length + (extras.length === 1 ? ' usuario' : ' usuarios') + ' a este centro.'
-            : 'Se quitará a ' + (row.usuario || 'este usuario') + ' de ' + (etiquetaCentro(row.centro_codigo, row.centro_nombre) || 'este centro') + '.';
+        var text = esRevisionDeTodoElCentro(row)
+            ? 'Se quita la revisión de este centro para todos los usuarios que lo tienen.'
+            : (esP && extras.length
+                ? 'También se quitará el acceso de ' + extras.length + (extras.length === 1 ? ' usuario' : ' usuarios') + ' a este usuario.'
+                : 'Se quitará a ' + (row.usuario || 'este usuario') + ' de ' + (etiquetaCentro(row.centro_codigo, row.centro_nombre) || 'este centro') + '.');
         var go = function () {
             sendJSON(asigUrl(row.id), 'DELETE').then(function () {
-                toast('success', 'Asignación eliminada');
-                reloadTabla();
+                window.location.reload();
             }).catch(function (err) {
                 toast('error', 'No se pudo quitar', err.message);
             });
@@ -1716,7 +1900,7 @@
             }
             var btn = document.getElementById('asig-edit-guardar');
             if (btn) btn.disabled = true;
-            var target = isPrincipal(CCAsig._activo) ? CCAsig._activo : principalDe(CCAsig._activo);
+            var target = asignacionDueno(CCAsig._activo);
             sendJSON(asigUrl(target.id), 'PUT', { cuentas: cuentas }).then(function () {
                 hideModal('modalAsigEditar');
                 toast('success', 'Cuentas actualizadas', 'El gasto nuevo se guarda en la copia local.');
@@ -1757,10 +1941,7 @@
             var p = CCAsig._permPrincipal;
             if (!p) return;
             var permisos = selectedPerms('asig-perm-principal', 'perm-principal');
-            if (!permisos.length) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Falta un permiso', text: 'El usuario a cargo necesita al menos un permiso.' });
-                return;
-            }
+            if (!permisos.length) permisos = (p.permisos && p.permisos.length) ? p.permisos.slice() : ['capturar'];
             var accesos = (CCAsig._accesos || []).map(function (a) {
                 return { user_id: a.user_id, permisos: a.permisos && a.permisos.length ? a.permisos : ['revisar'] };
             });
@@ -1812,6 +1993,8 @@
         var ctaLoaded = false;
         var lastFlashKey = '';
         var currentUserId = 0;
+        var savesEnCurso = 0;
+        var copiaBusy = false;
 
         function showCtaLoading() {
             ctaLoaded = false;
@@ -2811,6 +2994,7 @@
             var box = document.getElementById('asig-resultados');
             if (box) box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
+            savesEnCurso += 1;
             fetch(cfg.storeUrl, {
                 method: 'POST',
                 headers: {
@@ -2828,17 +3012,120 @@
                     }
                     var savedRow = (res.json && res.json.asignacion) ? res.json.asignacion : local;
                     savedRow.pending = false;
+                    savedRow.needsSnapshot = true;
                     upsertSaved(savedRow);
-                    if (res.json && res.json.snapshot) {
-                        toast('info', 'Gasto del centro', 'Se está guardando en la copia local.');
-                    }
                     renderResumen();
                     renderEmpresaCards();
                     markEmpresaCard(cfg.empresa);
                     fillCentros(ccQ ? ccQ.value : '');
                 }).catch(function () {
                     if (window.Swal) Swal.fire({ icon: 'error', title: 'No se guardó en servidor', text: 'La fila ya está en la tabla de resultados.' });
+                }).then(function () {
+                    savesEnCurso = Math.max(0, savesEnCurso - 1);
                 });
+        }
+
+        function centrosParaCopia() {
+            var vistos = {};
+            var items = [];
+            saved.forEach(function (row) {
+                if (!row.needsSnapshot) return;
+                var cc = String(row.centro_codigo || '').toUpperCase();
+                if (!cc || cc === 'SIN_CC' || cc === 'EMPRESA') return;
+                var key = String(row.empresa || '').toUpperCase() + '|' + cc;
+                if (vistos[key]) return;
+                vistos[key] = true;
+                items.push({
+                    empresa: row.empresa,
+                    centro_codigo: row.centro_codigo,
+                    cuentas: row.cuentas || []
+                });
+            });
+            return items;
+        }
+
+        function marcarCopiaHecha() {
+            saved.forEach(function (row) { row.needsSnapshot = false; });
+        }
+
+        var btnFinGuardar = document.getElementById('asig-fin-guardar');
+        var btnFinSeguir = document.getElementById('asig-fin-seguir');
+        var htmlFinGuardar = btnFinGuardar ? btnFinGuardar.innerHTML : '';
+        var htmlFinSeguir = btnFinSeguir ? btnFinSeguir.innerHTML : '';
+
+        function setGuardando(on, btn) {
+            [btnFinGuardar, btnFinSeguir].forEach(function (el) {
+                if (el) el.disabled = !!on;
+            });
+            if (btnFinGuardar) {
+                btnFinGuardar.innerHTML = (on && btn === btnFinGuardar)
+                    ? '<i class="fa-solid fa-spinner fa-spin"></i> Guardando…'
+                    : htmlFinGuardar;
+            }
+            if (btnFinSeguir) {
+                btnFinSeguir.innerHTML = (on && btn === btnFinSeguir)
+                    ? '<i class="fa-solid fa-spinner fa-spin"></i> Guardando…'
+                    : htmlFinSeguir;
+            }
+        }
+
+        function cuandoTermineAsignar(fn) {
+            if (!savesEnCurso) {
+                fn();
+                return;
+            }
+            var n = 0;
+            var t = setInterval(function () {
+                n += 1;
+                if (!savesEnCurso || n > 80) {
+                    clearInterval(t);
+                    fn();
+                }
+            }, 250);
+        }
+
+        function guardarCopiaLocal(btn, luego) {
+            if (copiaBusy) return;
+            if (!saved.length) {
+                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Nada que guardar', text: 'Asigna al menos un centro a la tabla de resultados.' });
+                return;
+            }
+            copiaBusy = true;
+            setGuardando(true, btn);
+            cuandoTermineAsignar(function () {
+                var items = centrosParaCopia();
+                var listo = function () {
+                    if (luego) luego();
+                };
+                if (!items.length || !cfg.snapshotUrl) {
+                    listo();
+                    return;
+                }
+                fetch(cfg.snapshotUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Accept: 'application/json',
+                        'X-CSRF-TOKEN': csrf,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: JSON.stringify({ items: items })
+                }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); })
+                    .then(function (res) {
+                        if (!res.ok || !res.json || res.json.ok === false) {
+                            copiaBusy = false;
+                            setGuardando(false, btn);
+                            if (window.Swal) Swal.fire({ icon: 'error', title: 'No se guardó la copia local', text: (res.json && res.json.message) || 'Vuelve a pulsar Guardar.' });
+                            return;
+                        }
+                        marcarCopiaHecha();
+                        listo();
+                    }).catch(function () {
+                        copiaBusy = false;
+                        setGuardando(false, btn);
+                        if (window.Swal) Swal.fire({ icon: 'error', title: 'No se guardó la copia local', text: 'Vuelve a pulsar Guardar.' });
+                    });
+            });
         }
 
         if (btnSave) btnSave.addEventListener('click', function (ev) {
@@ -2846,45 +3133,18 @@
             aplicarAResultados();
         });
 
-        var btnFinGuardar = document.getElementById('asig-fin-guardar');
         if (btnFinGuardar) btnFinGuardar.addEventListener('click', function (ev) {
             ev.preventDefault();
-            if (!saved.length) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Nada que guardar', text: 'Asigna al menos un centro a la tabla de resultados.' });
-                return;
-            }
-            if (window.Swal) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Asignaciones guardadas',
-                    text: saved.length + (saved.length === 1 ? ' centro asignado.' : ' centros asignados.'),
-                    timer: 1400,
-                    showConfirmButton: false
-                });
-            }
+            guardarCopiaLocal(btnFinGuardar, function () {
+                window.location.reload();
+            });
         });
 
-        var btnFinSeguir = document.getElementById('asig-fin-seguir');
         if (btnFinSeguir) btnFinSeguir.addEventListener('click', function (ev) {
             ev.preventDefault();
-            if (!saved.length) {
-                if (window.Swal) Swal.fire({ icon: 'warning', title: 'Nada que guardar', text: 'Asigna al menos un centro a la tabla de resultados.' });
-                return;
-            }
-            var goCiclo = function () {
+            guardarCopiaLocal(btnFinSeguir, function () {
                 window.location.href = cfg.cicloUrl || ('/AdminCentros/' + encodeURIComponent(cfg.ciclo));
-            };
-            if (window.Swal) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Asignaciones guardadas',
-                    text: saved.length + (saved.length === 1 ? ' centro asignado.' : ' centros asignados.'),
-                    timer: 1400,
-                    showConfirmButton: false
-                }).then(goCiclo);
-            } else {
-                goCiclo();
-            }
+            });
         });
 
         if (userQ) userQ.addEventListener('input', function () { fillUsers(userQ.value); });

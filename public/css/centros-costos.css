@@ -512,6 +512,9 @@
     grid-template-columns: minmax(180px, 1.45fr) repeat(3, minmax(0, 1fr));
     align-items: end;
 }
+.cc-filters-asig:has(#asig-q-permiso) {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(160px, 1.25fr);
+}
 .cc-filters-asig .cc-pick-search { margin-bottom: 0; }
 .cc-filters-asig .cc-filter-q .cc-input {
     letter-spacing: 0;
@@ -672,6 +675,23 @@ body > .select2-container--open:has(.cc-select-search-drop) {
 .cc-badge-aceptado { background: var(--cc-ok-bg); color: var(--cc-ok); }
 .cc-badge-rechazado { background: var(--cc-danger-bg); color: var(--cc-danger); }
 .cc-badge-captura { background: #ecfeff; color: #0e7490; }
+.cc-asig-perm {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+}
+.cc-asig-leyenda {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.08rem;
+    margin-top: 0.28rem;
+    font-size: 0.72rem;
+    font-weight: 300;
+    color: var(--cc-muted);
+    line-height: 1.25;
+    text-align: center;
+}
 .cc-badge-solo_revision { background: #fafafa; color: #525252; border: 1px solid var(--cc-line); }
 
 .cc-estado-pick {
@@ -2045,6 +2065,13 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     color: var(--cc-ink); cursor: pointer;
 }
 .cc-icon-btn:hover { background: var(--cc-ink); color: #fff; }
+.cc-icon-btn:disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
+    pointer-events: none;
+    background: #f4f4f5;
+    color: #a1a1aa;
+}
 .cc-icon-btn.is-danger:hover { background: #b91c1c; border-color: #b91c1c; color: #fff; }
 .cc-ver-cuentas {
     list-style: none;
@@ -2166,7 +2193,8 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     .cc-kpis-equal { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .cc-page { padding: 0.85rem 0.75rem 2rem; }
     .cc-filters,
-    .cc-filters-asig { grid-template-columns: 1fr; }
+    .cc-filters-asig,
+    .cc-filters-asig:has(#asig-q-permiso) { grid-template-columns: 1fr; }
     .cc-header-logo { height: 48px; }
     .cc-toolbar { flex-wrap: wrap; }
 }

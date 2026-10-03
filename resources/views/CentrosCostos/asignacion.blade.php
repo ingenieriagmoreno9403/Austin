@@ -196,6 +196,7 @@
         cicloUrl: @json(route('centros.ciclo', $ciclo)),
         listUrl: @json(route('centros.asignaciones.index', $ciclo)),
         storeUrl: @json(route('centros.asignaciones.store', $ciclo)),
+        snapshotUrl: @json(route('centros.asignaciones.snapshot', $ciclo)),
         csrf: @json(csrf_token()),
         usuarios: @json($bootstrap['usuarios'] ?? [])
     });
