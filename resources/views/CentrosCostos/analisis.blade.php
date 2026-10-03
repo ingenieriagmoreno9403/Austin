@@ -60,8 +60,6 @@
         </div>
     </div>
 
-    @include('CentrosCostos.partials.nav')
-
     <div class="cc-panel">
         <div class="cc-filters cc-filters-asig cc-filters-buscar">
             <div class="cc-filter-field">
@@ -172,7 +170,7 @@
             </div>
         </div>
         <div class="cc-table-wrap">
-            <table class="cc-table">
+            <table class="cc-table cc-an-detalle">
                 <thead>
                     <tr>
                         <th>Empresa</th>
@@ -188,6 +186,7 @@
                     </tr>
                 </thead>
                 <tbody id="an-tbody"></tbody>
+                <tfoot id="an-tfoot"></tfoot>
             </table>
         </div>
     </div>
