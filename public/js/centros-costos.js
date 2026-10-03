@@ -1830,15 +1830,51 @@
         return CC.state.centros.map(mergedCentro).filter(function (c) { return centroKey(c) === key; })[0];
     }
 
-    function userCell(name, extraNames) {
-        if (!name) return '<span class="text-muted">Sin asignar</span>';
-        var head = String(name);
-        var resto = (extraNames || []).filter(function (n) { return n && n !== head; });
-        var more = '';
-        if (resto.length) {
-            more = '<span class="cc-user-more" tabindex="0" data-users="' + escapeHtml(JSON.stringify(resto)) + '" aria-label="' + escapeHtml(resto.length + ' más: ' + resto.join(', ')) + '">+' + resto.length + '</span>';
+    function listaUsuarios(names) {
+        var uniq = [];
+        (names || []).forEach(function (n) {
+            n = String(n || '').replace(/\s+/g, ' ').trim();
+            if (n && uniq.indexOf(n) === -1) uniq.push(n);
+        });
+        return uniq;
+    }
+
+    function usersFromAttr(raw) {
+        raw = String(raw || '');
+        if (!raw) return [];
+        if (raw.charAt(0) === '[') {
+            try {
+                var parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) return listaUsuarios(parsed);
+            } catch (e) {}
         }
-        return '<span class="cc-user"><span class="cc-avatar">' + initials(head) + '</span><span>' + escapeHtml(head) + '</span>' + more + '</span>';
+        try { raw = decodeURIComponent(raw); } catch (e2) {}
+        return listaUsuarios(raw.split('\n'));
+    }
+
+    function userCell(name, extraNames) {
+        var all = listaUsuarios([name].concat(extraNames || []));
+        if (!all.length) return '<span class="text-muted">Sin asignar</span>';
+        var resto = all.slice(1);
+        var more = resto.length
+            ? '<span class="cc-user-more" tabindex="0" data-users="' + encodeURIComponent(all.join('\n')) + '" aria-label="' + escapeHtml(all.join(', ')) + '">+' + resto.length + '</span>'
+            : '';
+        return '<span class="cc-user"><span class="cc-avatar">' + initials(all[0]) + '</span><span>' + escapeHtml(all[0]) + '</span>' + more + '</span>';
+    }
+
+    function htmlPilaUsuarios(names, withName) {
+        var uniq = listaUsuarios(names);
+        if (!uniq.length) return '<span class="text-muted">Sin asignar</span>';
+        var extra = uniq.length - 1;
+        var mostrarNombre = !extra && !!withName;
+        var more = extra ? '<span class="cc-avatar cc-avatar-more">+' + extra + '</span>' : '';
+        var nombre = mostrarNombre ? '<span class="cc-user-name">' + escapeHtml(uniq[0]) + '</span>' : '';
+        var tip = extra || !mostrarNombre;
+        var cls = 'cc-user' + (extra ? ' cc-user-stack' : '') + (tip ? ' cc-user-more' : '');
+        var attrs = tip
+            ? ' tabindex="0" data-users="' + encodeURIComponent(uniq.join('\n')) + '" aria-label="' + escapeHtml(uniq.join(', ')) + '"'
+            : '';
+        return '<span class="' + cls + '"' + attrs + '><span class="cc-avatar">' + initials(uniq[0]) + '</span>' + more + nombre + '</span>';
     }
 
     function userTipEl() {
@@ -1857,9 +1893,17 @@
         if (tip) tip.hidden = true;
     }
 
+    function tipUsuariosDe(el) {
+        var nodo = el;
+        while (nodo && nodo !== document) {
+            if (nodo.getAttribute && nodo.getAttribute('data-users')) return nodo;
+            nodo = nodo.parentNode;
+        }
+        return null;
+    }
+
     function showUserTip(el) {
-        var names = [];
-        try { names = JSON.parse(el.getAttribute('data-users') || '[]'); } catch (e) { names = []; }
+        var names = usersFromAttr(el.getAttribute('data-users') || '');
         if (!names.length) return;
         var tip = userTipEl();
         tip.innerHTML = names.map(function (n) { return '<div>' + escapeHtml(n) + '</div>'; }).join('');
@@ -1876,22 +1920,26 @@
         if (CC._userTipBound) return;
         CC._userTipBound = true;
         document.addEventListener('mouseover', function (e) {
-            var el = e.target && e.target.closest ? e.target.closest('.cc-user-more') : null;
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
             if (!el) return;
             showUserTip(el);
         });
         document.addEventListener('mouseout', function (e) {
-            var el = e.target && e.target.closest ? e.target.closest('.cc-user-more') : null;
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
             if (!el) return;
             if (e.relatedTarget && el.contains(e.relatedTarget)) return;
             hideUserTip();
         });
         document.addEventListener('focusin', function (e) {
-            var el = e.target && e.target.closest ? e.target.closest('.cc-user-more') : null;
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
             if (el) showUserTip(el);
         });
         document.addEventListener('focusout', function (e) {
-            var el = e.target && e.target.closest ? e.target.closest('.cc-user-more') : null;
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
             if (el) hideUserTip();
         });
         window.addEventListener('scroll', hideUserTip, true);
@@ -3371,18 +3419,26 @@
         return '';
     }
 
-    function usuariosDeCuenta(centro, codigo) {
+    function cuentaAsignadaA(codigo, cuentas) {
+        var lista = cuentas || [];
+        if (!lista.length) return true;
         var keys = {};
         clavesCuentaLookup(codigo).forEach(function (k) { keys[String(k)] = true; });
+        var norm = cuentaAsignadaNorm(codigo);
+        return lista.some(function (x) {
+            if (clavesCuentaLookup(x && x.codigo).some(function (k) { return keys[String(k)]; })) return true;
+            var otro = cuentaAsignadaNorm(x && x.codigo);
+            return !!(norm && otro && norm === otro);
+        });
+    }
+
+    function usuariosDeCuenta(centro, codigo) {
         var names = [];
         var principal = '';
         asigsDe(centro).forEach(function (a) {
-            var nombre = String(a.usuario || '').trim();
+            var nombre = String(a.usuario || '').replace(/\s+/g, ' ').trim();
             if (!nombre) return;
-            var hit = (a.cuentas || []).some(function (x) {
-                return clavesCuentaLookup(x && x.codigo).some(function (k) { return keys[String(k)]; });
-            });
-            if (!hit) return;
+            if (!cuentaAsignadaA(codigo, a.cuentas)) return;
             if (names.indexOf(nombre) === -1) names.push(nombre);
             if (a.es_principal && !principal) principal = nombre;
         });
@@ -3392,14 +3448,15 @@
         return names;
     }
 
+    function usuariosDelCentro(c) {
+        var names = (c && c.usuarios) ? c.usuarios.slice() : [];
+        if (c && c.usuario) names.unshift(c.usuario);
+        asigsDe(c || {}).forEach(function (a) { names.push(a.usuario); });
+        return listaUsuarios(names);
+    }
+
     function celdaUsuariosCuenta(centro, cta) {
-        var names = usuariosDeCuenta(centro, cta && cta.codigo);
-        if (!names.length) return '<td class="cc-col-users"><span class="text-muted">—</span></td>';
-        var extra = names.length - 1;
-        var more = extra
-            ? '<span class="cc-avatar cc-avatar-more">+' + extra + '</span>'
-            : '';
-        return '<td class="cc-col-users"><span class="cc-user cc-user-stack cc-user-more" tabindex="0" data-users="' + escapeHtml(JSON.stringify(names)) + '" aria-label="' + escapeHtml(names.join(', ')) + '"><span class="cc-avatar">' + initials(names[0]) + '</span>' + more + '</span></td>';
+        return '<td class="cc-col-users">' + htmlPilaUsuarios(usuariosDeCuenta(centro, cta && cta.codigo), false) + '</td>';
     }
 
     function paintMonthTableFoot(tbodyId, ctas) {
@@ -3859,7 +3916,7 @@
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
                 factHtml('Gasto', gastoListo ? money(stt.totG) : 'Cargando…', '', !gastoListo) +
                 factHtml('Presupuestado', presupuestoListo() ? money(stt.totP) : 'Cargando…', '', !presupuestoListo()) +
-                factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
+                factHtml('Usuario', htmlPilaUsuarios(usuariosDelCentro(c), true)) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
                 factHtml('Progreso', stt.avance + '%',
                     '<div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span></div>' +
@@ -5473,10 +5530,10 @@
                 var cls = c.avance < 40 ? 'warn' : (c.over ? 'bad' : 'good');
                 var todos = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
                 var principal = c.usuario || todos[0] || '';
-                var resto = todos.filter(function (n) { return n && n !== principal; });
+                var personas = listaUsuarios([principal].concat(todos));
                 return '<tr><td>' + escapeHtml(c.empresa || '—') + '</td>' +
                     '<td><div class="fw-semibold">' + escapeHtml(c.codigo) + ' — ' + escapeHtml(c.nombre) + '</div><div class="text-muted" style="font-size:.75rem">' + escapeHtml(c.departamento || '') + '</div></td>' +
-                    '<td>' + userCell(principal, resto) + '</td>' +
+                    '<td>' + htmlPilaUsuarios(personas, true) + '</td>' +
                     '<td>' + renderBadge(c.estado) + '</td>' +
                     '<td><div class="d-flex justify-content-between"><span>' + c.capturadas + '/' + c.cuentas + '</span><span>' + c.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(c.avance, 100) + '%"></span></div></td>' +
                     '<td class="num">' + (c.gastoListo ? moneyVista(c.gasto) : htmlCargando('sm')) + '</td>' +

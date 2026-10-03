@@ -95,14 +95,14 @@
                     <option value="">Todas las empresas</option>
                 </select>
             </label>
-            <label class="cc-filter-field" for="asig-q-usuario">Usuario
-                <select id="asig-q-usuario" class="cc-select" aria-label="Filtrar por usuario">
-                    <option value="">Todos los usuarios</option>
-                </select>
-            </label>
             <label class="cc-filter-field" for="asig-q-centro">Centro de costos
                 <select id="asig-q-centro" class="cc-select" aria-label="Filtrar por centro de costo">
                     <option value="">Todos los centros</option>
+                </select>
+            </label>
+            <label class="cc-filter-field" for="asig-q-usuario">Usuario
+                <select id="asig-q-usuario" class="cc-select" aria-label="Filtrar por usuario">
+                    <option value="">Todos los usuarios</option>
                 </select>
             </label>
         </div>

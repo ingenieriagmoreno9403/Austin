@@ -1350,7 +1350,9 @@ body > .select2-container--open:has(.cc-select-search-drop) {
 }
 .cc-user-stack.cc-user-more,
 .cc-user-stack.cc-user-more:hover,
-.cc-user-stack.cc-user-more:focus {
+.cc-user-stack.cc-user-more:focus,
+.cc-col-users .cc-user-more,
+.cc-detalle-fact .cc-user-more {
     border-bottom: 0;
     color: inherit;
 }
@@ -3378,6 +3380,13 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     margin-top: 0.12rem;
     font-size: 0.88rem;
     line-height: 1.25;
+}
+.cc-detalle-fact .cc-user { max-width: 100%; }
+.cc-detalle-fact .cc-user-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 .cc-detalle-fact .cc-visor-avance { min-width: 90px; margin-top: 0.2rem; }
 .cc-visor-avance {

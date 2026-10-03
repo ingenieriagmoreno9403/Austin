@@ -811,13 +811,9 @@
         return String(r.empresa || '').toLowerCase() + '|' + String(r.centro_codigo || '');
     }
 
-    function personasDeFila(r) {
-        return [r].concat(extrasDe(r));
-    }
-
     function filaTieneUsuario(r, key) {
         if (!key) return true;
-        return personasDeFila(r).some(function (p) { return userOptionKey(p) === key; });
+        return userOptionKey(r) === key;
     }
 
     function opcionSigue(items, value) {
@@ -869,12 +865,10 @@
         var users = [];
         var seenUser = {};
         scoped.filter(function (r) { return !cc || centroFiltroKey(r) === cc; }).forEach(function (r) {
-            personasDeFila(r).forEach(function (p) {
-                var key = userOptionKey(p);
-                if (!key || seenUser[key]) return;
-                seenUser[key] = true;
-                users.push({ value: key, label: userOptionLabel(p) });
-            });
+            var key = userOptionKey(r);
+            if (!key || seenUser[key]) return;
+            seenUser[key] = true;
+            users.push({ value: key, label: userOptionLabel(r) });
         });
         users.sort(function (a, b) { return a.label.localeCompare(b.label, 'es'); });
         user = opcionSigue(users, user);
@@ -970,7 +964,7 @@
             var emp = String(r.empresa || '').toLowerCase();
             if (emp) empSet[emp] = true;
             if (emp && r.centro_codigo) ccSet[emp + '|' + String(r.centro_codigo)] = true;
-            if (isPrincipal(r) && r.user_id) userSet[String(r.user_id)] = true;
+            if (r.user_id) userSet[String(r.user_id)] = true;
         });
         var empDone = Object.keys(empSet).length;
         var empTot = (CCAsig._empresas && CCAsig._empresas.length) ? CCAsig._empresas.length : 4;
@@ -989,7 +983,7 @@
     }
 
     function filasCaptura() {
-        return (CCAsig._rows || []).filter(isPrincipal).slice().sort(function (a, b) {
+        return (CCAsig._rows || []).slice().sort(function (a, b) {
             var ua = String(a.usuario || '').toLowerCase();
             var ub = String(b.usuario || '').toLowerCase();
             if (ua !== ub) return ua < ub ? -1 : 1;
@@ -1001,10 +995,8 @@
     }
 
     function textoFila(r) {
-        var personas = personasDeFila(r).map(function (p) {
-            var perms = (p.permisos || []).map(permNombre).join(' ');
-            return (p.usuario || '') + ' ' + (p.email || '') + ' ' + perms;
-        }).join(' ');
+        var perms = (r.permisos || []).map(permNombre).join(' ');
+        var personas = (r.usuario || '') + ' ' + (r.email || '') + ' ' + perms;
         var cuentas = (r.cuentas || []).map(function (c) {
             if (!c) return '';
             if (typeof c === 'string') return c;
@@ -1042,7 +1034,7 @@
         if (meta) {
             if (!total) meta.textContent = '';
             else if (filtrando) meta.textContent = rows.length + ' de ' + total;
-            else meta.textContent = total + (total === 1 ? ' asignación de captura' : ' asignaciones de captura');
+            else meta.textContent = total + (total === 1 ? ' asignación' : ' asignaciones');
         }
         if (!tb) return;
         if (!rows.length) {
@@ -1070,17 +1062,13 @@
                     '<span class="cc-asig-group-n">' + n + (n === 1 ? ' centro' : ' centros') + '</span>' +
                     '</div></td></tr>');
             }
-            var nRev = extrasDe(r).length;
-            var revHint = nRev
-                ? '<div class="text-muted" style="font-size:.72rem;margin-top:.25rem">' + nRev + (nRev === 1 ? ' revisor en Permisos' : ' revisores en Permisos') + '</div>'
-                : '';
             html.push('<tr data-id="' + r.id + '" data-empresa="' + escapeHtml(r.empresa || '') + '" data-cc="' + escapeHtml(r.centro_codigo || '') + '">' +
                 '<td><div class="fw-semibold">' + escapeHtml(r.usuario) + '</div>' +
-                '<div class="text-muted" style="font-size:.75rem">Captura</div></td>' +
+                '<div class="text-muted" style="font-size:.75rem">' + (isPrincipal(r) ? 'Captura' : 'Acceso') + '</div></td>' +
                 '<td>' + String(r.empresa || '').toUpperCase() + '</td>' +
                 '<td>' + escapeHtml(etiquetaCentro(r.centro_codigo, r.centro_nombre)) + '</td>' +
                 '<td>' + (r.cuentas || []).length + '</td>' +
-                '<td>' + permBadges(r.permisos) + revHint + '</td>' +
+                '<td>' + permBadges(r.permisos) + '</td>' +
                 '<td><div class="cc-row-actions">' +
                     '<button type="button" class="cc-icon-btn" data-act="ver" title="Ver"><i class="fa-solid fa-eye"></i></button>' +
                     '<button type="button" class="cc-icon-btn" data-act="editar" title="Editar"><i class="fa-solid fa-pen"></i></button>' +
