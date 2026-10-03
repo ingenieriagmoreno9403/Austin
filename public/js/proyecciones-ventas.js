@@ -842,7 +842,14 @@
 
     function gastoCacheKey(c) {
         var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+        return String(c.empresa || '').toUpperCase() + '|' +
+            String(c.codigo || '').trim().toUpperCase() + '|' + year;
+    }
+
+    /** ¿Se está consultando venta SAP para el cliente abierto? (igual que precios lista). */
+    function gastoVentaCargando() {
+        if (!control.centro || !control._gastoLoading) return false;
+        return control._gastoLoading === gastoCacheKey(control.centro);
     }
 
     /** ¿Hay entrada usable en caché de sesión? No confiar en {} sin meta (envenena el snapshot). */
@@ -1086,70 +1093,77 @@
         opts = opts || {};
         if (!c || !CC.state.gastoUrl) return;
         var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
-        var force = !!opts.force;
+        var key = gastoCacheKey(c);
+        // Por defecto fuerza SAP (como precio de lista). Pasar { force: false } solo para visor/caché.
+        var force = opts.force !== false;
+        var auto = !!opts.auto;
+        var reqId = (control._gastoReqId = (control._gastoReqId || 0) + 1);
         control._gastoReq = key;
+        control._gastoLoading = key;
         if (!force) {
             var hit = gastoCacheEntry(key);
             if (hit) {
+                control._gastoLoading = '';
                 applyGastoMap(hit.por, hit.meta);
-            return;
+                return;
             }
         }
-        if (force) {
-            if (CC.state.gastoCache) delete CC.state.gastoCache[key];
-            if (CC.state.gastoMeta) delete CC.state.gastoMeta[key];
-            if (CC.state.gastoLookup) delete CC.state.gastoLookup[key];
-        }
-        control._gastoMap = {};
-        control._gastoMeta = {};
+        if (CC.state.gastoCache) delete CC.state.gastoCache[key];
+        if (CC.state.gastoMeta) delete CC.state.gastoMeta[key];
+        if (CC.state.gastoLookup) delete CC.state.gastoLookup[key];
         var badgeTxt = document.getElementById('ctl-venta-snap-text');
         var pillTxt = document.getElementById('ctl-venta-snap-pill-text');
         var nav = document.getElementById('ctl-venta-snap-nav');
-        if (badgeTxt) badgeTxt.textContent = force ? 'Actualizando SAP…' : 'Cargando…';
-        if (pillTxt) pillTxt.textContent = force ? 'Actualizando…' : 'Cargando…';
-        if (nav) nav.textContent = 'Snapshot: cargando…';
+        if (badgeTxt) badgeTxt.textContent = 'Consultando SAP…';
+        if (pillTxt) pillTxt.textContent = 'Consultando SAP…';
+        if (nav) nav.textContent = 'Venta: SAP…';
         ['ctl-venta-snap-badge', 'ctl-venta-snap-pill'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.className = 'cc-snap-badge is-cache';
         });
-        showApiWait(force
-            ? ('Actualizando venta ' + year + ' desde SAP…')
-            : ('Cargando venta ' + year + '…'));
+        showApiWait('Consultando unidades de venta ' + year + ' en SAP…');
+        if (CC._capturaReady) {
+            try { renderControlTable(); } catch (e1) { /* ignore */ }
+        }
         var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
-            '&cc=' + encodeURIComponent(c.codigo || '') +
+            '&cc=' + encodeURIComponent(String(c.codigo || '').trim()) +
             '&year=' + encodeURIComponent(year) +
-            '&ref=' + encodeURIComponent(year);
-        if (force) qs += '&force=1';
+            '&ref=' + encodeURIComponent(year) +
+            '&force=1';
+        var reqKey = key;
         fetch(CC.state.gastoUrl + qs, {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
-            if (control._gastoReq !== key) return;
+            if (reqId !== control._gastoReqId) return;
+            if (!control.centro || gastoCacheKey(control.centro) !== reqKey) return;
+            control._gastoLoading = '';
             var por = (json && json.por_cuenta) || {};
             var meta = {
-                fuente: (json && json.fuente) || '',
+                fuente: (json && json.fuente) || 'api',
                 synced_at: (json && json.synced_at) || null,
                 year: (json && json.year) || year,
                 mensaje: (json && json.mensaje) || null
             };
-            rememberGastoCache(key, por, meta);
+            rememberGastoCache(reqKey, por, meta);
             applyGastoMap(por, meta);
-            if (force) {
+            if (!auto) {
                 toast('success', 'Venta actualizada',
-                    'Snapshot ' + year + (meta.synced_at ? (' · ' + meta.synced_at) : '') +
+                    'SAP ' + year + (meta.synced_at ? (' · ' + meta.synced_at) : '') +
                     (meta.fuente ? (' · ' + meta.fuente) : ''));
-            } else if (meta.fuente === 'api') {
-                toast('info', 'Snapshot guardado', 'Venta ' + year + ' quedó en BD local para próximas cargas.');
             }
         }).catch(function () {
-            if (control._gastoReq !== key) return;
+            if (reqId !== control._gastoReqId) return;
+            if (!control.centro || gastoCacheKey(control.centro) !== reqKey) return;
+            control._gastoLoading = '';
             applyGastoMap({}, { fuente: 'error', year: year });
-            if (force) toast('error', 'No se actualizó', 'No se pudo consultar SAP.');
+            toast('error', 'No se actualizó', 'No se pudo consultar las unidades de venta en SAP.');
         }).then(function () {
-            hideApiWait();
+            if (reqId === control._gastoReqId) {
+                if (control._gastoLoading === reqKey) control._gastoLoading = '';
+                hideApiWait();
+            }
         });
     }
-
     function preciosCacheKey(c) {
         return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '');
     }
@@ -5024,7 +5038,7 @@
                 ? perms.map(function (p) { return '<span class="cc-badge cc-badge-abierto">' + escapeHtml(p) + '</span> '; }).join('')
                 : '<span class="text-muted">Sin permiso</span>';
         }
-        loadGastoRealCentro(c);
+        loadGastoRealCentro(c, { force: true, auto: true });
         loadVentasBudgetRefCentro(c);
         loadListasPreciosCentro(c);
         stripSiopSeedLocalOnce(c);
@@ -5873,14 +5887,18 @@
                         : '<span class="cc-price-empty">—</span>')) +
             '</td>' +
             '<td class="num cc-sem-cell" data-uds-venta title="' +
-                escapeHtml('Total unidades vendidas en ' + anioPast +
-                    ' (misma fuente que Ventas pasadas · TOT. UDS)' +
-                    (uomLabel ? ' · ' + uomLabel : '') +
-                    (udsSem ? '' : (udsVentaAnio ? ' · Ene–Jun: 0; venta en jul–Dic' : ''))) + '">' +
+                escapeHtml(gastoVentaCargando()
+                    ? ('Consultando unidades de venta ' + anioPast + ' en SAP…')
+                    : ('Total unidades vendidas en ' + anioPast +
+                        ' (SAP · misma fuente que Ventas pasadas · TOT. UDS)' +
+                        (uomLabel ? ' · ' + uomLabel : '') +
+                        (udsSem ? '' : (udsVentaAnio ? ' · Ene–Jun: 0; venta en jul–Dic' : '')))) + '">' +
                 (udsVentaAnio
                     ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsVentaAnio)) + '</div>' +
                         (uomLabel ? '<div class="cc-sem-uom">' + escapeHtml(uomLabel) + '</div>' : ''))
-                    : '<span class="cc-price-empty">—</span>') +
+                    : (gastoVentaCargando()
+                        ? '<span class="cc-price-empty">Cargando...</span>'
+                        : '<span class="cc-price-empty">—</span>')) +
             '</td>' +
             '<td class="num cc-sem-cell" data-uds-total title="' +
                 escapeHtml('Suma de unidades proyectadas Ene–Dic' + (uomLabel ? ' · ' + uomLabel : '')) + '">' +
@@ -6854,17 +6872,22 @@
         function kick() {
             while (inflight < max && pending.length) {
                 var c = pending.shift();
-                var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+                var key = gastoCacheKey(c);
                 if (visorGastoInflight[key]) continue;
+                if (control.centro && gastoCacheKey(control.centro) === key && control._gastoLoading === key) continue;
                 if (CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key)) continue;
                 visorGastoInflight[key] = true;
                 inflight += 1;
                 (function (centro, cacheKey, yearFrozen) {
                     fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
-                        '&cc=' + encodeURIComponent(centro.codigo || '') +
+                        '&cc=' + encodeURIComponent(String(centro.codigo || '').trim()) +
                         '&year=' + encodeURIComponent(yearFrozen), {
                         headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
                     }).then(function (res) { return res.json(); }).then(function (json) {
+                        // No pisar la venta SAP del cliente abierto en Captura.
+                        if (control.centro && gastoCacheKey(control.centro) === cacheKey && control._gastoLoading === cacheKey) {
+                            return;
+                        }
                         CC.state.gastoCache = CC.state.gastoCache || {};
                         CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
                         CC.state.gastoLookup = CC.state.gastoLookup || {};
@@ -6872,6 +6895,7 @@
                         dirty = true;
                         schedulePaint();
                     }).catch(function () {
+                        if (control.centro && gastoCacheKey(control.centro) === cacheKey) return;
                         CC.state.gastoCache = CC.state.gastoCache || {};
                         CC.state.gastoCache[cacheKey] = {};
                         dirty = true;

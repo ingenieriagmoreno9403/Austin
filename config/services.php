@@ -39,7 +39,7 @@ return [
     */
     'autin_api' => [
         // Si la variable existe pero viene vacía, usamos el default (útil en hosting).
-        'base_url' => env('AUTIN_API_BASE_URL') ?: 'http://187.237.178.149/api',
+        'base_url' => env('AUTIN_API_BASE_URL') ?: 'http://179.236.234.178/api',
         'username' => env('AUTIN_API_USER'),
         'password' => env('AUTIN_API_PASSWORD'),
         'default_db' => env('AUTIN_API_DEFAULT_DB') ?: 'austin',

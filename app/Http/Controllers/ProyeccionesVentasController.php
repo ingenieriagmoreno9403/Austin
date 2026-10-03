@@ -6279,30 +6279,57 @@ class ProyeccionesVentasController extends Controller
     protected function cargarGastoRealCentro(string $empresa, string $cc, int $year): array
     {
         @set_time_limit(300);
-        $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
-            'CardCode' => $cc,
-            'fecha_desde' => $year.'/01/01',
-            'fecha_hasta' => $year.'/12/31',
-        ], 220);
+        $best = [
+            'ok' => false,
+            'year' => $year,
+            'por_cuenta' => [],
+            'mensaje' => null,
+        ];
+        foreach ($this->variantesCardCodeCliente($cc) as $cardTry) {
+            $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
+                'CardCode' => $cardTry,
+                'fecha_desde' => $year.'/01/01',
+                'fecha_hasta' => $year.'/12/31',
+            ], 220);
 
-        $porCuenta = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($pack['rows'] ?? [], $year, $cc));
-        $ok = ! empty($pack['ok']);
-        $mensaje = $pack['mensaje'] ?? null;
+            $porCuenta = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($pack['rows'] ?? [], $year, $cc));
+            $ok = ! empty($pack['ok']);
+            $mensaje = $pack['mensaje'] ?? null;
 
-        if ($ok) {
-            $porCuenta['_meta'] = [
-                'completo' => true,
-                'filas' => (int) ($pack['filas'] ?? count($pack['rows'] ?? [])),
-                'api_total' => (int) ($pack['total'] ?? 0),
-            ];
+            if ($ok) {
+                $porCuenta['_meta'] = [
+                    'completo' => true,
+                    'filas' => (int) ($pack['filas'] ?? count($pack['rows'] ?? [])),
+                    'api_total' => (int) ($pack['total'] ?? 0),
+                    'card_code_consulta' => $cardTry,
+                ];
+                $best = [
+                    'ok' => true,
+                    'year' => $year,
+                    'por_cuenta' => $porCuenta,
+                    'mensaje' => null,
+                ];
+                $tieneVenta = false;
+                foreach ($porCuenta as $k => $item) {
+                    if ($k === '_meta' || ! is_array($item)) {
+                        continue;
+                    }
+                    if (array_sum($item['gasto'] ?? []) != 0.0
+                        || array_sum($item['importe'] ?? []) != 0.0
+                        || array_sum($item['importe_usd'] ?? []) != 0.0) {
+                        $tieneVenta = true;
+                        break;
+                    }
+                }
+                if ($tieneVenta) {
+                    return $best;
+                }
+            } elseif ($best['mensaje'] === null && $mensaje) {
+                $best['mensaje'] = $mensaje;
+            }
         }
 
-        return [
-            'ok' => $ok,
-            'year' => $year,
-            'por_cuenta' => $porCuenta,
-            'mensaje' => $ok ? null : $mensaje,
-        ];
+        return $best;
     }
 
     protected function esItemCodeSap(string $codigo): bool
@@ -6975,6 +7002,27 @@ class ProyeccionesVentasController extends Controller
         }
 
         return false;
+    }
+
+    /**
+     * Variantes D/DD del CardCode (IMSA) para consultar ventas en SAP.
+     *
+     * @return array<int, string>
+     */
+    protected function variantesCardCodeCliente(string $cc): array
+    {
+        $cc = strtoupper(trim($cc));
+        if ($cc === '') {
+            return [];
+        }
+        $out = [$cc];
+        if (preg_match('/^D(\d+)$/', $cc, $m)) {
+            $out[] = 'DD'.$m[1];
+        } elseif (preg_match('/^DD(\d+)$/', $cc, $m)) {
+            $out[] = 'D'.$m[1];
+        }
+
+        return array_values(array_unique($out));
     }
 
     protected function codigoCuentaKey(string $codigo): string
