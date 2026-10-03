@@ -466,6 +466,185 @@ class CcGastoRealSnapshot
     }
 
     /**
+     * Inserta o actualiza solo estas cuentas del centro. Lo demás de la copia local se queda.
+     *
+     * @param  array<int, array{cuenta: string, item: array<string, mixed>, filas: array<int, array<string, mixed>>}>  $cuentas
+     */
+    public function aplicarCuentas(string $empresa, int $year, string $cc, array $cuentas, ?int $userId): void
+    {
+        if (! $this->disponible() || $cuentas === []) {
+            return;
+        }
+
+        $empresa = strtoupper(trim($empresa));
+        $cc = strtoupper(trim($cc));
+        if ($empresa === '' || $cc === '') {
+            return;
+        }
+
+        $ahora = now();
+        $existentes = DB::table('tbl_cc_gasto_real_snap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->get();
+
+        $snapRows = [];
+        $borrar = [];
+        $codigosSap = [];
+        $sap = [];
+        $vistos = [];
+        foreach ($cuentas as $paquete) {
+            $cuenta = trim((string) ($paquete['cuenta'] ?? ''));
+            $item = is_array($paquete['item'] ?? null) ? $paquete['item'] : [];
+            $filas = is_array($paquete['filas'] ?? null) ? $paquete['filas'] : [];
+            $digits = $this->digitos($cuenta);
+            $needle = ltrim($digits !== '' ? $digits : $cuenta, '0');
+            if ($needle === '' || isset($vistos[$needle])) {
+                continue;
+            }
+            $vistos[$needle] = true;
+
+            $conservar = null;
+            $codigos = [trim($cuenta)];
+            foreach ($existentes as $row) {
+                $d = $this->digitos((string) $row->cuenta_codigo);
+                $alt = ltrim($d !== '' ? $d : (string) $row->cuenta_codigo, '0');
+                if ($alt === '' || $alt !== $needle) {
+                    continue;
+                }
+                $borrar[] = $row->id;
+                $codigos[] = (string) $row->cuenta_codigo;
+                if ($conservar === null) {
+                    $conservar = $row;
+                }
+            }
+            if ($conservar) {
+                if (trim((string) ($item['nombre'] ?? '')) === '') {
+                    $item['nombre'] = (string) ($conservar->cuenta_nombre ?? '');
+                }
+                if (trim((string) ($item['depto'] ?? '')) === '') {
+                    $item['depto'] = (string) ($conservar->depto ?? '');
+                }
+                if (trim((string) ($item['group_mask'] ?? '')) === '') {
+                    $item['group_mask'] = (string) ($conservar->group_mask ?? '');
+                }
+            }
+            foreach (['gasto', 'gasto_usd'] as $campo) {
+                $serie = array_values(is_array($item[$campo] ?? null) ? $item[$campo] : []);
+                for ($i = 9; $i < 12; $i++) {
+                    $serie[$i] = 0.0;
+                }
+                $item[$campo] = $serie;
+            }
+            $visible = trim((string) ($item['codigo'] ?? $cuenta));
+            $snapRow = $this->filaSnap($empresa, $year, $cc, $visible !== '' ? $visible : $cuenta, $item, 'api', $userId, $ahora);
+            if ($conservar) {
+                foreach (['10', '11', '12'] as $suf) {
+                    $snapRow['mes_'.$suf] = round((float) ($conservar->{'mes_'.$suf} ?? 0), 2);
+                    $snapRow['usd_'.$suf] = round((float) ($conservar->{'usd_'.$suf} ?? 0), 2);
+                }
+            }
+            $snapRows[] = $snapRow;
+            foreach (array_unique(array_filter($codigos)) as $codigo) {
+                $codigosSap[$codigo] = $codigo;
+            }
+            foreach ($filas as $fila) {
+                if (! is_array($fila)) {
+                    continue;
+                }
+                $mes = (int) ($fila['mes'] ?? 0);
+                $cta = trim((string) ($fila['cuenta'] ?? ''));
+                if ($mes < 1 || $mes > 9 || $cta === '') {
+                    continue;
+                }
+                $fecha = $fila['fecha'] ?? null;
+                $sap[] = [
+                    'empresa' => $empresa,
+                    'anio' => $year,
+                    'centro_codigo' => $cc,
+                    'cuenta_codigo' => $this->corte($cta, 40),
+                    'cuenta_nombre' => $this->corte((string) ($fila['cuenta_nombre'] ?? ''), 180),
+                    'depto' => $this->corte((string) ($fila['depto'] ?? ''), 80),
+                    'group_mask' => $this->corte((string) ($fila['group_mask'] ?? ''), 20),
+                    'fecha' => $fecha !== '' ? $fecha : null,
+                    'mes' => $mes,
+                    'importe' => round((float) ($fila['importe'] ?? 0), 2),
+                    'importe_usd' => round((float) ($fila['importe_usd'] ?? 0), 2),
+                    'fila' => json_encode($fila['fila'] ?? [], JSON_UNESCAPED_UNICODE) ?: '{}',
+                    'origen' => 'api',
+                    'synced_by' => $userId,
+                    'created_at' => $ahora,
+                    'updated_at' => $ahora,
+                ];
+            }
+        }
+
+        if ($snapRows === []) {
+            return;
+        }
+
+        DB::transaction(function () use ($empresa, $year, $cc, $borrar, $codigosSap, $snapRows, $sap, $ahora) {
+            if ($borrar) {
+                DB::table('tbl_cc_gasto_real_snap')->whereIn('id', $borrar)->delete();
+            }
+            foreach (array_chunk($snapRows, 400) as $chunk) {
+                DB::table('tbl_cc_gasto_real_snap')->insert($chunk);
+            }
+            if (Schema::hasTable('tbl_cc_gasto_real_sap') && $codigosSap) {
+                DB::table('tbl_cc_gasto_real_sap')
+                    ->where('empresa', $empresa)
+                    ->where('anio', $year)
+                    ->where('centro_codigo', $cc)
+                    ->whereIn('cuenta_codigo', array_values($codigosSap))
+                    ->where('mes', '<=', 9)
+                    ->delete();
+                foreach (array_chunk($sap, 300) as $chunk) {
+                    DB::table('tbl_cc_gasto_real_sap')->insert($chunk);
+                }
+            }
+            $total = (int) DB::table('tbl_cc_gasto_real_snap')
+                ->where('empresa', $empresa)
+                ->where('anio', $year)
+                ->where('centro_codigo', $cc)
+                ->count();
+            $ccQuery = DB::table('tbl_cc_gasto_real_cc')
+                ->where('empresa', $empresa)
+                ->where('anio', $year)
+                ->where('centro_codigo', $cc);
+            if ($ccQuery->exists()) {
+                $ccQuery->update([
+                    'cuentas' => $total,
+                    'origen' => 'api',
+                    'synced_at' => $ahora,
+                    'updated_at' => $ahora,
+                ]);
+            } else {
+                DB::table('tbl_cc_gasto_real_cc')->insert([
+                    'empresa' => $empresa,
+                    'anio' => $year,
+                    'centro_codigo' => $cc,
+                    'cuentas' => $total,
+                    'origen' => 'api',
+                    'synced_at' => $ahora,
+                    'created_at' => $ahora,
+                    'updated_at' => $ahora,
+                ]);
+            }
+        });
+
+        $filasN = Schema::hasTable('tbl_cc_gasto_real_sap')
+            ? (int) DB::table('tbl_cc_gasto_real_sap')->where('empresa', $empresa)->where('anio', $year)->count()
+            : count($sap);
+        $completa = (bool) DB::table('tbl_cc_gasto_real_carga')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->value('completa');
+        $this->marcarCarga($empresa, $year, 'api', $filasN, $userId, $ahora, $completa, $this->firmaDe($this->mapa($empresa, $year), $filasN));
+        Cache::forget('cc.gasto-emp.v4.'.$empresa.'.'.$year);
+    }
+
+    /**
      * Incorpora un centro a la copia local sin borrar el resto de la empresa.
      *
      * @param  array<string, array<string, array<string, mixed>>>  $mapa
