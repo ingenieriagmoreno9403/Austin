@@ -3012,7 +3012,7 @@
                     }
                     var savedRow = (res.json && res.json.asignacion) ? res.json.asignacion : local;
                     savedRow.pending = false;
-                    savedRow.needsSnapshot = true;
+                    savedRow.needsSnapshot = !!(res.json && res.json.snapshot);
                     upsertSaved(savedRow);
                     renderResumen();
                     renderEmpresaCards();
@@ -3025,20 +3025,27 @@
                 });
         }
 
+        function esCapturaRow(row) {
+            return (row.permisos || []).indexOf('capturar') !== -1;
+        }
+
         function centrosParaCopia() {
             var vistos = {};
             var items = [];
             saved.forEach(function (row) {
-                if (!row.needsSnapshot) return;
+                if (!row.needsSnapshot || !esCapturaRow(row)) return;
                 var cc = String(row.centro_codigo || '').toUpperCase();
                 if (!cc || cc === 'SIN_CC' || cc === 'EMPRESA') return;
+                var ctas = row.cuentas || [];
+                if (!ctas.length) return;
                 var key = String(row.empresa || '').toUpperCase() + '|' + cc;
                 if (vistos[key]) return;
                 vistos[key] = true;
                 items.push({
                     empresa: row.empresa,
                     centro_codigo: row.centro_codigo,
-                    cuentas: row.cuentas || []
+                    cuentas: ctas,
+                    permisos: row.permisos || ['capturar']
                 });
             });
             return items;

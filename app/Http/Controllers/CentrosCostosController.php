@@ -606,9 +606,14 @@ class CentrosCostosController extends Controller
         $this->syncPermisosClaves($asig, $permisos);
 
         $asig->load(['usuario', 'cuentas', 'permisos.tipo']);
-        $this->programarSnapshotAsignacion($ciclo, $asig->empresa, $asig->centro_codigo, $data['cuentas'] ?? []);
+        $snapshot = $this->clavesSonCaptura($permisos)
+            && $this->datosSnapshotAsignacion($asig->empresa, $asig->centro_codigo, $data['cuentas'] ?? []) !== null;
 
-        return response()->json(['ok' => true, 'asignacion' => $this->asignacionPayload($asig), 'snapshot' => true]);
+        return response()->json([
+            'ok' => true,
+            'asignacion' => $this->asignacionPayload($asig),
+            'snapshot' => $snapshot,
+        ]);
     }
 
     /**
@@ -622,12 +627,18 @@ class CentrosCostosController extends Controller
             'items.*.empresa' => 'required|string|max:40',
             'items.*.centro_codigo' => 'required|string|max:40',
             'items.*.cuentas' => 'array',
+            'items.*.permisos' => 'array',
+            'items.*.permisos.*' => 'string',
         ]);
 
         @set_time_limit(180);
         $n = 0;
         $userId = auth()->id();
         foreach ($data['items'] as $item) {
+            $permisos = is_array($item['permisos'] ?? null) ? $item['permisos'] : [];
+            if (! $this->clavesSonCaptura($permisos)) {
+                continue;
+            }
             $prep = $this->datosSnapshotAsignacion(
                 (string) $item['empresa'],
                 (string) $item['centro_codigo'],
@@ -692,7 +703,10 @@ class CentrosCostosController extends Controller
         });
 
         $asig->load(['usuario', 'cuentas', 'permisos.tipo']);
-        if (array_key_exists('cuentas', $data)) {
+        $claves = $asig->permisos->map(function ($p) {
+            return (string) ($p->tipo->clave ?? '');
+        })->all();
+        if (array_key_exists('cuentas', $data) && $this->clavesSonCaptura($claves)) {
             $this->programarSnapshotAsignacion($ciclo, $asig->empresa, $asig->centro_codigo, $data['cuentas']);
         }
 
@@ -753,6 +767,10 @@ class CentrosCostosController extends Controller
             } else {
                 $codigos[] = trim((string) $cuenta);
             }
+        }
+        $codigos = array_values(array_filter($codigos));
+        if ($codigos === []) {
+            return null;
         }
 
         return ['empresa' => $empresa, 'centro' => $centro, 'codigos' => $codigos];
@@ -822,21 +840,6 @@ class CentrosCostosController extends Controller
         }
 
         if ($codigos === []) {
-            if (! $ok || $por === []) {
-                return;
-            }
-            foreach ($destinos as $destino) {
-                $filasCentro = [];
-                foreach ($filas as $fila) {
-                    if (! is_array($fila)) {
-                        continue;
-                    }
-                    $fila['centro'] = $destino;
-                    $filasCentro[] = $fila;
-                }
-                $snap->fusionarCentro($empresa, $year, [$destino => $por], $filasCentro, $userId);
-            }
-
             return;
         }
 
