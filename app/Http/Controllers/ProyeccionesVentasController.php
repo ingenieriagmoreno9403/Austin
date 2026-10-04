@@ -5130,7 +5130,9 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Si una bajada de /ventas viene sin oct–dic, conserva lo ya guardado de ventas-budget.
+     * Si una bajada de /ventas viene sin oct–dic, conserva lo ya guardado de ventas-budget
+     * solo en productos que SÍ vienen en la bajada nueva.
+     * No reintroduce productos viejos (p. ej. DD814 mezclados en un snapshot de D814).
      *
      * @param  array<string, mixed>  $prev
      * @param  array<string, mixed>  $nuevo
@@ -5149,9 +5151,8 @@ class ProyeccionesVentasController extends Controller
             if ($cod === '_meta' || ! is_array($item)) {
                 continue;
             }
+            // Solo oct–dic de productos presentes en la bajada actual.
             if (! isset($nuevo[$cod]) || ! is_array($nuevo[$cod])) {
-                $nuevo[$cod] = $item;
-
                 continue;
             }
             foreach ($meses as $m) {
@@ -5463,6 +5464,91 @@ class ProyeccionesVentasController extends Controller
             return response()->json(['message' => 'Falta el ciclo.'], 422);
         }
 
+        return response()->json($this->capturaPayload($ciclo));
+    }
+
+    /**
+     * Payload local de Detalle: captura + snapshot de venta + precios maestro.
+     * No consulta SAP (ni rellena meses, ni listas-precios, ni ventas-budget).
+     */
+    public function capturaBootstrap(Request $request): JsonResponse
+    {
+        $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
+        $empresa = strtoupper(trim((string) $request->get('empresa', '')));
+        $cc = trim((string) $request->get('cc', $request->get('cliente', '')));
+        $alias = ['ABSA' => 'AUSTIN'];
+        if (isset($alias[$empresa])) {
+            $empresa = $alias[$empresa];
+        }
+
+        if ($ciclo === '' || $empresa === '' || $cc === '') {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Faltan ciclo, empresa o cliente.',
+            ], 422);
+        }
+
+        $year = (int) $request->get('year', $request->get('anio', 0));
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) ($this->anioReferenciaDeCiclo($ciclo) ?: date('Y'));
+        }
+
+        $payload = $this->capturaPayload($ciclo);
+        $costosMaster = json_decode(json_encode($payload['costosMaster'] ?? []), true);
+        if (! is_array($costosMaster)) {
+            $costosMaster = [];
+        }
+
+        $ventaReal = null;
+        $budgetRef = [];
+        $snap = $this->snapshotVentaRealGuardado($empresa, $cc, $year);
+        if (! $snap) {
+            // Reintento por CardCode case-insensitive.
+            if (Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+                $snap = PvVentaRealSnapshot::query()
+                    ->where('empresa', $empresa)
+                    ->where('anio', $year)
+                    ->whereRaw('LOWER(cliente_codigo) = ?', [strtolower($cc)])
+                    ->first();
+                if ($snap && ! $this->ventaRealSnapshotSirve($snap->por_cuenta)) {
+                    $snap = null;
+                }
+            }
+        }
+        if ($snap) {
+            $por = is_array($snap->por_cuenta) ? $snap->por_cuenta : [];
+            $ventaReal = [
+                'ok' => true,
+                'year' => $year,
+                'por_cuenta' => $this->porCuentaSinMeta($por),
+                'fuente' => 'snapshot',
+                'budget_completo' => $this->budgetCompletoDe($por),
+                'synced_at' => $snap->synced_at ? $snap->synced_at->format('Y-m-d H:i') : null,
+            ];
+            $budgetRef = $this->budgetRefDesdePorCuenta($por);
+        }
+
+        return response()->json(array_merge($payload, [
+            'ok' => true,
+            'fuente' => 'local',
+            'empresa' => $empresa,
+            'cliente' => $cc,
+            'year_venta' => $year,
+            'venta_real' => $ventaReal,
+            'ventas_budget_ref' => (object) $budgetRef,
+            'precios' => [
+                'ok' => true,
+                'fuente' => 'maestro_local',
+                'por_articulo' => (object) $this->preciosLocalesDesdeMaestro($empresa, $cc, $costosMaster),
+            ],
+        ]));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function capturaPayload(string $ciclo): array
+    {
         $budgets = [];
         $completados = [];
         $costos = [];
@@ -5500,7 +5586,7 @@ class ProyeccionesVentasController extends Controller
 
         $anioCostos = $this->anioProyeccionCostos(null, $ciclo);
 
-        return response()->json([
+        return [
             'ok' => true,
             'ciclo' => $ciclo,
             'anio_costos' => $anioCostos,
@@ -5512,7 +5598,138 @@ class ProyeccionesVentasController extends Controller
             'ajustes' => (object) $ajustes,
             'preciosMeses' => (object) $preciosMeses,
             'overlays' => (object) $overlays,
-        ]);
+        ];
+    }
+
+    /**
+     * Oct–Dic del snapshot → formato ventas-budget ref (sin SAP).
+     *
+     * @param  array<string, mixed>  $por
+     * @return array<string, array<string, mixed>>
+     */
+    protected function budgetRefDesdePorCuenta(array $por): array
+    {
+        $out = [];
+        foreach ($por as $code => $row) {
+            if ($code === '_meta' || ! is_array($row)) {
+                continue;
+            }
+            $gasto = is_array($row['gasto'] ?? null) ? $row['gasto'] : [];
+            $imp = is_array($row['importe'] ?? null) ? $row['importe'] : [];
+            $usd = is_array($row['importe_usd'] ?? null) ? $row['importe_usd'] : [];
+            $meses = array_fill(0, 12, null);
+            $importe = array_fill(0, 12, null);
+            $importeUsd = array_fill(0, 12, null);
+            $any = false;
+            for ($i = 9; $i <= 11; $i++) {
+                $q = (float) ($gasto[$i] ?? 0);
+                $mx = (float) ($imp[$i] ?? 0);
+                $us = (float) ($usd[$i] ?? 0);
+                if ($q > 0) {
+                    $meses[$i] = round($q, 4);
+                    $any = true;
+                }
+                if ($mx > 0) {
+                    $importe[$i] = round($mx, 2);
+                    $any = true;
+                }
+                if ($us > 0) {
+                    $importeUsd[$i] = round($us, 2);
+                    $any = true;
+                }
+            }
+            if (! $any) {
+                continue;
+            }
+            $cod = trim((string) ($row['codigo'] ?? $code));
+            if ($cod === '') {
+                continue;
+            }
+            $out[$cod] = [
+                'codigo' => $cod,
+                'nombre' => (string) ($row['nombre'] ?? ''),
+                'meses' => $meses,
+                'importe' => $importe,
+                'importe_usd' => $importeUsd,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Precios de lista desde maestro local (tbl_pv_productos_costo) para el cliente.
+     *
+     * @param  array<string, mixed>  $costosMaster
+     * @return array<string, array<string, mixed>>
+     */
+    protected function preciosLocalesDesdeMaestro(string $empresa, string $cc, array $costosMaster): array
+    {
+        $empresa = strtoupper(trim($empresa));
+        $cc = trim($cc);
+        $out = [];
+        $prefixCard = $empresa.'|'.$cc.'|';
+        $prefixEmp = $empresa.'|';
+
+        foreach ($costosMaster as $key => $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+            $k = (string) $key;
+            $cod = '';
+            $card = trim((string) ($entry['card_code'] ?? ''));
+            if (str_starts_with($k, $prefixCard)) {
+                $cod = substr($k, strlen($prefixCard));
+            } elseif ($card !== '' && strcasecmp($card, $cc) === 0) {
+                $parts = explode('|', $k);
+                $cod = (string) end($parts);
+            } elseif ($card === '' && str_starts_with($k, $prefixEmp) && substr_count($k, '|') === 1) {
+                // EMP|Item (sin card): solo si no hay precio por cliente.
+                $cod = substr($k, strlen($prefixEmp));
+                if (isset($out[$cod])) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            $cod = trim((string) $cod);
+            if ($cod === '') {
+                continue;
+            }
+            $precio = (float) ($entry['costo'] ?? 0);
+            if ($precio <= 0 && empty($entry['explicito'])) {
+                continue;
+            }
+            if (isset($out[$cod]) && $card === '') {
+                continue;
+            }
+            $out[$cod] = [
+                'codigo' => $cod,
+                'precio' => round($precio, 4),
+                'moneda' => strtoupper((string) ($entry['moneda'] ?? 'MXN')) ?: 'MXN',
+                'fuente' => 'maestro_local',
+            ];
+        }
+
+        return $out;
+    }
+
+    protected function anioReferenciaDeCiclo(string $ciclo): ?int
+    {
+        $ciclo = strtoupper(trim($ciclo));
+        if ($ciclo === '' || ! Schema::hasTable('tbl_pv_ciclos')) {
+            return null;
+        }
+        $row = DB::table('tbl_pv_ciclos')->whereRaw('UPPER(codigo) = ?', [$ciclo])->first();
+        if (! $row) {
+            return null;
+        }
+        $anio = (int) ($row->anio_referencia ?? $row->anioReferencia ?? 0);
+        if ($anio >= 2000 && $anio <= 2100) {
+            return $anio;
+        }
+
+        return null;
     }
 
     public function guardarPresupuesto(Request $request): JsonResponse
@@ -6168,12 +6385,15 @@ class ProyeccionesVentasController extends Controller
     protected function agregarPorCuentaVentas(array $rows, int $year, string $cc = ''): array
     {
         $porCuenta = [];
+        $ccNorm = strtoupper(trim($cc));
             foreach ($rows as $row) {
                 if (! is_array($row)) {
                     continue;
                 }
-                $rowCc = (string) ($row['CardCode'] ?? $row['Cardcode'] ?? $row['CC'] ?? '');
-                if ($cc !== '' && ! $this->mismoCentroCodigo($rowCc, $cc)) {
+                $rowCc = strtoupper(trim((string) ($row['CardCode'] ?? $row['Cardcode'] ?? $row['CC'] ?? '')));
+                // Ventas: CardCode exacto. No fusionar D814↔DD814 (son cuentas SAP distintas
+                // aunque compartan nombre; AutinApi /ventas a veces devuelve ambas).
+                if ($ccNorm !== '' && $rowCc !== $ccNorm) {
                     continue;
                 }
                 $codigo = trim((string) ($row['ItemCode'] ?? $row['Itemcode'] ?? ''));
@@ -6287,57 +6507,37 @@ class ProyeccionesVentasController extends Controller
     protected function cargarGastoRealCentro(string $empresa, string $cc, int $year): array
     {
         @set_time_limit(300);
-        $best = [
+        $cc = trim($cc);
+        // Solo el CardCode de la asignación (sin variantes D/DD): evita mezclar D814 + DD814.
+        $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
+            'CardCode' => $cc,
+            'fecha_desde' => $year.'/01/01',
+            'fecha_hasta' => $year.'/12/31',
+        ], 220);
+
+        $porCuenta = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($pack['rows'] ?? [], $year, $cc));
+        if (! empty($pack['ok'])) {
+            $porCuenta['_meta'] = [
+                'completo' => true,
+                'filas' => (int) ($pack['filas'] ?? count($pack['rows'] ?? [])),
+                'api_total' => (int) ($pack['total'] ?? 0),
+                'card_code_consulta' => $cc,
+            ];
+
+            return [
+                'ok' => true,
+                'year' => $year,
+                'por_cuenta' => $porCuenta,
+                'mensaje' => null,
+            ];
+        }
+
+        return [
             'ok' => false,
             'year' => $year,
             'por_cuenta' => [],
-            'mensaje' => null,
+            'mensaje' => $pack['mensaje'] ?? 'Sin conexión a ventas SAP',
         ];
-        foreach ($this->variantesCardCodeCliente($cc) as $cardTry) {
-            $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
-                'CardCode' => $cardTry,
-                'fecha_desde' => $year.'/01/01',
-                'fecha_hasta' => $year.'/12/31',
-            ], 220);
-
-            $porCuenta = $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($pack['rows'] ?? [], $year, $cc));
-            $ok = ! empty($pack['ok']);
-            $mensaje = $pack['mensaje'] ?? null;
-
-            if ($ok) {
-                $porCuenta['_meta'] = [
-                    'completo' => true,
-                    'filas' => (int) ($pack['filas'] ?? count($pack['rows'] ?? [])),
-                    'api_total' => (int) ($pack['total'] ?? 0),
-                    'card_code_consulta' => $cardTry,
-                ];
-                $best = [
-                    'ok' => true,
-                    'year' => $year,
-                    'por_cuenta' => $porCuenta,
-                    'mensaje' => null,
-                ];
-                $tieneVenta = false;
-                foreach ($porCuenta as $k => $item) {
-                    if ($k === '_meta' || ! is_array($item)) {
-                        continue;
-                    }
-                    if (array_sum($item['gasto'] ?? []) != 0.0
-                        || array_sum($item['importe'] ?? []) != 0.0
-                        || array_sum($item['importe_usd'] ?? []) != 0.0) {
-                        $tieneVenta = true;
-                        break;
-                    }
-                }
-                if ($tieneVenta) {
-                    return $best;
-                }
-            } elseif ($best['mensaje'] === null && $mensaje) {
-                $best['mensaje'] = $mensaje;
-            }
-        }
-
-        return $best;
     }
 
     protected function esItemCodeSap(string $codigo): bool
@@ -7114,6 +7314,7 @@ class ProyeccionesVentasController extends Controller
             'gastoUrl' => route('pv.api.gasto_real'),
             'gastoBatchUrl' => route('pv.api.gasto_real_batch'),
             'listasPreciosUrl' => route('pv.api.listas_precios'),
+            'capturaBootstrapUrl' => route('pv.api.captura.bootstrap'),
             'ventasBudgetUrl' => route('pv.api.captura.ventas_budget'),
             'costosUrl' => route('pv.api.costos'),
             'costosHistorialUrl' => route('pv.api.costos.historial'),

@@ -1282,8 +1282,9 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/ProyeccionesVentas/api/gasto-real', [ProyeccionesVentasController::class, 'gastoReal'])->name('pv.api.gasto_real');
     Route::post('/ProyeccionesVentas/api/gasto-real-batch', [ProyeccionesVentasController::class, 'gastoRealBatch'])->name('pv.api.gasto_real_batch');
     Route::get('/ProyeccionesVentas/api/listas-precios', [ProyeccionesVentasController::class, 'listasPrecios'])->name('pv.api.listas_precios');
-    Route::get('/ProyeccionesVentas/api/captura', [ProyeccionesVentasController::class, 'captura'])->name('pv.api.captura');
-    Route::get('/ProyeccionesVentas/api/captura/ventas-budget', [ProyeccionesVentasController::class, 'capturaVentasBudget'])->name('pv.api.captura.ventas_budget');
+            Route::get('/ProyeccionesVentas/api/captura', [ProyeccionesVentasController::class, 'captura'])->name('pv.api.captura');
+            Route::get('/ProyeccionesVentas/api/captura/bootstrap', [ProyeccionesVentasController::class, 'capturaBootstrap'])->name('pv.api.captura.bootstrap');
+            Route::get('/ProyeccionesVentas/api/captura/ventas-budget', [ProyeccionesVentasController::class, 'capturaVentasBudget'])->name('pv.api.captura.ventas_budget');
     Route::put('/ProyeccionesVentas/api/captura/presupuesto', [ProyeccionesVentasController::class, 'guardarPresupuesto'])->name('pv.api.captura.presupuesto');
     Route::put('/ProyeccionesVentas/api/captura/centro', [ProyeccionesVentasController::class, 'guardarCapturaCentro'])->name('pv.api.captura.centro');
     Route::get('/ProyeccionesVentas/api/captura/plantilla', [ProyeccionesVentasController::class, 'plantillaCaptura'])->name('pv.api.captura.plantilla');
