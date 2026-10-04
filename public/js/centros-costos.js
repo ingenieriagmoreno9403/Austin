@@ -1830,9 +1830,119 @@
         return CC.state.centros.map(mergedCentro).filter(function (c) { return centroKey(c) === key; })[0];
     }
 
-    function userCell(name) {
-        if (!name) return '<span class="text-muted">Sin asignar</span>';
-        return '<span class="cc-user"><span class="cc-avatar">' + initials(name) + '</span>' + escapeHtml(name) + '</span>';
+    function listaUsuarios(names) {
+        var uniq = [];
+        (names || []).forEach(function (n) {
+            n = String(n || '').replace(/\s+/g, ' ').trim();
+            if (n && uniq.indexOf(n) === -1) uniq.push(n);
+        });
+        return uniq;
+    }
+
+    function usersFromAttr(raw) {
+        raw = String(raw || '');
+        if (!raw) return [];
+        if (raw.charAt(0) === '[') {
+            try {
+                var parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) return listaUsuarios(parsed);
+            } catch (e) {}
+        }
+        try { raw = decodeURIComponent(raw); } catch (e2) {}
+        return listaUsuarios(raw.split('\n'));
+    }
+
+    function userCell(name, extraNames) {
+        var all = listaUsuarios([name].concat(extraNames || []));
+        if (!all.length) return '<span class="text-muted">Sin asignar</span>';
+        var resto = all.slice(1);
+        var more = resto.length
+            ? '<span class="cc-user-more" tabindex="0" data-users="' + encodeURIComponent(all.join('\n')) + '" aria-label="' + escapeHtml(all.join(', ')) + '">+' + resto.length + '</span>'
+            : '';
+        return '<span class="cc-user"><span class="cc-avatar">' + initials(all[0]) + '</span><span>' + escapeHtml(all[0]) + '</span>' + more + '</span>';
+    }
+
+    function htmlPilaUsuarios(names, withName) {
+        var uniq = listaUsuarios(names);
+        if (!uniq.length) return '<span class="text-muted">Sin asignar</span>';
+        var extra = uniq.length - 1;
+        var mostrarNombre = !extra && !!withName;
+        var more = extra ? '<span class="cc-avatar cc-avatar-more">+' + extra + '</span>' : '';
+        var nombre = mostrarNombre ? '<span class="cc-user-name">' + escapeHtml(uniq[0]) + '</span>' : '';
+        var tip = extra || !mostrarNombre;
+        var cls = 'cc-user' + (extra ? ' cc-user-stack' : '') + (tip ? ' cc-user-more' : '');
+        var attrs = tip
+            ? ' tabindex="0" data-users="' + encodeURIComponent(uniq.join('\n')) + '" aria-label="' + escapeHtml(uniq.join(', ')) + '"'
+            : '';
+        return '<span class="' + cls + '"' + attrs + '><span class="cc-avatar">' + initials(uniq[0]) + '</span>' + more + nombre + '</span>';
+    }
+
+    function userTipEl() {
+        var tip = document.getElementById('cc-user-tip');
+        if (tip) return tip;
+        tip = document.createElement('div');
+        tip.id = 'cc-user-tip';
+        tip.className = 'cc-user-tip';
+        tip.hidden = true;
+        document.body.appendChild(tip);
+        return tip;
+    }
+
+    function hideUserTip() {
+        var tip = document.getElementById('cc-user-tip');
+        if (tip) tip.hidden = true;
+    }
+
+    function tipUsuariosDe(el) {
+        var nodo = el;
+        while (nodo && nodo !== document) {
+            if (nodo.getAttribute && nodo.getAttribute('data-users')) return nodo;
+            nodo = nodo.parentNode;
+        }
+        return null;
+    }
+
+    function showUserTip(el) {
+        var names = usersFromAttr(el.getAttribute('data-users') || '');
+        if (!names.length) return;
+        var tip = userTipEl();
+        tip.innerHTML = names.map(function (n) { return '<div>' + escapeHtml(n) + '</div>'; }).join('');
+        tip.hidden = false;
+        var r = el.getBoundingClientRect();
+        var left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8));
+        var top = r.bottom + 6;
+        if (top + tip.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - tip.offsetHeight - 6);
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+    }
+
+    function bindUserTip() {
+        if (CC._userTipBound) return;
+        CC._userTipBound = true;
+        document.addEventListener('mouseover', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (!el) return;
+            showUserTip(el);
+        });
+        document.addEventListener('mouseout', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (!el) return;
+            if (e.relatedTarget && el.contains(e.relatedTarget)) return;
+            hideUserTip();
+        });
+        document.addEventListener('focusin', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (el) showUserTip(el);
+        });
+        document.addEventListener('focusout', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (el) hideUserTip();
+        });
+        window.addEventListener('scroll', hideUserTip, true);
     }
 
     function bindPeriodoForm() {
@@ -2059,28 +2169,86 @@
         return String(codigo || '').replace(/\s+/g, '').toUpperCase() === 'EMPRESA';
     }
 
+    /** 0006 y 6 son el mismo centro. La clave no lleva ceros a la izquierda. */
+    function claveCentro(codigo) {
+        var s = String(codigo || '').trim().toUpperCase();
+        if (!s || isEmpresaCompleta(s) || s === 'SIN_CC') return s;
+        var stripped = s.replace(/^0+/, '');
+        return stripped || s;
+    }
+
     function asigPuedeRevisar(a) {
         return !!(a && (a.revisar || ((a.permisos || []).indexOf('revisar') !== -1)));
     }
 
-    function recordarAsignacionesPropias(list) {
-        if (!CC._asigPropias) CC._asigPropias = (list || []).slice();
+    function filasDelUsuarioActual(list) {
+        var uid = Number(CC.state.usuarioActualId || 0);
+        if (!uid) return (list || []).slice();
+        return (list || []).filter(function (a) {
+            return Number(a.user_id) === uid;
+        });
     }
 
-    /** Empresas, centros y cuentas que el usuario actual puede revisar. */
+    function recordarAsignacionesPropias(list) {
+        if (!CC._asigPropias) CC._asigPropias = filasDelUsuarioActual(list);
+    }
+
+    function indiceAsignaciones(list) {
+        var byId = {};
+        function put(rows) {
+            (rows || []).forEach(function (a) {
+                if (a && a.id != null) byId[Number(a.id)] = a;
+            });
+        }
+        put(CC._anAsigTodas);
+        put(list);
+        return byId;
+    }
+
+    /** parent_id ata la revisión a una persona. Sin ese vínculo, el centro o la empresa siguen abiertos. */
+    function vinculoRevision(a, byId) {
+        if (!a || a.es_principal !== false) return null;
+        var pid = Number(a.parent_id || 0);
+        if (!pid) return null;
+        var p = byId[pid];
+        if (!p) return null;
+        var uid = Number(p.user_id || 0);
+        if (!uid || uid === Number(a.user_id)) return null;
+        return uid;
+    }
+
+    function anotarUsuario(slot, userId) {
+        if (!slot || slot.usuarios === null) return;
+        if (!userId) {
+            slot.usuarios = null;
+            return;
+        }
+        if (!slot.usuarios) slot.usuarios = {};
+        slot.usuarios[String(userId)] = true;
+    }
+
+    function usuarioEnRegla(usuarios, a) {
+        if (usuarios == null) return true;
+        return !!usuarios[String(a && a.user_id)];
+    }
+
+    /** Empresas, centros, cuentas y, si aplica, la persona ligada que el usuario actual puede revisar. */
     function alcanceRevisionPropio(list) {
         var uid = Number(CC.state.usuarioActualId || 0);
+        var byId = indiceAsignaciones(list);
         var scope = {};
         (list || []).forEach(function (a) {
             if (!uid || Number(a.user_id) !== uid) return;
             if (!asigPuedeRevisar(a)) return;
             var e = String(a.empresa || '').toUpperCase().trim();
             if (!e) return;
-            if (!scope[e]) scope[e] = { wide: false, todasEmpresa: false, cuentasEmpresa: [], centros: {} };
+            if (!scope[e]) scope[e] = { wide: false, todasEmpresa: false, cuentasEmpresa: [], usuarios: undefined, centros: {} };
+            var ligadoA = vinculoRevision(a, byId);
             var code = String(a.centro_codigo || '').trim();
             var cuentas = (a.cuentas || []).map(function (c) { return String(c.codigo || '').trim(); }).filter(Boolean);
             if (isEmpresaCompleta(code)) {
                 scope[e].wide = true;
+                anotarUsuario(scope[e], ligadoA);
                 if (!cuentas.length) scope[e].todasEmpresa = true;
                 else cuentas.forEach(function (c) {
                     if (scope[e].cuentasEmpresa.indexOf(c) === -1) scope[e].cuentasEmpresa.push(c);
@@ -2088,8 +2256,10 @@
                 return;
             }
             if (!code) return;
-            if (!scope[e].centros[code]) scope[e].centros[code] = { todas: false, cuentas: [] };
-            var slot = scope[e].centros[code];
+            var ck = claveCentro(code);
+            if (!scope[e].centros[ck]) scope[e].centros[ck] = { todas: false, cuentas: [], usuarios: undefined };
+            var slot = scope[e].centros[ck];
+            anotarUsuario(slot, ligadoA);
             if (!cuentas.length) slot.todas = true;
             else cuentas.forEach(function (c) {
                 if (slot.cuentas.indexOf(c) === -1) slot.cuentas.push(c);
@@ -2113,12 +2283,21 @@
             if (!rule) return;
             var code = String(a.centro_codigo || '').trim();
             if (!code || isEmpresaCompleta(code)) return;
+            var ck = claveCentro(code);
             var permitidas = null;
             if (rule.wide) {
-                if (!rule.todasEmpresa) permitidas = rule.cuentasEmpresa || [];
+                var amplio = rule.centros[ck];
+                if (amplio && amplio.usuarios) {
+                    if (!usuarioEnRegla(amplio.usuarios, a)) return;
+                    if (!amplio.todas) permitidas = amplio.cuentas;
+                } else if (!usuarioEnRegla(rule.usuarios, a)) {
+                    return;
+                } else if (!rule.todasEmpresa) {
+                    permitidas = rule.cuentasEmpresa || [];
+                }
             } else {
-                var slot = rule.centros[code];
-                if (!slot) return;
+                var slot = rule.centros[ck];
+                if (!slot || !usuarioEnRegla(slot.usuarios, a)) return;
                 if (!slot.todas) permitidas = slot.cuentas;
             }
             var cuentas = filtrarCuentasAlcance(a.cuentas, permitidas);
@@ -2156,16 +2335,20 @@
 
     function aplicarHerenciaRevision(ciclo, luego) {
         var key = String(ciclo || '');
-        var propias = CC._asigPropias || CC.state.misAsignaciones || [];
+        var propias = filasDelUsuarioActual(CC._asigPropias || CC.state.misAsignaciones || []);
         if (!key || !revisionNecesitaHerencia(propias, key) || CC._revHerenciaCiclo === key) {
             if (luego) luego();
             return;
         }
         if (CC._revHerenciaLoading === key) return;
         CC._revHerenciaLoading = key;
+        var herenciaGen = CC._anAsigGen || 0;
         fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
-            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            cache: 'no-store'
         }).then(function (r) { return r.json(); }).then(function (json) {
+            if (herenciaGen !== (CC._anAsigGen || 0)) return;
+            if (json && json.asignaciones) CC._anAsigTodas = json.asignaciones;
             var scope = alcanceRevisionPropio(propias);
             var uid = Number(CC.state.usuarioActualId || 0);
             var extras = filasCubiertasPorRevision(json.asignaciones || [], scope).filter(function (a) {
@@ -2183,6 +2366,7 @@
             CC._revHerenciaLoading = '';
             if (luego) luego();
         }).catch(function () {
+            if (herenciaGen !== (CC._anAsigGen || 0)) return;
             CC._revHerenciaCiclo = key;
             CC._revHerenciaLoading = '';
             if (luego) luego();
@@ -2195,7 +2379,7 @@
             var emp = String(a.empresa || '').toUpperCase();
             var code = String(a.centro_codigo || '').trim();
             if (!emp || !code || isEmpresaCompleta(code)) return;
-            var k = emp + '|' + code;
+            var k = emp + '|' + claveCentro(code);
             if (!map[k]) {
                 map[k] = {
                     codigo: a.centro_codigo,
@@ -2885,6 +3069,7 @@
     function bindDetalleCurrency() {
         var mon = document.getElementById('ctl-moneda');
         if (mon) mon.value = CC.state.currency || 'MXN';
+        bindUserTip();
         if (CC._detalleBound) return;
         if (mon) {
             mon.addEventListener('change', function () {
@@ -3304,6 +3489,46 @@
         return '';
     }
 
+    function cuentaAsignadaA(codigo, cuentas) {
+        var lista = cuentas || [];
+        if (!lista.length) return true;
+        var keys = {};
+        clavesCuentaLookup(codigo).forEach(function (k) { keys[String(k)] = true; });
+        var norm = cuentaAsignadaNorm(codigo);
+        return lista.some(function (x) {
+            if (clavesCuentaLookup(x && x.codigo).some(function (k) { return keys[String(k)]; })) return true;
+            var otro = cuentaAsignadaNorm(x && x.codigo);
+            return !!(norm && otro && norm === otro);
+        });
+    }
+
+    function usuariosDeCuenta(centro, codigo) {
+        var names = [];
+        var principal = '';
+        asigsDe(centro).forEach(function (a) {
+            var nombre = String(a.usuario || '').replace(/\s+/g, ' ').trim();
+            if (!nombre) return;
+            if (!cuentaAsignadaA(codigo, a.cuentas)) return;
+            if (names.indexOf(nombre) === -1) names.push(nombre);
+            if (a.es_principal && !principal) principal = nombre;
+        });
+        if (principal && names.indexOf(principal) > 0) {
+            names = [principal].concat(names.filter(function (n) { return n !== principal; }));
+        }
+        return names;
+    }
+
+    function usuariosDelCentro(c) {
+        var names = (c && c.usuarios) ? c.usuarios.slice() : [];
+        if (c && c.usuario) names.unshift(c.usuario);
+        asigsDe(c || {}).forEach(function (a) { names.push(a.usuario); });
+        return listaUsuarios(names);
+    }
+
+    function celdaUsuariosCuenta(centro, cta) {
+        return '<td class="cc-col-users">' + htmlPilaUsuarios(usuariosDeCuenta(centro, cta && cta.codigo), false) + '</td>';
+    }
+
     function paintMonthTableFoot(tbodyId, ctas) {
         var tf = document.getElementById(monthTableFootId(tbodyId));
         if (!tf) return;
@@ -3331,6 +3556,7 @@
         for (var m = 0; m < 12; m++) grand += gastoMes[m] + pptoMes[m];
         var html = '<tr>';
         html += '<td class="sticky-col">Total</td>';
+        if (tbodyId === 'det-tbody') html += '<td class="cc-col-users"></td>';
         html += '<td class="num' + (gastoListo ? '' : ' is-loading') + '">' + (gastoListo ? money(totG) : 'Cargando...') + '</td>';
         html += '<td class="num">' + money(totP) + '</td>';
         html += '<td class="num ' + dCls + '">' + (!gastoListo ? 'Cargando...' : ((totP || totG) ? ((d > 0 ? '+' : '') + d + '%') : '—')) + '</td>';
@@ -3349,8 +3575,10 @@
         var thead = document.getElementById(theadId);
         var tbody = document.getElementById(tbodyId);
         if (!thead || !tbody) return;
+        var conUsuarios = tbodyId === 'det-tbody';
+        var colCount = conUsuarios ? 30 : 29;
         if (!c) {
-            tbody.innerHTML = '<tr><td colspan="29"><div class="cc-empty">Elige un centro para ver el detalle</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">Elige un centro para ver el detalle</div></td></tr>';
             paintMonthTableFoot(tbodyId, null);
             if (tbodyId === 'ctl-tbody') paintVisibleTableTotals(null, 'ctl');
             if (tbodyId === 'det-tbody') paintVisibleTableTotals(null, 'det');
@@ -3377,7 +3605,7 @@
         var closedMap = control[opts.groupKey] || (control[opts.groupKey] = {});
 
         var gastoHead = 'Gasto ' + CC.state.anioGasto + (CC.state.page === 'control' ? ' · Ene–Sep' : '');
-        var head = '<tr><th class="sticky-col">Cuenta</th><th class="num">' + gastoHead + '</th><th class="num">Ppto ' + CC.state.anioPresupuesto + '</th><th class="num">Δ%</th>';
+        var head = '<tr><th class="sticky-col">Cuenta</th>' + (conUsuarios ? '<th>Usuarios</th>' : '') + '<th class="num">' + gastoHead + '</th><th class="num">Ppto ' + CC.state.anioPresupuesto + '</th><th class="num">Δ%</th>';
         MONTHS.forEach(function (m) { head += '<th class="num">' + m + ' ' + String(CC.state.anioGasto).slice(2) + '</th><th class="num">' + m + ' ' + String(CC.state.anioPresupuesto).slice(2) + '</th>'; });
         head += '<th class="num cc-col-total" title="Suma de los totales de cada mes">Total</th></tr>';
         thead.innerHTML = head;
@@ -3390,7 +3618,7 @@
             var gListo = groups[g].every(gastoDeCuentaCargado);
             var closed = !!closedMap[g];
             if (!hideGroups) {
-                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="4"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' cuentas</td>';
+                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="' + (conUsuarios ? 5 : 4) + '"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' cuentas</td>';
                 html += '<td class="num' + (gListo ? '' : ' is-loading') + '" colspan="2">' + (gListo ? money(gTotG) : 'Cargando...') + ' → ' + money(gTotP) + '</td><td colspan="22"></td>';
                 html += '<td class="num cc-col-total' + (gListo ? '' : ' is-loading') + '">' + (gListo ? money(gTotG + gTotP) : 'Cargando...') + '</td></tr>';
             }
@@ -3402,6 +3630,7 @@
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
+                    if (conUsuarios) html += celdaUsuariosCuenta(c, cta);
                     html += '<td class="num' + (ctaGastoListo ? '' : ' is-loading') + '">' + textoGastoCuenta(cta, cta.totG) + '</td><td class="num fw-semibold">' + money(cta.totP) + '</td>';
                     html += '<td class="num ' + dCls + '">' + (!ctaGastoListo ? 'Cargando...' : (cta.totP ? ((d > 0 ? '+' : '') + d + '%') : '—')) + '</td>';
                     for (var i = 0; i < 12; i++) {
@@ -3423,7 +3652,8 @@
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
             ? 'No hay filas para esta cuenta con los filtros actuales'
             : 'Sin cuentas asignadas a este centro';
-        tbody.innerHTML = html || '<tr><td colspan="29"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
+        if (tbodyId === 'det-tbody') hideUserTip();
+        tbody.innerHTML = html || '<tr><td colspan="' + colCount + '"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
         paintMonthTableFoot(tbodyId, html ? ctas : null);
 
         tbody.querySelectorAll('.cc-group-row').forEach(function (row) {
@@ -3756,7 +3986,7 @@
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
                 factHtml('Gasto', gastoListo ? money(stt.totG) : 'Cargando…', '', !gastoListo) +
                 factHtml('Presupuestado', presupuestoListo() ? money(stt.totP) : 'Cargando…', '', !presupuestoListo()) +
-                factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
+                factHtml('Usuario', htmlPilaUsuarios(usuariosDelCentro(c), true)) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
                 factHtml('Progreso', stt.avance + '%',
                     '<div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span></div>' +
@@ -4550,7 +4780,7 @@
     }
 
     function centroAnalisisKey(c) {
-        return String(c.empresa || '') + '|' + String(c.codigo || '');
+        return String(c.empresa || '').toUpperCase() + '|' + claveCentro(c.codigo);
     }
 
     function fillSelectKeep(el, items, valueKey, labelKey, extra) {
@@ -4570,6 +4800,9 @@
         }
         paintAnalisisYears();
         CC._anVistaConfirmada = false;
+        CC._asigPropias = null;
+        CC._anAsigTodas = null;
+        CC._revHerenciaCiclo = '';
         CC._anCapturaCiclo = null;
         CC._anAsigLoaded = false;
         CC._anAsigLoading = false;
@@ -4615,6 +4848,7 @@
                     toggleAnalisisEmpresa(hit.getAttribute('data-emp') || '');
                 });
             }
+            bindUserTip();
             var buscarBtn = document.getElementById('an-buscar');
             if (buscarBtn) buscarBtn.addEventListener('click', buscarAnalisis);
             var refrescarBtn = document.getElementById('an-refrescar');
@@ -4659,29 +4893,44 @@
                 return;
             }
             CC._anAsigLoading = true;
+            CC._anAsigGen = (CC._anAsigGen || 0) + 1;
+            var asigGen = CC._anAsigGen;
             fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
-                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                cache: 'no-store'
             }).then(function (r) { return r.json(); }).then(function (json) {
+                if (asigGen !== CC._anAsigGen) return;
                 var list = (json && json.asignaciones) || [];
+                CC._anAsigTodas = list;
                 recordarAsignacionesPropias(list);
                 CC.state.misAsignaciones = filasVisiblesRevision(list);
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 fillAnalisisFilters();
                 aplicarHerenciaRevision(ciclo, function () {
+                    if (asigGen !== CC._anAsigGen) return;
+                    var base = (CC._anAsigTodas && CC._anAsigTodas.length) ? CC._anAsigTodas : (CC.state.misAsignaciones || []);
+                    CC.state.misAsignaciones = filasVisiblesRevision(base);
                     CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                     CC._anAsigLoaded = true;
                     CC._anAsigLoading = false;
                     fillAnalisisFilters();
+                    var st = document.getElementById('an-sap-status');
+                    if (st && st.textContent === 'Actualizando empresas, centros y usuarios…') st.textContent = '';
                     if (CC._anVistaConfirmada && analisisTieneFiltro()) queueAnalisisGastos();
                     else renderAnalisis();
                 });
             }).catch(function () {
+                if (asigGen !== CC._anAsigGen) return;
                 var list = CC.state.misAsignaciones || [];
                 CC.state.misAsignaciones = filasVisiblesRevision(list);
                 CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
                 CC._anAsigLoaded = true;
                 CC._anAsigLoading = false;
                 fillAnalisisFilters();
+                var st = document.getElementById('an-sap-status');
+                if (st && st.textContent === 'Actualizando empresas, centros y usuarios…') {
+                    st.textContent = 'No se pudo actualizar la lista. Intenta de nuevo.';
+                }
                 renderAnalisis();
             });
             return;
@@ -4841,7 +5090,28 @@
     }
 
     function refrescarAnalisis() {
-        buscarAnalisis();
+        if (CC._anCargandoSap || CC._anAsigLoading) return;
+        var ciclo = val('an-ciclo') || CC.state.cicloCodigo || '';
+        var status = document.getElementById('an-sap-status');
+        if (!ciclo) {
+            if (status) status.textContent = 'Elige un presupuesto.';
+            return;
+        }
+        CC.state.gastoCache = {};
+        CC.state.gastoLookup = {};
+        CC.state.gastoUsdLookup = {};
+        CC.state.gastoReady = {};
+        CC._asigPropias = null;
+        CC._anAsigTodas = null;
+        CC._revHerenciaCiclo = '';
+        CC._revHerenciaLoading = '';
+        CC._anAsigLoaded = false;
+        CC._anAsigLoading = false;
+        CC._anCapturaCiclo = '';
+        CC._anAsigGen = (CC._anAsigGen || 0) + 1;
+        if (analisisTieneFiltro()) CC._anVistaConfirmada = true;
+        if (status) status.textContent = 'Actualizando empresas, centros y usuarios…';
+        CC.initAnalisis();
     }
 
     function setAnalisisSelect(el, value) {
@@ -5332,14 +5602,15 @@
 
         var tb = document.getElementById('an-tbody');
         if (tb) {
+            hideUserTip();
             tb.innerHTML = tableRows.map(function (c) {
                 var cls = c.avance < 40 ? 'warn' : (c.over ? 'bad' : 'good');
-                var userLabel = (c.usuarios && c.usuarios.length > 1)
-                    ? c.usuario + ' +' + (c.usuarios.length - 1)
-                    : c.usuario;
+                var todos = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
+                var principal = c.usuario || todos[0] || '';
+                var personas = listaUsuarios([principal].concat(todos));
                 return '<tr><td>' + escapeHtml(c.empresa || '—') + '</td>' +
                     '<td><div class="fw-semibold">' + escapeHtml(c.codigo) + ' — ' + escapeHtml(c.nombre) + '</div><div class="text-muted" style="font-size:.75rem">' + escapeHtml(c.departamento || '') + '</div></td>' +
-                    '<td>' + userCell(userLabel) + '</td>' +
+                    '<td>' + htmlPilaUsuarios(personas, true) + '</td>' +
                     '<td>' + renderBadge(c.estado) + '</td>' +
                     '<td><div class="d-flex justify-content-between"><span>' + c.capturadas + '/' + c.cuentas + '</span><span>' + c.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(c.avance, 100) + '%"></span></div></td>' +
                     '<td class="num">' + (c.gastoListo ? moneyVista(c.gasto) : htmlCargando('sm')) + '</td>' +

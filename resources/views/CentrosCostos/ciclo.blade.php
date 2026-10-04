@@ -84,15 +84,14 @@
             </div>
         </div>
         <div class="cc-filters cc-filters-asig">
-            <label class="cc-filter-field cc-filter-q" for="asig-q">Buscar
-                <div class="cc-pick-search">
-                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
-                    <input id="asig-q" class="cc-input" type="search" placeholder="Buscar coincidencias…" aria-label="Buscar coincidencias" autocomplete="off">
-                </div>
-            </label>
             <label class="cc-filter-field" for="asig-q-empresa">Empresa
                 <select id="asig-q-empresa" class="cc-select" aria-label="Filtrar por empresa">
                     <option value="">Todas las empresas</option>
+                </select>
+            </label>
+            <label class="cc-filter-field" for="asig-q-centro">Centro de costos
+                <select id="asig-q-centro" class="cc-select" aria-label="Filtrar por centro de costo">
+                    <option value="">Todos los centros</option>
                 </select>
             </label>
             <label class="cc-filter-field" for="asig-q-usuario">Usuario
@@ -100,10 +99,16 @@
                     <option value="">Todos los usuarios</option>
                 </select>
             </label>
-            <label class="cc-filter-field" for="asig-q-centro">Centro de costos
-                <select id="asig-q-centro" class="cc-select" aria-label="Filtrar por centro de costo">
-                    <option value="">Todos los centros</option>
+            <label class="cc-filter-field" for="asig-q-permiso">Permiso
+                <select id="asig-q-permiso" class="cc-select" aria-label="Filtrar por permiso">
+                    <option value="">Todos los permisos</option>
                 </select>
+            </label>
+            <label class="cc-filter-field cc-filter-q" for="asig-q">Buscar
+                <div class="cc-pick-search">
+                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+                    <input id="asig-q" class="cc-input" type="search" placeholder="Buscar coincidencias…" aria-label="Buscar coincidencias" autocomplete="off">
+                </div>
             </label>
         </div>
         <div class="cc-table-wrap">

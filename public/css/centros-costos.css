@@ -512,6 +512,9 @@
     grid-template-columns: minmax(180px, 1.45fr) repeat(3, minmax(0, 1fr));
     align-items: end;
 }
+.cc-filters-asig:has(#asig-q-permiso) {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(160px, 1.25fr);
+}
 .cc-filters-asig .cc-pick-search { margin-bottom: 0; }
 .cc-filters-asig .cc-filter-q .cc-input {
     letter-spacing: 0;
@@ -672,6 +675,23 @@ body > .select2-container--open:has(.cc-select-search-drop) {
 .cc-badge-aceptado { background: var(--cc-ok-bg); color: var(--cc-ok); }
 .cc-badge-rechazado { background: var(--cc-danger-bg); color: var(--cc-danger); }
 .cc-badge-captura { background: #ecfeff; color: #0e7490; }
+.cc-asig-perm {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+}
+.cc-asig-leyenda {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.08rem;
+    margin-top: 0.28rem;
+    font-size: 0.72rem;
+    font-weight: 300;
+    color: var(--cc-muted);
+    line-height: 1.25;
+    text-align: center;
+}
 .cc-badge-solo_revision { background: #fafafa; color: #525252; border: 1px solid var(--cc-line); }
 
 .cc-estado-pick {
@@ -924,6 +944,25 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     text-transform: uppercase;
     color: #3f3f46;
     cursor: pointer;
+}
+.cc-col-users {
+    white-space: nowrap;
+    width: 1%;
+}
+.cc-user-stack {
+    gap: 0;
+    cursor: help;
+    border-bottom: 0;
+}
+.cc-user-stack .cc-avatar + .cc-avatar {
+    margin-left: -8px;
+    box-shadow: 0 0 0 2px #fff;
+}
+.cc-avatar-more {
+    background: #a1a1aa;
+    color: #fff;
+    border: 0;
+    font-size: 0.62rem;
 }
 .cc-group-totals {
     white-space: nowrap;
@@ -1318,6 +1357,39 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     align-items: center;
     gap: 0.4rem;
 }
+.cc-user-more {
+    font-weight: 700;
+    color: #3f3f46;
+    cursor: help;
+    border-bottom: 1px dashed #a1a1aa;
+}
+.cc-user-more:hover,
+.cc-user-more:focus {
+    color: var(--cc-ink);
+    outline: none;
+}
+.cc-user-stack.cc-user-more,
+.cc-user-stack.cc-user-more:hover,
+.cc-user-stack.cc-user-more:focus,
+.cc-col-users .cc-user-more,
+.cc-detalle-fact .cc-user-more {
+    border-bottom: 0;
+    color: inherit;
+}
+.cc-user-tip {
+    position: fixed;
+    z-index: 80;
+    max-width: 260px;
+    padding: 0.4rem 0.65rem;
+    background: #0a0a0a;
+    color: #fff;
+    border-radius: 8px;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+    pointer-events: none;
+}
+.cc-user-tip[hidden] { display: none !important; }
 .cc-avatar {
     width: 26px; height: 26px; border-radius: 50%;
     background: var(--cc-ink); color: #fff;
@@ -1993,6 +2065,13 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     color: var(--cc-ink); cursor: pointer;
 }
 .cc-icon-btn:hover { background: var(--cc-ink); color: #fff; }
+.cc-icon-btn:disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
+    pointer-events: none;
+    background: #f4f4f5;
+    color: #a1a1aa;
+}
 .cc-icon-btn.is-danger:hover { background: #b91c1c; border-color: #b91c1c; color: #fff; }
 .cc-ver-cuentas {
     list-style: none;
@@ -2114,7 +2193,8 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     .cc-kpis-equal { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .cc-page { padding: 0.85rem 0.75rem 2rem; }
     .cc-filters,
-    .cc-filters-asig { grid-template-columns: 1fr; }
+    .cc-filters-asig,
+    .cc-filters-asig:has(#asig-q-permiso) { grid-template-columns: 1fr; }
     .cc-header-logo { height: 48px; }
     .cc-toolbar { flex-wrap: wrap; }
 }
@@ -3328,6 +3408,13 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     margin-top: 0.12rem;
     font-size: 0.88rem;
     line-height: 1.25;
+}
+.cc-detalle-fact .cc-user { max-width: 100%; }
+.cc-detalle-fact .cc-user-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 .cc-detalle-fact .cc-visor-avance { min-width: 90px; margin-top: 0.2rem; }
 .cc-visor-avance {

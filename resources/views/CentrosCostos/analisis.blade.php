@@ -44,7 +44,7 @@
         <div>
             <div class="cc-kicker" id="an-kicker">Supervisión · presupuesto {{ $bootstrap['anioPresupuesto'] }}</div>
             <h1 class="cc-title">Análisis de progreso</h1>
-            <p class="cc-sub" id="an-sub">Cuánto se lleva capturado por empresa, centro, cuenta o usuario, y dónde se pasó el límite vs el gasto real.</p>
+            <p class="cc-sub" id="an-sub">Analíticas por empresa, centro, cuenta o usuario.</p>
         </div>
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>

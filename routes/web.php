@@ -1210,6 +1210,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
         ->name('centros.asignar');
     Route::get('/AdminCentros/{ciclo}/asignaciones', [CentrosCostosController::class, 'listAsignaciones'])->name('centros.asignaciones.index');
     Route::post('/AdminCentros/{ciclo}/asignaciones', [CentrosCostosController::class, 'storeAsignacion'])->name('centros.asignaciones.store');
+    Route::post('/AdminCentros/{ciclo}/asignaciones/snapshot', [CentrosCostosController::class, 'snapshotAsignaciones'])->name('centros.asignaciones.snapshot');
     Route::put('/AdminCentros/{ciclo}/asignaciones/{id}', [CentrosCostosController::class, 'updateAsignacion'])->name('centros.asignaciones.update');
     Route::delete('/AdminCentros/{ciclo}/asignaciones/{id}', [CentrosCostosController::class, 'destroyAsignacion'])->name('centros.asignaciones.destroy');
     Route::get('/AdminCentros/{ciclo}/importar-usuarios', [CentrosCostosController::class, 'listImportarUsuarios'])->name('centros.importar.usuarios');

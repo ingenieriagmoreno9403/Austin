@@ -554,6 +554,8 @@ class CentrosCostosController extends Controller
             $q->where('user_id', $userId);
         }
 
+        $this->promoverCapturasIndependientes($ciclo);
+
         $rows = $q->orderByDesc('id')->get()->map(function (CcAsignacion $a) {
             return $this->asignacionPayload($a);
         })->values()->all();
@@ -581,6 +583,8 @@ class CentrosCostosController extends Controller
         ]);
 
         $empresa = strtolower($data['empresa']);
+        $permisos = $data['permisos'] ?? ['capturar'];
+        $revisionCentro = $this->esRevisionDeCentroCompleto($data['centro_codigo'], $permisos, $data['cuentas'] ?? []);
         $asig = CcAsignacion::query()->firstOrNew([
             'ciclo_codigo' => $ciclo,
             'empresa' => $empresa,
@@ -591,21 +595,69 @@ class CentrosCostosController extends Controller
         $nuevo = ! $asig->exists;
         if ($nuevo) {
             $asig->created_by = auth()->id();
-            if ($this->asigHasRolColumns()) {
-                $principal = $this->buscarPrincipal($ciclo, $empresa, $data['centro_codigo']);
-                $asig->es_principal = $principal ? false : true;
-                $asig->parent_id = $principal ? $principal->id : null;
-            }
+        }
+        if ($this->asigHasRolColumns() && ($nuevo || $this->clavesSonCaptura($permisos) || $revisionCentro)) {
+            $asig->es_principal = true;
+            $asig->parent_id = null;
         }
         $asig->save();
 
         $this->syncCuentas($asig, $data['cuentas'] ?? []);
-        $this->syncPermisosClaves($asig, $data['permisos'] ?? ['capturar']);
+        $this->syncPermisosClaves($asig, $permisos);
 
         $asig->load(['usuario', 'cuentas', 'permisos.tipo']);
-        $this->programarSnapshotAsignacion($ciclo, $asig->empresa, $asig->centro_codigo, $data['cuentas'] ?? []);
+        $snapshot = $this->clavesSonCaptura($permisos)
+            && $this->datosSnapshotAsignacion($asig->empresa, $asig->centro_codigo, $data['cuentas'] ?? []) !== null;
 
-        return response()->json(['ok' => true, 'asignacion' => $this->asignacionPayload($asig), 'snapshot' => true]);
+        return response()->json([
+            'ok' => true,
+            'asignacion' => $this->asignacionPayload($asig),
+            'snapshot' => $snapshot,
+        ]);
+    }
+
+    /**
+     * Escribe ya la copia local de los centros que se acaban de asignar.
+     * Lo usan Guardar y Guardar y salir, para que los dos dejen el snapshot.
+     */
+    public function snapshotAsignaciones(Request $request, string $ciclo): JsonResponse
+    {
+        $data = $request->validate([
+            'items' => 'required|array|min:1|max:40',
+            'items.*.empresa' => 'required|string|max:40',
+            'items.*.centro_codigo' => 'required|string|max:40',
+            'items.*.cuentas' => 'array',
+            'items.*.permisos' => 'array',
+            'items.*.permisos.*' => 'string',
+        ]);
+
+        @set_time_limit(180);
+        $n = 0;
+        $userId = auth()->id();
+        foreach ($data['items'] as $item) {
+            $permisos = is_array($item['permisos'] ?? null) ? $item['permisos'] : [];
+            if (! $this->clavesSonCaptura($permisos)) {
+                continue;
+            }
+            $prep = $this->datosSnapshotAsignacion(
+                (string) $item['empresa'],
+                (string) $item['centro_codigo'],
+                is_array($item['cuentas'] ?? null) ? $item['cuentas'] : []
+            );
+            if ($prep === null) {
+                continue;
+            }
+            try {
+                $this->asegurarSnapshotAsignacion($ciclo, $prep['empresa'], $prep['centro'], $prep['codigos'], $userId);
+            } catch (Throwable $e) {
+                report($e);
+
+                return response()->json(['ok' => false, 'message' => 'No se pudo guardar la copia local.'], 500);
+            }
+            $n++;
+        }
+
+        return response()->json(['ok' => true, 'snapshot' => $n > 0, 'centros' => $n]);
     }
 
     public function updateAsignacion(Request $request, string $ciclo, int $id): JsonResponse
@@ -637,7 +689,13 @@ class CentrosCostosController extends Controller
                 $this->propagarCuentasAColaboradores($asig);
             }
             if (array_key_exists('permisos', $data)) {
-                $this->syncPermisosClaves($asig, $data['permisos'] ?: ['revisar']);
+                $permisos = $data['permisos'] ?: ['revisar'];
+                $this->syncPermisosClaves($asig, $permisos);
+                if ($this->asigHasRolColumns() && $this->clavesSonCaptura($permisos)) {
+                    $asig->es_principal = true;
+                    $asig->parent_id = null;
+                    $asig->save();
+                }
             }
             if (array_key_exists('accesos', $data)) {
                 $this->syncAccesos($asig, $data['accesos']);
@@ -645,7 +703,10 @@ class CentrosCostosController extends Controller
         });
 
         $asig->load(['usuario', 'cuentas', 'permisos.tipo']);
-        if (array_key_exists('cuentas', $data)) {
+        $claves = $asig->permisos->map(function ($p) {
+            return (string) ($p->tipo->clave ?? '');
+        })->all();
+        if (array_key_exists('cuentas', $data) && $this->clavesSonCaptura($claves)) {
             $this->programarSnapshotAsignacion($ciclo, $asig->empresa, $asig->centro_codigo, $data['cuentas']);
         }
 
@@ -663,14 +724,12 @@ class CentrosCostosController extends Controller
         }
 
         DB::transaction(function () use ($asig) {
+            if ($this->esRevisionCentroCompletoGuardada($asig)) {
+                $this->borrarRevisionesDelMismoCentro($asig);
+                return;
+            }
             if ($this->asigHasRolColumns() && $asig->es_principal) {
-                $extras = CcAsignacion::query()
-                    ->where('ciclo_codigo', $asig->ciclo_codigo)
-                    ->where('empresa', $asig->empresa)
-                    ->where('centro_codigo', $asig->centro_codigo)
-                    ->where('id', '!=', $asig->id)
-                    ->get();
-                foreach ($extras as $extra) {
+                foreach ($this->queryColaboradoresDe($asig)->get() as $extra) {
                     $this->borrarAsignacion($extra);
                 }
             }
@@ -686,11 +745,15 @@ class CentrosCostosController extends Controller
      *
      * @param  array<int, mixed>  $cuentas
      */
-    protected function programarSnapshotAsignacion(string $ciclo, string $empresa, string $centro, array $cuentas): void
+    /**
+     * @param  array<int, mixed>  $cuentas
+     * @return array{empresa: string, centro: string, codigos: array<int, string>}|null
+     */
+    protected function datosSnapshotAsignacion(string $empresa, string $centro, array $cuentas): ?array
     {
         $centro = strtoupper(trim($centro));
         if ($centro === '' || $centro === 'SIN_CC' || $centro === 'EMPRESA') {
-            return;
+            return null;
         }
         $empresa = strtoupper(trim($empresa));
         $alias = ['ABSA' => 'AUSTIN'];
@@ -705,11 +768,25 @@ class CentrosCostosController extends Controller
                 $codigos[] = trim((string) $cuenta);
             }
         }
+        $codigos = array_values(array_filter($codigos));
+        if ($codigos === []) {
+            return null;
+        }
+
+        return ['empresa' => $empresa, 'centro' => $centro, 'codigos' => $codigos];
+    }
+
+    protected function programarSnapshotAsignacion(string $ciclo, string $empresa, string $centro, array $cuentas): void
+    {
+        $prep = $this->datosSnapshotAsignacion($empresa, $centro, $cuentas);
+        if ($prep === null) {
+            return;
+        }
         $userId = auth()->id();
-        app()->terminating(function () use ($ciclo, $empresa, $centro, $codigos, $userId) {
+        app()->terminating(function () use ($ciclo, $prep, $userId) {
             try {
                 @set_time_limit(180);
-                $this->asegurarSnapshotAsignacion($ciclo, $empresa, $centro, $codigos, $userId);
+                $this->asegurarSnapshotAsignacion($ciclo, $prep['empresa'], $prep['centro'], $prep['codigos'], $userId);
             } catch (Throwable $e) {
                 report($e);
             }
@@ -763,21 +840,6 @@ class CentrosCostosController extends Controller
         }
 
         if ($codigos === []) {
-            if (! $ok || $por === []) {
-                return;
-            }
-            foreach ($destinos as $destino) {
-                $filasCentro = [];
-                foreach ($filas as $fila) {
-                    if (! is_array($fila)) {
-                        continue;
-                    }
-                    $fila['centro'] = $destino;
-                    $filasCentro[] = $fila;
-                }
-                $snap->fusionarCentro($empresa, $year, [$destino => $por], $filasCentro, $userId);
-            }
-
             return;
         }
 
@@ -4257,6 +4319,133 @@ class CentrosCostosController extends Controller
         return $has;
     }
 
+    /**
+     * @param  array<int, string>  $claves
+     */
+    protected function clavesSonCaptura(array $claves): bool
+    {
+        foreach ($claves as $clave) {
+            if ((string) $clave === 'capturar') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Revisar un centro, sin cuentas y sin ligarlo a una persona: cubre a quien ya lo tiene.
+     *
+     * @param  array<int, string>  $permisos
+     * @param  array<int, mixed>  $cuentas
+     */
+    protected function esRevisionDeCentroCompleto(string $centro, array $permisos, array $cuentas): bool
+    {
+        $centro = strtoupper(trim($centro));
+        if ($centro === '' || $centro === 'SIN_CC' || $centro === 'EMPRESA' || $cuentas !== []) {
+            return false;
+        }
+        $claves = array_map('strval', $permisos);
+
+        return in_array('revisar', $claves, true) && ! $this->clavesSonCaptura($claves);
+    }
+
+    protected function esRevisionCentroCompletoGuardada(CcAsignacion $asig): bool
+    {
+        if ($this->asigHasRolColumns() && $asig->parent_id) {
+            return false;
+        }
+        $cuentas = CcAsignacionCuenta::query()->where('asignacion_id', $asig->id)->count();
+        $claves = CcAsignacionPermiso::query()
+            ->where('asignacion_id', $asig->id)
+            ->with('tipo')
+            ->get()
+            ->map(function ($p) {
+                return (string) ($p->tipo->clave ?? '');
+            })->all();
+
+        return $this->esRevisionDeCentroCompleto((string) $asig->centro_codigo, $claves, $cuentas > 0 ? ['x'] : []);
+    }
+
+    /**
+     * Quita la revisión de ese centro, también si el código está guardado con o sin ceros.
+     */
+    protected function borrarRevisionesDelMismoCentro(CcAsignacion $asig): void
+    {
+        $hermanas = CcAsignacion::query()
+            ->where('ciclo_codigo', $asig->ciclo_codigo)
+            ->where('empresa', $asig->empresa)
+            ->where('user_id', $asig->user_id)
+            ->get()
+            ->filter(function (CcAsignacion $row) use ($asig) {
+                return $this->mismoCentroSap((string) $row->centro_codigo, (string) $asig->centro_codigo)
+                    && $this->esRevisionCentroCompletoGuardada($row);
+            });
+        foreach ($hermanas as $row) {
+            $this->borrarAsignacion($row);
+        }
+    }
+
+    protected function idPermisoCapturar(): ?int
+    {
+        if (! Schema::hasTable('tbl_cc_tipos_permiso')) {
+            return null;
+        }
+        $id = CcTipoPermiso::query()->where('clave', 'capturar')->value('id');
+
+        return $id ? (int) $id : null;
+    }
+
+    /**
+     * Quien captura el mismo centro es una asignación propia, no un revisor del primero.
+     */
+    protected function promoverCapturasIndependientes(string $ciclo): void
+    {
+        if (! $this->asigHasRolColumns()) {
+            return;
+        }
+        $tipoId = $this->idPermisoCapturar();
+        if (! $tipoId || ! Schema::hasTable('tbl_cc_asignacion_permisos')) {
+            return;
+        }
+        $ids = CcAsignacionPermiso::query()->where('permiso_id', $tipoId)->pluck('asignacion_id');
+        if ($ids->isEmpty()) {
+            return;
+        }
+        CcAsignacion::query()
+            ->where('ciclo_codigo', $ciclo)
+            ->whereIn('id', $ids)
+            ->where(function ($q) {
+                $q->where('es_principal', false)->orWhereNotNull('parent_id');
+            })
+            ->update([
+                'es_principal' => true,
+                'parent_id' => null,
+            ]);
+    }
+
+    protected function queryColaboradoresDe(CcAsignacion $principal)
+    {
+        $q = CcAsignacion::query()
+            ->where('ciclo_codigo', $principal->ciclo_codigo)
+            ->where('empresa', $principal->empresa)
+            ->where('centro_codigo', $principal->centro_codigo)
+            ->where('id', '!=', $principal->id);
+        if (! $this->asigHasRolColumns()) {
+            return $q;
+        }
+        $q->where('es_principal', false)
+            ->where('parent_id', $principal->id);
+        $tipoId = $this->idPermisoCapturar();
+        if ($tipoId) {
+            $q->whereDoesntHave('permisos', function ($p) use ($tipoId) {
+                $p->where('permiso_id', $tipoId);
+            });
+        }
+
+        return $q;
+    }
+
     protected function buscarPrincipal(string $ciclo, string $empresa, string $centro): ?CcAsignacion
     {
         $q = CcAsignacion::query()
@@ -4439,13 +4628,7 @@ class CentrosCostosController extends Controller
             return;
         }
         $cuentas = $this->cuentasDe($asig);
-        $extras = CcAsignacion::query()
-            ->where('ciclo_codigo', $asig->ciclo_codigo)
-            ->where('empresa', $asig->empresa)
-            ->where('centro_codigo', $asig->centro_codigo)
-            ->where('id', '!=', $asig->id)
-            ->get();
-        foreach ($extras as $extra) {
+        foreach ($this->queryColaboradoresDe($asig)->get() as $extra) {
             $this->syncCuentas($extra, $cuentas);
         }
     }
@@ -4484,10 +4667,7 @@ class CentrosCostosController extends Controller
             $this->syncPermisosClaves($col, $acc['permisos'] ?? ['revisar']);
         }
 
-        $extras = CcAsignacion::query()
-            ->where('ciclo_codigo', $principal->ciclo_codigo)
-            ->where('empresa', $principal->empresa)
-            ->where('centro_codigo', $principal->centro_codigo)
+        $extras = $this->queryColaboradoresDe($principal)
             ->whereNotIn('user_id', $keepIds)
             ->get();
         foreach ($extras as $extra) {
