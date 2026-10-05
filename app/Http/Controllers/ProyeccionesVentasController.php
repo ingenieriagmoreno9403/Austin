@@ -5533,6 +5533,8 @@ class ProyeccionesVentasController extends Controller
             'fuente' => 'local',
             'empresa' => $empresa,
             'cliente' => $cc,
+            'cliente_nombre' => $this->nombreClienteLocal($empresa, $cc),
+            'capturadores' => $this->capturadoresDeCliente($ciclo, $empresa, $cc),
             'year_venta' => $year,
             'venta_real' => $ventaReal,
             'ventas_budget_ref' => (object) $budgetRef,
@@ -5542,6 +5544,110 @@ class ProyeccionesVentasController extends Controller
                 'por_articulo' => (object) $this->preciosLocalesDesdeMaestro($empresa, $cc, $costosMaster),
             ],
         ]));
+    }
+
+    /**
+     * Nombre del cliente distinto del código: asignación, catálogo local o maestro de precios.
+     */
+    protected function nombreClienteLocal(string $empresa, string $cc): string
+    {
+        $empresa = strtoupper(trim($empresa));
+        $cc = trim($cc);
+        if ($empresa === '' || $cc === '') {
+            return '';
+        }
+
+        $mejor = '';
+        $tomar = function ($nombre) use (&$mejor, $cc) {
+            $nombre = trim((string) $nombre);
+            if ($nombre === '' || strcasecmp($nombre, $cc) === 0 || $mejor !== '') {
+                return;
+            }
+            $mejor = $nombre;
+        };
+
+        if (Schema::hasTable('tbl_pv_asignaciones') && Schema::hasColumn('tbl_pv_asignaciones', 'cliente_nombre')) {
+            $tomar(DB::table('tbl_pv_asignaciones')
+                ->whereRaw('UPPER(empresa) = ?', [$empresa])
+                ->whereRaw('LOWER(cliente_codigo) = ?', [strtolower($cc)])
+                ->whereNotNull('cliente_nombre')
+                ->where('cliente_nombre', '!=', '')
+                ->orderByDesc('id')
+                ->value('cliente_nombre'));
+        }
+        if ($mejor === '' && Schema::hasTable('tbl_pv_cliente_catalogo')) {
+            $tomar(DB::table('tbl_pv_cliente_catalogo')
+                ->whereRaw('UPPER(empresa) = ?', [$empresa])
+                ->whereRaw('LOWER(codigo) = ?', [strtolower($cc)])
+                ->orderByDesc('id')
+                ->value('nombre'));
+        }
+        if ($mejor === '' && Schema::hasTable('tbl_pv_productos_costo') && Schema::hasColumn('tbl_pv_productos_costo', 'card_name')) {
+            $tomar(DB::table('tbl_pv_productos_costo')
+                ->whereRaw('UPPER(empresa) = ?', [$empresa])
+                ->whereRaw('LOWER(card_code) = ?', [strtolower($cc)])
+                ->whereNotNull('card_name')
+                ->where('card_name', '!=', '')
+                ->orderByDesc('id')
+                ->value('card_name'));
+        }
+
+        return $mejor;
+    }
+
+    /**
+     * Usuarios con Capturar o Editar en este cliente, y los productos de cada uno.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function capturadoresDeCliente(string $ciclo, string $empresa, string $cc): array
+    {
+        $ciclo = strtoupper(trim($ciclo));
+        $empresa = strtoupper(trim($empresa));
+        $cc = trim($cc);
+        if ($ciclo === '' || $empresa === '' || $cc === '' || ! Schema::hasTable('tbl_pv_asignaciones')) {
+            return [];
+        }
+
+        $empresas = [$empresa];
+        if ($empresa === 'AUSTIN') {
+            $empresas[] = 'ABSA';
+        }
+
+        $rows = PvAsignacion::query()
+            ->with(['usuario', 'cuentas', 'permisos.tipo'])
+            ->where('ciclo_codigo', $ciclo)
+            ->where(function ($q) use ($empresas) {
+                foreach ($empresas as $e) {
+                    $q->orWhereRaw('UPPER(empresa) = ?', [$e]);
+                }
+            })
+            ->whereRaw('LOWER(cliente_codigo) = ?', [strtolower($cc)])
+            ->get();
+
+        $out = [];
+        foreach ($rows as $a) {
+            $permisos = $a->permisos->map(function ($p) {
+                return $p->tipo->clave ?? null;
+            })->filter()->values()->all();
+            if (! in_array('capturar', $permisos, true) && ! in_array('editar', $permisos, true)) {
+                continue;
+            }
+            $nombre = trim((string) ($a->usuario->name ?? ''));
+            if ($nombre === '') {
+                continue;
+            }
+            $cuentas = $a->cuentas->map(function ($c) {
+                return trim((string) $c->cuenta_codigo);
+            })->filter()->values()->all();
+            $out[] = [
+                'usuario' => $nombre,
+                'es_principal' => (bool) ($a->es_principal ?? false),
+                'cuentas' => $cuentas,
+            ];
+        }
+
+        return $out;
     }
 
     /**

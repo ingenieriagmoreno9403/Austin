@@ -22,8 +22,8 @@
             <button type="button" class="cc-btn" onclick="CC.showModal('modalIndicadores')">
                 <i class="fa-solid fa-circle-info"></i> Indicadores
             </button>
-            <a class="cc-btn" href="{{ route('pv.control', ['vista' => 'visor']) }}">
-                <i class="fa-solid fa-arrow-left"></i> Volver al visor
+            <a class="cc-btn" href="#" onclick="event.preventDefault(); history.back();">
+                <i class="fa-solid fa-arrow-left"></i> Volver
             </a>
         </div>
     </div>

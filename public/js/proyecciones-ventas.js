@@ -3786,6 +3786,175 @@
         return '<span class="cc-user"><span class="cc-avatar">' + initials(name) + '</span>' + escapeHtml(name) + '</span>';
     }
 
+    function listaUsuarios(names) {
+        var uniq = [];
+        (names || []).forEach(function (n) {
+            n = String(n || '').replace(/\s+/g, ' ').trim();
+            if (n && uniq.indexOf(n) === -1) uniq.push(n);
+        });
+        return uniq;
+    }
+
+    function usersFromAttr(raw) {
+        raw = String(raw || '');
+        if (!raw) return [];
+        if (raw.charAt(0) === '[') {
+            try {
+                var parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) return listaUsuarios(parsed);
+            } catch (e) {}
+        }
+        try { raw = decodeURIComponent(raw); } catch (e2) {}
+        return listaUsuarios(raw.split('\n'));
+    }
+
+    function htmlPilaUsuarios(names, withName) {
+        var uniq = listaUsuarios(names);
+        if (!uniq.length) return '<span class="text-muted">Sin asignar</span>';
+        var extra = uniq.length - 1;
+        var mostrarNombre = !extra && !!withName;
+        var more = extra ? '<span class="cc-avatar cc-avatar-more">+' + extra + '</span>' : '';
+        var nombre = mostrarNombre ? '<span class="cc-user-name">' + escapeHtml(uniq[0]) + '</span>' : '';
+        var tip = extra || !mostrarNombre;
+        var cls = 'cc-user' + (extra ? ' cc-user-stack' : '') + (tip ? ' cc-user-more' : '');
+        var attrs = tip
+            ? ' tabindex="0" data-users="' + encodeURIComponent(uniq.join('\n')) + '" aria-label="' + escapeHtml(uniq.join(', ')) + '"'
+            : '';
+        return '<span class="' + cls + '"' + attrs + '><span class="cc-avatar">' + initials(uniq[0]) + '</span>' + more + nombre + '</span>';
+    }
+
+    function userTipEl() {
+        var tip = document.getElementById('cc-user-tip');
+        if (tip) return tip;
+        tip = document.createElement('div');
+        tip.id = 'cc-user-tip';
+        tip.className = 'cc-user-tip';
+        tip.hidden = true;
+        document.body.appendChild(tip);
+        return tip;
+    }
+
+    function hideUserTip() {
+        var tip = document.getElementById('cc-user-tip');
+        if (tip) tip.hidden = true;
+    }
+
+    function tipUsuariosDe(el) {
+        var nodo = el;
+        while (nodo && nodo !== document) {
+            if (nodo.getAttribute && nodo.getAttribute('data-users')) return nodo;
+            nodo = nodo.parentNode;
+        }
+        return null;
+    }
+
+    function showUserTip(el) {
+        var names = usersFromAttr(el.getAttribute('data-users') || '');
+        if (!names.length) return;
+        var tip = userTipEl();
+        tip.innerHTML = names.map(function (n) { return '<div>' + escapeHtml(n) + '</div>'; }).join('');
+        tip.hidden = false;
+        var r = el.getBoundingClientRect();
+        var left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8));
+        var top = r.bottom + 6;
+        if (top + tip.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - tip.offsetHeight - 6);
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+    }
+
+    function bindUserTip() {
+        if (CC._userTipBound) return;
+        CC._userTipBound = true;
+        document.addEventListener('mouseover', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (!el) return;
+            showUserTip(el);
+        });
+        document.addEventListener('mouseout', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (!el) return;
+            if (e.relatedTarget && el.contains(e.relatedTarget)) return;
+            hideUserTip();
+        });
+        document.addEventListener('focusin', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (el) showUserTip(el);
+        });
+        document.addEventListener('focusout', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (el) hideUserTip();
+        });
+        window.addEventListener('scroll', hideUserTip, true);
+    }
+
+    function listaCapturadores() {
+        return CC._detalleCapturadores || [];
+    }
+
+    function ordenarPrincipal(names, principal) {
+        if (principal && names.indexOf(principal) > 0) {
+            return [principal].concat(names.filter(function (n) { return n !== principal; }));
+        }
+        return names;
+    }
+
+    function productoAsignadoA(codigo, cuentas) {
+        var lista = cuentas || [];
+        if (!lista.length) return true;
+        var needle = String(codigo || '').trim().toUpperCase();
+        if (!needle) return false;
+        return lista.some(function (x) {
+            var code = String((x && x.codigo) || x || '').trim().toUpperCase();
+            return code && code === needle;
+        });
+    }
+
+    /** Usuarios con Capturar o Editar en el cliente (no el de la sesión). */
+    function usuariosCapturaDetalle() {
+        var names = [];
+        var principal = '';
+        listaCapturadores().forEach(function (a) {
+            var nombre = String(a.usuario || '').replace(/\s+/g, ' ').trim();
+            if (!nombre) return;
+            if (names.indexOf(nombre) === -1) names.push(nombre);
+            if (a.es_principal && !principal) principal = nombre;
+        });
+        return ordenarPrincipal(names, principal);
+    }
+
+    function usuariosDeProducto(codigo) {
+        var names = [];
+        var principal = '';
+        listaCapturadores().forEach(function (a) {
+            var nombre = String(a.usuario || '').replace(/\s+/g, ' ').trim();
+            if (!nombre) return;
+            if (!productoAsignadoA(codigo, a.cuentas)) return;
+            if (names.indexOf(nombre) === -1) names.push(nombre);
+            if (a.es_principal && !principal) principal = nombre;
+        });
+        return ordenarPrincipal(names, principal);
+    }
+
+    function nombreDistintoDeCodigo(nombre, codigo) {
+        nombre = String(nombre || '').trim();
+        codigo = String(codigo || '').trim();
+        if (!nombre || (codigo && nombre.toUpperCase() === codigo.toUpperCase())) return '';
+        return nombre;
+    }
+
+    function nombreClienteDetalle(c) {
+        var code = String((c && c.codigo) || '').trim();
+        var desdeBoot = nombreDistintoDeCodigo(CC._detalleClienteNombre, code);
+        if (desdeBoot) return desdeBoot;
+        var propio = nombreDistintoDeCodigo(c && c.nombre, code);
+        if (propio) return propio;
+        return nombreDistintoDeCodigo(nombreCatalogoCliente(c && c.empresa, code), code);
+    }
+
     function bindPeriodoForm() {
         var formPeriod = document.getElementById('form-periodo');
         if (!formPeriod || CC._periodoBound) return;
@@ -4540,6 +4709,11 @@
         }).then(function (r) { return r.json(); }).then(function (json) {
             CC._cliEmp[key] = json.centros || [];
             CC._cliEmpLoad[key] = false;
+            if (CC.state.page === 'detalle' && control.centro) {
+                var nombreCli = nombreClienteDetalle(control.centro);
+                if (nombreCli) control.centro.nombre = nombreCli;
+                paintDetalleHeader();
+            }
             if (String(val('ctl-empresa') || '').toUpperCase() !== String(emp || '').toUpperCase()) return;
             var before = String(val('ctl-centro') || '');
             renderNavCentros();
@@ -4922,6 +5096,11 @@
         bindScopeToggles();
         loadDetalleLocalBootstrap().then(function () {
             loadControlCentro();
+            if (control.centro) {
+                var nombreCli = nombreClienteDetalle(control.centro);
+                if (nombreCli) control.centro.nombre = nombreCli;
+                else ensureClientesEmpresa(control.centro.empresa);
+            }
             paintDetalleHeader();
             renderDetalleTable();
             renderDetalleChart();
@@ -4942,6 +5121,8 @@
         CC._siopSeedStamp = '';
         CC._budgetsBaseLoaded = true;
         CC._capturaReady = false;
+        CC._detalleCapturadores = [];
+        CC._detalleClienteNombre = '';
         CC.state.overlays = {};
         CC.state.budgets = {};
         CC.state.budgetsBase = {};
@@ -4968,6 +5149,8 @@
             return r.json();
         }).then(function (json) {
             if (gen !== CC._capturaLoadGen) return;
+            CC._detalleCapturadores = Array.isArray(json.capturadores) ? json.capturadores : [];
+            CC._detalleClienteNombre = String(json.cliente_nombre || '').trim();
             CC.state.overlays = json.overlays || {};
             CC.state.completados = json.completados || {};
             CC.state.ajustes = json.ajustes || {};
@@ -5027,6 +5210,7 @@
     function bindDetalleCurrency() {
         var mon = document.getElementById('ctl-moneda');
         if (mon) mon.value = CC.state.currency || 'MXN';
+        bindUserTip();
         if (CC._detalleBound) return;
         if (mon) {
             mon.addEventListener('change', function () {
@@ -6435,8 +6619,10 @@
         var thead = document.getElementById(theadId);
         var tbody = document.getElementById(tbodyId);
         if (!thead || !tbody) return;
+        var conUsuarios = tbodyId === 'det-tbody';
+        var colCount = conUsuarios ? 31 : 30;
         if (!c) {
-            tbody.innerHTML = '<tr><td colspan="30"><div class="cc-empty">Elige un cliente para ver el detalle</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">Elige un cliente para ver el detalle</div></td></tr>';
             if (tbodyId === 'ctl-tbody') paintVisibleTableTotals(null, 'ctl');
             if (tbodyId === 'det-tbody') paintVisibleTableTotals(null, 'det');
             return;
@@ -6464,6 +6650,7 @@
         var yyG = String(CC.state.anioGasto).slice(2);
         var yyP = String(CC.state.anioPresupuesto).slice(2);
         var head = '<tr><th class="sticky-col">Producto</th>' +
+            (conUsuarios ? '<th>Usuarios</th>' : '') +
             '<th class="num">Precio<span class="cc-th-past">lista SAP</span></th>' +
             '<th class="num">Venta ' + CC.state.anioGasto + '</th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. ’' + yyP + '</span></th>' +
@@ -6482,7 +6669,7 @@
             var gTotP = groups[g].reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
             var closed = !!closedMap[g];
             if (!hideGroups) {
-                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="6"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
+                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="' + (conUsuarios ? 7 : 6) + '"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
                 html += '<td class="num cc-group-totals" colspan="2">' +
                     '<span class="cc-group-tot"><em>Venta ' + CC.state.anioGasto + '</em> ' + moneyGasto(gTotG) + '</span>' +
                     '<span class="cc-group-tot-sep">→</span>' +
@@ -6499,6 +6686,7 @@
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
+                    if (conUsuarios) html += '<td class="cc-col-users">' + htmlPilaUsuarios(usuariosDeProducto(cta.codigo), false) + '</td>';
                     // Mismo precio que la matriz (Precio de lista SAP · cliente); sin promedio de facturas.
                     var pLista = precioListaSapInfo(cta);
                     html += '<td class="num cc-price-cell" title="' +
@@ -6541,7 +6729,7 @@
             ? 'No hay filas para este producto con los filtros actuales'
             : 'Sin productos asignados a este cliente';
         if (!html) {
-            tbody.innerHTML = '<tr><td colspan="30"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
         } else {
             // Fila de totales por mes (todas las cuentas filtradas, aunque el grupo esté cerrado).
             var sumG = 0;
@@ -6562,6 +6750,7 @@
             html += '<tr class="cc-month-totals-row">' +
                 '<td class="sticky-col"><strong>Totales</strong>' +
                 '<span class="cc-month-totals-sub">' + ctas.length + (ctas.length === 1 ? ' producto' : ' productos') + '</span></td>' +
+                (conUsuarios ? '<td class="cc-col-users"></td>' : '') +
                 '<td class="num">—</td>' +
                 '<td class="num fw-semibold">' + moneyGasto(sumG) + '</td>' +
                 '<td class="num">—</td>' +
@@ -6574,6 +6763,7 @@
                     (mesP[ti] ? moneyGasto(mesP[ti]) : '—') + '</td>';
             }
             html += '</tr>';
+            if (conUsuarios) hideUserTip();
             tbody.innerHTML = html;
         }
 
@@ -6837,9 +7027,15 @@
         var stt = statsDeCentro(c);
         var dep = deptoDeCentro(c);
         var barCls = semaforoAvance(stt.avance);
-        setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
+        var codigoCli = String(c.codigo || '').trim();
+        var nombreCli = nombreClienteDetalle(c);
+        setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (codigoCli ? ' · ' + codigoCli : ''));
         var title = document.getElementById('cc-page-title');
-        if (title) title.innerHTML = '<span class="cc-title-kind">VENTAS</span> · ' + escapeHtml(c.nombre || c.codigo || 'Cliente');
+        if (title) {
+            var pieza = codigoCli;
+            if (nombreCli) pieza = codigoCli ? (codigoCli + ' · ' + nombreCli) : nombreCli;
+            title.innerHTML = '<span class="cc-title-kind">VENTAS</span> · ' + escapeHtml(pieza || 'Cliente');
+        }
         if (sub) sub.hidden = true;
         if (facts) {
             facts.hidden = false;
@@ -6847,7 +7043,7 @@
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
                 factHtml('TOTAL VENTA', textoImporteVisor(totalVentaAnioCliente(c))) +
                 factHtml('TOTAL PROYECTADO', textoImporteVisor(totalProyectadoCliente(c))) +
-                factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
+                factHtml('Usuario', htmlPilaUsuarios(usuariosCapturaDetalle(), true)) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
                 factHtml('Progreso', '<span class="cc-semaforo-' + barCls + '">' + stt.avance + '%</span>',
                     '<div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span></div>' +
