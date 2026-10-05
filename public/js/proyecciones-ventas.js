@@ -1393,9 +1393,10 @@
     function formatVpCell(v, metric) {
         var n = Number(v) || 0;
         if (!n) return '—';
+        var money = metric === 'mxn' || metric === 'usd';
         var txt = n.toLocaleString('es-MX', {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: metric === 'qty' ? 2 : 2
+            minimumFractionDigits: money ? 2 : 0,
+            maximumFractionDigits: 2
         });
         if (metric === 'mxn') return '$' + txt;
         if (metric === 'usd') return 'US$' + txt;
