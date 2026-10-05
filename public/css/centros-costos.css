@@ -1859,6 +1859,19 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     overflow-y: auto;
     flex: 1 1 auto;
 }
+.cc-modal .cc-toggle-row {
+    pointer-events: auto;
+    position: relative;
+    z-index: 2;
+}
+.cc-modal .cc-toggle-row input[type="checkbox"] {
+    pointer-events: auto;
+    position: relative;
+    z-index: 3;
+    appearance: auto;
+    -webkit-appearance: checkbox;
+    opacity: 1;
+}
 .cc-modal .cc-modal-actions,
 .cc-modal .modal-footer {
     display: flex;

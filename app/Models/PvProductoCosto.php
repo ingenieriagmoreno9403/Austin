@@ -17,6 +17,7 @@ class PvProductoCosto extends Model
         'producto_nombre',
         'mes',
         'costo_unitario',
+        'precio_lista',
         'moneda',
         'updated_by',
     ];
@@ -24,6 +25,7 @@ class PvProductoCosto extends Model
     protected $casts = [
         'anio' => 'integer',
         'costo_unitario' => 'float',
+        'precio_lista' => 'float',
         'mes' => 'integer',
     ];
 }

@@ -1124,9 +1124,8 @@
             var el = document.getElementById(id);
             if (el) el.className = 'cc-snap-badge is-cache';
         });
-        // Detalle auto (sin force): no bloquear UI; el snapshot llega en segundo plano.
-        // Captura / refresh manual sí muestran overlay.
-        var showedWait = !!(force || !auto);
+        // Solo overlay en refresh manual. Auto/snapshot no bloquean la captura.
+        var showedWait = !auto && force;
         if (showedWait) showApiWait(waitMsg);
         if (CC._capturaReady) {
             try { renderControlTable(); } catch (e1) { /* ignore */ }
@@ -1137,8 +1136,13 @@
             '&ref=' + encodeURIComponent(year) +
             '&force=' + (force ? '1' : '0');
         var reqKey = key;
+        var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var abortTimer = setTimeout(function () {
+            try { if (ctrl) ctrl.abort(); } catch (eAbort) { /* ignore */ }
+        }, force ? 45000 : 20000);
         fetch(CC.state.gastoUrl + qs, {
-            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            signal: ctrl ? ctrl.signal : undefined
         }).then(function (res) { return res.json(); }).then(function (json) {
             if (reqId !== control._gastoReqId) return;
             if (!control.centro || gastoCacheKey(control.centro) !== reqKey) return;
@@ -1161,9 +1165,18 @@
             if (reqId !== control._gastoReqId) return;
             if (!control.centro || gastoCacheKey(control.centro) !== reqKey) return;
             control._gastoLoading = '';
-            applyGastoMap({}, { fuente: 'error', year: year });
-            toast('error', 'No se actualizó', 'No se pudo consultar las unidades de venta en SAP.');
+            // Si ya hay snapshot/caché, no borrar la tabla al fallar SAP.
+            var prev = gastoCacheEntry(reqKey);
+            if (prev && prev.por && Object.keys(prev.por).length) {
+                applyGastoMap(prev.por, prev.meta || { fuente: 'snapshot', year: year });
+            } else {
+                applyGastoMap({}, { fuente: 'error', year: year });
+            }
+            if (!auto) {
+                toast('error', 'No se actualizó', 'No se pudo consultar las unidades de venta en SAP.');
+            }
         }).then(function () {
+            clearTimeout(abortTimer);
             if (reqId === control._gastoReqId && control._gastoLoading === reqKey) {
                 control._gastoLoading = '';
             }
@@ -1242,17 +1255,60 @@
         paintDetalleHeader();
     }
 
+    /** Precio lista desde costosMaster (tbl_pv_productos_costo.precio_lista), no SAP. */
+    function preciosMapDesdeMaestroLocal(c) {
+        var out = {};
+        if (!c) return out;
+        var emp = String(c.empresa || '').toUpperCase();
+        var card = String(c.codigo || '').trim();
+        var map = CC.state.costosMaster || {};
+        var prefix = emp && card ? (emp + '|' + card + '|') : '';
+        Object.keys(map).forEach(function (key) {
+            var entry = map[key];
+            if (!entry || typeof entry !== 'object') return;
+            var cod = '';
+            var entryCard = String(entry.card_code || '').trim();
+            if (prefix && key.indexOf(prefix) === 0) {
+                cod = key.slice(prefix.length);
+            } else if (card && entryCard && entryCard.toUpperCase() === card.toUpperCase()) {
+                var parts = String(key).split('|');
+                cod = parts[parts.length - 1] || '';
+            } else {
+                return;
+            }
+            cod = String(cod || '').trim();
+            if (!cod) return;
+            var pl = Number(entry.precio_lista != null ? entry.precio_lista : entry.precioLista) || 0;
+            if (!(pl > 0)) return;
+            out[cod] = {
+                codigo: cod,
+                precio: pl,
+                moneda: canonMoneda(entry.moneda || 'MXN'),
+                lista: 'Maestro local · Precio lista',
+                fuente: 'maestro_local_precio_lista'
+            };
+        });
+        return out;
+    }
+
     function loadListasPreciosCentro(c) {
-        if (!c || !CC.state.listasPreciosUrl) return;
+        if (!c) return;
+        // Captura / Detalle: Precio lista = maestro local (no SAP).
+        if (CC.state.page === 'control' || CC.state.page === 'detalle') {
+            var localKey = preciosCacheKey(c);
+            control._preciosReq = localKey;
+            control._preciosLoading = '';
+            applyPreciosMap(preciosMapDesdeMaestroLocal(c));
+            return;
+        }
+        if (!CC.state.listasPreciosUrl) return;
         var key = preciosCacheKey(c);
         control._preciosReq = key;
         control._preciosLoading = key;
         // No reutilizar caché de sesión incompleta: siempre pedir los productos del cliente.
         if (CC.state.preciosCache) delete CC.state.preciosCache[key];
-        // Si ya hay maestro local de precios, no bloquear la UI con SAP (fallback en segundo plano).
-        // En Detalle tampoco bloquear: la tabla ya pinta con costosMaster / captura.
         var hasMaster = CC.state.costosMaster && Object.keys(CC.state.costosMaster).length > 0;
-        var showedWait = !hasMaster && CC.state.page !== 'detalle';
+        var showedWait = !hasMaster;
         control._preciosMap = {};
         if (showedWait) {
             showApiWait('Consultando listas de precios…');
@@ -2049,6 +2105,13 @@
         if (!(val('ctl-empresa') && val('ctl-centro'))) return;
         if (!control.centro) return;
         stripSiopSeedLocalOnce(control.centro);
+        // Reaplicar precio lista local cuando ya llegó costosMaster del ciclo.
+        if (CC.state.page === 'control' || CC.state.page === 'detalle') {
+            var pKey = preciosCacheKey(control.centro);
+            control._preciosReq = pKey;
+            control._preciosLoading = '';
+            applyPreciosMap(preciosMapDesdeMaestroLocal(control.centro));
+        }
         control._allCtas = cuentasEnriquecidas(control.centro);
         seedPresupuestoDesdeVentaReal(control.centro);
         if (esBudgetTipo()) scrubProyeccionOctDicSiCopiaBudgetRef();
@@ -4215,14 +4278,20 @@
             var hasMasterRow = !!master;
             var masterPrecio = hasMasterRow ? (Number(master.costo) || 0) : 0;
             var masterMes = (master && Number(master.mes)) || 0;
-            // PRECIO proy. local = solo precio global del maestro (Ventas/Costos). Nunca lista SAP.
-            var precioListaSap = Number(lista.precio) || 0;
+            // PRECIO proy. local = solo precio global del maestro (Ventas/Costos).
+            // PRECIO DE LISTA = columna precio_lista del maestro local (no SAP).
+            var masterPrecioLista = hasMasterRow
+                ? (Number(master.precio_lista != null ? master.precio_lista : master.precioLista) || 0)
+                : 0;
+            if (!(masterPrecioLista > 0) && lista && Number(lista.precio) > 0
+                && String(lista.lista || lista.fuente || '').indexOf('Maestro local') >= 0) {
+                masterPrecioLista = Number(lista.precio) || 0;
+            }
+            var precioListaSap = masterPrecioLista > 0 ? masterPrecioLista : 0;
             var precioLista = hasMasterRow ? masterPrecio : 0;
             var precioMoneda = '';
             if (hasMasterRow && master && master.moneda) {
                 precioMoneda = canonMoneda(master.moneda);
-            } else if (lista.moneda) {
-                precioMoneda = canonMoneda(lista.moneda);
             } else {
                 precioMoneda = 'MXN';
             }
@@ -4239,19 +4308,21 @@
                 costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
                 precioLista: precioLista,
                 precioListaSap: precioListaSap,
-                precioListaSapMoneda: lista.moneda ? canonMoneda(lista.moneda) : '',
+                precioListaSapMoneda: precioMoneda || 'MXN',
                 precioMoneda: precioMoneda || 'MXN',
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
                 precioMaestroMeses: precioMaestroMeses,
                 precioLocalMes: masterMes > 0 ? masterMes : null,
                 tienePrecioMaestro: hasMasterRow,
-                unidad: String(lista.unidad || cta.unidad || '').trim(),
-                unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
+                unidad: String((lista && lista.unidad) || cta.unidad || '').trim(),
+                unidadNombre: String((lista && lista.unidad_nombre) || cta.unidadNombre || '').trim(),
                 listaPrecioNombre: hasMasterRow
                     ? 'Maestro local · global'
                     : '',
-                listaPrecioNombreSap: String(lista.lista || '').trim(),
-                listaPrecioNoSap: String(lista.no_lista || '').trim()
+                listaPrecioNombreSap: precioListaSap > 0
+                    ? 'Maestro local · Precio lista'
+                    : String((lista && lista.lista) || '').trim(),
+                listaPrecioNoSap: String((lista && lista.no_lista) || '').trim()
             });
             enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
             if (!enriched.unidadNombre && enriched.unidad) {
@@ -5171,10 +5242,11 @@
                 control._preciosMap = CC.state.preciosCache[pKey];
             }
         } else {
-            // Captura: sigue forzando SAP en venta + listas + budget.
-            loadGastoRealCentro(c, { force: true, auto: true });
+            // Captura: venta desde snapshot (SAP solo con «Actualizar venta SAP»).
+            // Precio lista = maestro local (no SAP).
+            loadGastoRealCentro(c, { force: false, auto: true });
             loadVentasBudgetRefCentro(c);
-            loadListasPreciosCentro(c);
+            applyPreciosMap(preciosMapDesdeMaestroLocal(c));
         }
         stripSiopSeedLocalOnce(c);
         control._allCtas = cuentasEnriquecidas(c);
@@ -5685,40 +5757,35 @@
     }
 
     /**
-     * Precio de lista SAP del cliente (OCRD.ListNum → OPLN / ITM1).
-     * No usa maestro local ni promedio de venta.
+     * Precio lista desde maestro local (tbl_pv_productos_costo.precio_lista).
+     * Ya no consulta SAP en Captura.
      */
     function precioListaSapInfo(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
         var precio = Number(cta && cta.precioListaSap) || 0;
         var mon = canonMoneda((cta && cta.precioListaSapMoneda) || (cta && cta.precioMoneda) || 'MXN');
-        var listaNom = String((cta && cta.listaPrecioNombreSap) || '').trim();
-        var noLista = String((cta && cta.listaPrecioNoSap) || '').trim();
 
-        // Lookup directo si aún no viene enriquecido.
         if (!(precio > 0) && cta && cta.codigo) {
             var c = control.centro;
-            var lista = (c ? listaPrecioDeCentro(c, cta.codigo) : null) || lookupPrecioLista(cta.codigo) || {};
-            precio = Number(lista.precio) || 0;
-            if (lista.moneda) mon = canonMoneda(lista.moneda);
-            if (lista.lista) listaNom = String(lista.lista).trim();
-            if (lista.no_lista) noLista = String(lista.no_lista).trim();
-            if (!unidad && lista.unidad) unidad = String(lista.unidad).trim();
-            if (!unidadNombre && lista.unidad_nombre) unidadNombre = String(lista.unidad_nombre).trim();
+            if (c) {
+                var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
+                if (master) {
+                    precio = Number(master.precio_lista != null ? master.precio_lista : master.precioLista) || 0;
+                    if (master.moneda) mon = canonMoneda(master.moneda);
+                }
+            }
         }
 
-        var title = 'Precio de lista SAP (ITM1 · lista del cliente)';
-        if (listaNom || noLista) {
-            title += ' · ' + (noLista ? ('#' + noLista + (listaNom ? ' ' : '')) : '') + listaNom;
-        }
         return {
             precio: precio,
             moneda: mon,
             unidad: unidad,
             unidadNombre: unidadNombre,
             decimals: 2,
-            title: title
+            title: precio > 0
+                ? 'Precio lista · Maestro local (Ventas/Costos)'
+                : 'Sin Precio lista en el maestro local. Usa «Obtener precio lista» en /Ventas/Costos.'
         };
     }
 
@@ -6013,8 +6080,8 @@
             '</td>' +
             '<td class="num cc-price-cell" data-precio-venta title="' +
                 escapeHtml(precioLista.precio
-                    ? (precioLista.title || 'Precio de lista SAP del cliente')
-                    : (preciosListaCargando() ? 'Consultando la lista de precios del cliente…' : (precioLista.title || 'Sin precio de lista'))) + '">' +
+                    ? (precioLista.title || 'Precio lista · Maestro local')
+                    : (preciosListaCargando() ? 'Cargando precio lista del maestro…' : (precioLista.title || 'Sin precio de lista'))) + '">' +
                 (precioLista.precio
                     ? precioInfoHtml(precioLista)
                     : (preciosListaCargando()
@@ -6120,7 +6187,7 @@
         var anioPast = CC.state.anioGasto || '';
         var cur = isUsdView() ? 'USD' : 'MXN';
         var head = '<tr><th class="sticky-col">Producto</th>' +
-            '<th class="num">Precio de lista<span class="cc-th-past">SAP · cliente</span></th>' +
+            '<th class="num">Precio de lista<span class="cc-th-past">Maestro local</span></th>' +
             '<th class="num">Uds. venta<span class="cc-th-past">' + escapeHtml(String(anioPast || '')) + '</span></th>' +
             '<th class="num">Total uds<span class="cc-th-past">proy. 12 meses</span></th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. local</span></th>' +
@@ -6499,10 +6566,10 @@
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
-                    // Mismo precio que la matriz (Precio de lista SAP · cliente); sin promedio de facturas.
+                    // Mismo precio que la matriz (Precio lista · Maestro local).
                     var pLista = precioListaSapInfo(cta);
                     html += '<td class="num cc-price-cell" title="' +
-                        escapeHtml(pLista.title || ('Precio de lista SAP del cliente (misma fuente que la matriz)')) + '">' +
+                        escapeHtml(pLista.title || ('Precio lista · Maestro local (misma fuente que la matriz)')) + '">' +
                         precioInfoHtml(pLista) + '</td>';
                     html += '<td class="num" title="' + (isUsdView()
                         ? 'Suma de LineTotalUSD (SAP). No se convierte con el tipo de cambio.'
@@ -9711,13 +9778,19 @@
             var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
             updatePager();
             if (!items.length) {
-                tbody.innerHTML = '<tr><td colspan="11"><div class="cc-empty">Sin productos para mostrar</div></td></tr>';
+                tbody.innerHTML = '<tr><td colspan="12"><div class="cc-empty">Sin productos para mostrar</div></td></tr>';
                 return;
             }
             tbody.innerHTML = items.map(function (it, idx) {
                 var mon = String(it.moneda || 'MXN').toUpperCase();
                 var costoTxt = (mon === 'USD' ? 'US$' : '$') +
                     (Number(it.costo_unitario) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                var listaPrecio = it.precio_lista != null && it.precio_lista !== '' ? Number(it.precio_lista) : null;
+                var listaMon = String(it.moneda_lista || mon || 'MXN').toUpperCase();
+                var listaTxt = (listaPrecio != null && isFinite(listaPrecio) && listaPrecio > 0)
+                    ? ((listaMon === 'USD' ? 'US$' : '$') +
+                        listaPrecio.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+                    : '—';
                 var codigo = String(it.producto_codigo || '').trim();
                 var nombre = String(it.producto_nombre || '').trim();
                 if (nombre && nombre.toUpperCase() === codigo.toUpperCase()) nombre = '';
@@ -9730,6 +9803,7 @@
                     '<td>' + escapeHtml(nombre || '—') + '</td>' +
                     '<td>' + escapeHtml(mesesLabel) + '</td>' +
                     '<td class="num fw-semibold">' + escapeHtml(costoTxt) + '</td>' +
+                    '<td class="num" title="Precio lista SAP">' + escapeHtml(listaTxt) + '</td>' +
                     '<td>' + escapeHtml(mon) + '</td>' +
                     '<td>' + (it.tiene_maestro
                         ? '<span class="cc-badge cc-badge-aceptado">Maestro</span>'
@@ -9754,6 +9828,14 @@
                     ' data-mes="0"' +
                     ' title="Actualizar precio global desde listaPreciosventa">' +
                     '<i class="fa-solid fa-cloud-arrow-down"></i></button>' +
+                    '<button type="button" class="cc-btn cc-btn-sm" data-sync-precio-lista' +
+                    ' data-emp="' + escapeHtml(it.empresa) + '"' +
+                    ' data-cod="' + escapeHtml(codigo) + '"' +
+                    ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
+                    ' data-card="' + escapeHtml(it.card_code || '') + '"' +
+                    ' data-mon="' + escapeHtml(mon) + '"' +
+                    ' title="Actualizar Precio lista de este producto">' +
+                    '<i class="fa-solid fa-tag"></i></button>' +
                     '<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
                     ' title="Editar precios por mes">' +
                     '<i class="fa-solid fa-calendar-days"></i></button>')
@@ -9784,6 +9866,12 @@
                 btn.addEventListener('click', function () {
                     if (!puedeEditar) return;
                     actualizarPrecioDesdeApi(btn);
+                });
+            });
+            tbody.querySelectorAll('[data-sync-precio-lista]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    if (!puedeEditar) return;
+                    actualizarPrecioListaProducto(btn);
                 });
             });
         }
@@ -10032,6 +10120,97 @@
 
         bindCostoMesesUi();
 
+        /** Actualiza solo precio_lista de UN producto vía /listaPreciosventa/{EMPRESA}. */
+        function actualizarPrecioListaProducto(btn) {
+            var emp = String(btn.getAttribute('data-emp') || '').toUpperCase();
+            var cod = String(btn.getAttribute('data-cod') || '').trim();
+            var card = String(btn.getAttribute('data-card') || '').trim();
+            var nom = btn.getAttribute('data-nom') || cod;
+            var mon = String(btn.getAttribute('data-mon') || 'MXN').toUpperCase() || 'MXN';
+            var loteUrl = CC.state.costosSyncPrecioListaLoteUrl || (url + '/sincronizar-precio-lista-lote');
+            if (!emp || !cod) {
+                toast('error', 'Datos incompletos', 'Falta empresa o ItemCode.');
+                return;
+            }
+            if (!card) {
+                toast('error', 'Sin CardCode', 'Se necesita CardCode para consultar listaPreciosventa.');
+                return;
+            }
+            var go = function () {
+                var prevHtml = btn.innerHTML;
+                btn.disabled = true;
+                btn.setAttribute('aria-busy', 'true');
+                btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+                fetch(loteUrl, {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify({
+                        empresa: emp,
+                        card_code: card,
+                        anio_proyeccion: costosAnio(),
+                        solo_vacios: false,
+                        sync_precio_global: true,
+                        items: [{
+                            item_code: cod,
+                            producto: nom || cod,
+                            moneda: mon
+                        }]
+                    })
+                }).then(function (r) {
+                    return r.text().then(function (txt) {
+                        var json = null;
+                        try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                        if (!r.ok) {
+                            throw new Error((json && json.message) || ('HTTP ' + r.status));
+                        }
+                        return json || {};
+                    });
+                }).then(function (json) {
+                    var n = Number(json.actualizados) || 0;
+                    var nG = Number(json.actualizados_global) || 0;
+                    var omit = Number(json.omitidos_sin_lista) || 0;
+                    if (n > 0) {
+                        toast('success', 'Sincronizado con SAP',
+                            (nom || cod) + ' · ' + card +
+                            (nG ? (' · Precio global: ' + nG) : '') +
+                            (json.message ? (' · ' + json.message) : ''));
+                        load(page);
+                    } else if (omit > 0) {
+                        toast('warning', 'Sin precio en SAP',
+                            'No hay Precio lista en listaPreciosventa para ' + cod + ' / ' + card + '.');
+                    } else {
+                        toast('info', 'Sin cambios', json.message || 'No se actualizó el Precio lista.');
+                    }
+                }).catch(function (err) {
+                    toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+                }).then(function () {
+                    btn.disabled = false;
+                    btn.removeAttribute('aria-busy');
+                    btn.innerHTML = prevHtml || '<i class="fa-solid fa-tag"></i>';
+                });
+            };
+            if (window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: '¿Actualizar Precio lista?',
+                    html: '<div style="text-align:left;font-size:.9rem">' +
+                        '<div><strong>' + escapeHtml(nom || cod) + '</strong></div>' +
+                        '<div class="text-muted">ItemCode: ' + escapeHtml(cod) +
+                        ' · CardCode: ' + escapeHtml(card) +
+                        ' · ' + escapeHtml(emp) + '</div>' +
+                        '<div class="mt-2">Consulta <code>/listaPreciosventa/' + escapeHtml(emp) +
+                        '</code>, actualiza <strong>Precio lista</strong> y alinea <strong>Precio global</strong> si difiere de SAP.</div>' +
+                        '</div>',
+                    showCancelButton: true,
+                    confirmButtonText: 'Actualizar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) go(); });
+                return;
+            }
+            if (window.confirm('¿Actualizar Precio lista de ' + cod + ' (' + card + ')?')) go();
+        }
+
         function actualizarPrecioDesdeApi(btn) {
             var emp = btn.getAttribute('data-emp') || '';
             var cod = btn.getAttribute('data-cod') || '';
@@ -10159,7 +10338,7 @@
                     from = 0;
                     to = 0;
                     lastPage = 1;
-                    tbody.innerHTML = '<tr><td colspan="11"><div class="cc-empty">No se pudieron cargar los precios</div></td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="12"><div class="cc-empty">No se pudieron cargar los precios</div></td></tr>';
                     if (hint) hint.textContent = 'Error al cargar';
                     updatePager();
                 });
@@ -11036,6 +11215,285 @@
             }
         }
 
+        var plistaBtn = document.getElementById('pv-costos-sync-precio-lista');
+        if (plistaBtn) {
+            var plistaListUrl = CC.state.costosSinPrecioListaUrl || (url + '/sin-precio-lista');
+            var plistaLoteUrl = CC.state.costosSyncPrecioListaLoteUrl || (url + '/sincronizar-precio-lista-lote');
+            var plistaEmpEl = document.getElementById('pv-plista-empresa');
+            var plistaAnioLabel = document.getElementById('pv-plista-anio-label');
+            var plistaHint = document.getElementById('pv-plista-hint');
+            var plistaEjecutar = document.getElementById('pv-plista-ejecutar');
+            var plistaCancelar = document.getElementById('pv-plista-cancelar');
+            var plistaProgWrap = document.getElementById('pv-plista-progress-wrap');
+            var plistaProgLabel = document.getElementById('pv-plista-progress-label');
+            var plistaProgPct = document.getElementById('pv-plista-progress-pct');
+            var plistaProgBar = document.getElementById('pv-plista-progress-bar');
+            var plistaProgDetail = document.getElementById('pv-plista-progress-detail');
+            var plistaBusy = false;
+            var plistaAbort = false;
+            var plistaSyncGlobalEl = document.getElementById('pv-plista-sync-global');
+            var plistaTodosEl = document.getElementById('pv-plista-todos');
+
+            function openPlistaModal() {
+                plistaAbort = false;
+                if (plistaAnioLabel) plistaAnioLabel.textContent = 'Proy. ' + costosAnio();
+                if (plistaEmpEl) {
+                    var empFiltro = empSel ? String(empSel.value || '').toUpperCase() : '';
+                    if (empFiltro) plistaEmpEl.value = empFiltro;
+                }
+                if (plistaProgWrap) plistaProgWrap.style.display = 'none';
+                if (plistaProgBar) plistaProgBar.style.width = '0%';
+                if (plistaHint) {
+                    plistaHint.textContent = 'Endpoint: /listaPreciosventa/' + (plistaEmpEl && plistaEmpEl.value ? plistaEmpEl.value : '{EMPRESA}');
+                }
+                showModal('modalPvSyncPrecioLista');
+            }
+
+            function parsePlistaResp(r) {
+                return r.text().then(function (txt) {
+                    var json = null;
+                    try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                    if (!r.ok) {
+                        var msg = (json && json.message) || ('HTTP ' + r.status);
+                        if (r.status === 504 || r.status === 502 || /maximum execution|timeout/i.test(txt || '')) {
+                            msg = 'Timeout en este cliente. Se puede continuar con el siguiente.';
+                        }
+                        throw new Error(msg);
+                    }
+                    return json || {};
+                });
+            }
+
+            function setPlistaProgress(idx, total, card, extra) {
+                var pct = total > 0 ? Math.round((idx / total) * 100) : 0;
+                if (plistaProgWrap) plistaProgWrap.style.display = '';
+                if (plistaProgLabel) {
+                    plistaProgLabel.textContent = card
+                        ? ('Cliente ' + idx + '/' + total + ' · ' + card)
+                        : 'Preparando…';
+                }
+                if (plistaProgPct) plistaProgPct.textContent = pct + '%';
+                if (plistaProgBar) plistaProgBar.style.width = pct + '%';
+                if (plistaProgDetail) plistaProgDetail.textContent = extra || '';
+                if (hint) hint.textContent = extra || ('Obteniendo Precio lista… ' + pct + '%');
+            }
+
+            function procesarPlistaLotes(emp, clientes, opts) {
+                opts = opts || {};
+                var soloVacios = opts.solo_vacios !== false;
+                var syncGlobal = opts.sync_precio_global !== false;
+                var i = 0;
+                var totalCli = clientes.length;
+                var actualizados = 0;
+                var actualizadosGlobal = 0;
+                var omitidos = 0;
+                var errores = [];
+                var okCli = 0;
+
+                function next() {
+                    if (plistaAbort) {
+                        return Promise.resolve({
+                            aborted: true,
+                            actualizados: actualizados,
+                            actualizados_global: actualizadosGlobal,
+                            omitidos_sin_lista: omitidos,
+                            errores: errores,
+                            clientes_ok: okCli,
+                            clientes_total: totalCli
+                        });
+                    }
+                    if (i >= totalCli) {
+                        return Promise.resolve({
+                            aborted: false,
+                            actualizados: actualizados,
+                            actualizados_global: actualizadosGlobal,
+                            omitidos_sin_lista: omitidos,
+                            errores: errores,
+                            clientes_ok: okCli,
+                            clientes_total: totalCli
+                        });
+                    }
+                    var cli = clientes[i++];
+                    var card = String(cli.card_code || '').trim();
+                    var items = Array.isArray(cli.items) ? cli.items : [];
+                    setPlistaProgress(i, totalCli, card,
+                        'Actualizados: ' + actualizados +
+                        (actualizadosGlobal ? (' · global: ' + actualizadosGlobal) : '') +
+                        (omitidos ? (' · sin lista: ' + omitidos) : '') +
+                        (errores.length ? (' · errores: ' + errores.length) : ''));
+                    if (plistaHint) {
+                        plistaHint.textContent = 'Consultando /listaPreciosventa/' + emp + ' · ' + card +
+                            ' (' + items.length + ' ítem(s))…';
+                    }
+
+                    return fetch(plistaLoteUrl, {
+                        method: 'POST',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify({
+                            empresa: emp,
+                            card_code: card,
+                            cliente: cli.cliente || '',
+                            anio_proyeccion: costosAnio(),
+                            solo_vacios: soloVacios,
+                            sync_precio_global: syncGlobal,
+                            items: items.map(function (it) {
+                                return {
+                                    item_code: it.item_code || it.codigo || '',
+                                    producto: it.producto || '',
+                                    moneda: it.moneda || 'MXN'
+                                };
+                            })
+                        })
+                    }).then(parsePlistaResp).then(function (json) {
+                        okCli++;
+                        actualizados += Number(json.actualizados) || 0;
+                        actualizadosGlobal += Number(json.actualizados_global) || 0;
+                        omitidos += Number(json.omitidos_sin_lista) || 0;
+                        return next();
+                    }).catch(function (err) {
+                        errores.push(card + ': ' + (err && err.message ? err.message : 'Error'));
+                        return next();
+                    });
+                }
+
+                return next();
+            }
+
+            plistaBtn.addEventListener('click', function () {
+                if (!puedeEditar) {
+                    toast('warning', 'Sin permiso', 'No puedes editar precios del maestro.');
+                    return;
+                }
+                openPlistaModal();
+            });
+
+            if (plistaCancelar) {
+                plistaCancelar.addEventListener('click', function () {
+                    if (plistaBusy) plistaAbort = true;
+                });
+            }
+
+            if (plistaEjecutar) {
+                plistaEjecutar.addEventListener('click', function () {
+                    if (plistaBusy) return;
+                    var emp = plistaEmpEl ? String(plistaEmpEl.value || '').toUpperCase() : '';
+                    if (!emp) {
+                        toast('warning', 'Empresa', 'Selecciona una empresa.');
+                        return;
+                    }
+                    plistaBusy = true;
+                    plistaAbort = false;
+                    plistaEjecutar.disabled = true;
+                    plistaBtn.disabled = true;
+                    if (plistaEmpEl) plistaEmpEl.disabled = true;
+                    var prevHtml = plistaEjecutar.innerHTML;
+                    plistaEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Armando…';
+                    // Si no hay DOM de opciones, asumir ambas activas (caso típico: corregir vs SAP).
+                    var soloVaciosPlista = plistaTodosEl ? !plistaTodosEl.checked : false;
+                    var syncGlobalPlista = plistaSyncGlobalEl ? !!plistaSyncGlobalEl.checked : true;
+                    setPlistaProgress(0, 1, '', soloVaciosPlista
+                        ? 'Leyendo maestro local (sin Precio lista)…'
+                        : 'Leyendo maestro local (todos los productos)…');
+
+                    var qs = '?empresa=' + encodeURIComponent(emp) +
+                        '&anio_proyeccion=' + encodeURIComponent(String(costosAnio())) +
+                        '&solo_vacios=' + (soloVaciosPlista ? '1' : '0');
+
+                    fetch(plistaListUrl + qs, {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(parsePlistaResp).then(function (json) {
+                        var clientes = (json && json.clientes) || [];
+                        var total = Number(json.total) || 0;
+                        var sinCard = Number(json.sin_card) || 0;
+                        if (!clientes.length) {
+                            if (window.Swal) {
+                                Swal.fire({
+                                    icon: 'info',
+                                    title: 'Nada que sincronizar',
+                                    text: json.message || ('No hay productos sin Precio lista en ' + emp + '.'),
+                                    confirmButtonColor: '#0a0a0a'
+                                });
+                            } else {
+                                window.alert(json.message || 'Nada que sincronizar.');
+                            }
+                            return null;
+                        }
+                        var askHtml = '<div style="text-align:left;font-size:.9rem">' +
+                            '<p style="margin:0 0 .5rem">Empresa <b>' + escapeHtml(emp) + '</b> · ' +
+                            '<code>/listaPreciosventa/' + escapeHtml(emp) + '</code></p>' +
+                            '<p style="margin:0 0 .5rem"><b>' + total + '</b> producto(s) · <b>' +
+                            clientes.length + '</b> cliente(s).</p>' +
+                            (sinCard ? ('<p style="margin:0;color:#b45309">' + sinCard +
+                                ' sin CardCode se omiten.</p>') : '') +
+                            '<p style="margin:.65rem 0 0;color:#71717a;font-size:.82rem">' +
+                            (syncGlobalPlista
+                                ? 'Se actualiza Precio lista y Precio global si difiere de SAP.'
+                                : 'Solo se actualiza Precio lista (Precio global no cambia).') +
+                            '</p></div>';
+
+                        var ask = window.Swal
+                            ? Swal.fire({
+                                icon: 'question',
+                                title: '¿Sincronizar con SAP?',
+                                html: askHtml,
+                                width: '36rem',
+                                showCancelButton: true,
+                                focusCancel: true,
+                                confirmButtonText: 'Sí, procesar ' + clientes.length + ' cliente(s)',
+                                cancelButtonText: 'Cancelar',
+                                confirmButtonColor: '#0a0a0a',
+                                cancelButtonColor: '#6b7280'
+                            }).then(function (res) { return !!(res && res.isConfirmed); })
+                            : Promise.resolve(window.confirm((json.message || '') + '\n\n¿Continuar?'));
+
+                        return ask.then(function (ok) {
+                            if (!ok) return null;
+                            plistaEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Procesando…';
+                            return procesarPlistaLotes(emp, clientes, {
+                                solo_vacios: soloVaciosPlista,
+                                sync_precio_global: syncGlobalPlista
+                            });
+                        });
+                    }).then(function (res) {
+                        if (!res) return;
+                        var n = Number(res.actualizados) || 0;
+                        var nG = Number(res.actualizados_global) || 0;
+                        var msg = (res.aborted ? 'Detenido. ' : '') +
+                            n + ' fila(s) actualizada(s)' +
+                            (nG ? (' · Precio global: ' + nG) : '') +
+                            ' · ' + (res.clientes_ok || 0) + '/' + (res.clientes_total || 0) + ' cliente(s)' +
+                            (res.omitidos_sin_lista ? (' · ' + res.omitidos_sin_lista + ' sin lista SAP') : '') +
+                            ((res.errores && res.errores.length) ? (' · ' + res.errores.length + ' con error') : '');
+                        if (n > 0) {
+                            toast('success', res.aborted ? 'Parcial' : 'Sincronización lista', msg);
+                            if (empSel) empSel.value = emp;
+                            load();
+                        } else if (res.errores && res.errores.length) {
+                            toast('error', 'No se actualizó', res.errores.slice(0, 2).join('; '));
+                        } else {
+                            toast('info', 'Sin cambios', msg || 'Ningún Precio lista se actualizó.');
+                        }
+                        if (!res.aborted && n > 0) {
+                            hideModal('modalPvSyncPrecioLista');
+                        }
+                    }).catch(function (err) {
+                        toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+                    }).then(function () {
+                        plistaBusy = false;
+                        plistaAbort = false;
+                        plistaEjecutar.disabled = false;
+                        plistaBtn.disabled = false;
+                        if (plistaEmpEl) plistaEmpEl.disabled = false;
+                        plistaEjecutar.innerHTML = prevHtml || '<i class="fa-solid fa-cloud-arrow-down"></i> Obtener precios';
+                        if (plistaHint) {
+                            plistaHint.textContent = 'Endpoint por empresa: /listaPreciosventa/AUSTIN|IMSA|PITIC|SYDNEY';
+                        }
+                        if (hint) hint.textContent = '';
+                    });
+                });
+            }
+        }
+
         var excelBtn = document.getElementById('pv-costos-excel');
         if (excelBtn) {
             excelBtn.addEventListener('click', function () {
@@ -11132,6 +11590,8 @@
         CC.state.costosImportListaUrl = boot.costosImportListaUrl || '/ProyeccionesVentas/api/costos/importar-lista-precios';
         CC.state.costosVaciosUrl = boot.costosVaciosUrl || '/ProyeccionesVentas/api/costos/vacios';
         CC.state.costosRellenarVaciosLoteUrl = boot.costosRellenarVaciosLoteUrl || '/ProyeccionesVentas/api/costos/rellenar-vacios-lote';
+        CC.state.costosSinPrecioListaUrl = boot.costosSinPrecioListaUrl || '/ProyeccionesVentas/api/costos/sin-precio-lista';
+        CC.state.costosSyncPrecioListaLoteUrl = boot.costosSyncPrecioListaLoteUrl || '/ProyeccionesVentas/api/costos/sincronizar-precio-lista-lote';
         CC.state.costosHistorialUrl = boot.costosHistorialUrl || '/ProyeccionesVentas/api/costos/historial';
         CC.state.puedeEditarCostos = boot.hasOwnProperty('puedeEditarCostos')
             ? !!boot.puedeEditarCostos
