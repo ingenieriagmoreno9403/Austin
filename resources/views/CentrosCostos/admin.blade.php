@@ -25,8 +25,6 @@
         </div>
     </div>
 
-    @include('CentrosCostos.partials.nav')
-
     <div class="cc-kpis">
         <div class="cc-kpi"><div class="label">Ciclos</div><div class="value" id="kpi-ciclos">—</div><div class="hint">Periodos de presupuesto</div></div>
         <div class="cc-kpi"><div class="label">Abiertos</div><div class="value" id="kpi-ciclos-abiertos">—</div><div class="hint">Listos para captura</div></div>

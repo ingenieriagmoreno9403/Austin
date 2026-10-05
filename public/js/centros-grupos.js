@@ -28,7 +28,9 @@
         gruposCache: {},
         loadSeq: 0,
         creating: false,
-        named: false
+        named: false,
+        renaming: false,
+        savingNombre: false
     };
 
     function getJSON(url) {
@@ -276,6 +278,27 @@
         });
     }
 
+    function cuentasLabel(n) {
+        return n + (n === 1 ? ' cuenta' : ' cuentas');
+    }
+
+    function nombreEditorRow(attrs, n) {
+        return '<div class="cc-cc-item is-on is-editing cc-grupos-nombre-row" ' + attrs + ' role="option" aria-selected="true">' +
+            '<span class="cc-grupos-inline-name">' +
+            '<input id="grp-nombre" class="cc-input" type="text" maxlength="180" placeholder="Nombre de la agrupación…" autocomplete="off" aria-label="Nombre de la agrupación">' +
+            '<span class="cc-cc-code" data-cta-count="1">' + cuentasLabel(n) + '</span></span>' +
+            '<button type="button" class="cc-grupos-confirm" data-confirmar-nombre="1" title="Listo" aria-label="Confirmar nombre">' +
+            '<i class="fa-solid fa-check"></i></button></div>';
+    }
+
+    function grupoSeleccionadoRow(attrs, nombre, n) {
+        return '<div class="cc-cc-item is-on" ' + attrs + ' role="option" aria-selected="true">' +
+            '<span><span class="cc-cc-name">' + escapeHtml(nombre || 'Sin nombre') + '</span>' +
+            '<span class="cc-cc-code" data-cta-count="1">' + cuentasLabel(n) + '</span></span>' +
+            '<button type="button" class="cc-grupos-confirm" data-editar-nombre="1" title="Editar nombre" aria-label="Editar nombre">' +
+            '<i class="fa-solid fa-pen"></i></button></div>';
+    }
+
     function renderGrupos() {
         var box = document.getElementById('grp-list');
         var meta = document.getElementById('grp-list-meta');
@@ -303,19 +326,24 @@
         }
         if (draftOn) {
             var nDraft = selectedList().length;
-            html += '<button type="button" class="cc-cc-item is-on" data-draft="1" role="option" aria-selected="true">' +
-                '<span><span class="cc-cc-name">' + escapeHtml(state.nombre || 'Sin nombre') + '</span>' +
-                '<span class="cc-cc-code">' + nDraft + (nDraft === 1 ? ' cuenta' : ' cuentas') + '</span></span>' +
-                '<span class="cc-badge cc-badge-ink">Nueva</span></button>';
+            html += state.renaming
+                ? nombreEditorRow('data-draft="1"', nDraft)
+                : grupoSeleccionadoRow('data-draft="1"', state.nombre, nDraft);
         }
         if (rows.length) {
             html += rows.map(function (g) {
                 var on = Number(state.editingId) === Number(g.id);
                 var n = (g.cuentas || []).length;
-                return '<button type="button" class="cc-cc-item' + (on ? ' is-on' : '') + '" data-grupo="' + g.id + '" role="option" aria-selected="' + (on ? 'true' : 'false') + '" title="Clic para editar">' +
+                if (on) {
+                    var live = selectedList().length || n;
+                    return state.renaming
+                        ? nombreEditorRow('data-grupo="' + g.id + '"', live)
+                        : grupoSeleccionadoRow('data-grupo="' + g.id + '"', state.nombre || g.nombre, live);
+                }
+                return '<button type="button" class="cc-cc-item" data-grupo="' + g.id + '" role="option" aria-selected="false" title="Clic para editar">' +
                     '<span><span class="cc-cc-name">' + escapeHtml(g.nombre) + '</span>' +
                     '<span class="cc-cc-code">' + n + (n === 1 ? ' cuenta' : ' cuentas') + '</span></span>' +
-                    '<span class="cc-badge ' + (n ? 'cc-badge-ink' : 'cc-badge-solo_revision') + '">' + (on ? 'Editando' : n) + '</span>' +
+                    '<span class="cc-badge ' + (n ? 'cc-badge-ink' : 'cc-badge-solo_revision') + '">' + n + '</span>' +
                     '</button>';
             }).join('');
         }
@@ -435,11 +463,10 @@
             meta.textContent = selectedList().length + ' en la agrupación · ' +
                 document.querySelectorAll('#grp-cta-list [data-grp-cta]').length + ' visibles';
         }
-        var draftCode = document.querySelector('#grp-list [data-draft] .cc-cc-code');
-        if (draftCode) {
-            var n = selectedList().length;
-            draftCode.textContent = n + (n === 1 ? ' cuenta' : ' cuentas');
-        }
+        var nSelLive = selectedList().length;
+        document.querySelectorAll('#grp-list [data-cta-count]').forEach(function (el) {
+            el.textContent = cuentasLabel(nSelLive);
+        });
     }
 
     function nombreEl() {
@@ -483,18 +510,80 @@
             setEditorTitle();
         });
         nom.addEventListener('keydown', function (ev) {
-            if (ev.key === 'Enter') {
-                ev.preventDefault();
-                confirmNombre();
-            }
+            if (ev.key !== 'Enter') return;
+            ev.preventDefault();
+            acceptNombre();
         });
         nom.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    }
+
+    function acceptNombre() {
+        var nom = readNombre();
+        if (!nom) {
+            toast('warning', 'Ponle un nombre', state.renaming
+                ? 'El grupo necesita un nombre.'
+                : 'Escríbelo y pulsa el botón para confirmar.');
+            focusNombre(true);
+            return;
+        }
+        if (state.renaming) {
+            if (state.editingId) {
+                guardarSoloNombre(nom);
+                return;
+            }
+            state.renaming = false;
+            setEditorTitle();
+            renderGrupos();
+            return;
+        }
+        confirmNombre();
+    }
+
+    function guardarSoloNombre(nom) {
+        if (state.savingNombre || !state.editingId) return;
+        var actual = state.grupos.filter(function (x) { return Number(x.id) === Number(state.editingId); })[0];
+        if (actual && String(actual.nombre || '').trim() === nom) {
+            state.renaming = false;
+            setEditorTitle();
+            renderGrupos();
+            return;
+        }
+        state.savingNombre = true;
+        var btn = document.querySelector('#grp-list [data-confirmar-nombre]');
+        if (btn) btn.disabled = true;
+        sendJSON('/CentrosCostos/api/grupos/' + state.editingId, 'PUT', { nombre: nom }).then(function (json) {
+            var saved = json.grupo;
+            if (!saved || !saved.id) throw new Error(json.message || 'No se recibió el grupo guardado.');
+            state.nombre = saved.nombre || nom;
+            state.renaming = false;
+            state.grupos = state.grupos.map(function (row) {
+                return Number(row.id) === Number(saved.id) ? saved : row;
+            });
+            rememberGrupos(state.empresa, state.grupos);
+            setEditorTitle();
+            toast('success', 'Nombre actualizado', saved.nombre || nom);
+        }).catch(function (err) {
+            toast('error', 'No se guardó el nombre', err && err.message ? err.message : 'Error de red');
+            focusNombre(true);
+        }).then(function () {
+            state.savingNombre = false;
+            var again = document.querySelector('#grp-list [data-confirmar-nombre]');
+            if (again) again.disabled = false;
+        });
+    }
+
+    function startRename() {
+        if (!state.editingId && !(state.creating && state.named)) return;
+        state.renaming = true;
+        renderGrupos();
+        focusNombre(true);
     }
 
     function resetEditor() {
         state.editingId = 0;
         state.creating = false;
         state.named = false;
+        state.renaming = false;
         state.clave = '';
         state.selected = {};
         writeNombre('');
@@ -517,6 +606,7 @@
         state.creating = true;
         state.named = true;
         state.editingId = 0;
+        state.renaming = false;
         setEditorTitle();
         renderGrupos();
         renderCuentas();
@@ -530,6 +620,7 @@
         state.editingId = 0;
         state.creating = true;
         state.named = false;
+        state.renaming = false;
         state.clave = '';
         state.selected = {};
         writeNombre('');
@@ -548,6 +639,7 @@
         if (!g) return;
         state.creating = false;
         state.named = true;
+        state.renaming = false;
         state.editingId = g.id;
         state.clave = g.clave || '';
         writeNombre(g.nombre || '');
@@ -794,11 +886,18 @@
         if (gList) {
             gList.addEventListener('click', function (ev) {
                 if (ev.target.closest('input, textarea, select')) return;
+                var rename = ev.target.closest('[data-editar-nombre]');
+                if (rename && gList.contains(rename)) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    startRename();
+                    return;
+                }
                 var ok = ev.target.closest('[data-confirmar-nombre]');
                 if (ok && gList.contains(ok)) {
                     ev.preventDefault();
                     ev.stopPropagation();
-                    confirmNombre();
+                    acceptNombre();
                     return;
                 }
                 var nuevo = ev.target.closest('[data-nuevo]');

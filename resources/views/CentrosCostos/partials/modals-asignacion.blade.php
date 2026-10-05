@@ -77,15 +77,14 @@
                     </div>
                     <span class="cc-badge cc-badge-ink">A cargo</span>
                 </div>
-                <div class="cc-perm-grid is-wide" id="asig-perm-principal"></div>
 
                 <div class="cc-form-kicker" style="margin-top:1.1rem">Otros usuarios con acceso</div>
-                <p class="text-muted mb-2" style="font-size:.8rem">Por ejemplo, alguien de contabilidad con permiso de revisar este centro.</p>
+                <p class="text-muted mb-2" style="font-size:.8rem">Quien se agregue aquí revisa solo a este usuario. No ve a las demás personas del centro ni de la empresa.</p>
                 <div class="cc-pick-search">
                     <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
                     <input id="asig-acc-q" class="cc-input" type="search" placeholder="Buscar usuario por nombre o correo…">
                 </div>
-                <div id="asig-acc-pick" class="cc-pick-list cc-user-list" style="max-height:160px;margin-bottom:.7rem" role="listbox"></div>
+                <div id="asig-acc-pick" class="cc-pick-list cc-user-list" style="max-height:160px;margin-bottom:.7rem" role="listbox" hidden></div>
                 <div class="cc-acc-add" id="asig-acc-add-box" hidden>
                     <div class="cc-acc-add-user">
                         <strong id="asig-acc-add-name"></strong>
@@ -106,7 +105,7 @@
                             </tr>
                         </thead>
                         <tbody id="asig-acc-tbody">
-                            <tr><td colspan="3"><div class="cc-empty">Nadie más tiene acceso a este centro.</div></td></tr>
+                            <tr><td colspan="3"><div class="cc-empty">Nadie más tiene acceso a este usuario.</div></td></tr>
                         </tbody>
                     </table>
                 </div>

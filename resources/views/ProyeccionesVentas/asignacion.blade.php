@@ -194,6 +194,7 @@
 <script>
     CC.boot(Object.assign(@json($bootstrap), { page: 'asignacion' }));
     CCAsig.initWizard({
+        ciclo: @json($ciclo),
         cicloUrl: @json(route('pv.ciclo', $ciclo)),
         listUrl: @json(route('pv.asignaciones.index', $ciclo)),
         storeUrl: @json(route('pv.asignaciones.store', $ciclo)),

@@ -121,16 +121,15 @@
 
     <div class="cc-panel">
         <div class="cc-panel-head">
-            <h3><i class="fa-solid fa-list-check"></i> Detalle por producto</h3>
+            <h3><i class="fa-solid fa-list-check"></i> Detalle por cliente</h3>
             <div class="cc-panel-head-tools">
-                <input id="an-q" class="cc-input cc-table-search" type="search" placeholder="Buscar producto, cliente o usuario…">
+                <input id="an-q" class="cc-input cc-table-search" type="search" placeholder="Buscar cliente, empresa o usuario…">
             </div>
         </div>
         <div class="cc-table-wrap">
             <table class="cc-table cc-an-detalle">
                 <thead>
                     <tr>
-                        <th>Producto</th>
                         <th>Cliente</th>
                         <th>Usuario</th>
                         <th>Estado</th>

@@ -22,16 +22,25 @@
             <button type="button" class="cc-btn" onclick="CC.showModal('modalIndicadores')">
                 <i class="fa-solid fa-circle-info"></i> Indicadores
             </button>
-            <a class="cc-btn" href="{{ route('centros.control', ['vista' => 'visor']) }}">
-                <i class="fa-solid fa-arrow-left"></i> Volver al visor
+            <a class="cc-btn" href="#" onclick="event.preventDefault(); history.back();">
+                <i class="fa-solid fa-arrow-left"></i> Volver
             </a>
         </div>
     </div>
-    <div class="cc-detalle-facts" id="cc-detalle-facts"></div>
-
     <select id="ctl-ciclo" hidden></select>
     <input type="hidden" id="ctl-empresa" value="{{ $bootstrap['empresaInicial'] ?? '' }}">
     <input type="hidden" id="ctl-centro" value="{{ $bootstrap['centroInicial'] ?? '' }}">
+
+    <div class="cc-detalle-stage" id="cc-detalle-stage">
+    <div id="det-busy" class="cc-busy-overlay" aria-hidden="false">
+        <div class="cc-busy">
+            <span class="cc-dots is-lg" role="status" aria-label="Cargando">
+                <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </span>
+        </div>
+    </div>
+
+    <div class="cc-detalle-facts" id="cc-detalle-facts"></div>
 
     <div class="cc-panel cc-captura-results">
         <div class="cc-panel-head">
@@ -56,6 +65,7 @@
             <table class="cc-table">
                 <thead id="det-thead"></thead>
                 <tbody id="det-tbody" class="is-readonly is-selectable"></tbody>
+                <tfoot id="det-tfoot"></tfoot>
             </table>
         </div>
         <div class="cc-sticky-totales">
@@ -71,6 +81,7 @@
             <span class="text-muted" style="font-size:.78rem" id="det-chart-hint">Gasto {{ $bootstrap['anioGasto'] }} vs presupuesto {{ $bootstrap['anioPresupuesto'] }}</span>
         </div>
         <div class="cc-chart"><canvas id="chart-detalle"></canvas></div>
+    </div>
     </div>
 </div>
 

@@ -30,7 +30,22 @@
     }
     .sap-badge.global { background: #fdf4ff; color: #a21caf; }
     .sap-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82rem; word-break: break-all; }
-    .sap-table-wrap { overflow-x: auto; max-height: 62vh; }
+    .sap-table-wrap { overflow: visible; }
+    .sap-panel .dt-buttons { display: flex; flex-wrap: wrap; gap: .35rem; }
+    .sap-panel .dt-buttons .buttons-colvis,
+    .sap-panel .dt-buttons .buttons-colvis.btn-secondary {
+        background: #f8fafc !important;
+        color: #475569 !important;
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 8px !important;
+        box-shadow: none !important;
+    }
+    .sap-panel .dt-buttons .buttons-colvis:hover,
+    .sap-panel .dt-buttons .buttons-colvis.btn-secondary:hover {
+        background: #f1f5f9 !important;
+        color: #334155 !important;
+    }
+    .sap-panel .dt-buttons .btn { margin: 0; }
     .sap-table thead th {
         position: sticky; top: 0; background: #f8fafc; z-index: 1;
         font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; color: #64748b;
@@ -42,13 +57,6 @@
         padding: .2rem .55rem; font-size: .75rem; cursor: pointer;
     }
     .sap-copy:hover { background: #e2e8f0; }
-    .sap-search { position: relative; flex: 1 1 280px; min-width: 240px; max-width: 440px; }
-    .sap-search i {
-        position: absolute; left: .75rem; top: 50%; transform: translateY(-50%);
-        color: #94a3b8; pointer-events: none;
-    }
-    .sap-search input { padding-left: 2.15rem; }
-    mark.sap-hit { background: #fef08a; color: inherit; padding: 0 .12rem; border-radius: 3px; }
     .sap-totals {
         margin-top: .9rem; padding: .9rem 1rem; border-radius: 12px;
         background: #f8fafc; border: 1px solid rgba(17, 24, 39, .08);
@@ -156,7 +164,7 @@
             </table>
         </div>
         <p class="sap-meta mt-3 mb-0">
-            <strong>Global:</strong> <code>/cuentas</code> · <code>/centros-costo</code> · <code>/gasto-real</code> · <code>/ventas</code>
+            <strong>Global:</strong> <code>/cuentas</code> · <code>/centros-costo</code> · <code>/gasto-real</code> · <code>/ventas</code> · <code>/VerificarProductosVendidosAnioPasado</code>
             &nbsp;|&nbsp;
             <strong>Por empresa:</strong> <code>{database}</code> = austin | imsa | pitic | sydney ·
             <code>{resource}</code> = centros-costo | cuentas | agrupaciones-cuentas | transacciones
@@ -393,8 +401,76 @@
                 <button type="button" class="btn btn-outline-primary" id="sapBtnListasPreciosQuick">
                     <i class="fas fa-tags me-1"></i> Abrir listas-precios
                 </button>
+                <button type="button" class="btn btn-outline-success" id="sapBtnVerificarProductos" data-bs-toggle="modal" data-bs-target="#sapVerificarProductosModal">
+                    <i class="fas fa-boxes me-1"></i> Productos vendidos (cliente)
+                </button>
             </div>
         </form>
+    </div>
+
+    <div class="modal fade" id="sapVerificarProductosModal" tabindex="-1" aria-labelledby="sapVerificarProductosModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="sapVerificarProductosModalLabel">
+                        <i class="fas fa-boxes me-2"></i>Verificar productos vendidos
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="sap-meta mb-3">
+                        Endpoint: <code>/api/VerificarProductosVendidosAnioPasado</code>
+                        · Agregado ene–sep por cliente (CardCode + Empresa + year)
+                    </p>
+                    <form id="sapVerificarProductosForm" class="row g-3 align-items-end mb-3">
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold" for="vpCardCode">CardCode</label>
+                            <input type="text" class="form-control" id="vpCardCode" name="CardCode" value="A49" required placeholder="ej. A49">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold" for="vpEmpresa">Empresa</label>
+                            <select class="form-select" id="vpEmpresa" name="Empresa" required>
+                                <option value="AUSTIN" selected>AUSTIN</option>
+                                <option value="IMSA">IMSA</option>
+                                <option value="PITIC">PITIC</option>
+                                <option value="SYDNEY">SYDNEY</option>
+                                <option value="BACHIMBA">BACHIMBA</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label fw-semibold" for="vpYear">Año</label>
+                            <input type="number" class="form-control" id="vpYear" name="year" value="{{ date('Y') }}" min="2000" max="2100" required>
+                        </div>
+                        <div class="col-md-4 d-flex gap-2">
+                            <button type="submit" class="btn btn-primary" id="vpBtnBuscar">
+                                <i class="fas fa-search me-1"></i> Buscar
+                            </button>
+                            <a href="#" class="btn btn-outline-secondary" id="vpBtnAbrirProxy" target="_blank" title="Abrir proxy en nueva pestaña">
+                                <i class="fas fa-external-link-alt me-1"></i> Proxy
+                            </a>
+                        </div>
+                    </form>
+                    <div id="vpStatus" class="sap-meta mb-2">Ingresa CardCode, Empresa y año, luego busca.</div>
+                    <div id="vpResumen" class="mb-3" hidden></div>
+                    <div class="table-responsive mb-3" id="vpMesWrap" hidden>
+                        <h6 class="mb-2">Por mes</h6>
+                        <table class="table table-sm table-hover mb-0">
+                            <thead><tr id="vpMesThead"></tr></thead>
+                            <tbody id="vpMesTbody"></tbody>
+                        </table>
+                    </div>
+                    <div class="table-responsive">
+                        <h6 class="mb-2">Productos</h6>
+                        <table class="table table-sm table-hover mb-0">
+                            <thead><tr id="vpProdThead"></tr></thead>
+                            <tbody id="vpProdTbody">
+                                <tr><td class="text-muted py-3">Sin datos cargados.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="sap-panel">
@@ -402,10 +478,6 @@
             <div>
                 <h5 class="mb-0" id="sapTitle">Resultados</h5>
                 <div class="sap-meta" id="sapMeta">Selecciona alcance y catálogo, luego consulta.</div>
-            </div>
-            <div class="sap-search">
-                <i class="fas fa-search"></i>
-                <input type="search" id="sapSearch" class="form-control form-control-sm" placeholder="Buscar coincidencias en los resultados" autocomplete="off" disabled>
             </div>
             <div class="d-flex gap-2">
                 <button type="button" class="btn btn-sm btn-outline-primary" id="sapPrev" disabled>Anterior</button>
@@ -429,6 +501,7 @@
     const routes = {
         health: @json(route('autin-api.health')),
         sumas: @json(route('autin-api.sumas')),
+        verificarProductos: @json(route('autin-api.verificar-productos-vendidos')),
         base: @json(url('/Sistemas/AutinApi'))
     };
 
@@ -518,17 +591,17 @@
         return String(value).replace(/-/g, '/');
     }
 
-    function buildRequest() {
+    function buildRequest(pageOverride, perPageOverride) {
         const scope = document.getElementById('sapScope').value;
         const resource = document.getElementById('sapResource').value;
-        const perPage = document.getElementById('sapPerPage').value;
+        const perPage = perPageOverride != null ? String(perPageOverride) : document.getElementById('sapPerPage').value;
         const code = document.getElementById('sapFilterCode').value.trim();
         const name = document.getElementById('sapFilterName').value.trim();
         const empresaFiltro = document.getElementById('sapFilterEmpresa').value;
 
         const params = new URLSearchParams();
         params.set('per_page', perPage);
-        params.set('page', String(currentPage));
+        params.set('page', String(pageOverride != null ? pageOverride : currentPage));
 
         let url;
         if (scope === 'global') {
@@ -595,20 +668,10 @@
             .replace(/"/g, '&quot;');
     }
 
-    function fold(value) {
-        return String(value || '')
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '');
-    }
-
-    function highlight(value, query) {
-        const raw = value === null || value === undefined ? '' : String(value);
-        const safe = escapeHtml(raw);
-        const q = String(query || '').trim();
-        if (!q) return safe;
-        const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return safe.replace(new RegExp('(' + pattern + ')', 'ig'), '<mark class="sap-hit">$1</mark>');
+    function cellText(value) {
+        if (value === null || value === undefined) return '';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
     }
 
     function parseAmount(value) {
@@ -653,31 +716,64 @@
         return withDecimal > 0;
     }
 
-    function visibleRows() {
-        const query = fold(document.getElementById('sapSearch').value.trim());
-        if (!query) return loadedRows.slice();
-        return loadedRows.filter(function (row) {
-            return loadedKeys.some(function (key) {
-                return fold(row[key]).indexOf(query) !== -1;
-            });
+    function destroyResultsTable() {
+        const el = document.getElementById('sapTable');
+        if (!el || !window.jQuery || !jQuery.fn.DataTable || !jQuery.fn.DataTable.isDataTable(el)) return;
+        jQuery(el).DataTable().destroy();
+    }
+
+    function initResultsTable() {
+        if (!window.jQuery || !jQuery.fn.DataTable || !loadedRows.length) return;
+        const title = document.getElementById('sapTitle').textContent || 'Resultados';
+        const button = function (extend, icon, label, extra) {
+            return Object.assign({
+                extend: extend,
+                text: '<i class="' + icon + '"></i>',
+                titleAttr: label,
+                title: title,
+                className: 'btn btn-sm btn-outline-secondary'
+            }, extra || {});
+        };
+        jQuery('#sapTable').DataTable({
+            paging: false,
+            searching: true,
+            info: false,
+            ordering: true,
+            order: [],
+            scrollX: true,
+            scrollY: '55vh',
+            scrollCollapse: true,
+            autoWidth: false,
+            language: { url: 'https://cdn.datatables.net/plug-ins/1.13.7/i18n/es-ES.json' },
+            layout: {
+                topStart: {
+                    buttons: [
+                        button('copy', 'fa-regular fa-copy', 'Copiar', { className: 'btn btn-sm btn-tool-copy push' }),
+                        button('excel', 'fa-regular fa-file-excel', 'Excel', { className: 'btn btn-sm btn-tool-excel push' }),
+                        button('csv', 'fa-solid fa-file-csv', 'CSV', { className: 'btn btn-sm btn-tool-excel push' }),
+                        button('pdf', 'fa-regular fa-file-pdf', 'PDF', { orientation: 'landscape', pageSize: 'A3', className: 'btn btn-sm btn-tool-pdf push' }),
+                        button('print', 'fa-solid fa-print', 'Imprimir', { className: 'btn btn-sm btn-tool-print push' }),
+                        button('colvis', 'fa-solid fa-table-columns', 'Columnas', { title: undefined, className: 'btn btn-sm btn-tool-copy push' })
+                    ]
+                },
+                topEnd: 'search'
+            }
         });
     }
 
-    function paintRows(rows, query) {
+    function paintRows() {
+        destroyResultsTable();
         const tbody = document.getElementById('sapTbody');
         if (!loadedRows.length) {
             tbody.innerHTML = '<tr><td class="text-muted py-4">Sin resultados.</td></tr>';
             return;
         }
-        if (!rows.length) {
-            tbody.innerHTML = '<tr><td class="text-muted py-4" colspan="' + loadedKeys.length + '">Sin coincidencias para «' + escapeHtml(query) + '».</td></tr>';
-            return;
-        }
-        tbody.innerHTML = rows.map(function (row) {
+        tbody.innerHTML = loadedRows.map(function (row) {
             return '<tr>' + loadedKeys.map(function (key) {
-                return '<td>' + highlight(row[key], query) + '</td>';
+                return '<td>' + escapeHtml(cellText(row[key])) + '</td>';
             }).join('') + '</tr>';
         }).join('');
+        initResultsTable();
     }
 
     function totalsChips(totals) {
@@ -793,12 +889,8 @@
         }
     }
 
-    function applyResultView() {
-        const query = document.getElementById('sapSearch').value.trim();
-        paintRows(visibleRows(), query);
-    }
-
     function renderTable(payload) {
+        destroyResultsTable();
         const thead = document.getElementById('sapThead');
         const data = Array.isArray(payload.data) ? payload.data : [];
         const meta = payload.meta || {};
@@ -824,20 +916,17 @@
         document.getElementById('sapPrev').disabled = !meta.current_page || meta.current_page <= 1;
         document.getElementById('sapNext').disabled = !meta.last_page || meta.current_page >= meta.last_page;
 
-        const search = document.getElementById('sapSearch');
-        search.value = '';
-        search.disabled = data.length === 0;
         loadedRows = data;
         loadedKeys = data.length ? Object.keys(data[0]) : [];
 
         if (!data.length) {
             thead.innerHTML = '';
-            applyResultView();
+            paintRows();
             return;
         }
 
         thead.innerHTML = loadedKeys.map(function (k) { return '<th>' + escapeHtml(k) + '</th>'; }).join('');
-        applyResultView();
+        paintRows();
     }
 
     async function fetchJson(url, signal) {
@@ -882,8 +971,7 @@
             if (job !== tableJob) return;
             loadedRows = [];
             loadedKeys = [];
-            document.getElementById('sapSearch').value = '';
-            document.getElementById('sapSearch').disabled = true;
+            destroyResultsTable();
             if (refreshTotals) {
                 if (totalsAbort) totalsAbort.abort();
                 grand = null;
@@ -902,7 +990,6 @@
         }
     }
 
-    document.getElementById('sapSearch').addEventListener('input', applyResultView);
 
     document.getElementById('sapFilterForm').addEventListener('submit', function (e) {
         e.preventDefault();
@@ -970,6 +1057,139 @@
         document.getElementById('sapPerPage').value = '100';
         currentPage = 1;
         loadData();
+    });
+
+    function vpFmtNum(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return v == null ? '' : String(v);
+        return n.toLocaleString('es-MX', { maximumFractionDigits: 2 });
+    }
+
+    function vpBuildProxyUrl() {
+        const params = new URLSearchParams({
+            CardCode: (document.getElementById('vpCardCode').value || '').trim(),
+            Empresa: document.getElementById('vpEmpresa').value || '',
+            year: document.getElementById('vpYear').value || ''
+        });
+        return routes.verificarProductos + '?' + params.toString();
+    }
+
+    function vpRenderRows(theadEl, tbodyEl, rows, preferredKeys) {
+        theadEl.innerHTML = '';
+        tbodyEl.innerHTML = '';
+        if (!rows || !rows.length) {
+            tbodyEl.innerHTML = '<tr><td class="text-muted py-3">Sin registros.</td></tr>';
+            return;
+        }
+        const keys = preferredKeys && preferredKeys.length
+            ? preferredKeys.filter(function (k) { return Object.prototype.hasOwnProperty.call(rows[0], k); })
+            : Object.keys(rows[0]);
+        keys.forEach(function (k) {
+            const th = document.createElement('th');
+            th.textContent = k;
+            theadEl.appendChild(th);
+        });
+        rows.forEach(function (row) {
+            const tr = document.createElement('tr');
+            keys.forEach(function (k) {
+                const td = document.createElement('td');
+                const val = row[k];
+                td.textContent = (typeof val === 'number') ? vpFmtNum(val) : (val == null ? '' : String(val));
+                tr.appendChild(td);
+            });
+            tbodyEl.appendChild(tr);
+        });
+    }
+
+    document.getElementById('vpBtnAbrirProxy').addEventListener('click', function (e) {
+        e.preventDefault();
+        window.open(vpBuildProxyUrl(), '_blank');
+    });
+
+    document.getElementById('sapVerificarProductosForm').addEventListener('submit', function (e) {
+        e.preventDefault();
+        const cardCode = (document.getElementById('vpCardCode').value || '').trim();
+        const empresa = document.getElementById('vpEmpresa').value || '';
+        const year = document.getElementById('vpYear').value || '';
+        if (!cardCode || !empresa || !year) {
+            document.getElementById('vpStatus').textContent = 'Completa CardCode, Empresa y año.';
+            return;
+        }
+
+        const btn = document.getElementById('vpBtnBuscar');
+        const statusEl = document.getElementById('vpStatus');
+        const resumenEl = document.getElementById('vpResumen');
+        const mesWrap = document.getElementById('vpMesWrap');
+        btn.disabled = true;
+        statusEl.textContent = 'Consultando AutinApi…';
+        resumenEl.hidden = true;
+        mesWrap.hidden = true;
+        document.getElementById('vpProdTbody').innerHTML = '<tr><td class="text-muted py-3">Cargando…</td></tr>';
+        document.getElementById('vpProdThead').innerHTML = '';
+
+        fetch(vpBuildProxyUrl(), {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        })
+            .then(function (res) {
+                return res.json().then(function (body) {
+                    return { ok: res.ok, status: res.status, body: body };
+                });
+            })
+            .then(function (result) {
+                if (!result.ok) {
+                    const msg = (result.body && (result.body.message || result.body.error)) || ('Error HTTP ' + result.status);
+                    statusEl.textContent = msg;
+                    document.getElementById('vpProdTbody').innerHTML = '<tr><td class="text-danger py-3">' + msg + '</td></tr>';
+                    return;
+                }
+                const data = result.body || {};
+                const cliente = data.cliente || {};
+                const totales = data.totales || {};
+                const filtros = data.filters_applied || {};
+                statusEl.textContent = (data.label || 'Resultado')
+                    + ' · ' + (cliente.CardCode || cardCode)
+                    + (cliente.CardName ? ' — ' + cliente.CardName : '')
+                    + ' · ' + (filtros.fecha_desde || '') + ' → ' + (filtros.fecha_hasta || '');
+
+                resumenEl.hidden = false;
+                resumenEl.innerHTML =
+                    '<div class="row g-2">'
+                    + '<div class="col-md-3"><div class="sap-panel py-2 px-3"><div class="sap-meta">Productos</div><strong>' + vpFmtNum(totales.productos_distintos) + '</strong></div></div>'
+                    + '<div class="col-md-3"><div class="sap-panel py-2 px-3"><div class="sap-meta">Líneas</div><strong>' + vpFmtNum(totales.lineas) + '</strong></div></div>'
+                    + '<div class="col-md-3"><div class="sap-panel py-2 px-3"><div class="sap-meta">Quantity</div><strong>' + vpFmtNum(totales.Quantity) + '</strong></div></div>'
+                    + '<div class="col-md-3"><div class="sap-panel py-2 px-3"><div class="sap-meta">LineTotal / USD</div><strong>' + vpFmtNum(totales.LineTotal) + '</strong><div class="sap-meta">' + vpFmtNum(totales.LineTotalUSD) + ' USD</div></div></div>'
+                    + '</div>';
+
+                const porMes = Array.isArray(data.por_mes) ? data.por_mes : [];
+                if (porMes.length) {
+                    mesWrap.hidden = false;
+                    vpRenderRows(
+                        document.getElementById('vpMesThead'),
+                        document.getElementById('vpMesTbody'),
+                        porMes,
+                        ['mes', 'lineas', 'LineTotal', 'LineTotalUSD']
+                    );
+                }
+
+                const productos = Array.isArray(data.productos) ? data.productos : [];
+                const fields = Array.isArray(data.fields) && data.fields.length
+                    ? data.fields
+                    : ['ItemCode', 'ItemName', 'Tipo_Doc', 'Lineas', 'Quantity', 'LineTotal', 'LineTotalUSD', 'Moneda'];
+                vpRenderRows(
+                    document.getElementById('vpProdThead'),
+                    document.getElementById('vpProdTbody'),
+                    productos,
+                    fields
+                );
+            })
+            .catch(function (err) {
+                statusEl.textContent = 'Error de red: ' + (err && err.message ? err.message : 'desconocido');
+                document.getElementById('vpProdTbody').innerHTML = '<tr><td class="text-danger py-3">No se pudo consultar el endpoint.</td></tr>';
+            })
+            .finally(function () {
+                btn.disabled = false;
+            });
     });
 })();
 </script>

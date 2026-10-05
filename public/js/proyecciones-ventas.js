@@ -120,6 +120,20 @@
         return String(CC.state.currency || 'MXN').toUpperCase() === 'USD';
     }
 
+    /**
+     * SAP B1 manda la moneda local como "$" o "##" (pesos), no como USD.
+     * Solo un código explícito de dólar se trata como USD.
+     */
+    function canonMoneda(raw) {
+        var m = String(raw || '').toUpperCase().replace(/[\s.]/g, '');
+        if (m === 'USD' || m === 'US$' || m === 'U$S' || m === 'U$D' || m === 'US'
+            || m === 'DLLS' || m === 'DLL' || m === 'DOLAR' || m === 'DOLARES'
+            || m === 'DOLLAR' || m === 'DOLLARS') {
+            return 'USD';
+        }
+        return 'MXN';
+    }
+
     /** Valor guardado (base MXN) → lo que se muestra según moneda. Solo importes. */
     function toDisplayAmount(n, monthIdx) {
         var val = Number(n);
@@ -463,14 +477,14 @@
                     empresa: c.empresa
                 };
             });
-            if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, mapped);
             return mapped;
         }
         var revisionSinProductos = asig && !asig.capturar && (asig.revisar || ((asig.permisos || []).indexOf('revisar') !== -1));
         if (revisionSinProductos && (CC.state.page === 'control' || CC.state.page === 'detalle')) {
             return mergeCuentasAnalisis(c, []);
         }
-        if (CC.state.page === 'analisis') return mergeCuentasAnalisis(c, []);
+        // Análisis: solo productos asignados a captura. Sin lista, no se rellena con la venta real.
+        if (CC.state.page === 'analisis') return [];
         if (CC.state.page === 'control' || CC.state.page === 'detalle') return [];
         var all = CC.state.cuentas.filter(function (cta) {
             return !cta.empresa || !c.empresa || String(cta.empresa).toUpperCase() === String(c.empresa).toUpperCase();
@@ -670,14 +684,19 @@
         return zeros12();
     }
 
-    /** Venta real del mes: USD = LineTotalUSD guardado; MXN = LineTotal. Sin tipo de cambio.
+    /** Venta real del mes en la moneda de vista.
+     *  USD: LineTotalUSD de SAP, o LineTotal MXN ÷ TC si SAP no trae dólares.
      *  Budget, oct–dic: si gasto-real no trae el mes, usa ventas-budget (importe o uds × precio). */
     function importeMesVentaVista(cta, i) {
         if (!cta) return 0;
-        var sap = isUsdView()
-            ? (Number(usdSeriesOf(cta)[i]) || 0)
-            : (Number((cta.importe && cta.importe[i]) || 0));
-        if (sap) return sap;
+        var mxnSap = Number((cta.importe && cta.importe[i]) || 0);
+        var usdSap = Number(usdSeriesOf(cta)[i]) || 0;
+        if (isUsdView()) {
+            if (usdSap) return usdSap;
+            if (mxnSap) return toDisplayAmount(mxnSap, i);
+        } else if (mxnSap) {
+            return mxnSap;
+        }
         var idx = Number(i);
         if (!esBudgetTipo() || idx < 9 || idx > 11) return 0;
         var hit = hitVentasBudget(cta);
@@ -695,7 +714,7 @@
         var qty = Number(pastQtyMes(cta, idx)) || 0;
         var precio = Number(cta.precioLista) || 0;
         if (!qty || !precio) return 0;
-        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var mon = canonMoneda(cta.precioMoneda || 'MXN');
         var mxnAmt = qty * (mon === 'USD' ? precio * fxRate(idx) : precio);
         return toDisplayAmount(mxnAmt, idx);
     }
@@ -823,7 +842,14 @@
 
     function gastoCacheKey(c) {
         var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+        return String(c.empresa || '').toUpperCase() + '|' +
+            String(c.codigo || '').trim().toUpperCase() + '|' + year;
+    }
+
+    /** ¿Se está consultando venta SAP para el cliente abierto? (igual que precios lista). */
+    function gastoVentaCargando() {
+        if (!control.centro || !control._gastoLoading) return false;
+        return control._gastoLoading === gastoCacheKey(control.centro);
     }
 
     /** ¿Hay entrada usable en caché de sesión? No confiar en {} sin meta (envenena el snapshot). */
@@ -1067,81 +1093,108 @@
         opts = opts || {};
         if (!c || !CC.state.gastoUrl) return;
         var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
-        var force = !!opts.force;
+        var key = gastoCacheKey(c);
+        // Por defecto fuerza SAP (Captura). Detalle pasa { force: false } → snapshot.
+        var force = opts.force !== false;
+        var auto = !!opts.auto;
+        var reqId = (control._gastoReqId = (control._gastoReqId || 0) + 1);
         control._gastoReq = key;
+        control._gastoLoading = key;
         if (!force) {
             var hit = gastoCacheEntry(key);
             if (hit) {
+                control._gastoLoading = '';
                 applyGastoMap(hit.por, hit.meta);
-            return;
+                return;
             }
         }
-        if (force) {
-            if (CC.state.gastoCache) delete CC.state.gastoCache[key];
-            if (CC.state.gastoMeta) delete CC.state.gastoMeta[key];
-            if (CC.state.gastoLookup) delete CC.state.gastoLookup[key];
-        }
-        control._gastoMap = {};
-        control._gastoMeta = {};
+        if (CC.state.gastoCache) delete CC.state.gastoCache[key];
+        if (CC.state.gastoMeta) delete CC.state.gastoMeta[key];
+        if (CC.state.gastoLookup) delete CC.state.gastoLookup[key];
         var badgeTxt = document.getElementById('ctl-venta-snap-text');
         var pillTxt = document.getElementById('ctl-venta-snap-pill-text');
         var nav = document.getElementById('ctl-venta-snap-nav');
-        if (badgeTxt) badgeTxt.textContent = force ? 'Actualizando SAP…' : 'Cargando…';
-        if (pillTxt) pillTxt.textContent = force ? 'Actualizando…' : 'Cargando…';
-        if (nav) nav.textContent = 'Snapshot: cargando…';
+        var waitMsg = force
+            ? ('Consultando unidades de venta ' + year + ' en SAP…')
+            : ('Cargando venta ' + year + ' desde snapshot…');
+        if (badgeTxt) badgeTxt.textContent = force ? 'Consultando SAP…' : 'Snapshot…';
+        if (pillTxt) pillTxt.textContent = force ? 'Consultando SAP…' : 'Snapshot…';
+        if (nav) nav.textContent = force ? 'Venta: SAP…' : 'Venta: local…';
         ['ctl-venta-snap-badge', 'ctl-venta-snap-pill'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.className = 'cc-snap-badge is-cache';
         });
-        showApiWait(force
-            ? ('Actualizando venta ' + year + ' desde SAP…')
-            : ('Cargando venta ' + year + '…'));
+        // Detalle auto (sin force): no bloquear UI; el snapshot llega en segundo plano.
+        // Captura / refresh manual sí muestran overlay.
+        var showedWait = !!(force || !auto);
+        if (showedWait) showApiWait(waitMsg);
+        if (CC._capturaReady) {
+            try { renderControlTable(); } catch (e1) { /* ignore */ }
+        }
         var qs = '?empresa=' + encodeURIComponent(c.empresa || '') +
-            '&cc=' + encodeURIComponent(c.codigo || '') +
+            '&cc=' + encodeURIComponent(String(c.codigo || '').trim()) +
             '&year=' + encodeURIComponent(year) +
-            '&ref=' + encodeURIComponent(year);
-        if (force) qs += '&force=1';
+            '&ref=' + encodeURIComponent(year) +
+            '&force=' + (force ? '1' : '0');
+        var reqKey = key;
         fetch(CC.state.gastoUrl + qs, {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
-            if (control._gastoReq !== key) return;
+            if (reqId !== control._gastoReqId) return;
+            if (!control.centro || gastoCacheKey(control.centro) !== reqKey) return;
+            control._gastoLoading = '';
             var por = (json && json.por_cuenta) || {};
             var meta = {
-                fuente: (json && json.fuente) || '',
+                fuente: (json && json.fuente) || 'api',
                 synced_at: (json && json.synced_at) || null,
                 year: (json && json.year) || year,
                 mensaje: (json && json.mensaje) || null
             };
-            rememberGastoCache(key, por, meta);
+            rememberGastoCache(reqKey, por, meta);
             applyGastoMap(por, meta);
-            if (force) {
+            if (!auto) {
                 toast('success', 'Venta actualizada',
-                    'Snapshot ' + year + (meta.synced_at ? (' · ' + meta.synced_at) : '') +
+                    'SAP ' + year + (meta.synced_at ? (' · ' + meta.synced_at) : '') +
                     (meta.fuente ? (' · ' + meta.fuente) : ''));
-            } else if (meta.fuente === 'api') {
-                toast('info', 'Snapshot guardado', 'Venta ' + year + ' quedó en BD local para próximas cargas.');
             }
         }).catch(function () {
-            if (control._gastoReq !== key) return;
+            if (reqId !== control._gastoReqId) return;
+            if (!control.centro || gastoCacheKey(control.centro) !== reqKey) return;
+            control._gastoLoading = '';
             applyGastoMap({}, { fuente: 'error', year: year });
-            if (force) toast('error', 'No se actualizó', 'No se pudo consultar SAP.');
+            toast('error', 'No se actualizó', 'No se pudo consultar las unidades de venta en SAP.');
         }).then(function () {
-            hideApiWait();
+            if (reqId === control._gastoReqId && control._gastoLoading === reqKey) {
+                control._gastoLoading = '';
+            }
+            // Siempre cerrar si esta petición abrió el overlay (evita modal colgado por race).
+            if (showedWait) hideApiWait();
         });
     }
-
     function preciosCacheKey(c) {
         return String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '');
+    }
+
+    function preciosListaCargando() {
+        if (!control.centro || !control._preciosLoading) return false;
+        return control._preciosLoading === preciosCacheKey(control.centro);
     }
 
     function lookupPrecioLista(codigo) {
         var map = control._preciosMap || {};
         if (!codigo) return null;
-        return map[String(codigo)]
-            || map[String(codigo).toUpperCase()]
-            || map[codigoCuentaKey(codigo)]
-            || null;
+        return precioListaEnMapa(map, codigo);
+    }
+
+    function precioListaEnMapa(map, codigo) {
+        if (!map || !codigo) return null;
+        var keys = [String(codigo), String(codigo).toUpperCase()];
+        if (!esItemCodeSap(codigo)) keys.push(codigoCuentaKey(codigo));
+        for (var i = 0; i < keys.length; i++) {
+            var hit = map[keys[i]];
+            if (hit && Number(hit.precio) > 0) return hit;
+        }
+        return null;
     }
 
     function mapaPreciosArticulo(porArticulo) {
@@ -1155,7 +1208,7 @@
                 codigo: codigo,
                 nombre: row.nombre || '',
                 precio: Number(row.precio) || 0,
-                moneda: String(row.moneda || 'MXN').toUpperCase(),
+                moneda: canonMoneda(row.moneda || 'MXN'),
                 unidad: String(row.unidad || '').trim(),
                 unidad_nombre: String(row.unidad_nombre || '').trim(),
                 lista: row.lista || '',
@@ -1163,7 +1216,7 @@
             };
             map[codigo] = entry;
             map[codigo.toUpperCase()] = entry;
-            map[codigoCuentaKey(codigo)] = entry;
+            if (!esItemCodeSap(codigo)) map[codigoCuentaKey(codigo)] = entry;
         });
         return map;
     }
@@ -1193,12 +1246,15 @@
         if (!c || !CC.state.listasPreciosUrl) return;
         var key = preciosCacheKey(c);
         control._preciosReq = key;
+        control._preciosLoading = key;
         // No reutilizar caché de sesión incompleta: siempre pedir los productos del cliente.
         if (CC.state.preciosCache) delete CC.state.preciosCache[key];
         // Si ya hay maestro local de precios, no bloquear la UI con SAP (fallback en segundo plano).
+        // En Detalle tampoco bloquear: la tabla ya pinta con costosMaster / captura.
         var hasMaster = CC.state.costosMaster && Object.keys(CC.state.costosMaster).length > 0;
+        var showedWait = !hasMaster && CC.state.page !== 'detalle';
         control._preciosMap = {};
-        if (!hasMaster) {
+        if (showedWait) {
             showApiWait('Consultando listas de precios…');
         }
         var items = [];
@@ -1218,12 +1274,14 @@
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
             if (control._preciosReq !== key) return;
+            control._preciosLoading = '';
             applyPreciosMap((json && json.por_articulo) || {});
         }).catch(function () {
             if (control._preciosReq !== key) return;
+            control._preciosLoading = '';
             applyPreciosMap({});
         }).then(function () {
-            if (!hasMaster) hideApiWait();
+            if (showedWait) hideApiWait();
         });
     }
 
@@ -1271,22 +1329,31 @@
         loadVentasPasadas(true);
     }
 
-    function fetchVentasPasadas(empresa, cc, year) {
+    function fetchVentasPasadas(empresa, cc, year, forceSap) {
         var key = String(empresa || '').toUpperCase() + '|' + String(cc || '') + '|' + year;
-        var hit = gastoCacheEntry(key);
-        if (hit) {
-            return Promise.resolve({
-                ok: true,
-                year: year,
-                por_cuenta: hit.por,
-                fuente: (hit.meta && hit.meta.fuente) || 'cache',
-                synced_at: hit.meta && hit.meta.synced_at,
-                cached: true
-            });
+        // El modal debe refrescar SAP (force): el snapshot pudo mezclar D* + DD*.
+        if (!forceSap) {
+            var hit = gastoCacheEntry(key);
+            if (hit) {
+                return Promise.resolve({
+                    ok: true,
+                    year: year,
+                    por_cuenta: hit.por,
+                    fuente: (hit.meta && hit.meta.fuente) || 'cache',
+                    synced_at: hit.meta && hit.meta.synced_at,
+                    cached: true
+                });
+            }
+        } else {
+            if (CC.state.gastoCache) delete CC.state.gastoCache[key];
+            if (CC.state.gastoMeta) delete CC.state.gastoMeta[key];
+            if (CC.state.gastoLookup) delete CC.state.gastoLookup[key];
         }
         return fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(empresa || '') +
             '&cc=' + encodeURIComponent(cc || '') +
-            '&year=' + encodeURIComponent(year), {
+            '&year=' + encodeURIComponent(year) +
+            '&ref=' + encodeURIComponent(year) +
+            '&force=' + (forceSap ? '1' : '0'), {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (json) {
             var por = (json && json.por_cuenta) || {};
@@ -1294,6 +1361,7 @@
                 fuente: (json && json.fuente) || (json && json.ok ? 'api' : 'error'),
                 synced_at: (json && json.synced_at) || null,
                 year: (json && json.year) || year,
+                budget_completo: !!(json && json.budget_completo),
                 mensaje: (json && json.mensaje) || null
             });
             return json || { ok: false, por_cuenta: {}, mensaje: 'Sin respuesta' };
@@ -1325,9 +1393,10 @@
     function formatVpCell(v, metric) {
         var n = Number(v) || 0;
         if (!n) return '—';
+        var money = metric === 'mxn' || metric === 'usd';
         var txt = n.toLocaleString('es-MX', {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: metric === 'qty' ? 2 : 2
+            minimumFractionDigits: money ? 2 : 0,
+            maximumFractionDigits: 2
         });
         if (metric === 'mxn') return '$' + txt;
         if (metric === 'usd') return 'US$' + txt;
@@ -1415,7 +1484,8 @@
         if (btn) btn.disabled = true;
         control._vpReq = String(emp).toUpperCase() + '|' + cc + '|' + year;
         showApiWait('Cargando ventas pasadas de ' + year + '…');
-        fetchVentasPasadas(emp, cc, year).then(function (json) {
+        // force=true (abrir modal / Cargar): SAP + CardCode exacto, reescribe snapshot.
+        fetchVentasPasadas(emp, cc, year, !!force).then(function (json) {
             if (control._vpReq !== String(emp).toUpperCase() + '|' + cc + '|' + year) return;
             if (btn) btn.disabled = false;
             if (!json || !json.ok) {
@@ -1728,7 +1798,7 @@
         var cta = ((control && control._allCtas) || []).filter(function (x) {
             return String(x.codigo) === String(cuenta);
         })[0];
-        var moneda = String(opts.moneda || (cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var moneda = canonMoneda(opts.moneda || (cta && cta.precioMoneda) || 'MXN');
         var nombre = opts.nombre || (cta && cta.nombre) || cuenta;
         var cardName = opts.card_name || (control.centro && control.centro.nombre) || '';
         return fetch(url, {
@@ -1758,22 +1828,20 @@
                     entry.monedas[i] = entry.meses[i] != null ? moneda : null;
                 }
                 CC.state.costosMeses[keyCard] = entry;
-                // Global del maestro = moda (no el último mes).
+                // Global del maestro = moda (no el último mes). Respeta 0 explícito.
                 var moda = precioModaDeMeses(entry.meses);
-                if (json.precio_global != null && Number(json.precio_global) > 0) {
-                    moda = Number(json.precio_global);
+                if (json.precio_global != null && json.precio_global !== '') {
+                    moda = Number(json.precio_global) || 0;
                 }
-                if (moda > 0) {
-                    CC.state.costosMaster = CC.state.costosMaster || {};
-                    var masterEntry = {
-                        costo: moda,
-                        moneda: moneda,
-                        mes: null,
-                        card_code: cc || '',
-                        origen: 'maestro_local'
-                    };
-                    CC.state.costosMaster[keyCard] = masterEntry;
-                }
+                CC.state.costosMaster = CC.state.costosMaster || {};
+                CC.state.costosMaster[keyCard] = {
+                    costo: moda,
+                    moneda: moneda,
+                    mes: null,
+                    card_code: cc || '',
+                    origen: 'maestro_local',
+                    explicito: true
+                };
                 return json;
             });
         });
@@ -3444,7 +3512,7 @@
         var sub = document.getElementById('pm-sub');
         if (sub) sub.textContent = labelNombreCodigo(cta.nombre, cta.codigo);
         var base = Number(cta.precioLista) || 0;
-        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var mon = canonMoneda(cta.precioMoneda || 'MXN');
         var baseEl = document.getElementById('pm-base');
         if (baseEl) baseEl.value = base > 0 ? base.toFixed(2) : '';
         var baseHint = document.getElementById('pm-base-hint');
@@ -3581,7 +3649,7 @@
             })[0];
             save.disabled = true;
             Promise.resolve(persistPrecioMesesProducto(c.empresa, c.codigo, codigo, meses, {
-                moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase(),
+                moneda: canonMoneda((cta && cta.precioMoneda) || 'MXN'),
                 nombre: (cta && cta.nombre) || codigo,
                 card_name: (c && c.nombre) || ''
             })).then(function (json) {
@@ -3705,7 +3773,6 @@
     /** Venta real ya en la moneda de vista (LineTotal o LineTotalUSD). */
     function totGastoCentroVista(c, ctas) {
         return (ctas || cuentasEnriquecidas(c)).reduce(function (a, cta) {
-            if (cta.importeVentaVista != null) return a + Number(cta.importeVentaVista || 0);
             return a + importeVentaVista(cta);
         }, 0);
     }
@@ -4086,11 +4153,12 @@
         var emp = String(empresa || '').toUpperCase();
         var card = String(cliente || '').trim();
         var cod = String(codigo || '').trim();
-        var hit = null;
+        // Con CardCode: solo la clave exacta. No heredar precio de otro cliente (EMP|Item).
         if (emp && card && cod) {
-            hit = map[emp + '|' + card + '|' + cod];
+            return map[emp + '|' + card + '|' + cod] || null;
         }
-        if (!hit && emp && cod) {
+        var hit = null;
+        if (emp && cod) {
             hit = map[emp + '|' + cod];
         }
         if (!hit) {
@@ -4125,10 +4193,7 @@
         if (!c || !codigo) return null;
         var own = CC.state.preciosCache && CC.state.preciosCache[preciosCacheKey(c)];
         if (own) {
-            return own[String(codigo)]
-                || own[String(codigo).toUpperCase()]
-                || own[codigoCuentaKey(codigo)]
-                || null;
+            return precioListaEnMapa(own, codigo);
         }
         if (control.centro
             && String(control.centro.codigo) === String(c.codigo)
@@ -4147,16 +4212,19 @@
             var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
             var maestroMesesHit = lookupMaestroMeses(c.empresa, c.codigo, cta.codigo);
             var snap = Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0;
-            var masterPrecio = (master && Number(master.costo)) || 0;
+            var hasMasterRow = !!master;
+            var masterPrecio = hasMasterRow ? (Number(master.costo) || 0) : 0;
             var masterMes = (master && Number(master.mes)) || 0;
-            // Precio de proyección: preferir maestro local (moda / mes=0) sobre lista SAP.
+            // PRECIO proy. local = solo precio global del maestro (Ventas/Costos). Nunca lista SAP.
             var precioListaSap = Number(lista.precio) || 0;
-            var precioLista = masterPrecio > 0 ? masterPrecio : precioListaSap;
+            var precioLista = hasMasterRow ? masterPrecio : 0;
             var precioMoneda = '';
-            if (masterPrecio > 0 && master && master.moneda) {
-                precioMoneda = String(master.moneda).toUpperCase();
+            if (hasMasterRow && master && master.moneda) {
+                precioMoneda = canonMoneda(master.moneda);
+            } else if (lista.moneda) {
+                precioMoneda = canonMoneda(lista.moneda);
             } else {
-                precioMoneda = String(lista.moneda || '').toUpperCase() || '';
+                precioMoneda = 'MXN';
             }
             var precioMaestroMeses = (maestroMesesHit && maestroMesesHit.meses)
                 ? maestroMesesHit.meses.slice(0, 12)
@@ -4171,16 +4239,17 @@
                 costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
                 precioLista: precioLista,
                 precioListaSap: precioListaSap,
-                precioListaSapMoneda: String(lista.moneda || '').toUpperCase() || '',
-                precioMoneda: precioMoneda,
+                precioListaSapMoneda: lista.moneda ? canonMoneda(lista.moneda) : '',
+                precioMoneda: precioMoneda || 'MXN',
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
                 precioMaestroMeses: precioMaestroMeses,
                 precioLocalMes: masterMes > 0 ? masterMes : null,
+                tienePrecioMaestro: hasMasterRow,
                 unidad: String(lista.unidad || cta.unidad || '').trim(),
                 unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
-                listaPrecioNombre: masterPrecio > 0
+                listaPrecioNombre: hasMasterRow
                     ? 'Maestro local · global'
-                    : (lista.lista || ''),
+                    : '',
                 listaPrecioNombreSap: String(lista.lista || '').trim(),
                 listaPrecioNoSap: String(lista.no_lista || '').trim()
             });
@@ -4188,7 +4257,7 @@
             if (!enriched.unidadNombre && enriched.unidad) {
                 enriched.unidadNombre = nombreUnidadMedida(enriched.unidad);
             }
-            var costoLocal = Number(cta.costo) || snap || masterPrecio || 0;
+            var costoLocal = Number(cta.costo) || snap || (hasMasterRow ? masterPrecio : 0) || 0;
             enriched.costo = costoLocal;
             enriched.costoMoneda = (master && master.moneda) || 'MXN';
             enriched.importeProy = importeProyeccionMxn(enriched);
@@ -4330,7 +4399,7 @@
             return;
         }
         var totG = ctas.reduce(function (a, x) {
-            return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+            return a + importeVentaVista(x);
         }, 0);
         var totP = ctas.reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
         var pend = ctas.filter(ctaPendiente).length;
@@ -4769,6 +4838,7 @@
             document.getElementById('ctl-moneda').addEventListener('change', function () {
                 CC.state.currency = this.value;
                 saveJSON(SK.currency, CC.state.currency);
+                if (control.centro) control._allCtas = cuentasEnriquecidas(control.centro);
                 paintFxBadge();
                 renderCapturaForm();
                 renderControlTable();
@@ -4850,7 +4920,7 @@
         control.scopeTabla = 'centro';
         control.chartVerTodas = false;
         bindScopeToggles();
-        loadOverlaysForCycle().then(function () {
+        loadDetalleLocalBootstrap().then(function () {
             loadControlCentro();
             paintDetalleHeader();
             renderDetalleTable();
@@ -4858,6 +4928,101 @@
             paintScopeHints();
         });
     };
+
+    /** Detalle: un solo JSON local (captura + snapshot + precios). Sin SAP. */
+    function loadDetalleLocalBootstrap() {
+        var ciclo = String(cicloActualCodigo() || CC.state.cicloInicial || '').trim();
+        var empresa = String(val('ctl-empresa') || CC.state.empresaInicial || '').trim();
+        var cc = String(val('ctl-centro') || CC.state.centroInicial || '').trim();
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || new Date().getFullYear();
+        CC._capturaLoadGen = (CC._capturaLoadGen || 0) + 1;
+        var gen = CC._capturaLoadGen;
+        CC._seedDoneFor = {};
+        CC._siopStrippedFor = '';
+        CC._siopSeedStamp = '';
+        CC._budgetsBaseLoaded = true;
+        CC._capturaReady = false;
+        CC.state.overlays = {};
+        CC.state.budgets = {};
+        CC.state.budgetsBase = {};
+        CC.state.budgetKeysFromServer = {};
+        CC.state.completados = {};
+        CC.state.preciosMeses = {};
+        CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
+
+        if (!ciclo || !empresa || !cc) {
+            CC._capturaReady = true;
+            return Promise.resolve();
+        }
+
+        var url = (CC.state.capturaBootstrapUrl || '/ProyeccionesVentas/api/captura/bootstrap') +
+            '?ciclo=' + encodeURIComponent(ciclo) +
+            '&empresa=' + encodeURIComponent(empresa) +
+            '&cc=' + encodeURIComponent(cc) +
+            '&year=' + encodeURIComponent(year);
+
+        return fetch(url, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) {
+            if (!r.ok) throw new Error('bootstrap ' + r.status);
+            return r.json();
+        }).then(function (json) {
+            if (gen !== CC._capturaLoadGen) return;
+            CC.state.overlays = json.overlays || {};
+            CC.state.completados = json.completados || {};
+            CC.state.ajustes = json.ajustes || {};
+            CC.state.costos = json.costos || {};
+            CC.state.costosMaster = json.costosMaster || {};
+            CC.state.costosMeses = json.costosMeses || {};
+            CC.state.preciosMeses = json.preciosMeses || {};
+            CC.state.budgets = {};
+            CC.state.budgetKeysFromServer = {};
+            var rawBudgets = json.budgets || {};
+            Object.keys(rawBudgets).forEach(function (k) {
+                CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
+                CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+            });
+            Object.keys(CC.state.completados || {}).forEach(function (k) {
+                if (CC.state.completados[k]) CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+            });
+            unscaleQtyBudgetsIfNeeded();
+
+            var cRef = { empresa: empresa, codigo: cc };
+            var gKey = gastoCacheKey(cRef);
+            var venta = json.venta_real;
+            if (venta && venta.ok && venta.por_cuenta) {
+                rememberGastoCache(gKey, venta.por_cuenta, {
+                    fuente: venta.fuente || 'snapshot',
+                    synced_at: venta.synced_at || null,
+                    year: venta.year || year,
+                    budget_completo: !!venta.budget_completo,
+                    mensaje: null
+                });
+            }
+
+            var budgetRef = json.ventas_budget_ref || {};
+            if (budgetRef && typeof budgetRef === 'object' && Object.keys(budgetRef).length) {
+                control._ventasBudgetRefMap = budgetRef;
+            } else {
+                control._ventasBudgetRefMap = {};
+            }
+
+            var precios = (json.precios && json.precios.por_articulo) || {};
+            var pKey = preciosCacheKey(cRef);
+            control._preciosReq = pKey;
+            control._preciosLoading = '';
+            applyPreciosMap(precios);
+
+            CC._capturaReady = true;
+            CC._detalleLocalBoot = true;
+        }).catch(function (err) {
+            if (gen !== CC._capturaLoadGen) return;
+            console.warn('[PV] Bootstrap local de detalle falló', err);
+            CC._capturaReady = true;
+            // Fallback: overlays del ciclo (BD) sin SAP de catálogo.
+            return loadOverlaysForCycle();
+        });
+    }
 
     function bindDetalleCurrency() {
         var mon = document.getElementById('ctl-moneda');
@@ -4867,6 +5032,7 @@
             mon.addEventListener('change', function () {
                 CC.state.currency = this.value || 'MXN';
                 saveJSON(SK.currency, CC.state.currency);
+                if (control.centro) control._allCtas = cuentasEnriquecidas(control.centro);
                 paintFxBadge();
                 paintDetalleHeader();
                 renderDetalleTable();
@@ -4988,9 +5154,28 @@
                 ? perms.map(function (p) { return '<span class="cc-badge cc-badge-abierto">' + escapeHtml(p) + '</span> '; }).join('')
                 : '<span class="text-muted">Sin permiso</span>';
         }
-        loadGastoRealCentro(c);
-        loadVentasBudgetRefCentro(c);
-        loadListasPreciosCentro(c);
+        if (CC.state.page === 'detalle') {
+            // Detalle: solo local (bootstrap/snapshot). Sin listas-precios ni ventas-budget SAP.
+            var gKey = gastoCacheKey(c);
+            control._gastoReq = gKey;
+            var gHit = gastoCacheEntry(gKey);
+            if (gHit) {
+                applyGastoMap(gHit.por, gHit.meta);
+            } else {
+                loadGastoRealCentro(c, { force: false, auto: true });
+            }
+            var pKey = preciosCacheKey(c);
+            if (CC.state.preciosCache && CC.state.preciosCache[pKey]) {
+                control._preciosReq = pKey;
+                control._preciosLoading = '';
+                control._preciosMap = CC.state.preciosCache[pKey];
+            }
+        } else {
+            // Captura: sigue forzando SAP en venta + listas + budget.
+            loadGastoRealCentro(c, { force: true, auto: true });
+            loadVentasBudgetRefCentro(c);
+            loadListasPreciosCentro(c);
+        }
         stripSiopSeedLocalOnce(c);
         control._allCtas = cuentasEnriquecidas(c);
         if (control.cuenta && !control._allCtas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
@@ -5059,7 +5244,7 @@
         setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' productos capturados');
         setText('ctl-pend-label', st.pendientes + (st.pendientes === 1 ? ' pendiente' : ' pendientes'));
         setText('kpi-ctl-gasto', moneyGasto(st.totGVista != null ? st.totGVista : st.totG));
-        setText('kpi-ctl-ppto', money(st.totP));
+        setText('kpi-ctl-ppto', moneyGasto(st.totPVista != null ? st.totPVista : st.totP));
         setText('kpi-ctl-pend', st.pendientes);
         paintBarraProgreso('ctl-avance-wrap', 'ctl-avance-bar', st.avance, 'kpi-ctl-avance');
         setText('ctl-nav-pend-n', st.pendientes);
@@ -5302,7 +5487,7 @@
             updateFormTotalsCliente();
             return;
         }
-        var ventaVista = cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+        var ventaVista = importeVentaVista(cta);
         var proyVista = importeProyeccionVista(cta);
         setText('ctl-form-gasto', moneyGasto(ventaVista));
         setText('ctl-form-ppto', moneyGasto(proyVista));
@@ -5361,7 +5546,7 @@
     /** Precio de lista (moneda nativa) → monto en la moneda de vista. Usa TC del mes si se indica. */
     function precioListaEnVista(precio, monedaNativa, monthIdx) {
         var amount = Number(precio) || 0;
-        var src = String(monedaNativa || 'MXN').toUpperCase();
+        var src = canonMoneda(monedaNativa);
         var view = isUsdView() ? 'USD' : 'MXN';
         if (src === view) return amount;
         var tc = fxRate(monthIdx);
@@ -5428,7 +5613,7 @@
         }
         var precio = Number(cta.precioLista) || 0;
         if (!qty || !precio) return 0;
-        var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+        var mon = canonMoneda(cta.precioMoneda || 'MXN');
         return qty * (mon === 'USD' ? precio * fxRate(i) : precio);
     }
 
@@ -5458,7 +5643,7 @@
         if (!uds) return 0;
         var precio = precioUnitarioMes(cta, i);
         if (precio > 0) {
-            var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            var mon = canonMoneda(cta.precioMoneda || 'MXN');
             var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
             return uds * precioMxn;
         }
@@ -5507,7 +5692,7 @@
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
         var precio = Number(cta && cta.precioListaSap) || 0;
-        var mon = String((cta && cta.precioListaSapMoneda) || (cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var mon = canonMoneda((cta && cta.precioListaSapMoneda) || (cta && cta.precioMoneda) || 'MXN');
         var listaNom = String((cta && cta.listaPrecioNombreSap) || '').trim();
         var noLista = String((cta && cta.listaPrecioNoSap) || '').trim();
 
@@ -5516,28 +5701,11 @@
             var c = control.centro;
             var lista = (c ? listaPrecioDeCentro(c, cta.codigo) : null) || lookupPrecioLista(cta.codigo) || {};
             precio = Number(lista.precio) || 0;
-            if (lista.moneda) mon = String(lista.moneda).toUpperCase() || mon;
+            if (lista.moneda) mon = canonMoneda(lista.moneda);
             if (lista.lista) listaNom = String(lista.lista).trim();
             if (lista.no_lista) noLista = String(lista.no_lista).trim();
             if (!unidad && lista.unidad) unidad = String(lista.unidad).trim();
             if (!unidadNombre && lista.unidad_nombre) unidadNombre = String(lista.unidad_nombre).trim();
-        }
-
-        // Sin fila en la lista del cliente: si sí se vendió, mostrar el precio de esa venta.
-        if (!(precio > 0) && cta) {
-            var venta = precioVentaPasadaInfo(cta);
-            if (venta && Number(venta.precio) > 0) {
-                var anioVenta = CC.state.anioGasto || '';
-                return {
-                    precio: Number(venta.precio),
-                    moneda: String(venta.moneda || mon || 'MXN').toUpperCase(),
-                    unidad: venta.unidad || unidad,
-                    unidadNombre: venta.unidadNombre || unidadNombre,
-                    decimals: 2,
-                    title: 'Precio de la venta ' + (anioVenta || '') +
-                        ' (no está en la lista SAP del cliente). ' + (venta.title || '')
-                };
-            }
         }
 
         var title = 'Precio de lista SAP (ITM1 · lista del cliente)';
@@ -5558,7 +5726,7 @@
     function precioVentaAnioRef(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
-        var mon = String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN';
+        var mon = canonMoneda((cta && cta.precioMoneda) || 'MXN');
         var anio = CC.state.anioGasto || '';
 
         var local = Number(cta && cta.precioLista) || 0;
@@ -5659,36 +5827,51 @@
         return { precio: 0, moneda: 'MXN', unidad: unidad, unidadNombre: unidadNombre };
     }
 
-    /** Precio de lista / proyección: prioriza maestro local (global = moda / mes=0). */
+    /** Precio proy. local: solo precio global del maestro (Ventas/Costos). Si es 0, muestra 0. */
     function precioProyeccionInfo(cta) {
-        var fromLocal = (cta && cta.listaPrecioNombre && String(cta.listaPrecioNombre).indexOf('Maestro local') === 0);
+        var fromLocal = !!(cta && cta.tienePrecioMaestro);
+        var precio = fromLocal ? (Number(cta.precioLista) || 0) : 0;
         return {
-            precio: Number(cta && cta.precioLista) || 0,
-            moneda: String((cta && cta.precioMoneda) || 'MXN').toUpperCase() || 'MXN',
+            precio: precio,
+            moneda: canonMoneda((cta && cta.precioMoneda) || 'MXN'),
             unidad: String((cta && cta.unidad) || '').trim(),
             unidadNombre: String((cta && cta.unidadNombre) || '').trim(),
-            porMes: precioMesesVarian(cta),
+            porMes: fromLocal ? precioMesesVarian(cta) : false,
+            showZero: fromLocal,
             title: fromLocal
-                ? 'Precio local global (Precios de productos · moda / mes=0)'
-                : 'Precio de lista / proyección'
+                ? 'Precio global del maestro (Ventas/Costos · mes=0)'
+                : 'Sin precio global en el maestro para este Empresa+CardCode+Item'
         };
     }
 
     function nombreUnidadMedida(codigo) {
         var code = String(codigo || '').trim();
         if (!code) return '';
+        var aliases = {
+            RK: 'Bobina',
+            RL: 'Rollo',
+            RO: 'Rollo',
+            BO: 'Botella',
+            PR: 'Par',
+            SET: 'Juego',
+            PZA: 'Pieza',
+            PZ: 'Pieza',
+            E48: 'Servicio',
+            ACT: 'Actividad',
+            H87: 'Pieza',
+            XBX: 'Caja'
+        };
+        var up = code.toUpperCase();
+        if (aliases[up]) return aliases[up];
         var map = CC.state.unidadesMedida || {};
-        return String(map[code.toUpperCase()] || map[code] || '').trim();
+        return String(map[up] || map[code] || '').trim();
     }
 
-    /** Etiqueta visible: "PIEZAS (PZA)" o solo el código si no hay nombre. */
+    /** Etiqueta visible: solo el nombre (Bobina, PIEZAS…). Sin metros ni código SAP. */
     function formatUnidadLabel(codigo, nombre) {
         var code = String(codigo || '').trim();
         var name = String(nombre || '').trim() || nombreUnidadMedida(code);
         if (!code && !name) return '';
-        if (name && code && name.toUpperCase() !== code.toUpperCase()) {
-            return name + ' (' + code + ')';
-        }
         return name || code;
     }
 
@@ -5699,18 +5882,30 @@
 
     function precioInfoHtml(info) {
         info = info || {};
-        var precio = Number(info.precio) || 0;
-        var mon = String(info.moneda || 'MXN').toUpperCase();
+        var precio = Number(info.precio);
+        if (!isFinite(precio)) precio = 0;
+        var mon = canonMoneda(info.moneda || 'MXN');
         var unidad = formatUnidadLabel(info.unidad, info.unidadNombre);
         var dec = info.decimals != null ? info.decimals : 2;
-        if (!precio && !unidad) {
+        var showZero = !!info.showZero;
+        var hasPrice = showZero || precio > 0;
+        var view = isUsdView() ? 'USD' : 'MXN';
+        if (!hasPrice && !unidad) {
             return '<span class="cc-price-empty">—</span>';
         }
         var html = '';
-        if (precio) {
+        if (hasPrice) {
             html += '<div class="cc-price-amt">' + escapeHtml(moneyLista(precio, mon, null, dec)) + '</div>';
-            if (mon && mon !== (isUsdView() ? 'USD' : 'MXN')) {
-                html += '<div class="cc-price-src">' + escapeHtml(mon) + '</div>';
+            // Si la vista difiere de la moneda nativa, aclarar origen (no confundir con la moneda de vista).
+            if (mon && mon !== view) {
+                var nativoTxt = (mon === 'USD' ? 'US$' : '$') +
+                    Number(precio || 0).toLocaleString('es-MX', {
+                        minimumFractionDigits: dec,
+                        maximumFractionDigits: dec
+                    });
+                html += '<div class="cc-price-src" title="Moneda original del precio (SAP/maestro). El monto de arriba ya está en ' +
+                    escapeHtml(view) + ' con el TC de la vista.">' +
+                    escapeHtml('origen ' + mon + ' · nativo ' + nativoTxt) + '</div>';
             }
         } else {
             html += '<div class="cc-price-amt text-muted">Sin precio</div>';
@@ -5782,7 +5977,7 @@
             var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
             var pMes = precioUnitarioMes(cta, i);
             var pCustom = precioMesEsDistinto(cta, i);
-            var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+            var mon = canonMoneda(cta.precioMoneda || 'MXN');
             var pastCap = pastQtyCaption();
             cells += '<td class="' + pCls + '">' +
                 '<div class="cc-matrix-month">' +
@@ -5817,21 +6012,28 @@
                 '<span class="cc-matrix-status">' + (done ? 'Capturado' : (mesesCapturados(cta) + '/12')) + '</span>' +
             '</td>' +
             '<td class="num cc-price-cell" data-precio-venta title="' +
-                escapeHtml(precioLista.title || 'Precio de lista SAP del cliente') + '">' +
+                escapeHtml(precioLista.precio
+                    ? (precioLista.title || 'Precio de lista SAP del cliente')
+                    : (preciosListaCargando() ? 'Consultando la lista de precios del cliente…' : (precioLista.title || 'Sin precio de lista'))) + '">' +
                 (precioLista.precio
-                    ? ('<div class="cc-price-amt">' + escapeHtml(moneyLista(precioLista.precio, precioLista.moneda, null, 2)) + '</div>' +
-                        (uomLabel ? '<div class="cc-price-uom" title="' + escapeHtml(cta.unidad || '') + '">' + escapeHtml(uomLabel) + '</div>' : ''))
-                    : '<span class="cc-price-empty">—</span>') +
+                    ? precioInfoHtml(precioLista)
+                    : (preciosListaCargando()
+                        ? '<span class="cc-price-empty">Cargando...</span>'
+                        : '<span class="cc-price-empty">—</span>')) +
             '</td>' +
             '<td class="num cc-sem-cell" data-uds-venta title="' +
-                escapeHtml('Total unidades vendidas en ' + anioPast +
-                    ' (misma fuente que Ventas pasadas · TOT. UDS)' +
-                    (uomLabel ? ' · ' + uomLabel : '') +
-                    (udsSem ? '' : (udsVentaAnio ? ' · Ene–Jun: 0; venta en jul–Dic' : ''))) + '">' +
+                escapeHtml(gastoVentaCargando()
+                    ? ('Consultando unidades de venta ' + anioPast + ' en SAP…')
+                    : ('Total unidades vendidas en ' + anioPast +
+                        ' (SAP · misma fuente que Ventas pasadas · TOT. UDS)' +
+                        (uomLabel ? ' · ' + uomLabel : '') +
+                        (udsSem ? '' : (udsVentaAnio ? ' · Ene–Jun: 0; venta en jul–Dic' : '')))) + '">' +
                 (udsVentaAnio
                     ? ('<div class="cc-sem-qty">' + escapeHtml(qtyLabel(udsVentaAnio)) + '</div>' +
                         (uomLabel ? '<div class="cc-sem-uom">' + escapeHtml(uomLabel) + '</div>' : ''))
-                    : '<span class="cc-price-empty">—</span>') +
+                    : (gastoVentaCargando()
+                        ? '<span class="cc-price-empty">Cargando...</span>'
+                        : '<span class="cc-price-empty">—</span>')) +
             '</td>' +
             '<td class="num cc-sem-cell" data-uds-total title="' +
                 escapeHtml('Suma de unidades proyectadas Ene–Dic' + (uomLabel ? ' · ' + uomLabel : '')) + '">' +
@@ -6057,7 +6259,7 @@
                     var tag = wrap.querySelector('.cc-month-price-tag');
                     var pMes = precioUnitarioMes(cta, i);
                     var pCustom = precioMesEsDistinto(cta, i);
-                    var mon = String(cta.precioMoneda || 'MXN').toUpperCase();
+                    var mon = canonMoneda(cta.precioMoneda || 'MXN');
                     if (pMes > 0) {
                         if (!tag) {
                             tag = document.createElement('div');
@@ -6262,7 +6464,7 @@
         var yyG = String(CC.state.anioGasto).slice(2);
         var yyP = String(CC.state.anioPresupuesto).slice(2);
         var head = '<tr><th class="sticky-col">Producto</th>' +
-            '<th class="num">Precio<span class="cc-th-past">venta ’' + yyG + '</span></th>' +
+            '<th class="num">Precio<span class="cc-th-past">lista SAP</span></th>' +
             '<th class="num">Venta ' + CC.state.anioGasto + '</th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. ’' + yyP + '</span></th>' +
             '<th class="num">Proy. ' + CC.state.anioPresupuesto + '</th>' +
@@ -6275,7 +6477,7 @@
         var hideGroups = opts.scope === 'cuenta' && control.cuenta && ctas.length <= 1;
         Object.keys(groups).forEach(function (g) {
             var gTotG = groups[g].reduce(function (a, x) {
-                return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+                return a + importeVentaVista(x);
             }, 0);
             var gTotP = groups[g].reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
             var closed = !!closedMap[g];
@@ -6289,7 +6491,7 @@
             }
             if (!closed || hideGroups) {
                 groups[g].forEach(function (cta) {
-                    var impG = cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+                    var impG = importeVentaVista(cta);
                     var impP = importeProyeccionVista(cta);
                     // Δ% en la misma moneda que se muestra (evita mezclar LineTotal MXN vs proy×TC).
                     var d = deltaPct(impP, impG);
@@ -6297,10 +6499,11 @@
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
-                    var pPast = precioVentaPasadaInfo(cta);
+                    // Mismo precio que la matriz (Precio de lista SAP · cliente); sin promedio de facturas.
+                    var pLista = precioListaSapInfo(cta);
                     html += '<td class="num cc-price-cell" title="' +
-                        escapeHtml(pPast.title || ('Precio unitario promedio de la venta ' + CC.state.anioGasto)) + '">' +
-                        precioInfoHtml(pPast) + '</td>';
+                        escapeHtml(pLista.title || ('Precio de lista SAP del cliente (misma fuente que la matriz)')) + '">' +
+                        precioInfoHtml(pLista) + '</td>';
                     html += '<td class="num" title="' + (isUsdView()
                         ? 'Suma de LineTotalUSD (SAP). No se convierte con el tipo de cambio.'
                         : 'Suma de LineTotal (SAP).') + '">' + moneyGasto(impG) + '</td>';
@@ -6346,7 +6549,7 @@
             var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             ctas.forEach(function (cta) {
-                sumG += cta.importeVentaVista != null ? cta.importeVentaVista : importeVentaVista(cta);
+                sumG += importeVentaVista(cta);
                 sumP += importeProyeccionVista(cta);
                 for (var mi = 0; mi < 12; mi++) {
                     mesG[mi] += Number(importeMesVentaVista(cta, mi)) || 0;
@@ -6804,17 +7007,22 @@
         function kick() {
             while (inflight < max && pending.length) {
                 var c = pending.shift();
-                var key = String(c.empresa || '').toUpperCase() + '|' + String(c.codigo || '') + '|' + year;
+                var key = gastoCacheKey(c);
                 if (visorGastoInflight[key]) continue;
+                if (control.centro && gastoCacheKey(control.centro) === key && control._gastoLoading === key) continue;
                 if (CC.state.gastoCache && Object.prototype.hasOwnProperty.call(CC.state.gastoCache, key)) continue;
                 visorGastoInflight[key] = true;
                 inflight += 1;
                 (function (centro, cacheKey, yearFrozen) {
                     fetch(CC.state.gastoUrl + '?empresa=' + encodeURIComponent(centro.empresa || '') +
-                        '&cc=' + encodeURIComponent(centro.codigo || '') +
+                        '&cc=' + encodeURIComponent(String(centro.codigo || '').trim()) +
                         '&year=' + encodeURIComponent(yearFrozen), {
                         headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
                     }).then(function (res) { return res.json(); }).then(function (json) {
+                        // No pisar la venta SAP del cliente abierto en Captura.
+                        if (control.centro && gastoCacheKey(control.centro) === cacheKey && control._gastoLoading === cacheKey) {
+                            return;
+                        }
                         CC.state.gastoCache = CC.state.gastoCache || {};
                         CC.state.gastoCache[cacheKey] = (json && json.por_cuenta) || {};
                         CC.state.gastoLookup = CC.state.gastoLookup || {};
@@ -6822,6 +7030,7 @@
                         dirty = true;
                         schedulePaint();
                     }).catch(function () {
+                        if (control.centro && gastoCacheKey(control.centro) === cacheKey) return;
                         CC.state.gastoCache = CC.state.gastoCache || {};
                         CC.state.gastoCache[cacheKey] = {};
                         dirty = true;
@@ -7435,8 +7644,18 @@
         var canvas = document.getElementById(canvasId);
         if (!canvas || !window.Chart) return;
         var ctas = scopedCtas(scopePref, control._allCtas || []);
-        var g = MONTHS.map(function (_, i) { return ctas.reduce(function (a, x) { return a + (pastQtyMes(x, i) || 0); }, 0); });
-        var p = MONTHS.map(function (_, i) { return ctas.reduce(function (a, x) { return a + ((x.ppto && x.ppto[i]) || 0); }, 0); });
+        // Importes en moneda de vista (igual que totales / sticky), no unidades.
+        var g = MONTHS.map(function (_, i) {
+            return ctas.reduce(function (a, x) {
+                return a + (Number(importeMesVentaVista(x, i)) || 0);
+            }, 0);
+        });
+        var p = MONTHS.map(function (_, i) {
+            return ctas.reduce(function (a, x) {
+                var mp = importeMesProyVista(x, i);
+                return a + (mp != null ? (Number(mp) || 0) : 0);
+            }, 0);
+        });
         var d = g.map(function (gv, i) { return deltaPct(p[i], gv); });
         if (CC.state.charts[chartKey]) CC.state.charts[chartKey].destroy();
         CC.state.charts[chartKey] = new Chart(canvas, {
@@ -7458,14 +7677,22 @@
                         callbacks: {
                             label: function (ctx) {
                                 if (ctx.dataset.yAxisID === 'y1') return ctx.dataset.label + ': ' + ctx.parsed.y + '%';
-                                return ctx.dataset.label + ': ' + money(ctx.parsed.y);
+                                // Valores ya en moneda de vista: no volver a aplicar TC.
+                                return ctx.dataset.label + ': ' + moneyVista(ctx.parsed.y);
                             }
                         }
                     }
                 },
                 scales: {
                     x: { grid: { display: false } },
-                    y: { ticks: { callback: function (v) { return money(v); } }, grid: { color: '#f1f1f3' } },
+                    y: {
+                        ticks: {
+                            callback: function (v) {
+                                return moneyVista(v);
+                            }
+                        },
+                        grid: { color: '#f1f1f3' }
+                    },
                     y1: { position: 'right', grid: { display: false }, ticks: { callback: function (v) { return v + '%'; } } }
                 }
             }
@@ -8910,13 +9137,17 @@
                 };
             });
         }
-        var tableRows = productRows.filter(function (p) {
+        // Tabla de detalle: 1 fila por cliente (agregado), no por producto.
+        var tableRows = rows.filter(function (c) {
             if (!q) return true;
             var blob = normSearch([
-                p.productoCodigo, p.productoNombre, p.clienteCodigo, p.clienteNombre,
-                p.empresa, p.departamento, p.usuario, (p.usuarios || []).join(' ')
+                c.codigo, c.nombre, c.empresa, c.departamento, c.usuario, (c.usuarios || []).join(' ')
             ].join(' '));
             return blob.indexOf(q) !== -1;
+        }).slice().sort(function (a, b) {
+            var byEmp = String(a.empresa || '').localeCompare(String(b.empresa || ''), 'es');
+            if (byEmp) return byEmp;
+            return String(a.nombre || a.codigo || '').localeCompare(String(b.nombre || b.codigo || ''), 'es');
         });
 
         if (!rows.length) {
@@ -8990,35 +9221,39 @@
 
         var tb = document.getElementById('an-tbody');
         if (tb) {
-            tb.innerHTML = tableRows.map(function (p) {
-                var cls = p.avance < 40 ? 'bad' : (p.avance < 80 ? 'warn' : 'good');
-                var userLabel = (p.usuarios && p.usuarios.length > 1)
-                    ? p.usuario + ' +' + (p.usuarios.length - 1)
-                    : p.usuario;
-                var cliSub = [p.empresa, p.departamento].filter(Boolean).join(' · ');
-                var capCell = p.proyLista
-                    ? ('<div class="d-flex justify-content-between"><span>' + p.capturadas + '/12</span><span class="cc-semaforo-' + cls + '">' + p.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(p.avance, 100) + '%"></span></div>')
+            tb.innerHTML = tableRows.map(function (c) {
+                var avance = Number(c.avance) || 0;
+                var cls = avance < 40 ? 'bad' : (avance < 80 ? 'warn' : 'good');
+                var userLabel = (c.usuarios && c.usuarios.length > 1)
+                    ? ((c.usuario || c.usuarios[0] || '') + ' +' + (c.usuarios.length - 1))
+                    : (c.usuario || (c.usuarios && c.usuarios[0]) || '');
+                var cliSub = [c.empresa, c.departamento].filter(Boolean).join(' · ');
+                var nCtas = Number(c.cuentas) || 0;
+                var capt = Number(c.capturadas) || 0;
+                var capCell = c.proyLista
+                    ? ('<div class="d-flex justify-content-between"><span>' + capt + '/' + nCtas + '</span><span class="cc-semaforo-' + cls + '">' + avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(avance, 100) + '%"></span></div>')
                     : htmlCargando('sm');
-                var ventaCell = p.ventaLista ? textoImporteReal(p.gasto, p.unidadesVenta) : htmlCargando('sm');
-                var proyCell = p.proyLista ? moneyGasto(p.ppto) : htmlCargando('sm');
-                var deltaCell = (p.ventaLista && p.proyLista)
-                    ? (p.gasto ? ((p.yoY > 0 ? '+' : '') + p.yoY + '%') : '—')
+                var ventaCell = c.ventaLista ? moneyDosDecimales(c.gasto) : htmlCargando('sm');
+                var pptoVal = c.pptoVista != null ? c.pptoVista : c.ppto;
+                var proyCell = c.proyLista ? moneyGasto(pptoVal) : htmlCargando('sm');
+                var yoY = Number(c.yoY) || 0;
+                var deltaCell = (c.ventaLista && c.proyLista)
+                    ? (Number(c.gasto) ? ((yoY > 0 ? '+' : '') + yoY + '%') : '—')
                     : htmlCargando('sm');
-                var limiteCell = (p.ventaLista && p.proyLista)
-                    ? (p.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>')
+                var limiteCell = (c.ventaLista && c.proyLista)
+                    ? (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>')
                     : htmlCargando('sm');
-                return '<tr><td>' + htmlNombreCodigo(p.productoNombre, p.productoCodigo) + '</td>' +
-                    '<td>' + htmlNombreCodigo(p.clienteNombre, p.clienteCodigo) +
-                        (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
+                return '<tr><td>' + htmlNombreCodigo(c.nombre || c.codigo, c.codigo) +
+                    (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
                     '<td>' + userCell(userLabel) + '</td>' +
-                    '<td>' + renderBadge(p.estado) + '</td>' +
+                    '<td>' + renderBadge(c.estado) + '</td>' +
                     '<td>' + capCell + '</td>' +
                     '<td class="num">' + ventaCell + '</td>' +
                     '<td class="num">' + proyCell + '</td>' +
-                    '<td class="num ' + (p.yoY > 10 ? 'text-danger' : '') + '">' + deltaCell + '</td>' +
+                    '<td class="num ' + (yoY > 10 ? 'text-danger' : '') + '">' + deltaCell + '</td>' +
                     '<td>' + limiteCell + '</td>' +
-                    '<td><a class="cc-btn" href="' + detalleHref(p.centro) + '">Ver</a></td></tr>';
-            }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin productos con esos filtros</div></td></tr>';
+                    '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
+            }).join('') || '<tr><td colspan="9"><div class="cc-empty">Sin clientes con esos filtros</div></td></tr>';
         }
 
         var tf = document.getElementById('an-tfoot');
@@ -9030,19 +9265,19 @@
                 var sumPpto = 0;
                 var ventaPend = false;
                 var proyPend = false;
-                tableRows.forEach(function (p) {
-                    if (p.ventaLista) sumGasto += Number(p.gasto) || 0;
+                tableRows.forEach(function (c) {
+                    if (c.ventaLista) sumGasto += Number(c.gasto) || 0;
                     else ventaPend = true;
-                    if (p.proyLista) sumPpto += Number(p.ppto) || 0;
+                    if (c.proyLista) sumPpto += Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0;
                     else proyPend = true;
                 });
                 var yoyTot = (!ventaPend && !proyPend) ? deltaPct(sumPpto, sumGasto) : null;
-                var nProd = tableRows.length;
-                var gastoFoot = ventaPend ? (tableRows.some(function (p) { return p.ventaLista; }) ? (moneyDosDecimales(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyDosDecimales(sumGasto);
-                var pptoFoot = proyPend ? (tableRows.some(function (p) { return p.proyLista; }) ? (moneyGasto(sumPpto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyGasto(sumPpto);
+                var nCli = tableRows.length;
+                var gastoFoot = ventaPend ? (tableRows.some(function (c) { return c.ventaLista; }) ? (moneyDosDecimales(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyDosDecimales(sumGasto);
+                var pptoFoot = proyPend ? (tableRows.some(function (c) { return c.proyLista; }) ? (moneyGasto(sumPpto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyGasto(sumPpto);
                 var deltaFoot = yoyTot == null ? htmlCargando('sm') : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
                 tf.innerHTML = '<tr>' +
-                    '<td colspan="5">Totales · ' + nProd + (nProd === 1 ? ' producto' : ' productos') + '</td>' +
+                    '<td colspan="4">Totales · ' + nCli + (nCli === 1 ? ' cliente' : ' clientes') + '</td>' +
                     '<td class="num">' + gastoFoot + '</td>' +
                     '<td class="num">' + pptoFoot + '</td>' +
                     '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + deltaFoot + '</td>' +
@@ -9704,7 +9939,12 @@
                 return;
             }
             var saveBtn = document.getElementById('pcm-save');
-            if (saveBtn) saveBtn.disabled = true;
+            var saveHtml = saveBtn ? saveBtn.innerHTML : '';
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.setAttribute('aria-busy', 'true');
+                saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Guardando…';
+            }
             var chain = Promise.resolve();
             var okCount = 0;
             jobs.forEach(function (payload) {
@@ -9729,7 +9969,11 @@
             }).catch(function (err) {
                 toast('error', 'No se guardó', err && err.message ? err.message : 'Error');
             }).then(function () {
-                if (saveBtn) saveBtn.disabled = false;
+                if (saveBtn) {
+                    saveBtn.disabled = false;
+                    saveBtn.removeAttribute('aria-busy');
+                    saveBtn.innerHTML = saveHtml || '<i class="fa-solid fa-check"></i> Guardar precios';
+                }
             });
         }
 
@@ -9801,7 +10045,10 @@
                 toast('error', 'Sin CardCode', 'Se necesita CodigoCliente para consultar listaPreciosventa.');
                 return;
             }
+            var prevHtml = btn.innerHTML;
             btn.disabled = true;
+            btn.setAttribute('aria-busy', 'true');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
             var payloadBase = {
                 empresa: emp,
                 card_code: card,
@@ -9810,16 +10057,34 @@
                 anio: CC.state.anioGasto || new Date().getFullYear(),
                 anio_proyeccion: costosAnio()
             };
+            function parseJsonResponse(r) {
+                return r.text().then(function (txt) {
+                    var json = null;
+                    try {
+                        json = txt ? JSON.parse(txt) : null;
+                    } catch (e) {
+                        json = null;
+                    }
+                    if (!r.ok) {
+                        var msg = (json && json.message)
+                            || (r.status === 404
+                                ? 'No se encontró el producto en listaPreciosventa.'
+                                : (r.status === 504 || r.status === 408
+                                    ? 'La consulta a SAP tardó demasiado. Intenta de nuevo.'
+                                    : ('Error HTTP ' + r.status + (txt && !json ? ' (respuesta no JSON)' : ''))));
+                        throw new Error(msg);
+                    }
+                    if (!json) {
+                        throw new Error('La respuesta del servidor no es JSON válido.');
+                    }
+                    return json;
+                });
+            }
             fetch(url + '/actualizar-desde-api', {
                 method: 'POST',
                 headers: apiJsonHeaders(),
                 body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: false }))
-            }).then(function (r) {
-                return r.json().then(function (json) {
-                    if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar la API');
-                    return json;
-                });
-            }).then(function (json) {
+            }).then(parseJsonResponse).then(function (json) {
                 if (json.igual) {
                     toast('info', 'Sin cambios', 'El precio global ya coincide con la API (' +
                         moneyTxt(json.precio_api, json.moneda_api) + ').');
@@ -9836,12 +10101,7 @@
                     method: 'POST',
                     headers: apiJsonHeaders(),
                     body: JSON.stringify(Object.assign({}, payloadBase, { confirmar: true }))
-                }).then(function (r) {
-                    return r.json().then(function (j2) {
-                        if (!r.ok) throw new Error((j2 && j2.message) || 'No se pudo actualizar');
-                        return j2;
-                    });
-                }).then(function (j2) {
+                }).then(parseJsonResponse).then(function (j2) {
                     if (j2.actualizado) {
                         toast('success', 'Precio global actualizado',
                             moneyTxt(j2.precio_anterior, j2.moneda_anterior) + ' → ' +
@@ -9855,6 +10115,8 @@
                 toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
             }).then(function () {
                 btn.disabled = false;
+                btn.removeAttribute('aria-busy');
+                btn.innerHTML = prevHtml || '<i class="fa-solid fa-cloud-arrow-down"></i>';
             });
         }
 
@@ -10220,14 +10482,117 @@
         var listaBtn = document.getElementById('pv-costos-import-lista');
         if (listaBtn) {
             var listaUrl = CC.state.costosImportListaUrl || (url + '/importar-lista-precios');
-            function payloadLista(preview) {
-                var emp = empSel ? String(empSel.value || '') : '';
-                return {
-                    empresa: emp,
-                    todas_empresas: !emp,
+            var EMPRESAS_LISTA = ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'];
+            function empresasListaTarget() {
+                var emp = empSel ? String(empSel.value || '').toUpperCase() : '';
+                if (emp) return [emp];
+                var fromBoot = (CC.state.empresasLocales || []).map(function (e) {
+                    return String(e.codigo || e.id || e.nombre || '').toUpperCase();
+                }).filter(Boolean);
+                var set = {};
+                (fromBoot.length ? fromBoot : EMPRESAS_LISTA).forEach(function (k) { set[k] = true; });
+                EMPRESAS_LISTA.forEach(function (k) { set[k] = true; });
+                return Object.keys(set);
+            }
+            function payloadListaEmp(preview, emp) {
+                var cliente = clienteEl ? String(clienteEl.value || '').trim() : '';
+                var itemcode = itemEl ? String(itemEl.value || '').trim() : '';
+                var payload = {
+                    empresa: emp || '',
+                    todas_empresas: false,
                     anio_proyeccion: costosAnio(),
                     preview: !!preview
                 };
+                // Respeta filtros de la pantalla (si no, reconsulta TODO IMSA y el guardado se cae/timeout).
+                if (cliente) payload.cliente = cliente;
+                if (itemcode) payload.itemcode = itemcode;
+                return payload;
+            }
+            function parseListaResp(r) {
+                return r.text().then(function (txt) {
+                    var json = null;
+                    try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                    if (!r.ok) {
+                        var msg = (json && json.message) || ('HTTP ' + r.status);
+                        if (r.status === 504 || r.status === 502 || /maximum execution|timeout/i.test(txt || '')) {
+                            msg = 'La consulta a SAP agotó el tiempo. Intenta de nuevo (puede tardar varios minutos por empresa).';
+                        }
+                        throw new Error(msg);
+                    }
+                    return json || {};
+                });
+            }
+            function mergeListaJson(acc, part, emp) {
+                if (!acc) {
+                    acc = {
+                        ok: true,
+                        preview: !!(part && part.preview),
+                        anio_proyeccion: (part && part.anio_proyeccion) || costosAnio(),
+                        afectados: [],
+                        afectados_total: 0,
+                        omitidos_sin_lista: 0,
+                        omitidos_sin_card: 0,
+                        clientes_consultados: 0,
+                        productos_unicos: 0,
+                        importados: 0,
+                        propagadas: 0,
+                        errores_clientes: 0,
+                        empresas_ok: [],
+                        empresas_error: []
+                    };
+                }
+                if (!part || part.ok === false) {
+                    acc.empresas_error.push(emp + ': ' + ((part && part.message) || 'error'));
+                    return acc;
+                }
+                acc.empresas_ok.push(emp);
+                acc.afectados = (acc.afectados || []).concat((part.afectados || []).slice(0, 80));
+                acc.afectados_total += Number(part.afectados_total || 0) || 0;
+                acc.omitidos_sin_lista += Number(part.omitidos_sin_lista || 0) || 0;
+                acc.omitidos_sin_card += Number(part.omitidos_sin_card || 0) || 0;
+                acc.clientes_consultados += Number(part.clientes_consultados || 0) || 0;
+                acc.productos_unicos += Number(part.productos_unicos || 0) || 0;
+                acc.importados += Number(part.importados || 0) || 0;
+                acc.propagadas += Number(part.propagadas || 0) || 0;
+                acc.errores_clientes += Number(part.errores_clientes || 0) || 0;
+                return acc;
+            }
+            function consultarListaPorEmpresas(preview, onProgress) {
+                var empresas = empresasListaTarget();
+                var i = 0;
+                var acc = null;
+                function next() {
+                    if (i >= empresas.length) {
+                        if (acc) {
+                            var nEmp = (acc.empresas_ok || []).length;
+                            acc.message = preview
+                                ? ('Vista previa: ' + (acc.afectados_total || 0) + ' producto(s) con precio en lista SAP'
+                                    + (nEmp > 1 ? (' · ' + nEmp + ' empresas') : '')
+                                    + (acc.omitidos_sin_card ? (' · ' + acc.omitidos_sin_card + ' sin CardCode') : '')
+                                    + '.')
+                                : ('Precio global actualizado en ' + (acc.importados || 0) + ' producto(s)'
+                                    + (nEmp > 1 ? (' · ' + nEmp + ' empresas') : '') + '.');
+                            if ((acc.empresas_error || []).length) {
+                                acc.message += ' Avisos: ' + acc.empresas_error.slice(0, 3).join('; ');
+                            }
+                        }
+                        return Promise.resolve(acc || { ok: true, afectados_total: 0, afectados: [], message: 'Sin datos.' });
+                    }
+                    var emp = empresas[i++];
+                    if (typeof onProgress === 'function') onProgress(emp, i, empresas.length);
+                    return fetch(listaUrl, {
+                        method: 'POST',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify(payloadListaEmp(preview, emp))
+                    }).then(parseListaResp).then(function (json) {
+                        acc = mergeListaJson(acc, json, emp);
+                        return next();
+                    }).catch(function (err) {
+                        acc = mergeListaJson(acc, { ok: false, message: err && err.message ? err.message : 'Error' }, emp);
+                        return next();
+                    });
+                }
+                return next();
             }
             function htmlListaGlobal(json) {
                 var list = (json && json.afectados) || [];
@@ -10236,9 +10601,14 @@
                 var html = '<div style="text-align:left;font-size:.88rem">' +
                     '<p style="margin:0 0 .6rem">Se actualizará solo el <b>precio global</b> (mes = 0) desde la <b>lista de precios SAP</b> ' +
                     'de cada cliente, en la proyección <b>' + escapeHtml(String(anioProy)) + '</b>. ' +
-                    'Los precios por mes no se tocan. Solo productos de tu maestro.</p>' +
+                    'Los precios por mes no se tocan. Solo productos de tu maestro' +
+                    (json.omitidos_sin_card ? (' (filas sin CardCode no se pueden sincronizar)') : '') +
+                    '.</p>' +
                     '<p style="margin:0 0 .75rem"><b>' + total + '</b> producto(s)' +
                     (json.omitidos_sin_lista ? (' · <span style="color:#b45309">' + json.omitidos_sin_lista + ' sin precio en lista</span>') : '') +
+                    (json.omitidos_sin_card ? (' · <span style="color:#b45309">' + json.omitidos_sin_card + ' sin CardCode</span>') : '') +
+                    (json.clientes_consultados ? (' · ' + json.clientes_consultados + ' cliente(s)') : '') +
+                    ((json.empresas_ok && json.empresas_ok.length > 1) ? (' · empresas: ' + json.empresas_ok.join(', ')) : '') +
                     '</p>';
                 if (!list.length) {
                     html += '<p class="text-muted" style="margin:0">Ningún producto coincide con la lista de precios.</p></div>';
@@ -10277,20 +10647,67 @@
                 html += '</div></div>';
                 return html;
             }
-            function ejecutarLista() {
+            function ejecutarLista(afectadosPreview) {
                 listaBtn.disabled = true;
-                if (hint) hint.textContent = 'Actualizando precio global desde lista…';
-                return fetch(listaUrl, {
-                    method: 'POST',
-                    headers: apiJsonHeaders(),
-                    body: JSON.stringify(payloadLista(false))
-                }).then(function (r) {
-                    return r.json().then(function (json) {
-                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo actualizar');
-                        return json;
+                if (hint) hint.textContent = 'Guardando precios en el maestro…';
+                var emp = empSel ? String(empSel.value || '').toUpperCase() : (empresasListaTarget()[0] || '');
+                var list = Array.isArray(afectadosPreview) ? afectadosPreview : [];
+                // Guarda lo del preview (sin reconsultar SAP).
+                if (list.length) {
+                    return fetch(listaUrl, {
+                        method: 'POST',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify({
+                            empresa: emp,
+                            todas_empresas: false,
+                            anio_proyeccion: costosAnio(),
+                            preview: false,
+                            afectados: list.map(function (p) {
+                                return {
+                                    empresa: p.empresa || emp,
+                                    card_code: p.card_code || '',
+                                    cliente: p.cliente || '',
+                                    item_code: p.item_code || '',
+                                    producto: p.producto || '',
+                                    precio: Number(p.precio) || 0,
+                                    moneda: p.moneda || 'MXN'
+                                };
+                            })
+                        })
+                    }).then(parseListaResp).then(function (json) {
+                        var n = Number(json && json.importados) || 0;
+                        if (n < 1) {
+                            var failMsg = (json && json.message) || 'No se guardó ningún precio.';
+                            toast('error', 'No se guardó', failMsg);
+                            if (hint) hint.textContent = failMsg;
+                            return;
+                        }
+                        toast('success', 'Lista de precios', json.message || ('Guardados ' + n + ' producto(s).'));
+                        if (hint) hint.textContent = '';
+                        load();
+                    }).catch(function (err) {
+                        toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+                        if (hint) hint.textContent = 'Error al guardar desde lista';
+                    }).then(function () {
+                        listaBtn.disabled = false;
                     });
+                }
+                // Fallback: reconsultar API (mismo filtro de pantalla).
+                return consultarListaPorEmpresas(false, function (e, idx, totalEmp) {
+                    if (hint) hint.textContent = 'Guardando ' + e + ' (' + idx + '/' + totalEmp + ')…';
                 }).then(function (json) {
-                    toast('success', 'Lista de precios', json.message || 'Precio global actualizado.');
+                    var n = Number(json && json.importados) || 0;
+                    var errs = (json && json.empresas_error) || [];
+                    if (n < 1) {
+                        var failMsg = (errs.length ? errs.join('; ') : '') ||
+                            (json && json.message) ||
+                            'No se guardó ningún precio. Revisa permisos o vuelve a intentar.';
+                        toast('error', 'No se guardó', failMsg);
+                        if (hint) hint.textContent = failMsg.length > 90 ? (failMsg.slice(0, 87) + '…') : failMsg;
+                        return;
+                    }
+                    toast('success', 'Lista de precios', (json && json.message) || ('Precio global actualizado en ' + n + ' producto(s).'));
+                    if (hint) hint.textContent = '';
                     load();
                 }).catch(function (err) {
                     toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
@@ -10301,20 +10718,22 @@
             }
             listaBtn.addEventListener('click', function () {
                 listaBtn.disabled = true;
-                if (hint) hint.textContent = 'Consultando listas de precios…';
-                fetch(listaUrl, {
-                    method: 'POST',
-                    headers: apiJsonHeaders(),
-                    body: JSON.stringify(payloadLista(true))
-                }).then(function (r) {
-                    return r.json().then(function (json) {
-                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo consultar listas');
-                        return json;
-                    });
+                var targets = empresasListaTarget();
+                var clienteFiltro = clienteEl ? String(clienteEl.value || '').trim() : '';
+                if (hint) {
+                    hint.textContent = targets.length > 1
+                        ? ('Consultando listas por empresa (1/' + targets.length + ')…')
+                        : (clienteFiltro
+                            ? ('Consultando lista SAP de ' + clienteFiltro + '…')
+                            : 'Consultando listas de precios…');
+                }
+                consultarListaPorEmpresas(true, function (emp, idx, totalEmp) {
+                    if (hint) hint.textContent = 'Consultando ' + emp + ' (' + idx + '/' + totalEmp + ')…';
                 }).then(function (json) {
                     listaBtn.disabled = false;
                     if (hint) hint.textContent = '';
                     var total = Number(json.afectados_total || (json.afectados && json.afectados.length) || 0) || 0;
+                    var afectadosPreview = (json && json.afectados) ? json.afectados.slice() : [];
                     if (!total) {
                         if (window.Swal) {
                             Swal.fire({
@@ -10328,31 +10747,293 @@
                         }
                         return;
                     }
+                    if (afectadosPreview.length < total) {
+                        toast('warning', 'Vista parcial', 'Se muestran ' + afectadosPreview.length + ' de ' + total +
+                            '. Filtra por CardCode para guardar el lote completo con seguridad.');
+                    }
+                    var filtroTxt = clienteFiltro
+                        ? ('<p style="margin:0 0 .75rem;color:#b45309">Filtro activo: <b>' + escapeHtml(clienteFiltro) + '</b>. Solo se actualizarán filas de ese cliente.</p>')
+                        : '<p style="margin:0 0 .75rem;color:#b45309">Sin filtro de cliente: conviene filtrar por CardCode (ej. D139) antes de guardar.</p>';
                     if (window.Swal) {
                         return Swal.fire({
                             icon: 'question',
-                            title: '¿Actualizar precio global?',
-                            html: htmlListaGlobal(json),
+                            title: '¿Guardar precio global?',
+                            html: filtroTxt + htmlListaGlobal(json),
                             width: '46rem',
                             showCancelButton: true,
                             focusCancel: true,
-                            confirmButtonText: 'Sí, actualizar ' + total + ' producto(s)',
+                            confirmButtonText: 'Sí, guardar ' + Math.min(total, afectadosPreview.length) + ' producto(s)',
                             cancelButtonText: 'Cancelar',
                             confirmButtonColor: '#0a0a0a',
                             cancelButtonColor: '#6b7280'
                         }).then(function (res) {
-                            if (res && res.isConfirmed) ejecutarLista();
+                            if (res && res.isConfirmed) return ejecutarLista(afectadosPreview);
                         });
                     }
-                    if (window.confirm((json.message || '') + '\n\n¿Deseas continuar?')) {
-                        ejecutarLista();
+                    if (window.confirm((json.message || '') + '\n\n¿Deseas guardar estos precios?')) {
+                        return ejecutarLista(afectadosPreview);
                     }
                 }).catch(function (err) {
                     listaBtn.disabled = false;
-                    toast('error', 'No se consultó', err && err.message ? err.message : 'Error');
-                    if (hint) hint.textContent = 'Error al consultar listas';
+                    var msg = (err && err.message) ? String(err.message) : 'Error al consultar listas';
+                    if (/timeout|timed out|network|failed to fetch|aborterror/i.test(msg)) {
+                        msg = 'La consulta a SAP agotó el tiempo. Filtra por CardCode (ej. D139) e inténtalo de nuevo.';
+                    }
+                    toast('error', 'No se consultó', msg);
+                    if (hint) hint.textContent = msg.length > 90 ? (msg.slice(0, 87) + '…') : msg;
                 });
             });
+        }
+
+        var cerosBtn = document.getElementById('pv-costos-rellenar-ceros');
+        if (cerosBtn) {
+            var vaciosUrl = CC.state.costosVaciosUrl || (url + '/vacios');
+            var loteUrl = CC.state.costosRellenarVaciosLoteUrl || (url + '/rellenar-vacios-lote');
+            var cerosEmpEl = document.getElementById('pv-ceros-empresa');
+            var cerosAnioLabel = document.getElementById('pv-ceros-anio-label');
+            var cerosHint = document.getElementById('pv-ceros-hint');
+            var cerosEjecutar = document.getElementById('pv-ceros-ejecutar');
+            var cerosCancelar = document.getElementById('pv-ceros-cancelar');
+            var cerosProgWrap = document.getElementById('pv-ceros-progress-wrap');
+            var cerosProgLabel = document.getElementById('pv-ceros-progress-label');
+            var cerosProgPct = document.getElementById('pv-ceros-progress-pct');
+            var cerosProgBar = document.getElementById('pv-ceros-progress-bar');
+            var cerosProgDetail = document.getElementById('pv-ceros-progress-detail');
+            var cerosBusy = false;
+            var cerosAbort = false;
+
+            function openCerosModal() {
+                cerosAbort = false;
+                if (cerosAnioLabel) cerosAnioLabel.textContent = 'Proy. ' + costosAnio();
+                if (cerosEmpEl) {
+                    var empFiltro = empSel ? String(empSel.value || '').toUpperCase() : '';
+                    if (empFiltro) cerosEmpEl.value = empFiltro;
+                }
+                if (cerosProgWrap) cerosProgWrap.style.display = 'none';
+                if (cerosProgBar) cerosProgBar.style.width = '0%';
+                if (cerosHint) {
+                    cerosHint.textContent = 'Se procesa un CardCode por request para evitar timeouts.';
+                }
+                showModal('modalPvRellenarCeros');
+            }
+
+            function parseCerosResp(r) {
+                return r.text().then(function (txt) {
+                    var json = null;
+                    try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                    if (!r.ok) {
+                        var msg = (json && json.message) || ('HTTP ' + r.status);
+                        if (r.status === 504 || r.status === 502 || /maximum execution|timeout/i.test(txt || '')) {
+                            msg = 'Timeout en este cliente. Se puede continuar con el siguiente.';
+                        }
+                        throw new Error(msg);
+                    }
+                    return json || {};
+                });
+            }
+
+            function setCerosProgress(idx, total, card, extra) {
+                var pct = total > 0 ? Math.round((idx / total) * 100) : 0;
+                if (cerosProgWrap) cerosProgWrap.style.display = '';
+                if (cerosProgLabel) {
+                    cerosProgLabel.textContent = card
+                        ? ('Cliente ' + idx + '/' + total + ' · ' + card)
+                        : ('Preparando…');
+                }
+                if (cerosProgPct) cerosProgPct.textContent = pct + '%';
+                if (cerosProgBar) cerosProgBar.style.width = pct + '%';
+                if (cerosProgDetail) cerosProgDetail.textContent = extra || '';
+                if (hint) hint.textContent = extra || ('Rellenando $0… ' + pct + '%');
+            }
+
+            function procesarLotesPorCliente(emp, clientes) {
+                var i = 0;
+                var totalCli = clientes.length;
+                var importados = 0;
+                var omitidos = 0;
+                var errores = [];
+                var okCli = 0;
+
+                function next() {
+                    if (cerosAbort) {
+                        return Promise.resolve({
+                            aborted: true,
+                            importados: importados,
+                            omitidos_sin_lista: omitidos,
+                            errores: errores,
+                            clientes_ok: okCli,
+                            clientes_total: totalCli
+                        });
+                    }
+                    if (i >= totalCli) {
+                        return Promise.resolve({
+                            aborted: false,
+                            importados: importados,
+                            omitidos_sin_lista: omitidos,
+                            errores: errores,
+                            clientes_ok: okCli,
+                            clientes_total: totalCli
+                        });
+                    }
+                    var cli = clientes[i++];
+                    var card = String(cli.card_code || '').trim();
+                    var items = Array.isArray(cli.items) ? cli.items : [];
+                    setCerosProgress(i, totalCli, card,
+                        'Actualizados: ' + importados +
+                        (omitidos ? (' · sin lista: ' + omitidos) : '') +
+                        (errores.length ? (' · errores: ' + errores.length) : ''));
+                    if (cerosHint) {
+                        cerosHint.textContent = 'Consultando SAP · ' + card +
+                            (cli.cliente ? (' · ' + cli.cliente) : '') +
+                            ' (' + items.length + ' ítem(s) en $0)…';
+                    }
+
+                    return fetch(loteUrl, {
+                        method: 'POST',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify({
+                            empresa: emp,
+                            card_code: card,
+                            cliente: cli.cliente || '',
+                            anio_proyeccion: costosAnio(),
+                            items: items.map(function (it) {
+                                return {
+                                    item_code: it.item_code || it.codigo || '',
+                                    producto: it.producto || '',
+                                    moneda: it.moneda || 'MXN'
+                                };
+                            })
+                        })
+                    }).then(parseCerosResp).then(function (json) {
+                        okCli++;
+                        importados += Number(json.importados) || 0;
+                        omitidos += Number(json.omitidos_sin_lista) || 0;
+                        return next();
+                    }).catch(function (err) {
+                        errores.push(card + ': ' + (err && err.message ? err.message : 'Error'));
+                        // Continúa con el siguiente cliente aunque falle uno.
+                        return next();
+                    });
+                }
+
+                return next();
+            }
+
+            cerosBtn.addEventListener('click', function () {
+                openCerosModal();
+            });
+
+            if (cerosCancelar) {
+                cerosCancelar.addEventListener('click', function () {
+                    if (cerosBusy) cerosAbort = true;
+                });
+            }
+
+            if (cerosEjecutar) {
+                cerosEjecutar.addEventListener('click', function () {
+                    if (cerosBusy) return;
+                    var emp = cerosEmpEl ? String(cerosEmpEl.value || '').toUpperCase() : '';
+                    if (!emp) {
+                        toast('warning', 'Empresa', 'Selecciona una empresa.');
+                        return;
+                    }
+                    cerosBusy = true;
+                    cerosAbort = false;
+                    cerosEjecutar.disabled = true;
+                    cerosBtn.disabled = true;
+                    if (cerosEmpEl) cerosEmpEl.disabled = true;
+                    var prevHtml = cerosEjecutar.innerHTML;
+                    cerosEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Armando JSON…';
+                    setCerosProgress(0, 1, '', 'Leyendo maestro local (solo $0)…');
+                    if (cerosHint) cerosHint.textContent = 'Armando JSON local de ' + emp + '…';
+
+                    var qs = '?empresa=' + encodeURIComponent(emp) +
+                        '&anio_proyeccion=' + encodeURIComponent(String(costosAnio()));
+
+                    fetch(vaciosUrl + qs, {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(parseCerosResp).then(function (json) {
+                        var clientes = (json && json.clientes) || [];
+                        var total = Number(json.total) || 0;
+                        var sinCard = Number(json.sin_card) || 0;
+                        if (!clientes.length) {
+                            if (window.Swal) {
+                                Swal.fire({
+                                    icon: 'info',
+                                    title: 'Nada que rellenar',
+                                    text: json.message || ('No hay productos en $0 con CardCode en ' + emp + '.'),
+                                    confirmButtonColor: '#0a0a0a'
+                                });
+                            } else {
+                                window.alert(json.message || 'Nada que rellenar.');
+                            }
+                            return null;
+                        }
+                        var askHtml = '<div style="text-align:left;font-size:.9rem">' +
+                            '<p style="margin:0 0 .5rem">Empresa <b>' + escapeHtml(emp) + '</b> · proyección <b>' +
+                            escapeHtml(String(costosAnio())) + '</b>.</p>' +
+                            '<p style="margin:0 0 .5rem"><b>' + total + '</b> producto(s) en $0 · <b>' +
+                            clientes.length + '</b> cliente(s) a consultar en SAP.</p>' +
+                            (sinCard ? ('<p style="margin:0;color:#b45309">' + sinCard +
+                                ' sin CardCode se omiten.</p>') : '') +
+                            '<p style="margin:.65rem 0 0;color:#71717a;font-size:.82rem">Se actualizará un CardCode a la vez. Puedes cancelar; lo ya guardado se conserva.</p></div>';
+
+                        var ask = window.Swal
+                            ? Swal.fire({
+                                icon: 'question',
+                                title: '¿Rellenar precios en $0?',
+                                html: askHtml,
+                                width: '36rem',
+                                showCancelButton: true,
+                                focusCancel: true,
+                                confirmButtonText: 'Sí, procesar ' + clientes.length + ' cliente(s)',
+                                cancelButtonText: 'Cancelar',
+                                confirmButtonColor: '#0a0a0a',
+                                cancelButtonColor: '#6b7280'
+                            }).then(function (res) { return !!(res && res.isConfirmed); })
+                            : Promise.resolve(window.confirm((json.message || '') + '\n\n¿Continuar?'));
+
+                        return ask.then(function (ok) {
+                            if (!ok) return null;
+                            cerosEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Procesando…';
+                            return procesarLotesPorCliente(emp, clientes);
+                        });
+                    }).then(function (res) {
+                        if (!res) return;
+                        var n = Number(res.importados) || 0;
+                        var msg = (res.aborted ? 'Detenido. ' : '') +
+                            n + ' producto(s) actualizado(s)' +
+                            ' · ' + (res.clientes_ok || 0) + '/' + (res.clientes_total || 0) + ' cliente(s)' +
+                            (res.omitidos_sin_lista ? (' · ' + res.omitidos_sin_lista + ' sin lista SAP') : '') +
+                            ((res.errores && res.errores.length) ? (' · ' + res.errores.length + ' con error') : '');
+                        if (n > 0) {
+                            toast('success', res.aborted ? 'Parcial' : 'Precios rellenados', msg);
+                            if (empSel) empSel.value = emp;
+                            load();
+                        } else if (res.errores && res.errores.length) {
+                            toast('error', 'No se rellenó', res.errores.slice(0, 2).join('; '));
+                        } else {
+                            toast('info', 'Sin cambios', msg || 'Ningún precio se actualizó (sin match en lista SAP).');
+                        }
+                        if (!res.aborted && n > 0) {
+                            hideModal('modalPvRellenarCeros');
+                        }
+                    }).catch(function (err) {
+                        toast('error', 'No se rellenó', err && err.message ? err.message : 'Error');
+                    }).then(function () {
+                        cerosBusy = false;
+                        cerosAbort = false;
+                        cerosEjecutar.disabled = false;
+                        cerosBtn.disabled = false;
+                        if (cerosEmpEl) cerosEmpEl.disabled = false;
+                        cerosEjecutar.innerHTML = prevHtml || '<i class="fa-solid fa-cloud-arrow-down"></i> Consultar y rellenar';
+                        if (cerosHint) {
+                            cerosHint.textContent = 'Se procesa un CardCode por request para evitar timeouts.';
+                        }
+                        if (hint) hint.textContent = '';
+                    });
+                });
+            }
         }
 
         var excelBtn = document.getElementById('pv-costos-excel');
@@ -10443,11 +11124,14 @@
         CC.state.gastoUrl = boot.gastoUrl || '/ProyeccionesVentas/api/gasto-real';
         CC.state.gastoBatchUrl = boot.gastoBatchUrl || '/ProyeccionesVentas/api/gasto-real-batch';
         CC.state.listasPreciosUrl = boot.listasPreciosUrl || '/ProyeccionesVentas/api/listas-precios';
+        CC.state.capturaBootstrapUrl = boot.capturaBootstrapUrl || '/ProyeccionesVentas/api/captura/bootstrap';
         CC.state.ventasBudgetUrl = boot.ventasBudgetUrl || '/ProyeccionesVentas/api/captura/ventas-budget';
         CC.state.costosUrl = boot.costosUrl || '/ProyeccionesVentas/api/costos';
         CC.state.costosPlantillaUrl = boot.costosPlantillaUrl || '/ProyeccionesVentas/api/costos/plantilla';
         CC.state.costosImportExcelUrl = boot.costosImportExcelUrl || '/ProyeccionesVentas/api/costos/importar-excel';
         CC.state.costosImportListaUrl = boot.costosImportListaUrl || '/ProyeccionesVentas/api/costos/importar-lista-precios';
+        CC.state.costosVaciosUrl = boot.costosVaciosUrl || '/ProyeccionesVentas/api/costos/vacios';
+        CC.state.costosRellenarVaciosLoteUrl = boot.costosRellenarVaciosLoteUrl || '/ProyeccionesVentas/api/costos/rellenar-vacios-lote';
         CC.state.costosHistorialUrl = boot.costosHistorialUrl || '/ProyeccionesVentas/api/costos/historial';
         CC.state.puedeEditarCostos = boot.hasOwnProperty('puedeEditarCostos')
             ? !!boot.puedeEditarCostos
@@ -10505,16 +11189,19 @@
         if (CC.state.page === 'detalle') CC.initDetalle();
         if (CC.state.page === 'analisis') CC.initAnalisis();
         if (CC.state.page === 'costos') initCostos();
-        if (CC.state.page === 'control' || CC.state.page === 'detalle') refreshSap(boot.catalogoUrl);
+        // Detalle: sin catálogo SAP (todo local vía captura/bootstrap).
+        if (CC.state.page === 'control') refreshSap(boot.catalogoUrl);
     };
 
     function refreshSap(url) {
         if (!url) return;
+        // Nunca rehidratar Detalle desde SAP: evita doble init y lentitud.
+        if (CC.state.page === 'detalle') return;
         fetch(url + '?per_page=120', {
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (data) {
             if (!data) return;
-            var lock = CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis';
+            var lock = CC.state.page === 'control' || CC.state.page === 'analisis';
             if (!lock && !(data.centros || []).length) return;
             mergeSap(Object.assign({}, data, { sapOk: !!data.sapOk }), { lockCentros: lock });
             var flag = document.getElementById('sap-flag');
@@ -10523,7 +11210,6 @@
                 flag.className = 'cc-sap-flag';
             }
             if (CC.state.page === 'control') CC.initControl();
-            if (CC.state.page === 'detalle') CC.initDetalle();
             if (CC.state.page === 'analisis') CC.initAnalisis();
         }).catch(function () { /* se queda el catálogo local */ });
     }
