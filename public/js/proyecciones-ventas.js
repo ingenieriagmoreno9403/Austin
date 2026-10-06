@@ -475,7 +475,37 @@
         return (base || []).concat(extra).concat(fromBudget);
     }
 
+    /**
+     * Detalle: productos del cliente abierto (venta real, proyección y los
+     * asignados a cualquier capturador de ese cliente). No usa la lista del usuario en sesión.
+     */
+    function cuentasDelClienteDetalle(c) {
+        var merged = mergeCuentasAnalisis(c, []);
+        var seen = {};
+        merged.forEach(function (cta) {
+            seen[String(cta.codigo)] = true;
+            seen[codigoCuentaKey(cta.codigo)] = true;
+        });
+        listaCapturadores().forEach(function (a) {
+            (a.cuentas || []).forEach(function (x) {
+                var codigo = String((x && x.codigo) || x || '').trim();
+                if (!codigo || seen[codigo] || seen[codigoCuentaKey(codigo)]) return;
+                seen[codigo] = true;
+                seen[codigoCuentaKey(codigo)] = true;
+                merged.push({
+                    codigo: codigo,
+                    nombre: (x && x.nombre) || codigo,
+                    grupo: (x && (x.agrupacion || x.linea)) || 'Asignadas',
+                    gasto: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    empresa: c.empresa
+                });
+            });
+        });
+        return merged;
+    }
+
     function cuentasDeCentro(c) {
+        if (CC.state.page === 'detalle') return cuentasDelClienteDetalle(c);
         var asig = asigDe(c);
         if (asig && asig.cuentas && asig.cuentas.length) {
             var packed = packedLookupDeCentro(c);
@@ -5377,6 +5407,31 @@
         });
     }
 
+    /** Detalle abre el cliente de la URL aunque el usuario en sesión no lo tenga asignado. */
+    function centroDetalleDesdeUrl(emp, codigo, ciclo) {
+        var e = String(emp || '').toUpperCase().trim();
+        var code = String(codigo || '').trim();
+        if (!e || !code) return null;
+        var merged = mergedCentro({
+            codigo: code,
+            nombre: nombreCatalogoCliente(e, code) || code,
+            empresa: e,
+            usuario: '',
+            estado: 'abierto',
+            modo: 'solo_revision',
+            departamento: '',
+            ciclo: ciclo || CC.state.cicloCodigo || '',
+            capturar: false,
+            editar: false,
+            revisar: true,
+            permisos: ['revisar'],
+            sap: true
+        });
+        var nombreCli = nombreClienteDetalle(merged);
+        if (nombreCli) merged.nombre = nombreCli;
+        return merged;
+    }
+
     function loadControlCentro() {
         var emp = String(val('ctl-empresa') || '').trim();
         var codigo = String(val('ctl-centro') || '').trim();
@@ -5413,6 +5468,9 @@
         }
         CC.state.centros = centrosDesdeAsignaciones(fuenteAsignacionesControl(cicloNow));
         control.centro = centroDesdeAsignacion(emp, codigo, cicloNow);
+        if (!control.centro && CC.state.page === 'detalle') {
+            control.centro = centroDetalleDesdeUrl(emp, codigo, cicloNow);
+        }
         if (!control.centro) {
             var tb = document.getElementById('ctl-tbody');
             if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes este cliente asignado en el ciclo seleccionado.</div></td></tr>';
@@ -6834,7 +6892,9 @@
         });
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
             ? 'No hay filas para este producto con los filtros actuales'
-            : 'Sin productos asignados a este cliente';
+            : (tbodyId === 'det-tbody'
+                ? 'Este cliente no tiene productos con venta ni proyección'
+                : 'Sin productos asignados a este cliente');
         if (!html) {
             tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
         } else {
@@ -9554,7 +9614,7 @@
                     ? (Number(c.gasto) ? ((yoY > 0 ? '+' : '') + yoY + '%') : '—')
                     : htmlCargando('sm');
                 var limiteCell = (c.ventaLista && c.proyLista)
-                    ? (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>')
+                    ? (c.over ? '<span class="cc-badge cc-badge-aceptado">Sobre límite</span>' : '<span class="cc-badge cc-badge-rechazado">Dentro</span>')
                     : htmlCargando('sm');
                 return '<tr><td>' + htmlNombreCodigo(c.nombre || c.codigo, c.codigo) +
                     (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
