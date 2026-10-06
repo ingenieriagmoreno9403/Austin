@@ -209,7 +209,7 @@
                                     <span id="ctl-venta-snap-pill-text">Venta local: —</span>
                                 </span>
                                 <span class="cc-fx-badge" id="ctl-fx-badge">Vista MXN · TC —</span>
-                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
+                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección en enteros (también negativos). Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
                             </div>
                         </div>
                         <div class="cc-matrix-legend" id="ctl-matrix-legend" aria-label="Indicadores de color">
@@ -346,7 +346,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body row g-3">
-                <div class="col-12"><label class="form-label" id="d-monto-label">Monto total</label><input id="d-monto" class="form-control" type="number" min="0" step="0.01" required></div>
+                <div class="col-12"><label class="form-label" id="d-monto-label">Monto total</label><input id="d-monto" class="form-control" type="number" step="1" inputmode="numeric" required></div>
                 <div class="col-6"><label class="form-label">Desde</label>
                     <select id="d-desde" class="form-select">
                         @foreach(['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'] as $i => $m)

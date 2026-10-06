@@ -6256,8 +6256,10 @@ class ProyeccionesVentasController extends Controller
             return response()->json(['message' => $motivo], 403);
         }
 
-        if (array_key_exists('precio_meses', $data) && ($deny = $this->denyUnlessPuedeEditarPreciosCaptura())) {
-            return $deny;
+        // La captura de cantidades no requiere editar precios. Si no hay permiso,
+        // se ignoran precio_meses y se conservan los que ya están guardados.
+        if (array_key_exists('precio_meses', $data) && ! $this->puedeEditarPreciosCaptura()) {
+            unset($data['precio_meses']);
         }
 
         $row = PvPresupuesto::query()->firstOrNew([
@@ -6794,7 +6796,7 @@ class ProyeccionesVentasController extends Controller
     /**
      * Celda de mes: vacía = pendiente (null). Un 0 escrito cuenta como capturado.
      */
-    protected function celdaMesCaptura($raw): ?float
+    protected function celdaMesCaptura($raw): ?int
     {
         if ($raw === null) {
             return null;
@@ -6809,7 +6811,7 @@ class ProyeccionesVentasController extends Controller
             return null;
         }
 
-        return round((float) $raw, 2);
+        return (int) round((float) $raw);
     }
 
     /**
