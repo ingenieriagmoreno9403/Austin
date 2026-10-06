@@ -151,21 +151,44 @@
     }
 
     /**
-     * Cantidades (unidades): el tipo de cambio NO las afecta.
-     * Se muestran y guardan tal cual.
+     * Cantidades (unidades) de la captura mensual: enteros, también negativos.
+     * El tipo de cambio no las afecta.
      */
     function toStoreQty(n) {
         var val = Number(n);
         if (!isFinite(val)) val = 0;
-        return Math.round(val * 100) / 100;
+        return Math.round(val);
+    }
+
+    /** Mientras se escribe: solo signo menos y dígitos. Un decimal pegado se redondea. */
+    function sanitizeQtyTyping(raw) {
+        var s = String(raw == null ? '' : raw).replace(/\s/g, '').replace(/,/g, '.');
+        if (s === '' || s === '-') return s;
+        if (/^-?\d+\.$/.test(s)) return s.slice(0, -1);
+        if (/^-?\d+\.\d+$/.test(s)) return String(Math.round(Number(s)));
+        if (/^-?\d+$/.test(s)) return s;
+        var neg = s.charAt(0) === '-';
+        var body = (neg ? s.slice(1) : s).replace(/-/g, '');
+        if (body.indexOf('.') >= 0) {
+            var n = Number((neg ? '-' : '') + body.replace(/[^\d.]/g, ''));
+            return isFinite(n) ? String(Math.round(n)) : (neg ? '-' : '');
+        }
+        var digits = body.replace(/\D/g, '');
+        if (!digits) return neg ? '-' : '';
+        return (neg ? '-' : '') + digits;
+    }
+
+    function readQtyInput(raw) {
+        var s = sanitizeQtyTyping(raw);
+        if (s === '' || s === '-') return null;
+        return toStoreQty(s);
     }
 
     function formatInputQty(n) {
         if (!mesLleno(n)) return '';
         var v = Number(n);
         if (!isFinite(v)) return '';
-        if (Math.abs(v - Math.round(v)) < 0.00001) return String(Math.round(v));
-        return String(Math.round(v * 100) / 100);
+        return String(Math.round(v));
     }
 
     /** @deprecated Usar formatInputQty para meses (unidades). */
@@ -1722,6 +1745,10 @@
     function persistBudget(empresa, cc, cuenta, months, opts) {
         opts = opts || {};
         months = protectLockedMonths(empresa, cc, cuenta, months, opts);
+        months = (months || []).map(function (v) {
+            if (!mesLleno(v)) return null;
+            return toStoreQty(v);
+        });
         var ciclo = cicloActualCodigo();
         if (!ciclo) return;
         var key = budgetKey(empresa, cc, cuenta);
@@ -1756,25 +1783,29 @@
                 break;
             }
         }
-        var precioMeses = preciosMesesDe(empresa, cc, cuenta);
         var ajuste = Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0;
+        var payload = {
+            ciclo: ciclo,
+            empresa: empresa,
+            centro: cc,
+            cuenta: cuenta,
+            cuenta_nombre: nombre,
+            meses: monthsToSave,
+            completado: done,
+            ajuste_pct: ajuste,
+            costo_unitario: costo
+        };
+        // Solo quien puede editar precios manda precio_meses. Si no, el guardado
+        // de cantidades no debe pedir el permiso editar_precios_captura.
+        if (CC.state.puedeEditarPreciosCaptura) {
+            payload.precio_meses = preciosMesesDe(empresa, cc, cuenta);
+        }
 
         function doSave() {
             return fetch('/ProyeccionesVentas/api/captura/presupuesto', {
                 method: 'PUT',
                 headers: apiJsonHeaders(),
-                body: JSON.stringify({
-                    ciclo: ciclo,
-                    empresa: empresa,
-                    centro: cc,
-                    cuenta: cuenta,
-                    cuenta_nombre: nombre,
-                    meses: monthsToSave,
-                    completado: done,
-                    ajuste_pct: ajuste,
-                    precio_meses: precioMeses,
-                    costo_unitario: costo
-                })
+                body: JSON.stringify(payload)
             }).then(function (res) {
                 return res.json().then(function (json) {
                     if (!res.ok) throw new Error(json.message || 'No se pudo guardar la proyección');
@@ -1986,11 +2017,11 @@
         while (months.length < 12) months.push(null);
         months = months.slice(0, 12);
         if (done) {
-            return months.map(function (v) { return mesLleno(v) ? Number(v) : 0; });
+            return months.map(function (v) { return mesLleno(v) ? toStoreQty(v) : 0; });
         }
         return months.map(function (v) {
             if (!mesLleno(v)) return null;
-            return Number(v);
+            return toStoreQty(v);
         });
     }
 
@@ -2013,7 +2044,7 @@
         Object.keys(CC.state.budgets || {}).forEach(function (k) {
             CC.state.budgets[k] = (CC.state.budgets[k] || []).map(function (v) {
                 if (!mesLleno(v)) return v;
-                return Math.round((Number(v) / tc) * 100) / 100;
+                return toStoreQty(Number(v) / tc);
             });
         });
         saveJSON(SK.qtyRaw, true);
@@ -6240,7 +6271,7 @@
                             (pastQty ? ' · ' + qtyLabel(pastQty) + ' uds' : '')) + '">' +
                         (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
                     '</div>' +
-                    '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
+                    '<input type="number" step="1" inputmode="numeric" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
                     ((control.locked || lockedMes) ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' +
                     ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
                     escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
@@ -6338,13 +6369,15 @@
                 var codigo = inp.getAttribute('data-cta');
                 var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
                 if (!td || !cta) return;
-                var raw = String(inp.value || '').trim().replace(/,/g, '');
+                var shown = sanitizeQtyTyping(inp.value);
+                if (inp.value !== shown) inp.value = shown;
+                var raw = shown;
                 var fake = {
                     gasto: cta.gasto,
                     ppto: (cta.ppto || []).slice(),
                     codigo: cta.codigo
                 };
-                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreQty(Number(raw) || 0);
+                fake.ppto[Number(inp.getAttribute('data-m'))] = readQtyInput(raw);
                 var lockedMes = mesBloqueadoBudget(Number(inp.getAttribute('data-m')));
                 td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell') +
                     (lockedMes ? ' is-locked' : '');
@@ -6361,6 +6394,10 @@
             });
             inp.addEventListener('change', onMonthChange);
             inp.addEventListener('keydown', function (ev) {
+                if (ev.key === '.' || ev.key === ',' || ev.key === 'e' || ev.key === 'E' || ev.key === '+') {
+                    ev.preventDefault();
+                    return;
+                }
                 if (ev.key === 'Enter') { ev.preventDefault(); inp.blur(); }
             });
         });
@@ -6563,8 +6600,8 @@
         var selector = '#ctl-matrix-tbody input[data-cta="' + cssEscape(cta.codigo) + '"][data-m], #ctl-month-grid input[data-cta="' + cssEscape(cta.codigo) + '"][data-m]';
         document.querySelectorAll(selector).forEach(function (inp) {
             var m = Number(inp.getAttribute('data-m'));
-            var raw = String(inp.value || '').trim().replace(/,/g, '');
-            months[m] = raw === '' ? (fillEmpty ? 0 : null) : toStoreQty(Number(raw) || 0);
+            var qty = readQtyInput(inp.value);
+            months[m] = qty === null ? (fillEmpty ? 0 : null) : qty;
         });
         return months;
     }
@@ -6869,9 +6906,14 @@
             refreshControlAfterEdit(codigo, { skipFormGrid: true });
             return;
         }
-        var raw = String(inp.value || '').trim().replace(/,/g, '');
-        var valN = raw === '' ? null : toStoreQty(Number(raw) || 0);
+        var shown = sanitizeQtyTyping(inp.value);
+        if (inp.value !== shown) inp.value = shown;
         var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
+        if (shown === '-') {
+            inp.value = formatInputQty(months[m]);
+            return;
+        }
+        var valN = readQtyInput(shown);
         var wasEmpty = !mesesTodosLlenos(months) && months.every(function (x) { return !mesLleno(x); });
         months[m] = valN;
         persistBudget(c.empresa, c.codigo, codigo, months);
@@ -7673,14 +7715,19 @@
                 var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
                 var n = to - from + 1;
                 if (modo === 'igual') {
-                    var each = Math.round((monto / n) * 100) / 100;
-                    for (var i = from; i <= to; i++) months[i] = each;
+                    var sign = monto < 0 ? -1 : 1;
+                    var abs = Math.abs(monto);
+                    var base = Math.floor(abs / n);
+                    var resto = abs - base * n;
+                    for (var i = from; i <= to; i++) {
+                        months[i] = sign * (base + ((i - from) < resto ? 1 : 0));
+                    }
                 } else if (modo === 'mismo') {
                     for (var k = from; k <= to; k++) months[k] = monto;
                 } else {
                     var weights = cta.gasto.slice(from, to + 1);
                     var tw = sum(weights) || n;
-                    for (var j = from; j <= to; j++) months[j] = Math.round(monto * ((cta.gasto[j] || 0) / tw) * 100) / 100;
+                    for (var j = from; j <= to; j++) months[j] = Math.round(monto * ((cta.gasto[j] || 0) / tw));
                 }
                 persistBudget(c.empresa, c.codigo, codigo, months);
                 hideModal('modalDispersar');
