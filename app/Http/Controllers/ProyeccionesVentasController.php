@@ -7593,19 +7593,23 @@ class ProyeccionesVentasController extends Controller
     protected function aliasUnidadesSap(): array
     {
         return [
-            'RK' => 'Bobina',
-            'RL' => 'Rollo',
-            'RO' => 'Rollo',
+            // Catálogo operativo solicitado
+            'XBX' => 'CAJA',
+            'RK' => 'ROLLOS',
+            'XSA' => 'SACOS',
+            'H87' => 'PIEZAS',
+            'MTS' => 'METROS',
+            'E48' => 'SERVICIOS',
+            'KGM' => 'KILOS',
+            // Alias adicionales frecuentes
+            'RL' => 'ROLLOS',
+            'RO' => 'ROLLOS',
             'BO' => 'Botella',
             'PR' => 'Par',
             'SET' => 'Juego',
-            'PZA' => 'Pieza',
-            'PZ' => 'Pieza',
-            // SAT / CFDI: E48 = Unidad de servicio
-            'E48' => 'Servicio',
+            'PZA' => 'PIEZAS',
+            'PZ' => 'PIEZAS',
             'ACT' => 'Actividad',
-            'H87' => 'Pieza',
-            'XBX' => 'Caja',
         ];
     }
 

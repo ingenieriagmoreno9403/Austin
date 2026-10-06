@@ -6099,18 +6099,21 @@
         var code = String(codigo || '').trim();
         if (!code) return '';
         var aliases = {
-            RK: 'Bobina',
-            RL: 'Rollo',
-            RO: 'Rollo',
+            XBX: 'CAJA',
+            RK: 'ROLLOS',
+            XSA: 'SACOS',
+            H87: 'PIEZAS',
+            MTS: 'METROS',
+            E48: 'SERVICIOS',
+            KGM: 'KILOS',
+            RL: 'ROLLOS',
+            RO: 'ROLLOS',
             BO: 'Botella',
             PR: 'Par',
             SET: 'Juego',
-            PZA: 'Pieza',
-            PZ: 'Pieza',
-            E48: 'Servicio',
-            ACT: 'Actividad',
-            H87: 'Pieza',
-            XBX: 'Caja'
+            PZA: 'PIEZAS',
+            PZ: 'PIEZAS',
+            ACT: 'Actividad'
         };
         var up = code.toUpperCase();
         if (aliases[up]) return aliases[up];
