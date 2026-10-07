@@ -41,6 +41,9 @@ class CentrosCostosController extends Controller
     /** @var array<string, string> */
     protected $ccCicloEstadoCache = [];
 
+    /** @var array<string, string> */
+    protected $formatCodePlantillaCache = [];
+
     /** @var array<string, bool> */
     protected $gastoCopiaEmpresas = [];
 
@@ -2465,7 +2468,7 @@ class CentrosCostosController extends Controller
                     $empresa,
                     $centro,
                     (string) ($a->centro_nombre ?: ''),
-                    $this->codigoCuentaPlantilla($cuenta),
+                    $this->codigoCuentaParaPlantilla($empresa, $cuenta, (string) ($cta->cuenta_nombre ?: '')),
                     (string) ($cta->cuenta_nombre ?: ''),
                 ], $vals);
                 $captured[] = ! empty($info['completado']) || $this->mesesTodosLlenos($vals);
@@ -2627,6 +2630,15 @@ class CentrosCostosController extends Controller
                         $out[$key] = $payload;
                     } else {
                         $out[$key]['capturar'] = $out[$key]['capturar'] || $capturar;
+                    }
+                }
+                $format = $this->codigoCuentaParaPlantilla($empresa, $cuenta, (string) ($cta->cuenta_nombre ?: ''));
+                if ($format !== '' && $format !== $cuenta) {
+                    $alias = $this->capturaBudgetKey($empresa, $centro, $format);
+                    if (! isset($out[$alias])) {
+                        $out[$alias] = $payload;
+                    } else {
+                        $out[$alias]['capturar'] = $out[$alias]['capturar'] || $capturar;
                     }
                 }
             }
@@ -3825,6 +3837,157 @@ class CentrosCostosController extends Controller
         }
 
         return $this->codigoCuentaVisible($codigo);
+    }
+
+    /**
+     * Número que va en la plantilla: FormatCode (cuenta contable).
+     * El consecutivo viejo (_SYS… → 667) se cambia por ese número.
+     */
+    protected function codigoCuentaParaPlantilla(string $empresa, string $codigo, string $nombre): string
+    {
+        $codigo = trim($codigo);
+        if ($codigo === '' || ! $this->esCodigoCuentaViejo($codigo)) {
+            return $codigo;
+        }
+
+        $format = $this->formatCodeDeCuentaVieja($empresa, $codigo, $nombre);
+
+        return $format !== '' ? $format : $this->codigoCuentaVisible($codigo);
+    }
+
+    protected function esCodigoCuentaViejo(string $codigo): bool
+    {
+        $codigo = trim($codigo);
+        if ($codigo === '') {
+            return false;
+        }
+        if (preg_match('/SYS/i', $codigo)) {
+            return true;
+        }
+        $digits = preg_replace('/\D+/', '', $codigo) ?? '';
+
+        return $digits !== '' && $digits === $codigo && strlen($digits) < 8;
+    }
+
+    protected function formatCodeDeCuentaVieja(string $empresa, string $codigo, string $nombre): string
+    {
+        $empresa = strtoupper(trim($empresa));
+        $nombre = trim($nombre);
+        $cacheKey = $empresa.'|'.trim($codigo).'|'.mb_strtoupper($nombre);
+        if (array_key_exists($cacheKey, $this->formatCodePlantillaCache)) {
+            return $this->formatCodePlantillaCache[$cacheKey];
+        }
+        $guardado = Cache::get('cc_fmt_v1_'.$cacheKey);
+        if (is_string($guardado) && $guardado !== '') {
+            return $this->formatCodePlantillaCache[$cacheKey] = $guardado;
+        }
+
+        $format = '';
+        if ($empresa !== '' && $nombre !== '') {
+            try {
+                $api = app(AutinApiClient::class);
+                $codes = $this->formatCodesPorNombre($api, $empresa, $nombre);
+                if (count($codes) === 1) {
+                    $format = $codes[0];
+                } elseif (count($codes) > 1) {
+                    $format = $this->emparejarCodigoViejo($api, $empresa, $codigo, $nombre, $codes);
+                }
+            } catch (Throwable $e) {
+                $format = '';
+            }
+        }
+
+        if ($format !== '') {
+            Cache::put('cc_fmt_v1_'.$cacheKey, $format, 3600);
+        }
+
+        return $this->formatCodePlantillaCache[$cacheKey] = $format;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function formatCodesPorNombre(AutinApiClient $api, string $empresa, string $nombre): array
+    {
+        $res = $api->cuentasGlobal([
+            'Empresa' => $empresa,
+            'AcctName' => $nombre,
+            'per_page' => 40,
+            'page' => 1,
+        ]);
+        $hits = [];
+        $needle = mb_strtoupper($nombre);
+        foreach (($res['body']['data'] ?? []) as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            if (mb_strtoupper(trim((string) ($row['Empresa'] ?? ''))) !== $empresa) {
+                continue;
+            }
+            if (mb_strtoupper(trim((string) ($row['AcctName'] ?? ''))) !== $needle) {
+                continue;
+            }
+            $code = trim((string) ($row['FormatCode'] ?? ''));
+            if ($code === '') {
+                continue;
+            }
+            $hits[$code] = trim((string) ($row['GroupMask'] ?? ''));
+        }
+        $gastos = [];
+        foreach ($hits as $code => $mask) {
+            if ($mask === '6') {
+                $gastos[] = $code;
+            }
+        }
+        $pool = count($gastos) >= 1 ? $gastos : array_keys($hits);
+        sort($pool, SORT_STRING);
+
+        return array_values($pool);
+    }
+
+    /**
+     * @param  array<int, string>  $formatCodes
+     */
+    protected function emparejarCodigoViejo(AutinApiClient $api, string $empresa, string $codigo, string $nombre, array $formatCodes): string
+    {
+        $digits = ltrim(preg_replace('/\D+/', '', $codigo) ?? '', '0');
+        if ($digits === '') {
+            return '';
+        }
+        $db = strtolower($empresa);
+        if (! in_array($db, $api->allowedDatabases(), true)) {
+            return '';
+        }
+
+        $res = $api->index('cuentas', [
+            'NOMBRE' => $nombre,
+            'GroupMask' => 6,
+            'per_page' => 50,
+            'page' => 1,
+        ], $db);
+        $needle = mb_strtoupper($nombre);
+        $orden = [];
+        foreach (($res['body']['data'] ?? []) as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            if (mb_strtoupper(trim((string) ($row['NOMBRE'] ?? ''))) !== $needle) {
+                continue;
+            }
+            $num = ltrim(preg_replace('/\D+/', '', (string) ($row['CUENTA'] ?? '')) ?? '', '0');
+            if ($num !== '' && ! in_array($num, $orden, true)) {
+                $orden[] = $num;
+            }
+        }
+        usort($orden, function ($a, $b) {
+            return ((int) $a) <=> ((int) $b);
+        });
+        $idx = array_search($digits, $orden, true);
+        if ($idx === false || count($orden) !== count($formatCodes) || ! isset($formatCodes[$idx])) {
+            return '';
+        }
+
+        return $formatCodes[$idx];
     }
 
     /**
