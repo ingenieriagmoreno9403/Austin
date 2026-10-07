@@ -256,6 +256,13 @@
         return Math.round(((now - prev) / prev) * 1000) / 10;
     }
 
+    /** Verde si la variación es positiva, rojo si es negativa. */
+    function deltaToneClass(d) {
+        var n = Number(d);
+        if (!isFinite(n) || n === 0) return 'cc-delta-flat';
+        return n > 0 ? 'cc-delta-up' : 'cc-delta-down';
+    }
+
     function loadJSON(key, fallback) {
         try {
             var raw = localStorage.getItem(key);
@@ -6323,7 +6330,7 @@
 
     function matrixProductRowHtml(cta, anioPast) {
         var d = deltaPct(cta.totP, cta.totG);
-        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var dCls = deltaToneClass(d);
         var selected = String(cta.codigo) === String(control.cuenta || '');
         var done = !ctaPendiente(cta);
         var udsVentaAnio = sum((cta.gasto || []).slice(0, 12));
@@ -6579,7 +6586,7 @@
             return;
         }
         var d = deltaPct(cta.totP, cta.totG);
-        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var dCls = deltaToneClass(d);
         var done = !ctaPendiente(cta);
         row.classList.toggle('is-done', done);
         row.classList.toggle('is-on', String(control.cuenta || '') === String(codigo));
@@ -6866,7 +6873,7 @@
                     var impP = importeProyeccionVista(cta);
                     // Δ% en la misma moneda que se muestra (evita mezclar LineTotal MXN vs proy×TC).
                     var d = deltaPct(impP, impG);
-                    var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+                    var dCls = deltaToneClass(d);
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
@@ -6932,7 +6939,7 @@
                 }
             });
             var dTot = deltaPct(sumP, sumG);
-            var dTotCls = dTot > 15 ? 'text-danger' : (dTot < 0 ? 'text-success' : 'text-muted');
+            var dTotCls = deltaToneClass(dTot);
             html += '<tr class="cc-month-totals-row">' +
                 '<td class="sticky-col"><strong>Totales</strong>' +
                 '<span class="cc-month-totals-sub">' + ctas.length + (ctas.length === 1 ? ' producto' : ' productos') + '</span></td>' +
@@ -9629,9 +9636,11 @@
                 var pptoVal = c.pptoVista != null ? c.pptoVista : c.ppto;
                 var proyCell = c.proyLista ? moneyGasto(pptoVal) : htmlCargando('sm');
                 var yoY = Number(c.yoY) || 0;
+                var showDelta = c.ventaLista && c.proyLista && Number(c.gasto);
                 var deltaCell = (c.ventaLista && c.proyLista)
                     ? (Number(c.gasto) ? ((yoY > 0 ? '+' : '') + yoY + '%') : '—')
                     : htmlCargando('sm');
+                var deltaCls = showDelta ? deltaToneClass(yoY) : '';
                 var limiteCell = (c.ventaLista && c.proyLista)
                     ? (c.over ? '<span class="cc-badge cc-badge-aceptado">Sobre límite</span>' : '<span class="cc-badge cc-badge-rechazado">Dentro</span>')
                     : htmlCargando('sm');
@@ -9642,7 +9651,7 @@
                     '<td>' + capCell + '</td>' +
                     '<td class="num">' + ventaCell + '</td>' +
                     '<td class="num">' + proyCell + '</td>' +
-                    '<td class="num ' + (yoY > 10 ? 'text-danger' : '') + '">' + deltaCell + '</td>' +
+                    '<td class="num ' + deltaCls + '">' + deltaCell + '</td>' +
                     '<td>' + limiteCell + '</td>' +
                     '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
             }).join('') || '<tr><td colspan="9"><div class="cc-empty">Sin clientes con esos filtros</div></td></tr>';
@@ -9668,11 +9677,12 @@
                 var gastoFoot = ventaPend ? (tableRows.some(function (c) { return c.ventaLista; }) ? (moneyDosDecimales(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyDosDecimales(sumGasto);
                 var pptoFoot = proyPend ? (tableRows.some(function (c) { return c.proyLista; }) ? (moneyGasto(sumPpto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyGasto(sumPpto);
                 var deltaFoot = yoyTot == null ? htmlCargando('sm') : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
+                var deltaFootCls = (yoyTot != null && sumGasto) ? deltaToneClass(yoyTot) : '';
                 tf.innerHTML = '<tr>' +
                     '<td colspan="4">Totales · ' + nCli + (nCli === 1 ? ' cliente' : ' clientes') + '</td>' +
                     '<td class="num">' + gastoFoot + '</td>' +
                     '<td class="num">' + pptoFoot + '</td>' +
-                    '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + deltaFoot + '</td>' +
+                    '<td class="num ' + deltaFootCls + '">' + deltaFoot + '</td>' +
                     '<td colspan="2"></td>' +
                     '</tr>';
             }

@@ -240,7 +240,7 @@
             </div>
         </div>
 
-        <div class="cc-panel cc-captura-results">
+        <div class="cc-panel cc-captura-results cc-pv-detalle">
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-table"></i> Detalle por producto y mes</h3>
                 <div class="cc-panel-head-tools">
@@ -251,10 +251,10 @@
                     <label class="cc-scope-check" id="ctl-chart-todas-wrap" hidden>
                         <input type="checkbox" id="ctl-chart-todas"> Ver todas
                     </label>
-                    <div class="cc-legend">
-                        <span><i style="background:#fffbeb"></i> Sin capturar</span>
-                        <span><i style="background:#ecfdf5"></i> Capturado</span>
-                        <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                    <div class="cc-legend" aria-label="Significado de colores de las celdas">
+                        <span><i class="cc-swatch is-empty"></i> Sin capturar</span>
+                        <span><i class="cc-swatch is-ok"></i> Mayor o igual a la venta</span>
+                        <span><i class="cc-swatch is-over"></i> Menor a la venta</span>
                     </div>
                 </div>
             </div>
