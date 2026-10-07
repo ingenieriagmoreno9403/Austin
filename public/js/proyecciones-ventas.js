@@ -453,24 +453,39 @@
         Object.keys(CC.state.budgets || {}).forEach(addKey);
         Object.keys(CC.state.budgetKeysFromServer || {}).forEach(addKey);
         Object.keys(CC.state.completados || {}).forEach(addKey);
-        return out;
+        var aliasDeItem = {};
+        out.forEach(function (cta) {
+            if (!esItemCodeSap(cta.codigo)) return;
+            var alias = aliasDigitosCuenta(cta.codigo);
+            if (alias) aliasDeItem[alias] = true;
+        });
+        return out.filter(function (cta) {
+            if (esItemCodeSap(cta.codigo)) return true;
+            var alias = aliasDigitosCuenta(cta.codigo);
+            return !(alias && aliasDeItem[alias]);
+        });
     }
 
     function mergeCuentasAnalisis(c, base) {
         var seen = {};
-        (base || []).forEach(function (cta) {
-            seen[String(cta.codigo)] = true;
-            seen[codigoCuentaKey(cta.codigo)] = true;
-        });
+        var aliasDeItem = {};
+        function markSeenCuenta(cta) {
+            var code = String(cta.codigo || '');
+            seen[code] = true;
+            seen[codigoCuentaKey(code)] = true;
+            if (!esItemCodeSap(code)) return;
+            var alias = aliasDigitosCuenta(code);
+            if (alias) aliasDeItem[alias] = true;
+        }
+        (base || []).forEach(markSeenCuenta);
         var extra = productosVentaRealDeCentro(c).filter(function (cta) {
             return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
         });
-        extra.forEach(function (cta) {
-            seen[String(cta.codigo)] = true;
-            seen[codigoCuentaKey(cta.codigo)] = true;
-        });
+        extra.forEach(markSeenCuenta);
         var fromBudget = productosDesdeBudgetsDeCentro(c).filter(function (cta) {
-            return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
+            if (seen[String(cta.codigo)] || seen[codigoCuentaKey(cta.codigo)]) return false;
+            if (!esItemCodeSap(cta.codigo) && aliasDeItem[aliasDigitosCuenta(cta.codigo)]) return false;
+            return true;
         });
         return (base || []).concat(extra).concat(fromBudget);
     }
@@ -618,9 +633,13 @@
         return vis.replace(/\D+/g, '') || vis;
     }
 
-    /** ItemCode SAP (tiene letras): no usar alias solo-dígitos (REPE-3PE MT → "3"). */
+    /** ItemCode SAP (tiene letras): no usar alias solo-dígitos (REPE-3PE MT → "3", AUS01-001 → "1001"). */
     function esItemCodeSap(codigo) {
         return /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(String(codigo || ''));
+    }
+
+    function aliasDigitosCuenta(codigo) {
+        return String(codigoCuentaKey(codigo) || '').replace(/^0+/, '');
     }
 
     function nombreCuentaKey(nombre) {

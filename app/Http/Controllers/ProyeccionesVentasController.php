@@ -9247,9 +9247,13 @@ class ProyeccionesVentasController extends Controller
             $this->capturaBudgetKey($empresa, $centro, $cuenta),
             $this->capturaBudgetKey($empresa, $centro, ltrim($cuenta, '0')),
             $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaVisible($cuenta)),
-            $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaKey($cuenta)),
-            $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaPlantilla($cuenta)),
         ];
+        // ItemCode (AUS01-001) no debe aliasarse a solo dígitos: 01001 y, sin ceros, 1001.
+        // Ese alias se pintaba en el detalle como un producto distinto y sin asignar.
+        if (! $this->esItemCodeSap($cuenta)) {
+            $keys[] = $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaKey($cuenta));
+            $keys[] = $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaPlantilla($cuenta));
+        }
 
         return array_values(array_unique(array_filter($keys)));
     }
