@@ -4539,27 +4539,68 @@
         });
     }
 
+    /**
+     * Totales de venta real del cliente (toda la consulta SAP / snapshot),
+     * misma base que el modal Ventas pasadas — no solo productos asignados.
+     */
+    /*Cambiar esto*/
+    function totalesVentaRealCentro(c) {
+        if (!c) return { totMxn: 0, totVista: 0, totQty: 0, productos: 0 };
+        var hit = gastoCacheEntry(gastoCacheKey(c));
+        var por = (hit && hit.por) || {};
+        var rows = rowsFromPorCuenta(por);
+        var totMxn = 0;
+        var totVista = 0;
+        var totQty = 0;
+        rows.forEach(function (r) {
+            totMxn += Number(r.totMxn) || 0;
+            totQty += Number(r.totQty) || 0;
+            totVista += importeVentaVista({
+                codigo: r.codigo,
+                importe: r.importe,
+                importeUsd: r.importe_usd,
+                importe_usd: r.importe_usd,
+                gasto: r.gasto,
+                precioLista: 0,
+                precioMoneda: 'MXN'
+            });
+        });
+        return {
+            totMxn: totMxn,
+            totVista: totVista,
+            totQty: totQty,
+            productos: rows.length
+        };
+    }
+
     function statsDeCentro(c) {
         var ctas = cuentasEnriquecidas(c);
         var pend = ctas.filter(ctaPendiente).length;
+        // SE VENDIÓ / Venta 2026 = toda la venta SAP del cliente (como Ventas pasadas).
+        // Proyección y avance siguen solo sobre productos asignados.
+        var ventaReal = totalesVentaRealCentro(c);
+        var totGAsig = ctas.reduce(function (a, x) { return a + (x.importeVenta || 0); }, 0);
+        var totGVistaAsig = ctas.reduce(function (a, x) {
+            return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+        }, 0);
+        var totUnitsAsig = ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0);
         return {
             total: ctas.length,
             capturadas: ctas.length - pend,
             pendientes: pend,
-            totG: ctas.reduce(function (a, x) { return a + (x.importeVenta || 0); }, 0),
-            totGVista: ctas.reduce(function (a, x) {
-                return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
-            }, 0),
+            totG: ventaReal.productos ? ventaReal.totMxn : totGAsig,
+            totGVista: ventaReal.productos ? ventaReal.totVista : totGVistaAsig,
             totP: ctas.reduce(function (a, x) { return a + (x.importeProy || 0); }, 0),
             totPVista: ctas.reduce(function (a, x) {
                 return a + (x.importeProyVista != null ? x.importeProyVista : importeProyeccionVista(x));
             }, 0),
-            totUnitsG: ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0),
+            totUnitsG: ventaReal.productos ? ventaReal.totQty : totUnitsAsig,
             totUnitsP: ctas.reduce(function (a, x) { return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto)); }, 0),
-            avance: pct(ctas.length - pend, ctas.length || 1)
+            avance: pct(ctas.length - pend, ctas.length || 1),
+            ventaProductosSap: ventaReal.productos
         };
     }
-
+/*Hatsa aqui s ecambia */
     function currentCta() {
         return (control._allCtas || []).filter(function (x) {
             return String(x.codigo) === String(control.cuenta || '');
@@ -6671,25 +6712,32 @@
         var c = control.centro;
         if (!c || control.locked) return true;
         var ctas = control._allCtas || [];
-        var incompletos = [];
+        var guardados = 0;
+        var completos = 0;
+        var parciales = 0;
         ctas.forEach(function (cta) {
             var months = monthsFromGrid(cta);
             var faltan = cuentaMesesVacios(months);
+            var tieneAlgo = (months || []).some(mesLleno);
+            // Sin captura: queda pendiente; no se manda al servidor.
+            if (!tieneAlgo) return;
             if (faltan.length) {
-                incompletos.push(labelNombreCodigo(cta.nombre, cta.codigo));
-                return;
+                // Parcial: se guarda el avance y sigue pendiente.
+                persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: false });
+                parciales++;
+            } else {
+                persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
+                completos++;
             }
-            persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
+            guardados++;
         });
-        if (incompletos.length) {
-            toast('warning', 'Faltan meses', incompletos.length === 1
-                ? ('Completa los 12 meses de ' + incompletos[0] + ' (el 0 sí cuenta) o pulsa Completado.')
-                : ('Hay ' + incompletos.length + ' productos incompletos. Llena los 12 meses o usa Completado.'));
-            drawMatrixTable();
+        if (!guardados) {
+            toast('warning', 'Nada que guardar', 'Captura al menos un mes en algún producto. El resto puede quedar pendiente.');
             return false;
         }
         persistOverlay(c, { estado: c.estado === 'abierto' ? 'en_proceso' : c.estado });
         renderVisorTable();
+        control._lastSaveInfo = { guardados: guardados, completos: completos, parciales: parciales };
         return true;
     }
 
@@ -7073,16 +7121,46 @@
         var completar = document.getElementById('ctl-completar');
         if (completar) completar.addEventListener('click', function () {
             var c = control.centro;
-            var list = targetCtasForTools();
-            if (!c || !list.length || control.locked) return;
-            list.forEach(function (cta) {
-            var months = monthsFromGrid(cta, true);
-            persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
-            });
-            refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
-            toast('success', 'Completado', list.length === 1
-                ? 'Los meses vacíos quedaron en 0'
-                : ('Se completaron ' + list.length + ' productos (vacíos en 0)'));
+            if (!c || control.locked) return;
+            // Completado: todos los productos del cliente. Lo no capturado → 0 y se guarda.
+            var list = (control._allCtas || cuentasEnriquecidas(c) || []).slice();
+            if (!list.length) {
+                toast('warning', 'Sin productos', 'Este cliente no tiene productos para completar.');
+                return;
+            }
+            var pendientes = list.filter(ctaPendiente);
+            var run = function () {
+                list.forEach(function (cta) {
+                    var months = monthsFromGrid(cta, true); // vacíos → 0
+                    persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
+                });
+                flushPendingBudgetSaves().then(function () {
+                    refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                    toast('success', 'Completado',
+                        list.length === 1
+                            ? 'Los meses vacíos quedaron en 0 y se guardaron'
+                            : ('Se completaron ' + list.length + ' productos: lo no capturado quedó en 0 y se guardó'));
+                });
+            };
+            if (list.length > 1 && window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: '¿Marcar Completado?',
+                    html: '<div style="text-align:left;font-size:.9rem">' +
+                        '<p style="margin:0 0 .5rem">Se aplicará a <b>' + list.length + '</b> producto(s).</p>' +
+                        '<p style="margin:0">Los meses <b>sin valor</b> quedarán en <b>0</b> y todo se guardará. ' +
+                        (pendientes.length
+                            ? ('Hay <b>' + pendientes.length + '</b> pendiente(s).')
+                            : 'Todos ya estaban capturados; se reconfirma el guardado.') +
+                        '</p></div>',
+                    showCancelButton: true,
+                    confirmButtonText: 'Completar y guardar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) run(); });
+                return;
+            }
+            run();
         });
     }
 
@@ -7743,20 +7821,28 @@
         if (save) save.addEventListener('click', function () {
             var codigo = control.cuenta;
             if (!guardarCapturaActual()) return;
-            refreshControlAfterEdit(codigo);
-            if (!(control._allCtas || []).some(ctaPendiente)) {
-                celebrarCentroCompleto();
-                return;
-            }
-            toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
+            flushPendingBudgetSaves().then(function () {
+                refreshControlAfterEdit(codigo);
+                if (!(control._allCtas || []).some(ctaPendiente)) {
+                    celebrarCentroCompleto();
+                    return;
+                }
+                var info = control._lastSaveInfo || {};
+                var msg = (info.completos || 0) + ' capturado(s)';
+                if (info.parciales) msg += ' · ' + info.parciales + ' parcial(es)';
+                msg += '. El resto sigue pendiente.';
+                toast('success', 'Captura guardada', msg);
+            });
         });
         var saveNext = document.getElementById('ctl-guardar-seguir');
         if (saveNext) saveNext.addEventListener('click', function () {
             var codigo = control.cuenta;
             if (!guardarCapturaActual()) return;
-            refreshControlAfterEdit(codigo);
-            if (!irSiguientePendiente(codigo)) return;
-            toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
+            flushPendingBudgetSaves().then(function () {
+                refreshControlAfterEdit(codigo);
+                if (!irSiguientePendiente(codigo)) return;
+                toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
+            });
         });
     }
 
