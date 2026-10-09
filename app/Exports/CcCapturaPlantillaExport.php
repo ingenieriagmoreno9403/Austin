@@ -9,6 +9,7 @@ use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithStrictNullComparison;
 use Maatwebsite\Excel\Concerns\WithTitle;
 use Maatwebsite\Excel\Events\AfterSheet;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 
 class CcCapturaPlantillaExport implements FromArray, WithHeadings, ShouldAutoSize, WithEvents, WithTitle, WithStrictNullComparison
@@ -56,8 +57,11 @@ class CcCapturaPlantillaExport implements FromArray, WithHeadings, ShouldAutoSiz
                     ->setFillType(Fill::FILL_SOLID)
                     ->getStartColor()->setRGB('111827');
                 $event->sheet->getDelegate()->getStyle('A1:'.$lastCol.'1')->getFont()->getColor()->setRGB('FFFFFF');
+                $event->sheet->getDelegate()->getStyle('D2:D'.$lastRow)->getNumberFormat()->setFormatCode('@');
                 foreach ($this->rows as $i => $row) {
                     $excelRow = $i + 2;
+                    $cuenta = isset($row[3]) ? (string) $row[3] : '';
+                    $event->sheet->getDelegate()->setCellValueExplicit('D'.$excelRow, $cuenta, DataType::TYPE_STRING);
                     if (! empty($this->captured[$i])) {
                         continue;
                     }

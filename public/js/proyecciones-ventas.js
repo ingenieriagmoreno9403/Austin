@@ -256,6 +256,13 @@
         return Math.round(((now - prev) / prev) * 1000) / 10;
     }
 
+    /** Verde si la variación es positiva, rojo si es negativa. */
+    function deltaToneClass(d) {
+        var n = Number(d);
+        if (!isFinite(n) || n === 0) return 'cc-delta-flat';
+        return n > 0 ? 'cc-delta-up' : 'cc-delta-down';
+    }
+
     function loadJSON(key, fallback) {
         try {
             var raw = localStorage.getItem(key);
@@ -453,29 +460,74 @@
         Object.keys(CC.state.budgets || {}).forEach(addKey);
         Object.keys(CC.state.budgetKeysFromServer || {}).forEach(addKey);
         Object.keys(CC.state.completados || {}).forEach(addKey);
-        return out;
+        var aliasDeItem = {};
+        out.forEach(function (cta) {
+            if (!esItemCodeSap(cta.codigo)) return;
+            var alias = aliasDigitosCuenta(cta.codigo);
+            if (alias) aliasDeItem[alias] = true;
+        });
+        return out.filter(function (cta) {
+            if (esItemCodeSap(cta.codigo)) return true;
+            var alias = aliasDigitosCuenta(cta.codigo);
+            return !(alias && aliasDeItem[alias]);
+        });
     }
 
     function mergeCuentasAnalisis(c, base) {
         var seen = {};
-        (base || []).forEach(function (cta) {
-            seen[String(cta.codigo)] = true;
-            seen[codigoCuentaKey(cta.codigo)] = true;
-        });
+        var aliasDeItem = {};
+        function markSeenCuenta(cta) {
+            var code = String(cta.codigo || '');
+            seen[code] = true;
+            seen[codigoCuentaKey(code)] = true;
+            if (!esItemCodeSap(code)) return;
+            var alias = aliasDigitosCuenta(code);
+            if (alias) aliasDeItem[alias] = true;
+        }
+        (base || []).forEach(markSeenCuenta);
         var extra = productosVentaRealDeCentro(c).filter(function (cta) {
             return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
         });
-        extra.forEach(function (cta) {
-            seen[String(cta.codigo)] = true;
-            seen[codigoCuentaKey(cta.codigo)] = true;
-        });
+        extra.forEach(markSeenCuenta);
         var fromBudget = productosDesdeBudgetsDeCentro(c).filter(function (cta) {
-            return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
+            if (seen[String(cta.codigo)] || seen[codigoCuentaKey(cta.codigo)]) return false;
+            if (!esItemCodeSap(cta.codigo) && aliasDeItem[aliasDigitosCuenta(cta.codigo)]) return false;
+            return true;
         });
         return (base || []).concat(extra).concat(fromBudget);
     }
 
+    /**
+     * Detalle: productos del cliente abierto (venta real, proyección y los
+     * asignados a cualquier capturador de ese cliente). No usa la lista del usuario en sesión.
+     */
+    function cuentasDelClienteDetalle(c) {
+        var merged = mergeCuentasAnalisis(c, []);
+        var seen = {};
+        merged.forEach(function (cta) {
+            seen[String(cta.codigo)] = true;
+            seen[codigoCuentaKey(cta.codigo)] = true;
+        });
+        listaCapturadores().forEach(function (a) {
+            (a.cuentas || []).forEach(function (x) {
+                var codigo = String((x && x.codigo) || x || '').trim();
+                if (!codigo || seen[codigo] || seen[codigoCuentaKey(codigo)]) return;
+                seen[codigo] = true;
+                seen[codigoCuentaKey(codigo)] = true;
+                merged.push({
+                    codigo: codigo,
+                    nombre: (x && x.nombre) || codigo,
+                    grupo: (x && (x.agrupacion || x.linea)) || 'Asignadas',
+                    gasto: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    empresa: c.empresa
+                });
+            });
+        });
+        return merged;
+    }
+
     function cuentasDeCentro(c) {
+        if (CC.state.page === 'detalle') return cuentasDelClienteDetalle(c);
         var asig = asigDe(c);
         if (asig && asig.cuentas && asig.cuentas.length) {
             var packed = packedLookupDeCentro(c);
@@ -588,9 +640,13 @@
         return vis.replace(/\D+/g, '') || vis;
     }
 
-    /** ItemCode SAP (tiene letras): no usar alias solo-dígitos (REPE-3PE MT → "3"). */
+    /** ItemCode SAP (tiene letras): no usar alias solo-dígitos (REPE-3PE MT → "3", AUS01-001 → "1001"). */
     function esItemCodeSap(codigo) {
         return /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(String(codigo || ''));
+    }
+
+    function aliasDigitosCuenta(codigo) {
+        return String(codigoCuentaKey(codigo) || '').replace(/^0+/, '');
     }
 
     function nombreCuentaKey(nombre) {
@@ -5418,6 +5474,31 @@
         });
     }
 
+    /** Detalle abre el cliente de la URL aunque el usuario en sesión no lo tenga asignado. */
+    function centroDetalleDesdeUrl(emp, codigo, ciclo) {
+        var e = String(emp || '').toUpperCase().trim();
+        var code = String(codigo || '').trim();
+        if (!e || !code) return null;
+        var merged = mergedCentro({
+            codigo: code,
+            nombre: nombreCatalogoCliente(e, code) || code,
+            empresa: e,
+            usuario: '',
+            estado: 'abierto',
+            modo: 'solo_revision',
+            departamento: '',
+            ciclo: ciclo || CC.state.cicloCodigo || '',
+            capturar: false,
+            editar: false,
+            revisar: true,
+            permisos: ['revisar'],
+            sap: true
+        });
+        var nombreCli = nombreClienteDetalle(merged);
+        if (nombreCli) merged.nombre = nombreCli;
+        return merged;
+    }
+
     function loadControlCentro() {
         var emp = String(val('ctl-empresa') || '').trim();
         var codigo = String(val('ctl-centro') || '').trim();
@@ -5454,6 +5535,9 @@
         }
         CC.state.centros = centrosDesdeAsignaciones(fuenteAsignacionesControl(cicloNow));
         control.centro = centroDesdeAsignacion(emp, codigo, cicloNow);
+        if (!control.centro && CC.state.page === 'detalle') {
+            control.centro = centroDetalleDesdeUrl(emp, codigo, cicloNow);
+        }
         if (!control.centro) {
             var tb = document.getElementById('ctl-tbody');
             if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes este cliente asignado en el ciclo seleccionado.</div></td></tr>';
@@ -6287,7 +6371,7 @@
 
     function matrixProductRowHtml(cta, anioPast) {
         var d = deltaPct(cta.totP, cta.totG);
-        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var dCls = deltaToneClass(d);
         var selected = String(cta.codigo) === String(control.cuenta || '');
         var done = !ctaPendiente(cta);
         var udsVentaAnio = sum((cta.gasto || []).slice(0, 12));
@@ -6543,7 +6627,7 @@
             return;
         }
         var d = deltaPct(cta.totP, cta.totG);
-        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var dCls = deltaToneClass(d);
         var done = !ctaPendiente(cta);
         row.classList.toggle('is-done', done);
         row.classList.toggle('is-on', String(control.cuenta || '') === String(codigo));
@@ -6837,7 +6921,7 @@
                     var impP = importeProyeccionVista(cta);
                     // Δ% en la misma moneda que se muestra (evita mezclar LineTotal MXN vs proy×TC).
                     var d = deltaPct(impP, impG);
-                    var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+                    var dCls = deltaToneClass(d);
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
@@ -6882,7 +6966,9 @@
         });
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
             ? 'No hay filas para este producto con los filtros actuales'
-            : 'Sin productos asignados a este cliente';
+            : (tbodyId === 'det-tbody'
+                ? 'Este cliente no tiene productos con venta ni proyección'
+                : 'Sin productos asignados a este cliente');
         if (!html) {
             tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
         } else {
@@ -6901,7 +6987,7 @@
                 }
             });
             var dTot = deltaPct(sumP, sumG);
-            var dTotCls = dTot > 15 ? 'text-danger' : (dTot < 0 ? 'text-success' : 'text-muted');
+            var dTotCls = deltaToneClass(dTot);
             html += '<tr class="cc-month-totals-row">' +
                 '<td class="sticky-col"><strong>Totales</strong>' +
                 '<span class="cc-month-totals-sub">' + ctas.length + (ctas.length === 1 ? ' producto' : ' productos') + '</span></td>' +
@@ -9636,11 +9722,13 @@
                 var pptoVal = c.pptoVista != null ? c.pptoVista : c.ppto;
                 var proyCell = c.proyLista ? moneyGasto(pptoVal) : htmlCargando('sm');
                 var yoY = Number(c.yoY) || 0;
+                var showDelta = c.ventaLista && c.proyLista && Number(c.gasto);
                 var deltaCell = (c.ventaLista && c.proyLista)
                     ? (Number(c.gasto) ? ((yoY > 0 ? '+' : '') + yoY + '%') : '—')
                     : htmlCargando('sm');
+                var deltaCls = showDelta ? deltaToneClass(yoY) : '';
                 var limiteCell = (c.ventaLista && c.proyLista)
-                    ? (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>')
+                    ? (c.over ? '<span class="cc-badge cc-badge-aceptado">Sobre límite</span>' : '<span class="cc-badge cc-badge-rechazado">Dentro</span>')
                     : htmlCargando('sm');
                 return '<tr><td>' + htmlNombreCodigo(c.nombre || c.codigo, c.codigo) +
                     (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
@@ -9649,7 +9737,7 @@
                     '<td>' + capCell + '</td>' +
                     '<td class="num">' + ventaCell + '</td>' +
                     '<td class="num">' + proyCell + '</td>' +
-                    '<td class="num ' + (yoY > 10 ? 'text-danger' : '') + '">' + deltaCell + '</td>' +
+                    '<td class="num ' + deltaCls + '">' + deltaCell + '</td>' +
                     '<td>' + limiteCell + '</td>' +
                     '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
             }).join('') || '<tr><td colspan="9"><div class="cc-empty">Sin clientes con esos filtros</div></td></tr>';
@@ -9675,11 +9763,12 @@
                 var gastoFoot = ventaPend ? (tableRows.some(function (c) { return c.ventaLista; }) ? (moneyDosDecimales(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyDosDecimales(sumGasto);
                 var pptoFoot = proyPend ? (tableRows.some(function (c) { return c.proyLista; }) ? (moneyGasto(sumPpto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyGasto(sumPpto);
                 var deltaFoot = yoyTot == null ? htmlCargando('sm') : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
+                var deltaFootCls = (yoyTot != null && sumGasto) ? deltaToneClass(yoyTot) : '';
                 tf.innerHTML = '<tr>' +
                     '<td colspan="4">Totales · ' + nCli + (nCli === 1 ? ' cliente' : ' clientes') + '</td>' +
                     '<td class="num">' + gastoFoot + '</td>' +
                     '<td class="num">' + pptoFoot + '</td>' +
-                    '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + deltaFoot + '</td>' +
+                    '<td class="num ' + deltaFootCls + '">' + deltaFoot + '</td>' +
                     '<td colspan="2"></td>' +
                     '</tr>';
             }

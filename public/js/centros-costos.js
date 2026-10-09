@@ -173,6 +173,13 @@
         return Math.round(((now - prev) / prev) * 1000) / 10;
     }
 
+    /** En costos, un Δ% positivo (más gasto) va en rojo y uno negativo (menos gasto) en verde. */
+    function deltaCostoClass(d) {
+        var n = Number(d);
+        if (!isFinite(n) || n === 0) return 'cc-delta-flat';
+        return n > 0 ? 'cc-delta-down' : 'cc-delta-up';
+    }
+
     function loadJSON(key, fallback) {
         try {
             var raw = localStorage.getItem(key);
@@ -5615,7 +5622,7 @@
                     '<td><div class="d-flex justify-content-between"><span>' + c.capturadas + '/' + c.cuentas + '</span><span>' + c.avance + '%</span></div><div class="cc-progress ' + cls + ' mt-1"><span style="width:' + Math.min(c.avance, 100) + '%"></span></div></td>' +
                     '<td class="num">' + (c.gastoListo ? moneyVista(c.gasto) : htmlCargando('sm')) + '</td>' +
                     '<td class="num">' + moneyVista(c.ppto) + '</td>' +
-                    '<td class="num ' + (c.gastoListo && c.yoY > 10 ? 'text-danger' : '') + '">' + (c.gastoListo ? (c.gasto ? ((c.yoY > 0 ? '+' : '') + c.yoY + '%') : '—') : htmlCargando('sm')) + '</td>' +
+                    '<td class="num ' + ((c.gastoListo && c.gasto) ? deltaCostoClass(c.yoY) : '') + '">' + (c.gastoListo ? (c.gasto ? ((c.yoY > 0 ? '+' : '') + c.yoY + '%') : '—') : htmlCargando('sm')) + '</td>' +
                     '<td>' + (!c.gastoListo ? htmlCargando('sm') : (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>')) + '</td>' +
                     '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
             }).join('') || '<tr><td colspan="10"><div class="cc-empty">Sin coincidencias</div></td></tr>';
@@ -5645,12 +5652,13 @@
                     ? (tableRows.some(function (c) { return c.gastoListo; }) ? (moneyVista(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm'))
                     : moneyVista(sumGasto);
                 var deltaFoot = yoyTot == null ? htmlCargando('sm') : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
+                var deltaFootCls = (yoyTot != null && sumGasto) ? deltaCostoClass(yoyTot) : '';
                 tf.innerHTML = '<tr>' +
                     '<td colspan="4">Totales · ' + nCentros + (nCentros === 1 ? ' centro' : ' centros') + '</td>' +
                     '<td><div class="d-flex justify-content-between"><span>' + sumCap + '/' + sumCtas + '</span><span>' + avTot + '%</span></div></td>' +
                     '<td class="num">' + gastoFoot + '</td>' +
                     '<td class="num">' + moneyVista(sumPpto) + '</td>' +
-                    '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + deltaFoot + '</td>' +
+                    '<td class="num ' + deltaFootCls + '">' + deltaFoot + '</td>' +
                     '<td colspan="2"></td>' +
                     '</tr>';
             }
