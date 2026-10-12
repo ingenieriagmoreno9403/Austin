@@ -271,13 +271,13 @@
                     Formato: <code>Empresa · CardCode · Cliente · ItemCode · Producto · Moneda · PrecioGlobal · Ene…Dic</code>.
                 </p>
                 <ol class="mb-3" style="font-size:.85rem; padding-left:1.2rem">
-                    <li>Descarga la plantilla con los datos de tu BD.</li>
+                    <li>Descarga la plantilla con los datos de tu búsqueda actual (empresa, cliente, ItemCode).</li>
                     <li>Edita <b>Ene–Dic</b> para precio por mes (vacío = no se toca). Solo <b>PrecioGlobal</b> aplica a los 12 meses.</li>
                     <li>Sube el archivo para actualizar el maestro local.</li>
                 </ol>
                 <div class="d-grid gap-2 mb-3">
                     <button type="button" class="cc-btn cc-btn-ink" id="pv-precios-descargar">
-                        <i class="fa-solid fa-download"></i> Descargar plantilla con datos
+                        <i class="fa-solid fa-download"></i> Descargar plantilla (filtro actual)
                     </button>
                 </div>
                 <label class="form-label">Subir Excel editado</label>

@@ -11926,8 +11926,12 @@
             dlBtn.addEventListener('click', function () {
                 var plantillaUrl = CC.state.costosPlantillaUrl || (url + '/plantilla');
                 var emp = empSel ? String(empSel.value || '') : '';
+                var cliente = clienteEl ? String(clienteEl.value || '').trim() : '';
+                var itemcode = itemEl ? String(itemEl.value || '').trim() : '';
                 var qs = '?anio=' + encodeURIComponent(String(costosAnio()));
                 if (emp) qs += '&empresa=' + encodeURIComponent(emp);
+                if (cliente) qs += '&cliente=' + encodeURIComponent(cliente);
+                if (itemcode) qs += '&itemcode=' + encodeURIComponent(itemcode);
                 window.location.href = plantillaUrl + qs;
             });
         }

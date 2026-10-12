@@ -1376,9 +1376,16 @@ class ProyeccionesVentasController extends Controller
         }
 
         $empresa = strtoupper(trim((string) $request->get('empresa', '')));
+        $cliente = trim((string) $request->get('cliente', ''));
+        $itemcode = trim((string) $request->get('itemcode', $request->get('item_code', '')));
+        $q = trim((string) $request->get('q', ''));
         $anio = $this->anioProyeccionCostos((int) $request->get('anio', 0));
+        // Misma consulta que la tabla (sin paginar): respeta filtros de pantalla.
         $listReq = Request::create('/ProyeccionesVentas/api/costos', 'GET', [
             'empresa' => $empresa,
+            'cliente' => $cliente,
+            'itemcode' => $itemcode,
+            'q' => $q,
             'anio' => $anio,
             'grouped' => 1,
             'sin_paginar' => 1,
@@ -1417,6 +1424,9 @@ class ProyeccionesVentasController extends Controller
         }
 
         $suffix = $empresa !== '' ? '_'.$empresa : '';
+        if ($cliente !== '') {
+            $suffix .= '_'.preg_replace('/[^A-Za-z0-9_-]+/', '', $cliente);
+        }
         $filename = 'Formato_Precios'.$suffix.'_'.now()->format('Ymd').'.xlsx';
 
         return Excel::download(new PvPreciosPlantillaExport($rows, $anio), $filename);
@@ -6534,6 +6544,9 @@ class ProyeccionesVentasController extends Controller
                 $empresa = strtoupper($this->celdaTexto($row[$map['empresa']] ?? ''));
                 $centro = $this->celdaTexto($row[$map['centro']] ?? '');
                 $cuenta = $this->celdaTexto($row[$map['cuenta']] ?? '');
+                $cuentaNombre = ($map['cuenta_nombre'] !== null)
+                    ? $this->celdaTexto($row[$map['cuenta_nombre']] ?? '')
+                    : '';
                 if ($empresa === '' && $centro === '' && $cuenta === '') {
                     $omitidas++;
                     continue;
@@ -6542,7 +6555,7 @@ class ProyeccionesVentasController extends Controller
                     $errores[] = ['fila' => $fila, 'mensaje' => 'Empresa, cliente o producto vacíos'];
                     continue;
                 }
-                $info = $this->buscarCuentaCaptura($permitidas, $empresa, $centro, $cuenta);
+                $info = $this->buscarCuentaCaptura($permitidas, $empresa, $centro, $cuenta, $cuentaNombre);
                 if (! $info) {
                     $errores[] = ['fila' => $fila, 'mensaje' => 'No tienes ese producto asignado ('.$empresa.' / '.$centro.' / '.$cuenta.')'];
                     continue;
@@ -6710,6 +6723,7 @@ class ProyeccionesVentasController extends Controller
         $empresa = null;
         $centro = null;
         $cuenta = null;
+        $cuentaNombre = null;
         $meses = [];
         $mesAlias = [
             'ene' => 0, 'enero' => 0, 'jan' => 0, 'january' => 0, 'mes_01' => 0, 'mes01' => 0, 'm01' => 0,
@@ -6743,6 +6757,13 @@ class ProyeccionesVentasController extends Controller
                 $centro = (int) $idx;
                 continue;
             }
+            if (in_array($norm, [
+                'producto_nombre', 'itemname', 'item_name', 'nombre_producto',
+                'cuenta_nombre', 'account_name', 'nombre_cuenta',
+            ], true)) {
+                $cuentaNombre = (int) $idx;
+                continue;
+            }
             // Plantilla PV: producto. Compatibilidad con plantillas CC: cuenta.
             if (in_array($norm, [
                 'producto', 'producto_codigo', 'itemcode', 'item_code', 'articulo',
@@ -6764,6 +6785,7 @@ class ProyeccionesVentasController extends Controller
             'empresa' => $empresa,
             'centro' => $centro,
             'cuenta' => $cuenta,
+            'cuenta_nombre' => $cuentaNombre,
             'meses' => array_values($meses),
         ];
     }
@@ -9210,7 +9232,33 @@ class ProyeccionesVentasController extends Controller
         return $s !== '' ? $s : $this->codigoCuentaKey($codigo);
     }
 
+    /**
+     * Código de producto en plantilla Excel.
+     * ItemCode SAP (con letras) se exporta completo; si no, el import no lo reconoce
+     * (p. ej. AUSCA-001 → "1" rompía ~800 filas de Luis Betancourt).
+     */
     protected function codigoCuentaPlantilla(string $codigo): string
+    {
+        $s = trim($codigo);
+        if ($s === '') {
+            return '';
+        }
+        if ($this->esItemCodeSap($s)) {
+            return $this->codigoCuentaVisible($s);
+        }
+
+        $digits = $this->codigoCuentaKey($s);
+        if ($digits !== '' && preg_match('/^\d+$/', $digits)) {
+            $trimmed = ltrim($digits, '0');
+
+            return $trimmed !== '' ? $trimmed : $digits;
+        }
+
+        return $this->codigoCuentaVisible($s);
+    }
+
+    /** Comportamiento viejo (solo dígitos) para reconocer plantillas ya descargadas. */
+    protected function codigoCuentaPlantillaLegacy(string $codigo): string
     {
         $digits = $this->codigoCuentaKey($codigo);
         if ($digits !== '' && preg_match('/^\d+$/', $digits)) {
@@ -9226,11 +9274,67 @@ class ProyeccionesVentasController extends Controller
      * @param  array<string, array{cuenta: string, nombre: string, capturar: bool}>  $permitidas
      * @return array{cuenta: string, nombre: string, capturar: bool}|null
      */
-    protected function buscarCuentaCaptura(array $permitidas, string $empresa, string $centro, string $cuenta): ?array
-    {
+    protected function buscarCuentaCaptura(
+        array $permitidas,
+        string $empresa,
+        string $centro,
+        string $cuenta,
+        ?string $cuentaNombre = null
+    ): ?array {
         foreach ($this->clavesCuentaCaptura($empresa, $centro, $cuenta) as $key) {
             if (isset($permitidas[$key])) {
                 return $permitidas[$key];
+            }
+        }
+
+        $prefix = $this->capturaBudgetKey($empresa, $centro, '');
+        $cuenta = trim($cuenta);
+        $nombre = trim((string) $cuentaNombre);
+        $candidatos = [];
+
+        // Plantilla rota: ItemCode se bajó solo con dígitos (AUSCA-001 → 1).
+        if ($cuenta !== '' && ! $this->esItemCodeSap($cuenta) && preg_match('/^\d+$/', $cuenta)) {
+            foreach ($permitidas as $key => $info) {
+                if (strpos($key, $prefix) !== 0) {
+                    continue;
+                }
+                $cod = trim((string) ($info['cuenta'] ?? ''));
+                if ($cod === '') {
+                    continue;
+                }
+                if ($this->codigoCuentaPlantillaLegacy($cod) === $cuenta
+                    || ltrim($this->codigoCuentaKey($cod), '0') === ltrim($cuenta, '0')) {
+                    $candidatos[$cod] = $info;
+                }
+            }
+            if (count($candidatos) === 1) {
+                return reset($candidatos) ?: null;
+            }
+            if (count($candidatos) > 1 && $nombre !== '') {
+                $n = mb_strtoupper($nombre);
+                foreach ($candidatos as $info) {
+                    if (mb_strtoupper(trim((string) ($info['nombre'] ?? ''))) === $n) {
+                        return $info;
+                    }
+                }
+            }
+        }
+
+        // Respaldo por nombre de producto dentro del mismo cliente.
+        if ($nombre !== '') {
+            $n = mb_strtoupper($nombre);
+            $porNombre = [];
+            foreach ($permitidas as $key => $info) {
+                if (strpos($key, $prefix) !== 0) {
+                    continue;
+                }
+                if (mb_strtoupper(trim((string) ($info['nombre'] ?? ''))) === $n) {
+                    $cod = trim((string) ($info['cuenta'] ?? ''));
+                    $porNombre[$cod !== '' ? $cod : $key] = $info;
+                }
+            }
+            if (count($porNombre) === 1) {
+                return reset($porNombre) ?: null;
             }
         }
 
