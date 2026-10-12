@@ -9674,7 +9674,8 @@
             if (c.proyLista) {
                 byEmp[c.empresa].av += c.avance;
                 byEmp[c.empresa].avN += 1;
-                byEmp[c.empresa].ppto += c.ppto;
+                // Misma base que gráfica/tabla: importe ya en moneda de vista (TC por mes).
+                byEmp[c.empresa].ppto += Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0;
             } else {
                 byEmp[c.empresa].proyPend += 1;
             }
@@ -9693,8 +9694,8 @@
                     ? (info.ventaPend === info.n ? htmlCargando('sm') : (moneyVista(info.gasto) + ' · ' + htmlCargando('sm')))
                     : moneyVista(info.gasto);
                 var proyTxt = info.proyPend
-                    ? (info.proyPend === info.n ? htmlCargando('sm') : (money(info.ppto) + ' · ' + htmlCargando('sm')))
-                    : money(info.ppto);
+                    ? (info.proyPend === info.n ? htmlCargando('sm') : (moneyGasto(info.ppto) + ' · ' + htmlCargando('sm')))
+                    : moneyGasto(info.ppto);
                 var bar = av == null
                     ? '<div class="mt-1">' + htmlCargando('sm') + '</div>'
                     : '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>';
