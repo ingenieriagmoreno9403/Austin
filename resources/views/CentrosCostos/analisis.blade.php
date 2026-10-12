@@ -117,8 +117,8 @@
     <div class="cc-kpis cc-kpis-equal" id="an-kpis">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Cuentas ya capturadas</div></div>
         <div class="cc-kpi is-warn"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Centros debajo del 40%</div></div>
-        <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Ppto &gt; 110% del gasto real</div></div>
-        <div class="cc-kpi"><div class="label">Variación vs gasto</div><div class="value" id="an-kpi-yoy">—</div><div class="hint" id="an-kpi-yoy-hint">Promedio de aumento</div></div>
+        <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Ppto &gt; gasto real</div></div>
+        <div class="cc-kpi"><div class="label">Variación vs gasto</div><div class="value" id="an-kpi-yoy">—</div><div class="hint" id="an-kpi-yoy-hint">Presupuesto vs gasto</div></div>
     </div>
 
     <div class="cc-split">

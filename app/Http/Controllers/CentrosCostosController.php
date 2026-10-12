@@ -96,6 +96,8 @@ class CentrosCostosController extends Controller
     {
         return $this->page('analisis', 'CentrosCostos.analisis', [
             'detalleUrl' => route('centros.detalle'),
+            // Filtros al instante: solo lo asignado al usuario para revisión/captura.
+            'misAsignaciones' => $this->misAsignacionesList(''),
         ]);
     }
 

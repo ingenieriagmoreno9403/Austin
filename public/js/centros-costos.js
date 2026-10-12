@@ -2348,17 +2348,11 @@
             return;
         }
         if (CC._revHerenciaLoading === key) return;
-        CC._revHerenciaLoading = key;
-        var herenciaGen = CC._anAsigGen || 0;
-        fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
-            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            cache: 'no-store'
-        }).then(function (r) { return r.json(); }).then(function (json) {
-            if (herenciaGen !== (CC._anAsigGen || 0)) return;
-            if (json && json.asignaciones) CC._anAsigTodas = json.asignaciones;
+
+        function aplicarConLista(asignaciones) {
             var scope = alcanceRevisionPropio(propias);
             var uid = Number(CC.state.usuarioActualId || 0);
-            var extras = filasCubiertasPorRevision(json.asignaciones || [], scope).filter(function (a) {
+            var extras = filasCubiertasPorRevision(asignaciones || [], scope).filter(function (a) {
                 return !uid || Number(a.user_id) !== uid;
             }).map(function (a) {
                 return Object.assign({}, a, {
@@ -2372,6 +2366,24 @@
             CC._revHerenciaCiclo = key;
             CC._revHerenciaLoading = '';
             if (luego) luego();
+        }
+
+        // Si ya cargamos asignaciones del ciclo, no repetir el mismo fetch.
+        if (CC._anAsigTodas && CC._anAsigTodas.length) {
+            CC._revHerenciaLoading = key;
+            aplicarConLista(CC._anAsigTodas);
+            return;
+        }
+
+        CC._revHerenciaLoading = key;
+        var herenciaGen = CC._anAsigGen || 0;
+        fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            cache: 'no-store'
+        }).then(function (r) { return r.json(); }).then(function (json) {
+            if (herenciaGen !== (CC._anAsigGen || 0)) return;
+            if (json && json.asignaciones) CC._anAsigTodas = json.asignaciones;
+            aplicarConLista((json && json.asignaciones) || []);
         }).catch(function () {
             if (herenciaGen !== (CC._anAsigGen || 0)) return;
             CC._revHerenciaCiclo = key;
@@ -4551,8 +4563,8 @@
         var p = CC.state.anioPresupuesto || 2027;
         setText('an-kicker', 'Supervisión · presupuesto ' + p);
         setText('an-sub', 'Cuánto se lleva capturado por empresa, centro, cuenta o usuario, y dónde se pasó el límite vs el gasto ' + g + '.');
-        setText('an-kpi-over-hint', 'Ppto ' + p + ' > 110% del gasto ' + g);
-        setText('an-kpi-yoy-hint', 'Promedio de aumento vs ' + g);
+        setText('an-kpi-over-hint', 'Ppto ' + p + ' > gasto ' + g);
+        setText('an-kpi-yoy-hint', 'Presupuesto vs gasto ' + g);
         var title = document.getElementById('an-chart-emp-title');
         if (title) title.innerHTML = '<i class="fa-solid fa-chart-column"></i> Gasto ' + g + ' vs presupuesto ' + p;
         setText('an-th-gasto', 'Gasto ' + g);
@@ -4578,23 +4590,51 @@
         return !!(val('an-empresa') || val('an-centro') || val('an-user'));
     }
 
+    function mismoCicloAsig(a, ciclo) {
+        if (!ciclo) return true;
+        return String((a && a.ciclo) || '').toUpperCase() === String(ciclo).toUpperCase();
+    }
+
+    function empresasDesdeAsignaciones(ciclo) {
+        var empsMap = {};
+        function addEmp(e) {
+            e = String(e || '').toUpperCase().trim();
+            if (e) empsMap[e] = true;
+        }
+        function desdeLista(list, exigirCiclo) {
+            (list || []).forEach(function (a) {
+                if (exigirCiclo && !mismoCicloAsig(a, ciclo)) return;
+                addEmp(a.empresa);
+            });
+        }
+        // 1) del ciclo actual
+        desdeLista(CC._asigPropias, true);
+        desdeLista(CC.state.misAsignaciones, true);
+        (CC.state.centros || []).forEach(function (c) { addEmp(c.empresa); });
+        Object.keys(CC._anScopeRevision || {}).forEach(addEmp);
+        var emps = Object.keys(empsMap).sort();
+        // 2) si el ciclo no matcheó (mayúsculas / código), usar todas las propias
+        if (!emps.length) {
+            desdeLista(CC._asigPropias, false);
+            desdeLista(CC.state.misAsignaciones, false);
+            emps = Object.keys(empsMap).sort();
+        }
+        return emps;
+    }
+
     function fillAnalisisFilters() {
         var rows = (CC.state.centros || []).map(mergedCentro);
         var empEl = document.getElementById('an-empresa');
         var centroEl = document.getElementById('an-centro');
         var userEl = document.getElementById('an-user');
+        var ciclo = val('an-ciclo') || CC.state.cicloCodigo || '';
         var emp = empEl ? empEl.value : '';
         var centro = centroEl ? centroEl.value : '';
         var user = userEl ? userEl.value : '';
-        var emps = [];
-        rows.forEach(function (c) {
-            if (c.empresa && emps.indexOf(c.empresa) === -1) emps.push(c.empresa);
-        });
-        Object.keys(CC._anScopeRevision || {}).forEach(function (e) {
-            if (e && emps.indexOf(e) === -1) emps.push(e);
-        });
-        emps.sort();
-        if (emp && emp !== AN_EMP_TODAS && emps.indexOf(emp) === -1) emp = '';
+        var emps = empresasDesdeAsignaciones(ciclo);
+        var empsMap = {};
+        emps.forEach(function (e) { empsMap[e] = true; });
+        if (emp && emp !== AN_EMP_TODAS && !empsMap[emp]) emp = '';
         var empConcreta = empresaAnalisisConcreta(emp);
         var scoped = rows.filter(function (c) {
             return !empConcreta || c.empresa === empConcreta;
@@ -4603,15 +4643,21 @@
         var forUsers = scoped.filter(function (c) {
             return !centro || centroAnalisisKey(c) === centro;
         });
-        var users = [];
+        var usersMap = {};
         forUsers.forEach(function (c) {
             var names = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             names.forEach(function (n) {
-                if (n && users.indexOf(n) === -1) users.push(n);
+                if (n) usersMap[n] = true;
             });
         });
-        users.sort();
-        if (user && users.indexOf(user) === -1) user = '';
+        // Usuarios también desde asignaciones propias (aunque aún no haya centros expandidos).
+        (CC._asigPropias || []).forEach(function (a) {
+            if (ciclo && String(a.ciclo || '') !== String(ciclo)) return;
+            if (empConcreta && String(a.empresa || '').toUpperCase().trim() !== empConcreta) return;
+            if (a.usuario) usersMap[a.usuario] = true;
+        });
+        var users = Object.keys(usersMap).sort();
+        if (user && !usersMap[user]) user = '';
         var forCentros = scoped.filter(function (c) {
             if (!user) return true;
             return (c.usuarios || []).indexOf(user) !== -1 || c.usuario === user;
@@ -4627,6 +4673,7 @@
             items.push({ codigo: key, nombre: label });
         });
         items.sort(function (a, b) { return String(a.nombre).localeCompare(String(b.nombre), 'es'); });
+        if (empEl) empEl.removeAttribute('data-opt-firma');
         var empChanged = fillSelectKeepEscaped(empEl, emps, '<option value="">Seleccionar</option><option value="' + AN_EMP_TODAS + '">Todas</option>');
         var centroChanged = fillSelectKeepEscaped(centroEl, items, '<option value="">Todos los centros</option>');
         var userChanged = fillSelectKeepEscaped(userEl, users.map(function (n) {
@@ -4635,7 +4682,8 @@
         if (empEl) empEl.value = emp;
         if (centroEl) centroEl.value = centro;
         if (userEl) userEl.value = user;
-        syncAnalisisSelectSearch(empEl, empChanged);
+        // Empresa: siempre recrear Select2; si no, se queda con data vacía ("No results found").
+        syncAnalisisSelectSearch(empEl, true);
         syncAnalisisSelectSearch(centroEl, centroChanged);
         syncAnalisisSelectSearch(userEl, userChanged);
     }
@@ -4685,6 +4733,9 @@
                 searching: function () { return 'Buscando…'; }
             },
             matcher: function (params, data) {
+                if (!data || typeof data.id === 'undefined' || data.id === null) return null;
+                // Placeholder vacío no se lista; "Todas" (*) y empresas sí.
+                if (String(data.id) === '') return null;
                 if (!params.term || !String(params.term).trim()) return data;
                 var q = normSearch(params.term);
                 var t = normSearch((data.text || '') + ' ' + (data.id || ''));
@@ -4749,10 +4800,6 @@
         var abierto = false;
         try { abierto = !!($el.data('select2') && $el.data('select2').isOpen && $el.data('select2').isOpen()); } catch (e) {}
         if (abierto && !optionsChanged) return;
-        if (abierto && optionsChanged) {
-            CC._anSelectRefresh = true;
-            return;
-        }
         CC._anFillingFilters = true;
         try {
             if ($el.hasClass('select2-hidden-accessible') && !optionsChanged) {
@@ -4764,7 +4811,9 @@
                 try { $el.select2('destroy'); } catch (e2) {}
             }
             $el.siblings('.select2-container').remove();
-            $el.removeAttr('data-select2-id');
+            // Select2 deja data-select2-id en <select> y <option>; si no se limpia → "No results found".
+            $el.removeAttr('data-select2-id').removeAttr('aria-hidden').removeClass('select2-hidden-accessible');
+            $el.find('option').removeAttr('data-select2-id');
             $el.select2(analisisSelectSearchOpts(el));
             if (!$el.data('anSearchBound')) {
                 $el.data('anSearchBound', 1);
@@ -4807,9 +4856,11 @@
         }
         paintAnalisisYears();
         CC._anVistaConfirmada = false;
-        CC._asigPropias = null;
+        // Conservar _asigPropias del bootstrap: los filtros se repintan al instante al cambiar ciclo.
         CC._anAsigTodas = null;
         CC._revHerenciaCiclo = '';
+        CC._anExpandLoading = '';
+        CC._anMisFetchTried = false;
         CC._anCapturaCiclo = null;
         CC._anAsigLoaded = false;
         CC._anAsigLoading = false;
@@ -4882,72 +4933,93 @@
         CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
         var mon = document.getElementById('ctl-moneda');
         if (mon) mon.value = String(CC.state.currency || 'MXN').toUpperCase() === 'USD' ? 'USD' : 'MXN';
-        fillAnalisisFilters();
+
+        // Captura/overlays en paralelo: no bloquean empresa/centro/usuario.
         if (CC._anCapturaCiclo !== String(CC.state.cicloCodigo || '')) {
             CC._anCapturaCiclo = String(CC.state.cicloCodigo || '');
-            loadOverlaysForCycle().then(function () { CC.initAnalisis(); });
-            return;
-        }
-
-        if (!CC._anAsigLoaded) {
-            if (CC._anAsigLoading) return;
-            if (!ciclo) {
-                CC.state.misAsignaciones = CC.state.misAsignaciones || [];
-                CC.state.centros = [];
-                CC._anAsigLoaded = true;
-                fillAnalisisFilters();
-                renderAnalisis();
-                return;
-            }
-            CC._anAsigLoading = true;
-            CC._anAsigGen = (CC._anAsigGen || 0) + 1;
-            var asigGen = CC._anAsigGen;
-            fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
-                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                cache: 'no-store'
-            }).then(function (r) { return r.json(); }).then(function (json) {
-                if (asigGen !== CC._anAsigGen) return;
-                var list = (json && json.asignaciones) || [];
-                CC._anAsigTodas = list;
-                recordarAsignacionesPropias(list);
-                CC.state.misAsignaciones = filasVisiblesRevision(list);
-                CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                fillAnalisisFilters();
-                aplicarHerenciaRevision(ciclo, function () {
-                    if (asigGen !== CC._anAsigGen) return;
-                    var base = (CC._anAsigTodas && CC._anAsigTodas.length) ? CC._anAsigTodas : (CC.state.misAsignaciones || []);
-                    CC.state.misAsignaciones = filasVisiblesRevision(base);
-                    CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                    CC._anAsigLoaded = true;
-                    CC._anAsigLoading = false;
-                    fillAnalisisFilters();
-                    var st = document.getElementById('an-sap-status');
-                    if (st && st.textContent === 'Actualizando empresas, centros y usuarios…') st.textContent = '';
-                    if (CC._anVistaConfirmada && analisisTieneFiltro()) queueAnalisisGastos();
-                    else renderAnalisis();
-                });
-            }).catch(function () {
-                if (asigGen !== CC._anAsigGen) return;
-                var list = CC.state.misAsignaciones || [];
-                CC.state.misAsignaciones = filasVisiblesRevision(list);
-                CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                CC._anAsigLoaded = true;
-                CC._anAsigLoading = false;
-                fillAnalisisFilters();
-                var st = document.getElementById('an-sap-status');
-                if (st && st.textContent === 'Actualizando empresas, centros y usuarios…') {
-                    st.textContent = 'No se pudo actualizar la lista. Intenta de nuevo.';
-                }
-                renderAnalisis();
+            loadOverlaysForCycle().then(function () {
+                if (CC.state.page !== 'analisis') return;
+                if (CC._anVistaConfirmada && analisisTieneFiltro()) renderAnalisis();
             });
-            return;
         }
 
-        CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-        fillAnalisisFilters();
+        hidratarFiltrosAnalisis(ciclo);
+        var st = document.getElementById('an-sap-status');
+        if (st && st.textContent === 'Actualizando empresas, centros y usuarios…') st.textContent = '';
         if (CC._anVistaConfirmada && analisisTieneFiltro()) queueAnalisisGastos();
         else renderAnalisis();
     };
+
+    /** Pinta filtros al instante; luego expande con el listado del ciclo (como antes). */
+    function hidratarFiltrosAnalisis(ciclo) {
+        var propias = CC._asigPropias || filasDelUsuarioActual(CC.state.misAsignaciones || []);
+        recordarAsignacionesPropias(propias);
+
+        var fuente = (CC._anAsigTodas && CC._anAsigTodas.length) ? CC._anAsigTodas : propias;
+        if (!ciclo) {
+            CC.state.misAsignaciones = propias.slice();
+            CC.state.centros = [];
+        } else {
+            var visibles = filasVisiblesRevision(fuente);
+            var fallback = propias.filter(function (a) { return mismoCicloAsig(a, ciclo); });
+            if (!fallback.length) fallback = propias.slice();
+            CC.state.misAsignaciones = visibles.length ? visibles : fallback;
+            CC.state.centros = centrosAgrupadosDesdeAsignaciones(
+                visibles.length ? CC.state.misAsignaciones.filter(function (a) { return mismoCicloAsig(a, ciclo); }) : fallback
+            );
+        }
+        // Habilitar selects ya: Empresa debe listar al menos lo propio / Todas.
+        CC._anAsigLoaded = true;
+        CC._anAsigLoading = false;
+        fillAnalisisFilters();
+
+        // Lo que antes llenaba Empresa/Centro: asignaciones del ciclo visibles para revisión.
+        if (ciclo && !CC._anAsigTodas) {
+            expandirRevisionAnalisis(ciclo);
+        } else if (!propias.length && !CC._anMisFetchTried) {
+            CC._anMisFetchTried = true;
+            fetch('/CentrosCostos/api/mis-asignaciones', {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                cache: 'no-store'
+            }).then(function (r) { return r.json(); }).then(function (json) {
+                CC.state.misAsignaciones = (json && json.asignaciones) || [];
+                CC._asigPropias = null;
+                recordarAsignacionesPropias(CC.state.misAsignaciones);
+                hidratarFiltrosAnalisis(ciclo);
+                renderAnalisis();
+            }).catch(function () {});
+        }
+    }
+
+    function expandirRevisionAnalisis(ciclo) {
+        if (!ciclo || CC._anExpandLoading === String(ciclo)) return;
+        CC._anExpandLoading = String(ciclo);
+        CC._anAsigGen = (CC._anAsigGen || 0) + 1;
+        var gen = CC._anAsigGen;
+        fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones', {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            cache: 'no-store'
+        }).then(function (r) { return r.json(); }).then(function (json) {
+            if (gen !== CC._anAsigGen || CC.state.page !== 'analisis') return;
+            CC._anAsigTodas = (json && json.asignaciones) || [];
+            recordarAsignacionesPropias(CC._anAsigTodas);
+            CC.state.misAsignaciones = filasVisiblesRevision(CC._anAsigTodas);
+            CC.state.centros = centrosAgrupadosDesdeAsignaciones(
+                (CC.state.misAsignaciones || []).filter(function (a) { return mismoCicloAsig(a, ciclo); })
+            );
+            CC._revHerenciaCiclo = String(ciclo);
+            CC._anExpandLoading = '';
+            // Forzar rebuild del select Empresa (Select2 no ve options nuevas si no se destruye).
+            var empEl = document.getElementById('an-empresa');
+            if (empEl) empEl.removeAttribute('data-opt-firma');
+            fillAnalisisFilters();
+            if (CC._anVistaConfirmada && analisisTieneFiltro()) renderAnalisis();
+        }).catch(function () {
+            if (gen !== CC._anAsigGen) return;
+            CC._revHerenciaCiclo = String(ciclo);
+            CC._anExpandLoading = '';
+        });
+    }
 
     function kickAnalisisVista() {
         if (CC._anFillingFilters) return;
@@ -5108,17 +5180,32 @@
         CC.state.gastoLookup = {};
         CC.state.gastoUsdLookup = {};
         CC.state.gastoReady = {};
-        CC._asigPropias = null;
         CC._anAsigTodas = null;
         CC._revHerenciaCiclo = '';
         CC._revHerenciaLoading = '';
-        CC._anAsigLoaded = false;
-        CC._anAsigLoading = false;
+        CC._anExpandLoading = '';
         CC._anCapturaCiclo = '';
         CC._anAsigGen = (CC._anAsigGen || 0) + 1;
         if (analisisTieneFiltro()) CC._anVistaConfirmada = true;
         if (status) status.textContent = 'Actualizando empresas, centros y usuarios…';
-        CC.initAnalisis();
+        CC._anAsigLoading = true;
+        // Refresh ligero: solo mis asignaciones (no todo el ciclo).
+        fetch('/CentrosCostos/api/mis-asignaciones', {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            cache: 'no-store'
+        }).then(function (r) { return r.json(); }).then(function (json) {
+            CC.state.misAsignaciones = (json && json.asignaciones) || [];
+            CC._asigPropias = null;
+            recordarAsignacionesPropias(CC.state.misAsignaciones);
+            CC._anAsigLoading = false;
+            CC._anAsigLoaded = false;
+            CC.initAnalisis();
+        }).catch(function () {
+            CC._anAsigLoading = false;
+            CC._anAsigLoaded = false;
+            if (status) status.textContent = 'No se pudo actualizar la lista. Intenta de nuevo.';
+            CC.initAnalisis();
+        });
     }
 
     function setAnalisisSelect(el, value) {
@@ -5439,7 +5526,7 @@
                 capturadas: filled,
                 avance: pct(filled, ctas.length || 1),
                 yoY: (listo && usdOk) ? deltaPct(ppto, gasto) : 0,
-                over: listo && usdOk && gasto > 0 && ppto > gasto * 1.1,
+                over: listo && usdOk && gasto > 0 && ppto > gasto,
                 departamento: deptoDeCentro(c),
                 usuarios: users,
                 monthGasto: (listo && usdOk) ? MONTHS.map(function (_, i) {
@@ -5497,7 +5584,7 @@
     }
 
     function renderAnalisis() {
-        if (!CC._anFillingFilters && !analisisBuscadorAbierto()) fillAnalisisFilters();
+        // Los filtros se refrescan en kick/init/herencia; no reconstruir Select2 en cada repaint de gastos.
         var q = (val('an-q') || '').toLowerCase();
         var emp = empresaAnalisisConcreta();
         var centro = val('an-centro');
@@ -5563,6 +5650,20 @@
             if (!listo) el.innerHTML = htmlCargando('lg');
             else el.textContent = text;
         }
+        // Variación KPI y pie Δ %: misma base (tableRows) y misma fórmula.
+        var sumGastoYoy = 0;
+        var sumPptoYoy = 0;
+        var gastoPendYoy = false;
+        tableRows.forEach(function (c) {
+            sumPptoYoy += Number(c.ppto) || 0;
+            if (c.gastoListo) sumGastoYoy += Number(c.gasto) || 0;
+            else gastoPendYoy = true;
+        });
+        var yoyTotShared = (!gastoPendYoy && sumGastoYoy) ? deltaPct(sumPptoYoy, sumGastoYoy) : null;
+        var yoyTxtShared = gastoPendYoy
+            ? null
+            : (sumGastoYoy ? ((yoyTotShared > 0 ? '+' : '') + yoyTotShared + '%') : '—');
+
         var gastoListo = !rows.length || rows.every(function (c) { return c.gastoListo; });
         if (!rows.length) {
             setText('an-kpi-avance', all.length ? '—' : '—');
@@ -5575,14 +5676,11 @@
             var poco = rows.filter(function (c) { return c.avance < 40; }).length;
             var loaded = rows.filter(function (c) { return c.gastoListo; });
             var over = loaded.filter(function (c) { return c.over; }).length;
-            var withGasto = loaded.filter(function (c) { return c.gasto > 0; });
-            var avgYoy = withGasto.length
-                ? Math.round(withGasto.reduce(function (a, c) { return a + c.yoY; }, 0) / withGasto.length * 10) / 10
-                : 0;
             setText('an-kpi-avance', avgAv + '%');
             setText('an-kpi-poco', poco);
             paintKpi('an-kpi-over', gastoListo, String(over));
-            paintKpi('an-kpi-yoy', gastoListo, withGasto.length ? ((avgYoy > 0 ? '+' : '') + avgYoy + '%') : '—');
+            if (!gastoListo || yoyTxtShared == null) paintKpi('an-kpi-yoy', false, '');
+            else paintKpi('an-kpi-yoy', true, yoyTxtShared);
         }
 
         var byEmp = {};
@@ -5633,31 +5731,24 @@
             if (!tableRows.length) {
                 tf.innerHTML = '';
             } else {
-                var sumGasto = 0;
-                var sumPpto = 0;
                 var sumCap = 0;
                 var sumCtas = 0;
-                var gastoPend = false;
                 tableRows.forEach(function (c) {
                     sumCap += Number(c.capturadas) || 0;
                     sumCtas += Number(c.cuentas) || 0;
-                    sumPpto += Number(c.ppto) || 0;
-                    if (c.gastoListo) sumGasto += Number(c.gasto) || 0;
-                    else gastoPend = true;
                 });
                 var avTot = pct(sumCap, sumCtas);
-                var yoyTot = gastoPend ? null : deltaPct(sumPpto, sumGasto);
                 var nCentros = tableRows.length;
-                var gastoFoot = gastoPend
-                    ? (tableRows.some(function (c) { return c.gastoListo; }) ? (moneyVista(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm'))
-                    : moneyVista(sumGasto);
-                var deltaFoot = yoyTot == null ? htmlCargando('sm') : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
-                var deltaFootCls = (yoyTot != null && sumGasto) ? deltaCostoClass(yoyTot) : '';
+                var gastoFoot = gastoPendYoy
+                    ? (tableRows.some(function (c) { return c.gastoListo; }) ? (moneyVista(sumGastoYoy) + ' · ' + htmlCargando('sm')) : htmlCargando('sm'))
+                    : moneyVista(sumGastoYoy);
+                var deltaFoot = yoyTxtShared == null ? htmlCargando('sm') : yoyTxtShared;
+                var deltaFootCls = (yoyTotShared != null && sumGastoYoy) ? deltaCostoClass(yoyTotShared) : '';
                 tf.innerHTML = '<tr>' +
                     '<td colspan="4">Totales · ' + nCentros + (nCentros === 1 ? ' centro' : ' centros') + '</td>' +
                     '<td><div class="d-flex justify-content-between"><span>' + sumCap + '/' + sumCtas + '</span><span>' + avTot + '%</span></div></td>' +
                     '<td class="num">' + gastoFoot + '</td>' +
-                    '<td class="num">' + moneyVista(sumPpto) + '</td>' +
+                    '<td class="num">' + moneyVista(sumPptoYoy) + '</td>' +
                     '<td class="num ' + deltaFootCls + '">' + deltaFoot + '</td>' +
                     '<td colspan="2"></td>' +
                     '</tr>';

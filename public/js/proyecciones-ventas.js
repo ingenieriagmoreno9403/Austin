@@ -8208,8 +8208,8 @@
         var p = CC.state.anioPresupuesto || 2027;
         setText('an-kicker', 'Supervisión · proyección ' + p);
         setText('an-sub', 'Cuánto se lleva capturado por empresa, cliente, producto o usuario, y la diferencia vs la venta real (cantidad × costo).');
-        setText('an-kpi-over-hint', 'Proy. ' + p + ' > 110% de la venta ' + g);
-        setText('an-kpi-yoy-hint', 'Promedio de aumento vs ' + g);
+        setText('an-kpi-over-hint', 'Proy. ' + p + ' > venta ' + g);
+        setText('an-kpi-yoy-hint', 'Proyección vs venta ' + g);
         var title = document.getElementById('an-chart-emp-title');
         if (title) title.innerHTML = '<i class="fa-solid fa-chart-column"></i> Venta ' + g + ' vs proyección ' + p;
         setText('an-th-gasto', 'Venta ' + g);
@@ -9287,7 +9287,7 @@
                 capturadas: filled,
                 avance: pct(filled, ctas.length || 1),
                 yoY: deltaPct(pptoVista, gasto),
-                over: gasto > 0 && pptoVista > gasto * 1.1,
+                over: gasto > 0 && deltaPct(pptoVista, gasto) > 0,
                 ventaLista: ventaCentroLista(c),
                 proyLista: !!CC._capturaReady,
                 departamento: deptoDeCentro(c),
@@ -9392,7 +9392,7 @@
                     monthsVenta: monthsVenta,
                     monthsProy: monthsProy,
                     yoY: deltaPct(ppto, gasto),
-                    over: gasto > 0 && ppto > gasto * 1.1,
+                    over: gasto > 0 && deltaPct(ppto, gasto) > 0,
                     capturadas: capturadas,
                     avance: listo ? 100 : pct(filled, 12),
                     ventaLista: !!c.ventaLista,
@@ -9635,6 +9635,24 @@
             return String(a.nombre || a.codigo || '').localeCompare(String(b.nombre || b.codigo || ''), 'es');
         });
 
+        // Variación KPI y pie Δ año: misma base (tableRows) y misma fórmula.
+        var sumGastoYoy = 0;
+        var sumPptoYoy = 0;
+        var ventaPendYoy = false;
+        var proyPendYoy = false;
+        tableRows.forEach(function (c) {
+            if (c.ventaLista) sumGastoYoy += Number(c.gasto) || 0;
+            else ventaPendYoy = true;
+            if (c.proyLista) sumPptoYoy += Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0;
+            else proyPendYoy = true;
+        });
+        var yoyTotShared = (!ventaPendYoy && !proyPendYoy)
+            ? (sumGastoYoy ? deltaPct(sumPptoYoy, sumGastoYoy) : null)
+            : null;
+        var yoyTxtShared = (ventaPendYoy || proyPendYoy)
+            ? null
+            : (sumGastoYoy ? ((yoyTotShared > 0 ? '+' : '') + yoyTotShared + '%') : '—');
+
         if (!rows.length) {
             setText('an-kpi-avance', '—');
             setText('an-kpi-poco', all.length ? '0' : '—');
@@ -9658,12 +9676,9 @@
                 setLoading('an-kpi-yoy');
             } else {
                 var over = listosVenta.filter(function (c) { return c.over; }).length;
-                var withGasto = listosVenta.filter(function (c) { return c.gasto > 0; });
-                var avgYoy = withGasto.length
-                    ? Math.round(withGasto.reduce(function (a, c) { return a + c.yoY; }, 0) / withGasto.length * 10) / 10
-                    : 0;
                 setText('an-kpi-over', over);
-                setText('an-kpi-yoy', withGasto.length ? ((avgYoy > 0 ? '+' : '') + avgYoy + '%') : '—');
+                if (yoyTxtShared == null) setLoading('an-kpi-yoy');
+                else setText('an-kpi-yoy', yoyTxtShared);
             }
         }
 
@@ -9724,12 +9739,13 @@
                 var proyCell = c.proyLista ? moneyGasto(pptoVal) : htmlCargando('sm');
                 var yoY = Number(c.yoY) || 0;
                 var showDelta = c.ventaLista && c.proyLista && Number(c.gasto);
+                var overLimite = !!(showDelta && yoY > 0);
                 var deltaCell = (c.ventaLista && c.proyLista)
                     ? (Number(c.gasto) ? ((yoY > 0 ? '+' : '') + yoY + '%') : '—')
                     : htmlCargando('sm');
                 var deltaCls = showDelta ? deltaToneClass(yoY) : '';
                 var limiteCell = (c.ventaLista && c.proyLista)
-                    ? (c.over ? '<span class="cc-badge cc-badge-aceptado">Sobre límite</span>' : '<span class="cc-badge cc-badge-rechazado">Dentro</span>')
+                    ? (overLimite ? '<span class="cc-badge cc-badge-aceptado">Sobre límite</span>' : '<span class="cc-badge cc-badge-rechazado">Dentro</span>')
                     : htmlCargando('sm');
                 return '<tr><td>' + htmlNombreCodigo(c.nombre || c.codigo, c.codigo) +
                     (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
@@ -9749,22 +9765,15 @@
             if (!tableRows.length) {
                 tf.innerHTML = '';
             } else {
-                var sumGasto = 0;
-                var sumPpto = 0;
-                var ventaPend = false;
-                var proyPend = false;
-                tableRows.forEach(function (c) {
-                    if (c.ventaLista) sumGasto += Number(c.gasto) || 0;
-                    else ventaPend = true;
-                    if (c.proyLista) sumPpto += Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0;
-                    else proyPend = true;
-                });
-                var yoyTot = (!ventaPend && !proyPend) ? deltaPct(sumPpto, sumGasto) : null;
                 var nCli = tableRows.length;
-                var gastoFoot = ventaPend ? (tableRows.some(function (c) { return c.ventaLista; }) ? (moneyDosDecimales(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyDosDecimales(sumGasto);
-                var pptoFoot = proyPend ? (tableRows.some(function (c) { return c.proyLista; }) ? (moneyGasto(sumPpto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyGasto(sumPpto);
-                var deltaFoot = yoyTot == null ? htmlCargando('sm') : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
-                var deltaFootCls = (yoyTot != null && sumGasto) ? deltaToneClass(yoyTot) : '';
+                var gastoFoot = ventaPendYoy
+                    ? (tableRows.some(function (c) { return c.ventaLista; }) ? (moneyDosDecimales(sumGastoYoy) + ' · ' + htmlCargando('sm')) : htmlCargando('sm'))
+                    : moneyDosDecimales(sumGastoYoy);
+                var pptoFoot = proyPendYoy
+                    ? (tableRows.some(function (c) { return c.proyLista; }) ? (moneyGasto(sumPptoYoy) + ' · ' + htmlCargando('sm')) : htmlCargando('sm'))
+                    : moneyGasto(sumPptoYoy);
+                var deltaFoot = yoyTxtShared == null ? htmlCargando('sm') : yoyTxtShared;
+                var deltaFootCls = (yoyTotShared != null && sumGastoYoy) ? deltaToneClass(yoyTotShared) : '';
                 tf.innerHTML = '<tr>' +
                     '<td colspan="4">Totales · ' + nCli + (nCli === 1 ? ' cliente' : ' clientes') + '</td>' +
                     '<td class="num">' + gastoFoot + '</td>' +
