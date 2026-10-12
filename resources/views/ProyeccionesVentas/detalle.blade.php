@@ -51,7 +51,7 @@
                 </div>
             </div>
         </div>
-        <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Elige una fila para verla en la gráfica, o marca Ver todas para el cliente completo.</p>
+        <p class="text-muted" id="ctl-detalle-hint" style="font-size:.8rem;margin:-.35rem 0 .7rem">Solo productos asignados. Elige una fila para verla en la gráfica, o marca Ver todas para el cliente completo.</p>
         <div class="cc-table-wrap">
             <table class="cc-table">
                 <thead id="det-thead"></thead>

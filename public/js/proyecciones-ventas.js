@@ -498,23 +498,19 @@
     }
 
     /**
-     * Detalle: productos del cliente abierto (venta real, proyección y los
-     * asignados a cualquier capturador de ese cliente). No usa la lista del usuario en sesión.
+     * Detalle: solo productos asignados a algún capturador del cliente
+     * (con venta real / proyección si existen). No lista venta SAP sin asignación.
      */
     function cuentasDelClienteDetalle(c) {
-        var merged = mergeCuentasAnalisis(c, []);
         var seen = {};
-        merged.forEach(function (cta) {
-            seen[String(cta.codigo)] = true;
-            seen[codigoCuentaKey(cta.codigo)] = true;
-        });
+        var assigned = [];
         listaCapturadores().forEach(function (a) {
             (a.cuentas || []).forEach(function (x) {
                 var codigo = String((x && x.codigo) || x || '').trim();
                 if (!codigo || seen[codigo] || seen[codigoCuentaKey(codigo)]) return;
                 seen[codigo] = true;
                 seen[codigoCuentaKey(codigo)] = true;
-                merged.push({
+                assigned.push({
                     codigo: codigo,
                     nombre: (x && x.nombre) || codigo,
                     grupo: (x && (x.agrupacion || x.linea)) || 'Asignadas',
@@ -523,7 +519,21 @@
                 });
             });
         });
-        return merged;
+        var ventaByCode = {};
+        productosVentaRealDeCentro(c).forEach(function (cta) {
+            ventaByCode[String(cta.codigo)] = cta;
+            ventaByCode[codigoCuentaKey(cta.codigo)] = cta;
+        });
+        return assigned.map(function (cta) {
+            var v = ventaByCode[String(cta.codigo)] || ventaByCode[codigoCuentaKey(cta.codigo)];
+            if (!v) return cta;
+            return Object.assign({}, cta, v, {
+                codigo: cta.codigo,
+                empresa: c.empresa,
+                nombre: v.nombre || cta.nombre,
+                grupo: v.grupo || cta.grupo
+            });
+        });
     }
 
     function cuentasDeCentro(c) {
@@ -4696,11 +4706,11 @@
             } else if (control.scopeTabla === 'cuenta' && !control.cuenta) {
                 hint.textContent = 'Elige un producto para filtrar el detalle, o cambia a Todo el cliente para verlos todos.';
             } else if (control.chartVerTodas) {
-                hint.textContent = 'Todos los productos del cliente. La gráfica muestra el cliente completo.';
+                hint.textContent = 'Productos asignados del cliente. La gráfica muestra el cliente completo.';
             } else if (cta) {
-                hint.textContent = 'Todos los productos del cliente. La gráfica muestra ' + (cta.nombre || cta.codigo) + '. Marca Ver todas para ver el cliente completo.';
+                hint.textContent = 'Productos asignados del cliente. La gráfica muestra ' + (cta.nombre || cta.codigo) + '. Marca Ver todas para ver el cliente completo.';
             } else {
-                hint.textContent = 'Todos los productos del cliente. Elige una fila para verla en la gráfica, o marca Ver todas.';
+                hint.textContent = 'Productos asignados del cliente. Elige una fila para verla en la gráfica, o marca Ver todas.';
             }
         }
         var wrap = document.getElementById('ctl-chart-todas-wrap');
@@ -6967,7 +6977,7 @@
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
             ? 'No hay filas para este producto con los filtros actuales'
             : (tbodyId === 'det-tbody'
-                ? 'Este cliente no tiene productos con venta ni proyección'
+                ? 'Este cliente no tiene productos asignados'
                 : 'Sin productos asignados a este cliente');
         if (!html) {
             tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
