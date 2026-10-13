@@ -3080,7 +3080,6 @@
 
     function maybeHideDetalleBusy() {
         if (!document.getElementById('cc-detalle-stage')) return;
-        if (CC._sapRefreshPending && !control.centro) return;
         if (control.centro && (gastoInflight(control.centro) || (CC._ctlLocalCargando && !gastoCentroListo(control.centro)))) return;
         hideDetalleBusy();
     }
@@ -6024,21 +6023,19 @@
         if (CC.state.page === 'control') CC.initControl();
         if (CC.state.page === 'detalle') CC.initDetalle();
         if (CC.state.page === 'analisis') CC.initAnalisis();
-        if (CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis') refreshSap(boot.catalogoUrl);
+        // Detalle solo usa asignaciones + copia local de gasto/presupuesto.
+        // El catálogo SAP (varias páginas remotas) solo atrasaba el spinner.
+        if (CC.state.page === 'control' || CC.state.page === 'analisis') refreshSap(boot.catalogoUrl);
     };
 
     function refreshSap(url) {
         if (!url) return;
-        if (CC.state.page === 'detalle') CC._sapRefreshPending = true;
+        if (CC.state.page === 'detalle') return;
         fetch(url + '?per_page=120', {
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (data) {
-            CC._sapRefreshPending = false;
-            if (!data) {
-                if (CC.state.page === 'detalle') maybeHideDetalleBusy();
-                return;
-            }
-            var lock = CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis';
+            if (!data) return;
+            var lock = CC.state.page === 'control' || CC.state.page === 'analisis';
             if (!lock && !(data.centros || []).length) return;
             mergeSap(Object.assign({}, data, { sapOk: !!data.sapOk }), { lockCentros: lock });
             var flag = document.getElementById('sap-flag');
@@ -6047,12 +6044,8 @@
                 flag.className = 'cc-sap-flag';
             }
             if (CC.state.page === 'control') CC.initControl();
-            if (CC.state.page === 'detalle') CC.initDetalle();
             if (CC.state.page === 'analisis') CC.initAnalisis();
-        }).catch(function () {
-            CC._sapRefreshPending = false;
-            if (CC.state.page === 'detalle') maybeHideDetalleBusy();
-        });
+        }).catch(function () {});
     }
 
     window.CC = CC;
