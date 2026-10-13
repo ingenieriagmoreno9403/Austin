@@ -12,7 +12,7 @@
             <h1 class="cc-title">Precios de productos</h1>
             <p class="cc-sub">
                 Maestro local por <strong>año de proyección</strong>, <strong>Empresa</strong>, <strong>CardCode</strong> e <strong>ItemCode</strong>
-                (1 fila). Usa el selector <strong>Proy. AAAA</strong> para ver o editar precios de otro ciclo.
+                (1 fila). Si no eres Master/Administrador, solo ves <strong>empresas, clientes y productos de tus asignaciones</strong>.
                 Los precios mensuales se editan en el modal; en BD siguen guardados por mes y año.
             </p>
         </div>

@@ -195,6 +195,32 @@ class ProyeccionesVentasController extends Controller
         $hasAnio = $this->hasAnioCostos();
         $hasPrecioLista = Schema::hasColumn('tbl_pv_productos_costo', 'precio_lista');
 
+        // Usuarios normales: solo empresas/clientes/productos de sus asignaciones del año.
+        // Master/Administrador: maestro completo.
+        $alcance = $this->alcanceCostosAsignadosUsuario($anio);
+        $restringido = $alcance !== null;
+        if ($restringido && $alcance['empresas'] === []) {
+            return response()->json([
+                'ok' => true,
+                'anio' => $anio,
+                'anios' => $this->aniosDisponiblesCostos($anio),
+                'grouped' => true,
+                'items' => [],
+                'total' => 0,
+                'page' => 1,
+                'per_page' => $perPage,
+                'last_page' => 1,
+                'from' => 0,
+                'to' => 0,
+                'alcance_restringido' => true,
+                'empresas_permitidas' => [],
+                'mensaje' => 'No tienes clientes asignados en este año de proyección.',
+            ]);
+        }
+        if ($restringido && $empresa !== '' && empty($alcance['empresas'][$empresa])) {
+            $empresa = '';
+        }
+
         $map = [];
 
         // 1) Maestro local (Año + Empresa + CardCode + ItemCode + Mes)
@@ -204,6 +230,8 @@ class ProyeccionesVentasController extends Controller
         }
         if ($empresa !== '') {
             $masterQ->whereRaw('UPPER(empresa) = ?', [$empresa]);
+        } elseif ($restringido) {
+            $masterQ->whereIn(DB::raw('UPPER(empresa)'), array_keys($alcance['empresas']));
         }
         if ($cliente !== '' && $hasCard) {
             $likeCliente = '%'.$cliente.'%';
@@ -211,6 +239,21 @@ class ProyeccionesVentasController extends Controller
                 $w->where('card_code', 'like', $likeCliente)
                     ->orWhere('card_name', 'like', $likeCliente);
             });
+        } elseif ($restringido && $hasCard) {
+            // Solo filas con CardCode de clientes asignados (sin precios globales).
+            $cards = array_values(array_unique(array_map(function ($k) {
+                $parts = explode('|', $k, 2);
+
+                return $parts[1] ?? '';
+            }, array_keys($alcance['clientes']))));
+            $cards = array_values(array_filter($cards, function ($c) {
+                return $c !== '';
+            }));
+            if ($cards === []) {
+                $masterQ->whereRaw('1 = 0');
+            } else {
+                $masterQ->whereIn('card_code', $cards);
+            }
         }
         if ($itemcode !== '') {
             $likeItem = '%'.$itemcode.'%';
@@ -282,7 +325,8 @@ class ProyeccionesVentasController extends Controller
         };
 
         if ($cliente === '') {
-            if (Schema::hasTable('tbl_pv_proyecciones')) {
+            // Con alcance restringido no se mezclan huecos globales de otros usuarios.
+            if (! $restringido && Schema::hasTable('tbl_pv_proyecciones')) {
                 $proyQ = DB::table('tbl_pv_proyecciones as p')
                     ->select('p.empresa', 'p.producto_codigo', 'p.producto_nombre', DB::raw('MAX(p.costo_unitario) as costo_snap'))
                     ->groupBy('p.empresa', 'p.producto_codigo', 'p.producto_nombre');
@@ -308,33 +352,104 @@ class ProyeccionesVentasController extends Controller
             }
 
             if (Schema::hasTable('tbl_pv_asignacion_productos') && Schema::hasTable('tbl_pv_asignaciones')) {
-                $asigQ = DB::table('tbl_pv_asignacion_productos as ap')
-                    ->join('tbl_pv_asignaciones as a', 'a.id', '=', 'ap.asignacion_id')
-                    ->select('a.empresa', 'ap.producto_codigo', 'ap.producto_nombre')
-                    ->groupBy('a.empresa', 'ap.producto_codigo', 'ap.producto_nombre');
-                if (Schema::hasTable('tbl_pv_ciclos')) {
-                    $asigQ->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
-                        ->where('c.anio_presupuesto', $anio);
-                }
-                if ($empresa !== '') {
-                    $asigQ->whereRaw('UPPER(a.empresa) = ?', [$empresa]);
-                }
-                if ($itemcode !== '') {
-                    $likeItem = '%'.$itemcode.'%';
-                    $asigQ->where(function ($w) use ($likeItem) {
-                        $w->where('ap.producto_codigo', 'like', $likeItem)
-                            ->orWhere('ap.producto_nombre', 'like', $likeItem);
-                    });
-                }
-                foreach ($asigQ->get() as $row) {
-                    $emp = strtoupper(trim((string) $row->empresa));
-                    $cod = trim((string) $row->producto_codigo);
-                    $agregarHueco($emp, $cod, $row->producto_nombre);
+                if ($restringido) {
+                    // Huecos con Empresa + CardCode + ItemCode (nunca precio global vacío).
+                    $asigQ = DB::table('tbl_pv_asignacion_productos as ap')
+                        ->join('tbl_pv_asignaciones as a', 'a.id', '=', 'ap.asignacion_id')
+                        ->select(
+                            'a.empresa',
+                            'a.cliente_codigo',
+                            'a.cliente_nombre',
+                            'ap.producto_codigo',
+                            'ap.producto_nombre'
+                        )
+                        ->groupBy(
+                            'a.empresa',
+                            'a.cliente_codigo',
+                            'a.cliente_nombre',
+                            'ap.producto_codigo',
+                            'ap.producto_nombre'
+                        )
+                        ->where('a.user_id', (int) auth()->id());
+                    if (Schema::hasTable('tbl_pv_ciclos')) {
+                        $asigQ->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
+                            ->where('c.anio_presupuesto', $anio);
+                    }
+                    if ($empresa !== '') {
+                        $asigQ->whereRaw('UPPER(a.empresa) = ?', [$empresa]);
+                    }
+                    if ($itemcode !== '') {
+                        $likeItem = '%'.$itemcode.'%';
+                        $asigQ->where(function ($w) use ($likeItem) {
+                            $w->where('ap.producto_codigo', 'like', $likeItem)
+                                ->orWhere('ap.producto_nombre', 'like', $likeItem);
+                        });
+                    }
+                    foreach ($asigQ->get() as $row) {
+                        $emp = strtoupper(trim((string) $row->empresa));
+                        $card = trim((string) ($row->cliente_codigo ?? ''));
+                        $cod = trim((string) ($row->producto_codigo ?? ''));
+                        if ($emp === '' || $card === '' || $cod === '') {
+                            continue;
+                        }
+                        $key = $emp.'|'.$card.'|'.$cod.'|0';
+                        if (isset($map[$key])) {
+                            if (! empty($row->producto_nombre) && empty($map[$key]['producto_nombre'])) {
+                                $map[$key]['producto_nombre'] = $row->producto_nombre;
+                            }
+                            if (! empty($row->cliente_nombre) && empty($map[$key]['card_name'])) {
+                                $map[$key]['card_name'] = $row->cliente_nombre;
+                            }
+                            continue;
+                        }
+                        $map[$key] = [
+                            'empresa' => $emp,
+                            'card_code' => $card,
+                            'card_name' => trim((string) ($row->cliente_nombre ?? '')),
+                            'producto_codigo' => $cod,
+                            'producto_nombre' => $row->producto_nombre,
+                            'mes' => null,
+                            'anio' => $anio,
+                            'costo_unitario' => 0.0,
+                            'precio_lista' => null,
+                            'moneda_lista' => null,
+                            'moneda' => 'MXN',
+                            'tiene_maestro' => false,
+                            'updated_at' => null,
+                        ];
+                    }
+                } else {
+                    $asigQ = DB::table('tbl_pv_asignacion_productos as ap')
+                        ->join('tbl_pv_asignaciones as a', 'a.id', '=', 'ap.asignacion_id')
+                        ->select('a.empresa', 'ap.producto_codigo', 'ap.producto_nombre')
+                        ->groupBy('a.empresa', 'ap.producto_codigo', 'ap.producto_nombre');
+                    if (Schema::hasTable('tbl_pv_ciclos')) {
+                        $asigQ->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
+                            ->where('c.anio_presupuesto', $anio);
+                    }
+                    if ($empresa !== '') {
+                        $asigQ->whereRaw('UPPER(a.empresa) = ?', [$empresa]);
+                    }
+                    if ($itemcode !== '') {
+                        $likeItem = '%'.$itemcode.'%';
+                        $asigQ->where(function ($w) use ($likeItem) {
+                            $w->where('ap.producto_codigo', 'like', $likeItem)
+                                ->orWhere('ap.producto_nombre', 'like', $likeItem);
+                        });
+                    }
+                    foreach ($asigQ->get() as $row) {
+                        $emp = strtoupper(trim((string) $row->empresa));
+                        $cod = trim((string) $row->producto_codigo);
+                        $agregarHueco($emp, $cod, $row->producto_nombre);
+                    }
                 }
             }
         }
 
         $items = array_values($map);
+        if ($restringido) {
+            $items = $this->filtrarItemsCostosPorAlcance($items, $alcance);
+        }
         $nombres = $this->mapaNombresProductosLocal();
         foreach ($items as &$it) {
             $cod = trim((string) ($it['producto_codigo'] ?? ''));
@@ -404,7 +519,116 @@ class ProyeccionesVentasController extends Controller
             'last_page' => $lastPage,
             'from' => $total === 0 ? 0 : ($offset + 1),
             'to' => $total === 0 ? 0 : min($offset + $perPage, $total),
+            'alcance_restringido' => $restringido,
+            'empresas_permitidas' => $restringido
+                ? array_values(array_keys($alcance['empresas']))
+                : [],
         ]);
+    }
+
+    /**
+     * Alcance de Costos según asignaciones del usuario en ciclos del año.
+     * null = ver todo (Master/Administrador). Array = restringido.
+     *
+     * @return array{empresas: array<string, true>, clientes: array<string, true>, triples: array<string, true>, productos_emp: array<string, true>}|null
+     */
+    protected function alcanceCostosAsignadosUsuario(int $anio): ?array
+    {
+        if ($this->puedeVerMaestroCostosCompleto()) {
+            return null;
+        }
+        $uid = (int) auth()->id();
+        if ($uid <= 0 || ! Schema::hasTable('tbl_pv_asignaciones')) {
+            return [
+                'empresas' => [],
+                'clientes' => [],
+                'triples' => [],
+                'productos_emp' => [],
+            ];
+        }
+
+        $q = DB::table('tbl_pv_asignaciones as a')
+            ->leftJoin('tbl_pv_asignacion_productos as ap', 'ap.asignacion_id', '=', 'a.id')
+            ->where('a.user_id', $uid)
+            ->select('a.empresa', 'a.cliente_codigo', 'ap.producto_codigo');
+        if (Schema::hasTable('tbl_pv_ciclos')) {
+            $q->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
+                ->where('c.anio_presupuesto', $anio);
+        }
+
+        $empresas = [];
+        $clientes = [];
+        $triples = [];
+        $productosEmp = [];
+        foreach ($q->get() as $row) {
+            $emp = strtoupper(trim((string) ($row->empresa ?? '')));
+            $cli = trim((string) ($row->cliente_codigo ?? ''));
+            $prod = trim((string) ($row->producto_codigo ?? ''));
+            if ($emp === '' || $cli === '') {
+                continue;
+            }
+            $empresas[$emp] = true;
+            $clientes[$emp.'|'.$cli] = true;
+            if ($prod !== '') {
+                $triples[$emp.'|'.$cli.'|'.$prod] = true;
+                $productosEmp[$emp.'|'.$prod] = true;
+            }
+        }
+
+        return [
+            'empresas' => $empresas,
+            'clientes' => $clientes,
+            'triples' => $triples,
+            'productos_emp' => $productosEmp,
+        ];
+    }
+
+    protected function puedeVerMaestroCostosCompleto(): bool
+    {
+        $user = auth()->user();
+        if (! $user) {
+            return false;
+        }
+        // Acción puntual: Ver todo el maestro de precios (vista Precios).
+        if ($this->forpermisos('ver_ventas_costos_todos') === 'ver_ventas_costos_todos') {
+            return true;
+        }
+        $tipo = strtolower(trim((string) ($user->tipo ?? '')));
+        if (in_array($tipo, ['master', 'empresa'], true)) {
+            return true;
+        }
+        if (! Schema::hasTable('tblusuario_perfiles') || ! Schema::hasTable('tblperfiles')) {
+            return false;
+        }
+
+        return DB::table('tblusuario_perfiles as up')
+            ->join('tblperfiles as p', 'p.id', '=', 'up.id_perfil')
+            ->where('up.id_usuario', (int) $user->id)
+            ->whereIn(DB::raw('UPPER(p.nombre)'), ['MASTER', 'ADMINISTRADOR'])
+            ->exists();
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $items
+     * @param  array{empresas: array<string, true>, clientes: array<string, true>, triples: array<string, true>, productos_emp: array<string, true>}  $alcance
+     * @return array<int, array<string, mixed>>
+     */
+    protected function filtrarItemsCostosPorAlcance(array $items, array $alcance): array
+    {
+        return array_values(array_filter($items, function ($it) use ($alcance) {
+            $emp = strtoupper(trim((string) ($it['empresa'] ?? '')));
+            $card = trim((string) ($it['card_code'] ?? ''));
+            $cod = trim((string) ($it['producto_codigo'] ?? ''));
+            if ($emp === '' || $card === '' || $cod === '') {
+                return false;
+            }
+            if (empty($alcance['empresas'][$emp])) {
+                return false;
+            }
+
+            // Solo Empresa + CardCode + ItemCode de asignaciones (sin precio global).
+            return isset($alcance['triples'][$emp.'|'.$card.'|'.$cod]);
+        }));
     }
 
     /**

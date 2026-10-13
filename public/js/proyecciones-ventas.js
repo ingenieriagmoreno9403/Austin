@@ -10182,23 +10182,33 @@
             if (!empSel) return;
             var cur = empSel.value || '';
             var set = {};
-            (CC.state.empresasLocales || []).forEach(function (e) {
-                var code = String(e.codigo || e.id || e.nombre || '').toUpperCase();
-                if (code) set[code] = e.nombre || code;
-            });
-            ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'].forEach(function (k) {
-                if (!set[k]) set[k] = k;
-            });
+            var permitidas = CC._costosEmpresasPermitidas;
+            var restringido = !!CC._costosAlcanceRestringido;
+            if (restringido && Array.isArray(permitidas) && permitidas.length) {
+                permitidas.forEach(function (k) {
+                    var code = String(k || '').toUpperCase();
+                    if (code) set[code] = code;
+                });
+            } else if (!restringido) {
+                (CC.state.empresasLocales || []).forEach(function (e) {
+                    var code = String(e.codigo || e.id || e.nombre || '').toUpperCase();
+                    if (code) set[code] = e.nombre || code;
+                });
+                ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'].forEach(function (k) {
+                    if (!set[k]) set[k] = k;
+                });
+            }
             items.forEach(function (it) {
-                if (it.empresa) set[String(it.empresa).toUpperCase()] = it.empresa;
+                if (it.empresa) set[String(it.empresa).toUpperCase()] = String(it.empresa).toUpperCase();
             });
-            var opts = '<option value="">Todas las empresas</option>';
+            var opts = '<option value="">' + (restringido ? 'Mis empresas' : 'Todas las empresas') + '</option>';
             Object.keys(set).sort().forEach(function (k) {
                 opts += '<option value="' + escapeHtml(k) + '"' + (k === cur ? ' selected' : '') + '>' +
                     escapeHtml(set[k]) + '</option>';
             });
             empSel.innerHTML = opts;
-            if (cur) empSel.value = cur;
+            if (cur && set[cur]) empSel.value = cur;
+            else if (cur && !set[cur]) empSel.value = '';
         }
 
         function updatePager() {
@@ -10769,9 +10779,14 @@
                     lastPage = Number(json && json.last_page) || 1;
                     from = Number(json && json.from) || 0;
                     to = Number(json && json.to) || 0;
+                    CC._costosAlcanceRestringido = !!(json && json.alcance_restringido);
+                    CC._costosEmpresasPermitidas = (json && json.empresas_permitidas) || [];
                     fillAnios((json && json.anios) || [], (json && json.anio) || costosAnio());
                     fillEmpresas();
                     render();
+                    if (hint && json && json.mensaje && !items.length) {
+                        hint.textContent = String(json.mensaje);
+                    }
                 })
                 .catch(function () {
                     items = [];
