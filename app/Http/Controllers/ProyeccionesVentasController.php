@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\PvBudgetExport;
 use App\Exports\PvCapturaPlantillaExport;
 use App\Exports\PvPreciosPlantillaExport;
 use App\Models\PvAsignacion;
@@ -115,6 +116,378 @@ class ProyeccionesVentasController extends Controller
             'puedeEditarCostos' => $this->puedeEditarPreciosVentas(),
             'puedeFiltrarSoloAsignados' => $this->puedeFiltrarSoloAsignadosCostos(),
         ]);
+    }
+
+    /**
+     * Pantalla para exportar la información capturada del budget.
+     */
+    public function exportarInformacion()
+    {
+        return $this->page('exportar', 'ProyeccionesVentas.exportar', [
+            'exportExcelUrl' => route('pv.exportar.excel'),
+        ]);
+    }
+
+    /**
+     * Descarga Excel con las proyecciones (cantidades) del ciclo seleccionado.
+     */
+    public function exportarInformacionExcel(Request $request)
+    {
+        $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
+        if ($ciclo === '') {
+            return redirect()
+                ->route('pv.exportar')
+                ->with('error_msg', 'Selecciona un ciclo para exportar.');
+        }
+
+        if (! Schema::hasTable('tbl_pv_proyecciones')) {
+            return redirect()
+                ->route('pv.exportar')
+                ->with('error_msg', 'Falta ejecutar la migración de presupuestos.');
+        }
+
+        $empresa = strtoupper(trim((string) $request->get('empresa', '')));
+        $alias = ['ABSA' => 'AUSTIN'];
+        if (isset($alias[$empresa])) {
+            $empresa = $alias[$empresa];
+        }
+
+        $rows = $this->filasExportBudget($ciclo, $empresa !== '' ? $empresa : null);
+        $suffix = $empresa !== '' ? '_'.$empresa : '';
+        $filename = 'budget_ventas_'.$ciclo.$suffix.'_'.now()->format('Ymd_His').'.xlsx';
+
+        return Excel::download(new PvBudgetExport($rows, $ciclo), $filename);
+    }
+
+    /**
+     * Filas de exportación del budget en formato largo (1 fila por mes capturado).
+     * Columnas: COMPANY, ITEMCODE, ITEMNAME, CARDCODE, CARDNAME, MONTH, YEAR, QTY,
+     * QTY PREVIOUS, ORIGEN, IMPORTEUSD, IMPORTEMXN, TC, PRICE.
+     *
+     * @return array<int, array<int, mixed>>
+     */
+    protected function filasExportBudget(string $ciclo, ?string $empresa = null): array
+    {
+        $cicloCodigo = strtoupper(trim($ciclo));
+        $cicloRow = Schema::hasTable('tbl_pv_ciclos')
+            ? PvCiclo::query()->whereRaw('UPPER(codigo) = ?', [$cicloCodigo])->first()
+            : null;
+
+        $anioBudget = (int) ($cicloRow->anio_presupuesto ?? $this->anioProyeccionCostos(null, $cicloCodigo));
+        $origen = $this->normalizeTipoBudget(
+            ($cicloRow && Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget'))
+                ? $cicloRow->tipo_budget
+                : 'BUDGET'
+        ) ?: 'BUDGET';
+        $tcFallback = (float) ($cicloRow->tipo_cambio ?? 20);
+        if ($tcFallback <= 0) {
+            $tcFallback = 20.0;
+        }
+        $tcMeses = $this->normalizeTipoCambioMeses(
+            ($cicloRow && Schema::hasColumn('tbl_pv_ciclos', 'tipo_cambio_meses'))
+                ? $cicloRow->tipo_cambio_meses
+                : null,
+            $tcFallback
+        );
+
+        $anioCostos = $this->anioProyeccionCostos($anioBudget, $cicloCodigo);
+        $costosMaster = $this->costosMaestroMap($empresa, $anioCostos);
+        $costosMeses = $this->costosMaestroMesesMap($empresa, $anioCostos);
+        $hasPrecioMeses = Schema::hasColumn('tbl_pv_proyecciones', 'precio_meses');
+
+        $anioAnterior = (int) ($cicloRow->anio_referencia
+            ?? $this->anioReferenciaDeCiclo($cicloCodigo)
+            ?? ($anioBudget > 0 ? $anioBudget - 1 : ((int) date('Y') - 1)));
+        if ($anioAnterior < 2000 || $anioAnterior > 2100) {
+            $anioAnterior = $anioBudget > 0 ? $anioBudget - 1 : ((int) date('Y') - 1);
+        }
+        $qtyAnteriorMap = $this->mapaQtyVentaAnteriorExport(
+            $anioAnterior,
+            ($empresa !== null && $empresa !== '') ? $empresa : null
+        );
+
+        $q = PvPresupuesto::query()
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [$cicloCodigo])
+            ->orderBy('empresa')
+            ->orderBy('producto_codigo')
+            ->orderBy('cliente_codigo');
+
+        if ($empresa !== null && $empresa !== '') {
+            $q->whereRaw('UPPER(empresa) = ?', [strtoupper($empresa)]);
+        }
+
+        $rows = [];
+        foreach ($q->cursor() as $row) {
+            /** @var PvPresupuesto $row */
+            $emp = strtoupper(trim((string) $row->empresa));
+            $cliente = trim((string) $row->cliente_codigo);
+            $productoRaw = trim((string) $row->producto_codigo);
+            $producto = $this->codigoCuentaPlantilla($productoRaw);
+            $productoNombre = trim((string) ($row->producto_nombre ?? ''));
+            $clienteNombre = $this->nombreClienteLocal($emp, $cliente);
+
+            $cantidades = $row->meses();
+            $preciosCaptura = $hasPrecioMeses ? $row->precioMeses() : array_fill(0, 12, null);
+
+            // Misma regla que Captura (lookupMaestroLocal): con cliente solo EMP|Card|Item.
+            // No heredar precio de otro cliente vía EMP|Item.
+            $resolved = $this->resolverPrecioExportBudget(
+                $emp,
+                $cliente,
+                $productoRaw,
+                $producto,
+                $costosMaster,
+                $costosMeses,
+                $row
+            );
+            $monedaGlobal = $resolved['moneda'];
+            $precioGlobal = $resolved['precio_global'];
+            $masterMeses = $resolved['meses'];
+            $masterMonedas = $resolved['monedas'];
+
+            for ($i = 0; $i < 12; $i++) {
+                $rawQty = $cantidades[$i] ?? null;
+                if ($rawQty === null || $rawQty === '') {
+                    continue;
+                }
+                $qty = (float) $rawQty;
+                if ($qty == 0.0) {
+                    continue;
+                }
+
+                // Cascada por mes (= precioUnitarioMes en captura):
+                // 1) override capturado en proyección (precio_meses[mes])
+                // 2) precio del maestro Costos de ese mes
+                // 3) precio global del maestro / proyección
+                // 4) sin precio → 0
+                $price = 0.0;
+                $moneda = $monedaGlobal;
+                $pCap = $preciosCaptura[$i] ?? null;
+                if ($pCap !== null && $pCap !== '' && (float) $pCap > 0) {
+                    $price = round((float) $pCap, 4);
+                } elseif (isset($masterMeses[$i]) && (float) $masterMeses[$i] > 0) {
+                    $price = round((float) $masterMeses[$i], 4);
+                    $monMes = strtoupper(trim((string) ($masterMonedas[$i] ?? '')));
+                    if (in_array($monMes, ['MXN', 'USD'], true)) {
+                        $moneda = $monMes;
+                    }
+                } elseif ($precioGlobal !== null && $precioGlobal > 0) {
+                    $price = $precioGlobal;
+                }
+
+                $tc = (float) ($tcMeses[$i] ?? $tcFallback);
+                if ($tc <= 0) {
+                    $tc = $tcFallback;
+                }
+
+                // Importes como en captura: primero a MXN con TC del mes, luego USD.
+                $importeUsd = 0.0;
+                $importeMxn = 0.0;
+                if ($price > 0) {
+                    $precioMxn = ($moneda === 'USD') ? ($price * $tc) : $price;
+                    $importeMxn = round($qty * $precioMxn, 2);
+                    $importeUsd = $tc > 0 ? round($importeMxn / $tc, 2) : 0.0;
+                }
+
+                $qtyAnterior = $this->qtyVentaAnteriorDeMapa(
+                    $qtyAnteriorMap,
+                    $emp,
+                    $cliente,
+                    $productoRaw,
+                    $producto,
+                    $i
+                );
+
+                $rows[] = [
+                    $emp,                 // COMPANY
+                    $producto,            // ITEMCODE (producto)
+                    $productoNombre,      // ITEMNAME
+                    $cliente,             // CARDCODE (cliente)
+                    $clienteNombre,       // CARDNAME
+                    $i + 1,               // MONTH
+                    $anioBudget,          // YEAR
+                    round($qty, 4),       // QTY
+                    $qtyAnterior,         // QTY PREVIOUS (venta año referencia)
+                    $origen,              // ORIGEN (tipo_budget del ciclo)
+                    $importeUsd,          // IMPORTEUSD
+                    $importeMxn,          // IMPORTEMXN
+                    round($tc, 4),        // TC
+                    $price,               // PRICE del mes (puede variar Ene–Dic)
+                ];
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Mapa de cantidades vendidas el año anterior (snapshot local).
+     * Clave: EMPRESA|cliente|PRODUCTO → [12 floats].
+     *
+     * @return array<string, array<int, float>>
+     */
+    protected function mapaQtyVentaAnteriorExport(int $anio, ?string $empresa = null): array
+    {
+        if ($anio < 2000 || $anio > 2100 || ! Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+            return [];
+        }
+
+        $q = PvVentaRealSnapshot::query()->where('anio', $anio);
+        if ($empresa !== null && $empresa !== '') {
+            $q->whereRaw('UPPER(empresa) = ?', [strtoupper($empresa)]);
+        }
+
+        $map = [];
+        foreach ($q->cursor() as $snap) {
+            /** @var PvVentaRealSnapshot $snap */
+            $emp = strtoupper(trim((string) $snap->empresa));
+            $cliente = trim((string) $snap->cliente_codigo);
+            if ($emp === '' || $cliente === '') {
+                continue;
+            }
+            $por = $this->colapsarPorCuentaProductos(is_array($snap->por_cuenta) ? $snap->por_cuenta : []);
+            foreach ($por as $key => $item) {
+                if ($key === '_meta' || ! is_array($item)) {
+                    continue;
+                }
+                $cod = trim((string) ($item['codigo'] ?? $key));
+                if ($cod === '') {
+                    continue;
+                }
+                $gasto = is_array($item['gasto'] ?? null) ? array_values($item['gasto']) : [];
+                $meses = [];
+                for ($i = 0; $i < 12; $i++) {
+                    $meses[$i] = round((float) ($gasto[$i] ?? 0), 4);
+                }
+                $claveProd = $this->claveProductoVenta($cod);
+                if ($claveProd === '') {
+                    continue;
+                }
+                $base = $emp.'|'.$cliente.'|';
+                $map[$base.$claveProd] = $meses;
+                $map[$base.$cod] = $meses;
+                $map[$base.strtoupper($cod)] = $meses;
+                $plantilla = $this->codigoCuentaPlantilla($cod);
+                if ($plantilla !== '' && $plantilla !== $cod) {
+                    $map[$base.$this->claveProductoVenta($plantilla)] = $meses;
+                    $map[$base.$plantilla] = $meses;
+                }
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * @param  array<string, array<int, float>>  $map
+     */
+    protected function qtyVentaAnteriorDeMapa(
+        array $map,
+        string $empresa,
+        string $cliente,
+        string $productoRaw,
+        string $productoPlantilla,
+        int $mesIdx
+    ): float {
+        if ($mesIdx < 0 || $mesIdx > 11 || $map === []) {
+            return 0.0;
+        }
+        $base = strtoupper(trim($empresa)).'|'.trim($cliente).'|';
+        $candidatos = array_values(array_unique(array_filter([
+            $this->claveProductoVenta($productoRaw),
+            $productoRaw,
+            strtoupper($productoRaw),
+            $this->claveProductoVenta($productoPlantilla),
+            $productoPlantilla,
+            strtoupper($productoPlantilla),
+        ], static function ($v) {
+            return $v !== null && trim((string) $v) !== '';
+        })));
+        foreach ($candidatos as $cod) {
+            $hit = $map[$base.$cod] ?? null;
+            if (is_array($hit)) {
+                return round((float) ($hit[$mesIdx] ?? 0), 4);
+            }
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * Resuelve precio/moneda del export igual que Captura:
+     * maestro EMP|Card|Item (global + meses). Sin fallback a otro cliente.
+     * Último recurso: costo_unitario / moneda de la fila de proyección.
+     *
+     * @param  array<string, array<string, mixed>>  $costosMaster
+     * @param  array<string, array{meses?: array<int, float|null>, monedas?: array<int, string|null>}>  $costosMeses
+     * @return array{precio_global: float|null, moneda: string, meses: array<int, float|null>, monedas: array<int, string|null>}
+     */
+    protected function resolverPrecioExportBudget(
+        string $empresa,
+        string $cliente,
+        string $productoRaw,
+        string $productoPlantilla,
+        array $costosMaster,
+        array $costosMeses,
+        PvPresupuesto $row
+    ): array {
+        $codigos = array_values(array_unique(array_filter([
+            $productoRaw,
+            $productoPlantilla,
+            strtoupper($productoRaw),
+            strtoupper($productoPlantilla),
+        ], static function ($v) {
+            return $v !== null && trim((string) $v) !== '';
+        })));
+
+        $master = null;
+        $masterMesesPack = null;
+        if ($cliente !== '') {
+            foreach ($codigos as $cod) {
+                $k = $empresa.'|'.$cliente.'|'.$cod;
+                if ($master === null && isset($costosMaster[$k])) {
+                    $master = $costosMaster[$k];
+                }
+                if ($masterMesesPack === null && isset($costosMeses[$k])) {
+                    $masterMesesPack = $costosMeses[$k];
+                }
+            }
+        }
+
+        $meses = array_fill(0, 12, null);
+        $monedas = array_fill(0, 12, null);
+        if (is_array($masterMesesPack['meses'] ?? null)) {
+            for ($i = 0; $i < 12; $i++) {
+                $v = $masterMesesPack['meses'][$i] ?? null;
+                $meses[$i] = ($v !== null && $v !== '' && (float) $v > 0) ? round((float) $v, 4) : null;
+                $mon = strtoupper(trim((string) (($masterMesesPack['monedas'][$i] ?? null) ?: '')));
+                $monedas[$i] = in_array($mon, ['MXN', 'USD'], true) ? $mon : null;
+            }
+        }
+
+        $precioGlobal = null;
+        $moneda = 'MXN';
+        if (is_array($master) && isset($master['costo']) && (float) $master['costo'] > 0) {
+            $precioGlobal = round((float) $master['costo'], 4);
+            $monedaMaster = strtoupper(trim((string) ($master['moneda'] ?? 'MXN')));
+            if (in_array($monedaMaster, ['MXN', 'USD'], true)) {
+                $moneda = $monedaMaster;
+            }
+        } elseif ($row->costo_unitario !== null && $row->costo_unitario !== '' && (float) $row->costo_unitario > 0) {
+            // Solo si no hay fila de maestro para ese cliente+producto.
+            $precioGlobal = round((float) $row->costo_unitario, 4);
+            $monedaRow = strtoupper(trim((string) ($row->moneda ?? 'MXN'))) ?: 'MXN';
+            if (in_array($monedaRow, ['MXN', 'USD'], true)) {
+                $moneda = $monedaRow;
+            }
+        }
+
+        return [
+            'precio_global' => $precioGlobal,
+            'moneda' => $moneda,
+            'meses' => $meses,
+            'monedas' => $monedas,
+        ];
     }
 
     /**

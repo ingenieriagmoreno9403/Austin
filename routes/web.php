@@ -1272,6 +1272,8 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/Ventas/Captura/detalle', [ProyeccionesVentasController::class, 'detalle'])->name('pv.detalle');
     Route::get('/Ventas/Analisis', [ProyeccionesVentasController::class, 'analisis'])->name('pv.analisis');
     Route::get('/Ventas/Costos', [ProyeccionesVentasController::class, 'costos'])->name('pv.costos');
+    Route::get('/ExportarInformacionVentas', [ProyeccionesVentasController::class, 'exportarInformacion'])->name('pv.exportar');
+    Route::get('/ExportarInformacionVentas/excel', [ProyeccionesVentasController::class, 'exportarInformacionExcel'])->name('pv.exportar.excel');
     Route::get('/ProyeccionesVentas/api/costos', [ProyeccionesVentasController::class, 'listCostos'])->name('pv.api.costos');
     Route::get('/ProyeccionesVentas/api/costos/historial', [ProyeccionesVentasController::class, 'historialCostoProducto'])->name('pv.api.costos.historial');
     Route::put('/ProyeccionesVentas/api/costos', [ProyeccionesVentasController::class, 'guardarCostoProducto'])->name('pv.api.costos.save');
