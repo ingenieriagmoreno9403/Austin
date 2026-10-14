@@ -61,17 +61,6 @@
         return out || s.replace(/\D+/g, '').replace(/^0+/, '') || s;
     }
 
-    function formatUdsAsig(n) {
-        if (n == null || n === '') return null;
-        var v = Number(n);
-        if (!isFinite(v)) return null;
-        var abs = Math.abs(v);
-        var txt = abs.toLocaleString('es-MX', {
-            maximumFractionDigits: abs % 1 === 0 ? 0 : 2
-        });
-        return (v < 0 ? '-' : '') + txt + ' uds';
-    }
-
     function ctaNorm(codigo) {
         return ctaPretty(codigo).replace(/\s+/g, '').toLowerCase();
     }
@@ -497,7 +486,7 @@
             var emp = String(r.empresa || '').toLowerCase();
             if (emp) empSet[emp] = true;
             if (emp && r.centro_codigo) ccSet[emp + '|' + String(r.centro_codigo)] = true;
-            if (r.user_id) userSet[String(r.user_id)] = true;
+            if (isPrincipal(r) && r.user_id) userSet[String(r.user_id)] = true;
         });
         var empDone = Object.keys(empSet).length;
         var empTot = (CCAsig._empresas && CCAsig._empresas.length) ? CCAsig._empresas.length : 4;
@@ -516,7 +505,7 @@
     }
 
     function filasCaptura() {
-        return (CCAsig._rows || []).slice().sort(function (a, b) {
+        return (CCAsig._rows || []).filter(isPrincipal).slice().sort(function (a, b) {
             var ua = String(a.usuario || '').toLowerCase();
             var ub = String(b.usuario || '').toLowerCase();
             if (ua !== ub) return ua < ub ? -1 : 1;
@@ -569,7 +558,7 @@
         if (meta) {
             if (!total) meta.textContent = '';
             else if (filtrando) meta.textContent = rows.length + ' de ' + total;
-            else meta.textContent = total + (total === 1 ? ' asignación' : ' asignaciones');
+            else meta.textContent = total + (total === 1 ? ' asignación de captura' : ' asignaciones de captura');
         }
         if (!tb) return;
         if (!rows.length) {
@@ -597,17 +586,16 @@
                     '<span class="cc-asig-group-n">' + n + (n === 1 ? ' cliente' : ' clientes') + '</span>' +
                     '</div></td></tr>');
             }
-            var nRev = isPrincipal(r) ? extrasDe(r).length : 0;
+            var nRev = extrasDe(r).length;
             var revHint = nRev
                 ? '<div class="text-muted" style="font-size:.72rem;margin-top:.25rem">' + nRev + (nRev === 1 ? ' revisor en Permisos' : ' revisores en Permisos') + '</div>'
                 : '';
-            var rol = isPrincipal(r) ? 'Captura' : 'Revisión';
             var prodCell = isEmpresaCompleta(r.centro_codigo)
                 ? 'De los usuarios'
                 : String((r.cuentas || []).length);
             html.push('<tr data-id="' + r.id + '">' +
                 '<td><div class="fw-semibold">' + escapeHtml(r.usuario) + '</div>' +
-                '<div class="text-muted" style="font-size:.75rem">' + rol + '</div></td>' +
+                '<div class="text-muted" style="font-size:.75rem">Captura</div></td>' +
                 '<td>' + String(r.empresa || '').toUpperCase() + '</td>' +
                 '<td>' + escapeHtml(etiquetaCentro(r.centro_codigo, r.centro_nombre)) + '</td>' +
                 '<td>' + escapeHtml(prodCell) + '</td>' +
@@ -909,17 +897,10 @@
         var sel = CCAsig._editSelected || {};
         box.innerHTML = '<div class="cc-cta-group">' + rows.map(function (c) {
                     var on = !!sel[String(c.codigo)];
-                    var rawUds = (c.unidades != null ? c.unidades : c.uds);
-                    var uds = formatUdsAsig(rawUds);
-                    var udsHtml = (rawUds != null && rawUds !== '')
-                        ? ('<span class="cc-cta-qty" title="Total unidades vendidas en el año">' +
-                            escapeHtml(uds != null ? uds : '0 uds') + '</span>')
-                        : '';
                     return '<label class="cc-cta-item"><input type="checkbox" data-edit-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                         ' data-nombre="' + escapeHtml(c.nombre || '') + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
                         ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' + (on ? ' checked' : '') + '>' +
                         '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
-                        udsHtml +
                         '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                 }).join('') + '</div>';
         var todas = document.getElementById('asig-edit-todas');
@@ -1338,15 +1319,7 @@
     }
 
     CCAsig.initWizard = function (cfg) {
-        cfg = cfg || {};
-        if (!cfg.ciclo) {
-            var app = document.getElementById('cc-app');
-            cfg.ciclo = (app && app.getAttribute('data-ciclo'))
-                || (window.CC && CC.state && CC.state.cicloCodigo)
-                || '';
-        }
         CCAsig.cfg = cfg;
-        CCAsig.ciclo = cfg.ciclo || CCAsig.ciclo || '';
         csrf = cfg.csrf || csrf;
         var userSel = document.getElementById('asig-user');
         var userQ = document.getElementById('asig-user-q');
@@ -1741,45 +1714,20 @@
             });
         }
 
-        function pintarAsignaciones() {
+        function quitarFila(id, emp, codigo) {
+            var i = findSavedIndex(emp, codigo);
+            if (i < 0) return;
+            var row = saved[i];
+            saved.splice(i, 1);
             renderResumen();
             renderEmpresaCards();
             markEmpresaCard(cfg.empresa);
             fillCentros(ccQ ? ccQ.value : '');
-        }
-
-        function quitarFila(id, emp, codigo) {
-            var i = findSavedIndex(emp, codigo);
-            if (i < 0 && id) {
-                for (var j = 0; j < saved.length; j++) {
-                    if (String(saved[j].id) === String(id)) { i = j; break; }
-                }
-            }
-            if (i < 0) return;
-            var row = saved[i];
-            saved.splice(i, 1);
-            pintarAsignaciones();
             if (isTempId(id) || isTempId(row.id)) return;
-            var ciclo = cfg.ciclo || CCAsig.ciclo || '';
-            fetch('/Ventas/Asignaciones/' + encodeURIComponent(ciclo) + '/asignaciones/' + encodeURIComponent(row.id), {
+            fetch('/Ventas/Asignaciones/' + encodeURIComponent(cfg.ciclo) + '/asignaciones/' + row.id, {
                 method: 'DELETE',
                 headers: { 'X-CSRF-TOKEN': csrf, Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).then(function (r) {
-                if (r.ok) return null;
-                return r.json().catch(function () { return {}; }).then(function (j) {
-                    throw new Error((j && j.message) || 'No se pudo quitar la asignación.');
-                });
-            }).catch(function (err) {
-                saved.splice(Math.min(i, saved.length), 0, row);
-                pintarAsignaciones();
-                if (window.Swal) {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'No se pudo quitar',
-                        text: (err && err.message) || 'No se pudo eliminar la asignación.'
-                    });
-                }
-            });
+            }).catch(function () { /* la fila ya salió de la tabla */ });
         }
 
         function loadSaved() {
@@ -2183,15 +2131,8 @@
             };
             var qBusca = String(opts.q || '').trim();
             if (!opts.force && !qBusca && cacheCuentas[key]) {
-                var cachedRows = cacheCuentas[key] || [];
-                var cacheConUds = cachedRows.some(function (r) {
-                    return r && (r.unidades != null || r.uds != null);
-                });
-                if (cacheConUds) {
-                    apply(cachedRows, agrupaciones);
-                    return;
-                }
-                delete cacheCuentas[key];
+                apply(cacheCuentas[key], agrupaciones);
+                return;
             }
             var url = '/ProyeccionesVentas/api/asignacion/productos?empresa=' + encodeURIComponent(cfg.empresa) +
                 '&year=' + encodeURIComponent(year);
@@ -2233,21 +2174,12 @@
                         var checked = ctaSelected[normCode(c.codigo)] ? ' checked' : '';
                         var costo = Number(c.costo || c.precio || 0) || 0;
                         var moneda = String(c.costo_moneda || c.moneda || 'MXN').toUpperCase();
-                        var rawUds = (c.unidades != null ? c.unidades : c.uds);
-                        var uds = formatUdsAsig(rawUds);
-                        var udsHtml = (rawUds != null && rawUds !== '')
-                            ? ('<span class="cc-cta-qty" title="Total unidades vendidas en el año">' +
-                                escapeHtml(uds != null ? uds : '0 uds') + '</span>')
-                            : '';
                         return '<label class="cc-cta-item"><input type="checkbox" data-cta="1" value="' + escapeHtml(c.codigo) + '"' +
                             ' data-nombre="' + escapeHtml(c.nombre) + '" data-grupo="' + escapeHtml(c.grupo || '') + '"' +
                             ' data-mask="' + escapeHtml(c.grupo_id || '') + '"' +
                             ' data-costo="' + escapeHtml(String(costo)) + '"' +
-                            ' data-moneda="' + escapeHtml(moneda) + '"' +
-                            ' data-unidades="' + escapeHtml(String(Number(rawUds) || 0)) + '"' +
-                            checked + '>' +
+                            ' data-moneda="' + escapeHtml(moneda) + '"' + checked + '>' +
                             '<span class="cc-cta-name">' + escapeHtml(c.nombre || c.codigo) + '</span>' +
-                            udsHtml +
                             '<span class="cc-cta-code">' + escapeHtml(ctaPretty(c.codigo)) + '</span></label>';
                     }).join('') + '</div>';
             var boxes = box.querySelectorAll('[data-cta]');

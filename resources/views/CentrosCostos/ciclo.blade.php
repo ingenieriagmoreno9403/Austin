@@ -26,6 +26,8 @@
         </div>
     </div>
 
+    @include('CentrosCostos.partials.nav')
+
     <div class="cc-banner">
         <div>
             <strong>Ciclo para presupuestar</strong>
@@ -45,9 +47,6 @@
             </div>
             <span class="cc-badge cc-banner-fx" id="period-fx">—</span>
             <div class="cc-banner-actions">
-                <button type="button" class="cc-btn" id="ciclo-sap">
-                    <i class="fa-solid fa-rotate"></i> Actualizar de SAP
-                </button>
                 <button type="button" class="cc-btn" onclick="CC.showModal('modalPeriodo')">
                     <i class="fa-solid fa-pen"></i> Editar
                 </button>
@@ -84,14 +83,15 @@
             </div>
         </div>
         <div class="cc-filters cc-filters-asig">
+            <label class="cc-filter-field cc-filter-q" for="asig-q">Buscar
+                <div class="cc-pick-search">
+                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+                    <input id="asig-q" class="cc-input" type="search" placeholder="Buscar coincidencias…" aria-label="Buscar coincidencias" autocomplete="off">
+                </div>
+            </label>
             <label class="cc-filter-field" for="asig-q-empresa">Empresa
                 <select id="asig-q-empresa" class="cc-select" aria-label="Filtrar por empresa">
                     <option value="">Todas las empresas</option>
-                </select>
-            </label>
-            <label class="cc-filter-field" for="asig-q-centro">Centro de costos
-                <select id="asig-q-centro" class="cc-select" aria-label="Filtrar por centro de costo">
-                    <option value="">Todos los centros</option>
                 </select>
             </label>
             <label class="cc-filter-field" for="asig-q-usuario">Usuario
@@ -99,16 +99,10 @@
                     <option value="">Todos los usuarios</option>
                 </select>
             </label>
-            <label class="cc-filter-field" for="asig-q-permiso">Permiso
-                <select id="asig-q-permiso" class="cc-select" aria-label="Filtrar por permiso">
-                    <option value="">Todos los permisos</option>
+            <label class="cc-filter-field" for="asig-q-centro">Centro de costos
+                <select id="asig-q-centro" class="cc-select" aria-label="Filtrar por centro de costo">
+                    <option value="">Todos los centros</option>
                 </select>
-            </label>
-            <label class="cc-filter-field cc-filter-q" for="asig-q">Buscar
-                <div class="cc-pick-search">
-                    <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
-                    <input id="asig-q" class="cc-input" type="search" placeholder="Buscar coincidencias…" aria-label="Buscar coincidencias" autocomplete="off">
-                </div>
             </label>
         </div>
         <div class="cc-table-wrap">
@@ -173,58 +167,6 @@
                 </button>
             </div>
         </form>
-    </div>
-</div>
-
-<div class="modal fade cc-modal" id="modalCicloSap" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Actualizar gasto de SAP</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar" id="ciclo-sap-x"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted mb-3" style="font-size:.85rem">
-                    Elige una empresa. Cada centro se guarda en un archivo y de ahí se inserta. Si la conexión se corta, sigue con lo que ya quedó escrito.
-                </p>
-                <label class="cc-filter-field" for="ciclo-sap-empresa">Empresa
-                    <select id="ciclo-sap-empresa" class="cc-select" aria-label="Empresa a actualizar">
-                        <option value="">Seleccionar empresa</option>
-                    </select>
-                </label>
-                <p id="ciclo-sap-meta" class="text-muted" style="font-size:.8rem;margin:.75rem 0 1rem">Todavía no hay una empresa elegida.</p>
-                <div class="cc-sap-counts" aria-live="polite">
-                    <div>
-                        <strong id="ciclo-sap-reg">0</strong>
-                        <span>Registrados</span>
-                    </div>
-                    <div>
-                        <strong id="ciclo-sap-act">0</strong>
-                        <span>Actualizados</span>
-                    </div>
-                    <div>
-                        <strong id="ciclo-sap-igual">0</strong>
-                        <span>Sin cambio</span>
-                    </div>
-                    <div>
-                        <strong id="ciclo-sap-fail">0</strong>
-                        <span>Fallaron</span>
-                    </div>
-                </div>
-                <div class="cc-progress" aria-hidden="true"><span id="ciclo-sap-bar"></span></div>
-                <p id="ciclo-sap-label" class="text-muted" style="font-size:.8rem;margin-top:.55rem"></p>
-                <ul id="ciclo-sap-fallos" class="cc-sap-fallos"></ul>
-            </div>
-            <div class="cc-modal-actions">
-                <button type="button" class="cc-btn" id="ciclo-sap-cancelar" disabled>Cancelar</button>
-                <button type="button" class="cc-btn" id="ciclo-sap-reintentar" hidden>
-                    <i class="fa-solid fa-rotate"></i> Reintentar las que fallaron
-                </button>
-                <button type="button" class="cc-btn cc-btn-ink" id="ciclo-sap-go" disabled>
-                    <i class="fa-solid fa-rotate"></i> Actualizar esta empresa
-                </button>
-            </div>
-        </div>
     </div>
 </div>
 @endsection
