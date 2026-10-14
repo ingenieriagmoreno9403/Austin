@@ -16,6 +16,7 @@ use App\Models\CcUsuarioPermiso;
 use App\Models\Empresas;
 use App\Models\User;
 use App\Services\AutinApiClient;
+use App\Services\CcCatalogoLocal;
 use App\Services\CcGastoRealSnapshot;
 use App\Traits\MenuTrait;
 use Illuminate\Http\JsonResponse;
@@ -290,6 +291,21 @@ class CentrosCostosController extends Controller
         $alias = ['absa' => 'austin'];
         $empresa = $alias[$empresa] ?? $empresa;
         $perPage = min(500, max(50, (int) $request->get('per_page', 200)));
+        $refresh = $request->boolean('refresh');
+        $local = app(CcCatalogoLocal::class);
+        $empUp = strtoupper($empresa);
+
+        if (! $refresh && $local->disponible() && $local->tieneDatos($empUp)) {
+            $data = $local->leer($empUp);
+
+            return response()->json([
+                'ok' => true,
+                'centros' => $data['centros'],
+                'mensaje' => null,
+                'fuente' => 'local',
+                'synced_at' => $data['synced_at'],
+            ]);
+        }
 
         try {
             $api = app(AutinApiClient::class);
@@ -320,12 +336,32 @@ class CentrosCostosController extends Controller
                 }
             }
 
+            if ($ok && $local->disponible()) {
+                // Solo centros de esta empresa; conserva cuentas locales existentes.
+                $prev = $local->leer($empUp);
+                $local->reemplazarEmpresa($empUp, $centros, $prev['cuentas'], auth()->id());
+            }
+
             return response()->json([
                 'ok' => $ok,
                 'centros' => $centros,
                 'mensaje' => $mensaje,
+                'fuente' => $ok ? 'sap' : 'vacio',
+                'synced_at' => $local->disponible() ? $local->ultimaSync($empUp) : null,
             ]);
         } catch (Throwable $e) {
+            if ($local->disponible() && $local->tieneDatos($empUp)) {
+                $data = $local->leer($empUp);
+
+                return response()->json([
+                    'ok' => true,
+                    'centros' => $data['centros'],
+                    'mensaje' => $e->getMessage(),
+                    'fuente' => 'local',
+                    'synced_at' => $data['synced_at'],
+                ]);
+            }
+
             return response()->json(['ok' => false, 'centros' => [], 'mensaje' => $e->getMessage()], 200);
         }
     }
@@ -394,17 +430,59 @@ class CentrosCostosController extends Controller
         $empresa = strtolower((string) $request->get('empresa', 'austin'));
         $todas = $request->boolean('todas');
         $groupMask = trim((string) $request->get('group_mask', $request->get('GroupMask', '')));
+        $refresh = $request->boolean('refresh');
+        $local = app(CcCatalogoLocal::class);
+        $empUp = strtoupper($empresa);
+
+        if (! $refresh && $local->disponible() && $local->tieneDatos($empUp)) {
+            $data = $local->leer($empUp);
+            $cuentas = $data['cuentas'];
+            if ($groupMask !== '') {
+                $cuentas = array_values(array_filter($cuentas, function ($c) use ($groupMask) {
+                    return (string) ($c['grupo_id'] ?? '') === $groupMask;
+                }));
+            }
+
+            return response()->json([
+                'ok' => true,
+                'cuentas' => $cuentas,
+                'agrupaciones' => [],
+                'mensaje' => null,
+                'fuente' => 'local',
+                'synced_at' => $data['synced_at'],
+            ]);
+        }
 
         try {
             $cargadas = $this->cargarCuentasEmpresa($empresa, $todas, $groupMask);
+            if (! empty($cargadas['ok']) && $local->disponible() && ($todas || $groupMask === '')) {
+                $prev = $local->leer($empUp);
+                // Reemplaza cuentas del catálogo; conserva centros locales.
+                $local->reemplazarEmpresa($empUp, $prev['centros'], $cargadas['cuentas'] ?? [], auth()->id());
+            }
 
             return response()->json([
                 'ok' => $cargadas['ok'],
                 'cuentas' => $cargadas['cuentas'],
                 'agrupaciones' => $cargadas['agrupaciones'],
                 'mensaje' => $cargadas['mensaje'],
+                'fuente' => ! empty($cargadas['ok']) ? 'sap' : 'vacio',
+                'synced_at' => $local->disponible() ? $local->ultimaSync($empUp) : null,
             ]);
         } catch (Throwable $e) {
+            if ($local->disponible() && $local->tieneDatos($empUp)) {
+                $data = $local->leer($empUp);
+
+                return response()->json([
+                    'ok' => true,
+                    'cuentas' => $data['cuentas'],
+                    'agrupaciones' => [],
+                    'mensaje' => $e->getMessage(),
+                    'fuente' => 'local',
+                    'synced_at' => $data['synced_at'],
+                ]);
+            }
+
             return response()->json(['ok' => false, 'cuentas' => [], 'agrupaciones' => [], 'mensaje' => $e->getMessage()], 200);
         }
     }
@@ -1058,10 +1136,45 @@ class CentrosCostosController extends Controller
     {
         $perPage = (int) $request->get('per_page', 150);
         $empresa = $request->get('empresa');
+        $refresh = $request->boolean('refresh');
+        $local = app(CcCatalogoLocal::class);
+
+        // Por defecto: catálogo local (rápido). refresh=1 fuerza SAP → local.
+        if (! $refresh && $local->disponible() && $local->tieneDatos($empresa ? (string) $empresa : null)) {
+            $data = $local->leer($empresa ? (string) $empresa : null);
+
+            return response()->json([
+                'centros' => $data['centros'],
+                'cuentas' => $data['cuentas'],
+                'agrupaciones' => [],
+                'empresas' => $data['empresas'],
+                'sapOk' => false,
+                'sapMensaje' => null,
+                'fuente' => 'local',
+                'catalogo_local' => true,
+                'synced_at' => $data['synced_at'],
+            ]);
+        }
 
         try {
             $api = app(AutinApiClient::class);
         } catch (Throwable $e) {
+            if ($local->disponible() && $local->tieneDatos($empresa ? (string) $empresa : null)) {
+                $data = $local->leer($empresa ? (string) $empresa : null);
+
+                return response()->json([
+                    'centros' => $data['centros'],
+                    'cuentas' => $data['cuentas'],
+                    'agrupaciones' => [],
+                    'empresas' => $data['empresas'],
+                    'sapOk' => false,
+                    'sapMensaje' => $e->getMessage(),
+                    'fuente' => 'local',
+                    'catalogo_local' => true,
+                    'synced_at' => $data['synced_at'],
+                ]);
+            }
+
             return response()->json([
                 'centros' => [],
                 'cuentas' => [],
@@ -1069,10 +1182,120 @@ class CentrosCostosController extends Controller
                 'empresas' => [],
                 'sapOk' => false,
                 'sapMensaje' => $e->getMessage(),
+                'fuente' => 'sap',
+                'catalogo_local' => false,
+                'synced_at' => null,
             ]);
         }
 
-        return response()->json($this->cargarCatalogo($api, $perPage, $empresa));
+        $payload = $this->cargarCatalogo($api, $perPage, $empresa);
+        // Si vino de SAP y hay tablas locales, persistir (sin tocar captura).
+        if (! empty($payload['sapOk']) && $local->disponible()) {
+            $this->persistirCatalogoSapEnLocal($payload, $empresa ? (string) $empresa : null);
+            $payload['fuente'] = 'sap';
+            $payload['catalogo_local'] = true;
+            $payload['synced_at'] = $local->ultimaSync($empresa ? strtoupper((string) $empresa) : null);
+        } else {
+            $payload['fuente'] = ! empty($payload['sapOk']) ? 'sap' : 'vacio';
+            $payload['catalogo_local'] = $local->disponible();
+            $payload['synced_at'] = $local->disponible()
+                ? $local->ultimaSync($empresa ? strtoupper((string) $empresa) : null)
+                : null;
+        }
+
+        return response()->json($payload);
+    }
+
+    /**
+     * Actualiza catálogo local desde SAP (centros/cuentas/nombres/depto).
+     * No modifica tbl_cc_presupuestos ni asignaciones.
+     */
+    public function sincronizarCatalogo(Request $request): JsonResponse
+    {
+        @set_time_limit(300);
+        $local = app(CcCatalogoLocal::class);
+        if (! $local->disponible()) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Faltan tablas de catálogo local. Ejecuta database/sql/cc_catalogo_local.sql',
+            ], 422);
+        }
+
+        $empresaReq = strtoupper(trim((string) $request->get('empresa', '')));
+        try {
+            $api = app(AutinApiClient::class);
+            $dbs = $api->allowedDatabases();
+        } catch (Throwable $e) {
+            return response()->json(['ok' => false, 'message' => $e->getMessage()], 200);
+        }
+
+        $empresas = $empresaReq !== ''
+            ? [strtolower($empresaReq)]
+            : array_values($dbs);
+        $alias = ['absa' => 'austin'];
+        $out = [];
+        $okAll = true;
+        $userId = auth()->id();
+
+        foreach ($empresas as $db) {
+            $db = strtolower((string) ($alias[$db] ?? $db));
+            $empUp = strtoupper($db);
+            try {
+                $payload = $this->cargarCatalogo($api, 200, $empUp);
+                if (empty($payload['sapOk'])) {
+                    $okAll = false;
+                    $msg = (string) ($payload['sapMensaje'] ?? 'Sin respuesta SAP');
+                    $local->marcarFallo($empUp, $msg, $userId);
+                    $out[] = [
+                        'empresa' => $empUp,
+                        'ok' => false,
+                        'centros' => 0,
+                        'cuentas' => 0,
+                        'mensaje' => $msg,
+                    ];
+                    continue;
+                }
+                $stats = $local->reemplazarEmpresa(
+                    $empUp,
+                    $payload['centros'] ?? [],
+                    $payload['cuentas'] ?? [],
+                    $userId
+                );
+                $out[] = [
+                    'empresa' => $empUp,
+                    'ok' => true,
+                    'centros' => $stats['centros'],
+                    'cuentas' => $stats['cuentas'],
+                    'mensaje' => null,
+                ];
+            } catch (Throwable $e) {
+                $okAll = false;
+                $local->marcarFallo($empUp, $e->getMessage(), $userId);
+                $out[] = [
+                    'empresa' => $empUp,
+                    'ok' => false,
+                    'centros' => 0,
+                    'cuentas' => 0,
+                    'mensaje' => $e->getMessage(),
+                ];
+            }
+        }
+
+        $data = $local->leer($empresaReq !== '' ? $empresaReq : null);
+
+        return response()->json([
+            'ok' => $okAll,
+            'empresas' => $out,
+            'centros' => $data['centros'],
+            'cuentas' => $data['cuentas'],
+            'empresas_catalogo' => $data['empresas'],
+            'fuente' => 'local',
+            'catalogo_local' => true,
+            'synced_at' => $data['synced_at'],
+            'mensaje' => $okAll
+                ? 'Catálogo local actualizado desde SAP (sin tocar captura).'
+                : 'Algunas empresas fallaron; revisa el detalle.',
+        ]);
     }
 
     public function gastoReal(Request $request): JsonResponse
@@ -3523,6 +3746,21 @@ class CentrosCostosController extends Controller
                 ->all();
         }
 
+        $localCat = app(CcCatalogoLocal::class);
+        $centrosBoot = [];
+        $cuentasBoot = [];
+        $empresasSapBoot = [];
+        $catalogoSyncedAt = null;
+        $catalogoLocalOk = false;
+        if ($localCat->disponible() && $localCat->tieneDatos()) {
+            $cat = $localCat->leer();
+            $centrosBoot = $cat['centros'];
+            $cuentasBoot = $cat['cuentas'];
+            $empresasSapBoot = $cat['empresas'];
+            $catalogoSyncedAt = $cat['synced_at'];
+            $catalogoLocalOk = true;
+        }
+
         return [
             'usuarioActual' => auth()->user()->name ?? '',
             'usuarioActualId' => auth()->id(),
@@ -3530,13 +3768,16 @@ class CentrosCostosController extends Controller
             'anioPresupuesto' => 2027,
             'sapBase' => url('/Sistemas/AutinApi'),
             'catalogoUrl' => route('centros.catalogo'),
+            'catalogoSyncUrl' => route('centros.api.catalogo_sync'),
             'gastoUrl' => route('centros.api.gasto_real'),
             'gastoBatchUrl' => route('centros.api.gasto_real_analisis'),
             'sapOk' => false,
             'sapMensaje' => null,
-            'empresasSap' => [],
-            'centros' => [],
-            'cuentas' => [],
+            'catalogoLocal' => $catalogoLocalOk,
+            'catalogoSyncedAt' => $catalogoSyncedAt,
+            'empresasSap' => $empresasSapBoot,
+            'centros' => $centrosBoot,
+            'cuentas' => $cuentasBoot,
             'agrupaciones' => [],
             'usuarios' => $usuarios,
             'empresasLocales' => $empresasLocales,
@@ -3557,6 +3798,54 @@ class CentrosCostosController extends Controller
                 'fuente' => 'Informe Banxico',
             ],
         ];
+    }
+
+    /**
+     * Persiste respuesta SAP en catálogo local, agrupando por empresa.
+     * No toca presupuestos ni asignaciones.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    protected function persistirCatalogoSapEnLocal(array $payload, ?string $empresaFiltro = null): void
+    {
+        $local = app(CcCatalogoLocal::class);
+        if (! $local->disponible()) {
+            return;
+        }
+        $centros = is_array($payload['centros'] ?? null) ? $payload['centros'] : [];
+        $cuentas = is_array($payload['cuentas'] ?? null) ? $payload['cuentas'] : [];
+        $byEmp = [];
+        foreach ($centros as $c) {
+            $emp = strtoupper(trim((string) ($c['empresa'] ?? $empresaFiltro ?? '')));
+            if ($emp === '') {
+                continue;
+            }
+            if (! isset($byEmp[$emp])) {
+                $byEmp[$emp] = ['centros' => [], 'cuentas' => []];
+            }
+            $byEmp[$emp]['centros'][] = $c;
+        }
+        foreach ($cuentas as $c) {
+            $emp = strtoupper(trim((string) ($c['empresa'] ?? $empresaFiltro ?? '')));
+            if ($emp === '') {
+                continue;
+            }
+            if (! isset($byEmp[$emp])) {
+                $byEmp[$emp] = ['centros' => [], 'cuentas' => []];
+            }
+            $byEmp[$emp]['cuentas'][] = $c;
+        }
+        if ($empresaFiltro && ! isset($byEmp[strtoupper($empresaFiltro)])) {
+            $byEmp[strtoupper($empresaFiltro)] = ['centros' => $centros, 'cuentas' => $cuentas];
+        }
+        $uid = auth()->id();
+        foreach ($byEmp as $emp => $pack) {
+            // Si solo trajimos centros o solo cuentas, conserva el otro lado local.
+            $prev = $local->leer($emp);
+            $centrosSave = $pack['centros'] ?: $prev['centros'];
+            $cuentasSave = $pack['cuentas'] ?: $prev['cuentas'];
+            $local->reemplazarEmpresa($emp, $centrosSave, $cuentasSave, $uid);
+        }
     }
 
     /**

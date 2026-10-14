@@ -45,8 +45,12 @@
             </div>
             <span class="cc-badge cc-banner-fx" id="period-fx">—</span>
             <div class="cc-banner-actions">
+                <button type="button" class="cc-btn" id="ciclo-sync-catalogo"
+                    title="Baja centros/cuentas/nombres desde SAP a la copia local. No modifica captura ni gasto.">
+                    <i class="fa-solid fa-cloud-arrow-down"></i> Actualizar catálogo
+                </button>
                 <button type="button" class="cc-btn" id="ciclo-sap">
-                    <i class="fa-solid fa-rotate"></i> Actualizar de SAP
+                    <i class="fa-solid fa-rotate"></i> Actualizar gasto SAP
                 </button>
                 <button type="button" class="cc-btn" onclick="CC.showModal('modalPeriodo')">
                     <i class="fa-solid fa-pen"></i> Editar

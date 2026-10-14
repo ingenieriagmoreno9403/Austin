@@ -25,7 +25,11 @@
             </button>
         </nav>
         <div class="cc-header-actions">
-            <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
+            <span id="sap-flag" class="cc-sap-flag off" title="Fuente del catálogo de centros/cuentas">Catálogo local</span>
+            <button type="button" class="cc-btn" id="ctl-sync-catalogo"
+                title="Baja centros/cuentas/nombres desde SAP a la copia local. No modifica lo capturado.">
+                <i class="fa-solid fa-cloud-arrow-down"></i> Actualizar catálogo
+            </button>
             <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
             <select id="ctl-moneda" class="cc-select cc-header-ciclo cc-header-moneda" aria-label="Moneda de cambio">
                 <option value="MXN">MXN</option>

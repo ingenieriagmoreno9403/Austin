@@ -25,7 +25,7 @@
             <h3><i class="fa-solid fa-tags"></i> Maestro de precios</h3>
             <span class="text-muted" style="font-size:.8rem" id="pv-costos-hint">Cargando…</span>
         </div>
-        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto auto auto;">
+        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto auto auto auto;">
             <select id="pv-costos-anio" class="cc-select" title="Año de proyección del maestro">
                 <option value="{{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}">Proy. {{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}</option>
             </select>
@@ -41,6 +41,10 @@
             </select>
             <button type="button" class="cc-btn" id="pv-costos-reload">
                 <i class="fa-solid fa-rotate"></i> Actualizar
+            </button>
+            <button type="button" class="cc-btn" id="pv-costos-solo-asignados" hidden
+                title="Mostrar solo productos asignados a usuarios (cualquier asignación del año)">
+                <i class="fa-solid fa-user-check"></i> Solo asignados
             </button>
             <button type="button" class="cc-btn" id="pv-costos-excel" title="Descargar o subir plantilla Excel (Formato Precios)">
                 <i class="fa-solid fa-file-excel"></i> Plantilla Excel

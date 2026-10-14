@@ -10101,6 +10101,8 @@
     function initCostos() {
         var url = CC.state.costosUrl || '/ProyeccionesVentas/api/costos';
         var puedeEditar = !!CC.state.puedeEditarCostos;
+        var puedeSoloAsignados = !!CC.state.puedeFiltrarSoloAsignados;
+        var soloAsignados = false;
         var items = [];
         var page = 1;
         var lastPage = 1;
@@ -10119,6 +10121,7 @@
         var pageLabel = document.getElementById('pv-costos-page-label');
         var prevBtn = document.getElementById('pv-costos-prev');
         var nextBtn = document.getElementById('pv-costos-next');
+        var soloAsigBtn = document.getElementById('pv-costos-solo-asignados');
         if (!tbody) return;
 
         // Botones que modifican precios: solo con permiso editar_ventas_costos.
@@ -10138,6 +10141,28 @@
                 el.disabled = true;
             }
         });
+
+        function paintSoloAsignadosBtn() {
+            if (!soloAsigBtn) return;
+            if (!puedeSoloAsignados) {
+                soloAsigBtn.hidden = true;
+                return;
+            }
+            soloAsigBtn.hidden = false;
+            soloAsigBtn.classList.toggle('cc-btn-ink', !!soloAsignados);
+            soloAsigBtn.setAttribute('aria-pressed', soloAsignados ? 'true' : 'false');
+            soloAsigBtn.title = soloAsignados
+                ? 'Filtro activo: solo productos asignados a usuarios. Clic para ver el maestro completo.'
+                : 'Mostrar solo productos asignados a usuarios (cualquier asignación del año)';
+        }
+        paintSoloAsignadosBtn();
+        if (soloAsigBtn && puedeSoloAsignados) {
+            soloAsigBtn.addEventListener('click', function () {
+                soloAsignados = !soloAsignados;
+                paintSoloAsignadosBtn();
+                load(1);
+            });
+        }
 
         function costosAnio() {
             var fromSel = anioSel ? Number(anioSel.value) : 0;
@@ -10213,7 +10238,10 @@
 
         function updatePager() {
             if (hint) {
-                hint.textContent = total + (total === 1 ? ' registro' : ' registros');
+                var base = total + (total === 1 ? ' registro' : ' registros');
+                hint.textContent = soloAsignados
+                    ? (base + ' · solo asignados a usuarios')
+                    : base;
             }
             if (pageInfo) {
                 pageInfo.textContent = total
@@ -10762,6 +10790,9 @@
             params.push('page=' + encodeURIComponent(String(goPage || page || 1)));
             params.push('per_page=' + encodeURIComponent(String(perPage)));
             params.push('anio=' + encodeURIComponent(String(costosAnio())));
+            if (soloAsignados && puedeSoloAsignados) {
+                params.push('solo_asignados=1');
+            }
             return params.length ? ('?' + params.join('&')) : '';
         }
 
@@ -11967,6 +11998,7 @@
                 if (emp) qs += '&empresa=' + encodeURIComponent(emp);
                 if (cliente) qs += '&cliente=' + encodeURIComponent(cliente);
                 if (itemcode) qs += '&itemcode=' + encodeURIComponent(itemcode);
+                if (soloAsignados && puedeSoloAsignados) qs += '&solo_asignados=1';
                 window.location.href = plantillaUrl + qs;
             });
         }
@@ -12056,6 +12088,9 @@
         CC.state.puedeEditarCostos = boot.hasOwnProperty('puedeEditarCostos')
             ? !!boot.puedeEditarCostos
             : true;
+        CC.state.puedeFiltrarSoloAsignados = boot.hasOwnProperty('puedeFiltrarSoloAsignados')
+            ? !!boot.puedeFiltrarSoloAsignados
+            : false;
         CC.state.puedeEditarPreciosCaptura = boot.hasOwnProperty('puedeEditarPreciosCaptura')
             ? !!boot.puedeEditarPreciosCaptura
             : false;

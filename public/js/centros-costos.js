@@ -6002,12 +6002,17 @@
         CC.state.completados = {};
         CC.state.currency = String(loadJSON(SK.currency, 'MXN') || 'MXN').toUpperCase() === 'USD' ? 'USD' : 'MXN';
         CC.state.sapMensaje = boot.sapMensaje;
+        CC.state.catalogoSyncUrl = boot.catalogoSyncUrl || '/CentrosCostos/api/catalogo/sincronizar';
+        CC.state.catalogoLocal = !!boot.catalogoLocal;
+        CC.state.catalogoSyncedAt = boot.catalogoSyncedAt || null;
         mergeSap(boot, { lockCentros: CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis' });
-        var flag = document.getElementById('sap-flag');
-        if (flag) {
-            flag.textContent = CC.state.sapOk && (boot.centros || []).length ? 'Catálogo SAP' : (boot.sapMensaje ? 'Catálogo local' : 'Catálogo de trabajo');
-            flag.className = 'cc-sap-flag' + (CC.state.sapOk && (boot.centros || []).length ? '' : ' off');
-        }
+        paintCatalogoFlag({
+            local: CC.state.catalogoLocal || !!(boot.centros || []).length,
+            syncedAt: CC.state.catalogoSyncedAt,
+            sapLive: false,
+            empty: !(boot.centros || []).length && !(boot.cuentas || []).length
+        });
+        bindCatalogoSyncButtons();
         if (CC.state.page === 'admin') CC.initCiclos();
         if (CC.state.page === 'admin-ciclo' || CC.state.page === 'asignacion') {
             renderPeriodBanner();
@@ -6023,26 +6028,126 @@
         if (CC.state.page === 'control') CC.initControl();
         if (CC.state.page === 'detalle') CC.initDetalle();
         if (CC.state.page === 'analisis') CC.initAnalisis();
-        // Detalle solo usa asignaciones + copia local de gasto/presupuesto.
-        // El catálogo SAP (varias páginas remotas) solo atrasaba el spinner.
-        if (CC.state.page === 'control' || CC.state.page === 'analisis') refreshSap(boot.catalogoUrl);
+        // Control/Análisis: catálogo local primero. Solo llama SAP si aún no hay copia.
+        if ((CC.state.page === 'control' || CC.state.page === 'analisis') && !CC.state.catalogoLocal) {
+            refreshSap(boot.catalogoUrl);
+        }
     };
+
+    function paintCatalogoFlag(opts) {
+        opts = opts || {};
+        var flag = document.getElementById('sap-flag');
+        if (!flag) return;
+        var synced = opts.syncedAt ? String(opts.syncedAt) : (CC.state.catalogoSyncedAt || '');
+        if (opts.sapLive) {
+            flag.textContent = 'Catálogo SAP';
+            flag.className = 'cc-sap-flag';
+            flag.title = 'Datos recién bajados de SAP a la copia local';
+            return;
+        }
+        if (opts.local && !opts.empty) {
+            flag.textContent = 'Catálogo local';
+            flag.className = 'cc-sap-flag';
+            flag.title = synced
+                ? ('Copia local · última sync: ' + synced)
+                : 'Copia local de centros/cuentas (sin ir a SAP en cada carga)';
+            return;
+        }
+        flag.textContent = opts.empty ? 'Sin catálogo' : 'Catálogo de trabajo';
+        flag.className = 'cc-sap-flag off';
+        flag.title = 'Aún no hay copia local. Usa «Actualizar catálogo».';
+    }
+
+    function bindCatalogoSyncButtons() {
+        ['ctl-sync-catalogo', 'an-sync-catalogo', 'ciclo-sync-catalogo'].forEach(function (id) {
+            var btn = document.getElementById(id);
+            if (!btn || btn._ccCatBound) return;
+            btn._ccCatBound = true;
+            btn.addEventListener('click', function () {
+                sincronizarCatalogoLocal(btn);
+            });
+        });
+    }
+
+    function sincronizarCatalogoLocal(btn) {
+        var url = CC.state.catalogoSyncUrl || '/CentrosCostos/api/catalogo/sincronizar';
+        var prevHtml = btn ? btn.innerHTML : '';
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Actualizando…';
+        }
+        toast('info', 'Catálogo', 'Bajando centros/cuentas desde SAP a la copia local…');
+        fetch(url, {
+            method: 'POST',
+            headers: apiJsonHeaders(),
+            body: JSON.stringify({})
+        }).then(function (r) { return r.json().then(function (json) { return { ok: r.ok, json: json }; }); })
+            .then(function (res) {
+                var json = res.json || {};
+                if (!res.ok && !json.centros) {
+                    throw new Error(json.message || 'No se pudo sincronizar el catálogo');
+                }
+                CC.state.catalogoLocal = true;
+                CC.state.catalogoSyncedAt = json.synced_at || null;
+                mergeSap({
+                    centros: json.centros || [],
+                    cuentas: json.cuentas || [],
+                    sapOk: false
+                }, { lockCentros: CC.state.page === 'control' || CC.state.page === 'detalle' || CC.state.page === 'analisis' });
+                paintCatalogoFlag({
+                    local: true,
+                    sapLive: true,
+                    syncedAt: CC.state.catalogoSyncedAt,
+                    empty: !(json.centros || []).length
+                });
+                setTimeout(function () {
+                    paintCatalogoFlag({
+                        local: true,
+                        syncedAt: CC.state.catalogoSyncedAt,
+                        empty: !(json.centros || []).length
+                    });
+                }, 2500);
+                if (CC.state.page === 'control') CC.initControl();
+                if (CC.state.page === 'analisis') CC.initAnalisis();
+                var nEmp = (json.empresas || []).length;
+                var nC = (json.centros || []).length;
+                var nA = (json.cuentas || []).length;
+                toast(
+                    json.ok ? 'success' : 'warning',
+                    json.ok ? 'Catálogo actualizado' : 'Catálogo parcial',
+                    (json.mensaje || '') + ' · ' + nEmp + ' empresa(s), ' + nC + ' centros, ' + nA + ' cuentas. La captura no se modificó.'
+                );
+            })
+            .catch(function (err) {
+                toast('error', 'Catálogo', (err && err.message) || 'Error al sincronizar');
+            })
+            .then(function () {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = prevHtml;
+                }
+            });
+    }
 
     function refreshSap(url) {
         if (!url) return;
         if (CC.state.page === 'detalle') return;
+        // Sin refresh=1 el API sirve la copia local (o siembra desde SAP si está vacía).
         fetch(url + '?per_page=120', {
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (res) { return res.json(); }).then(function (data) {
             if (!data) return;
             var lock = CC.state.page === 'control' || CC.state.page === 'analisis';
             if (!lock && !(data.centros || []).length) return;
+            CC.state.catalogoLocal = !!data.catalogo_local || data.fuente === 'local';
+            CC.state.catalogoSyncedAt = data.synced_at || CC.state.catalogoSyncedAt;
             mergeSap(Object.assign({}, data, { sapOk: !!data.sapOk }), { lockCentros: lock });
-            var flag = document.getElementById('sap-flag');
-            if (flag && (data.sapOk || (data.centros || []).length || (data.cuentas || []).length)) {
-                flag.textContent = 'Catálogo SAP';
-                flag.className = 'cc-sap-flag';
-            }
+            paintCatalogoFlag({
+                local: CC.state.catalogoLocal || !!(data.centros || []).length,
+                syncedAt: CC.state.catalogoSyncedAt,
+                sapLive: data.fuente === 'sap',
+                empty: !(data.centros || []).length && !(data.cuentas || []).length
+            });
             if (CC.state.page === 'control') CC.initControl();
             if (CC.state.page === 'analisis') CC.initAnalisis();
         }).catch(function () {});

@@ -47,7 +47,11 @@
             <p class="cc-sub" id="an-sub">Analíticas por empresa, centro, cuenta o usuario.</p>
         </div>
         <div class="cc-header-actions">
-            <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
+            <span id="sap-flag" class="cc-sap-flag off" title="Fuente del catálogo de centros/cuentas">Catálogo local</span>
+            <button type="button" class="cc-btn" id="an-sync-catalogo"
+                title="Baja centros/cuentas/nombres desde SAP a la copia local. No modifica lo capturado.">
+                <i class="fa-solid fa-cloud-arrow-down"></i> Actualizar catálogo
+            </button>
             <select id="an-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
             <label class="cc-header-moneda-wrap">
                 <span>Ver en</span>
@@ -56,7 +60,9 @@
                     <option value="USD">USD</option>
                 </select>
             </label>
-            <button type="button" class="cc-btn" id="an-sap"><i class="fa-solid fa-rotate"></i> Actualizar de SAP</button>
+            <button type="button" class="cc-btn" id="an-sap" title="Actualiza gasto real desde SAP a la copia local">
+                <i class="fa-solid fa-rotate"></i> Actualizar gasto SAP
+            </button>
         </div>
     </div>
 

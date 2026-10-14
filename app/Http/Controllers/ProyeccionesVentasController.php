@@ -113,6 +113,7 @@ class ProyeccionesVentasController extends Controller
             'costosSyncPrecioListaLoteUrl' => route('pv.api.costos.sync_precio_lista_lote'),
             'costosHistorialUrl' => route('pv.api.costos.historial'),
             'puedeEditarCostos' => $this->puedeEditarPreciosVentas(),
+            'puedeFiltrarSoloAsignados' => $this->puedeFiltrarSoloAsignadosCostos(),
         ]);
     }
 
@@ -197,8 +198,17 @@ class ProyeccionesVentasController extends Controller
 
         // Usuarios normales: solo empresas/clientes/productos de sus asignaciones del año.
         // Master/Administrador: maestro completo.
-        $alcance = $this->alcanceCostosAsignadosUsuario($anio);
-        $restringido = $alcance !== null;
+        // solo_asignados=1 (Master / Rene / Luis): solo triples Empresa+CardCode+ItemCode
+        // con asignación de cualquier usuario en el año.
+        $soloAsignados = in_array(strtolower((string) $request->get('solo_asignados', '')), ['1', 'true', 'yes'], true)
+            && $this->puedeFiltrarSoloAsignadosCostos();
+        if ($soloAsignados) {
+            $alcance = $this->alcanceCostosAsignadosTodosUsuarios($anio);
+            $restringido = true;
+        } else {
+            $alcance = $this->alcanceCostosAsignadosUsuario($anio);
+            $restringido = $alcance !== null;
+        }
         if ($restringido && $alcance['empresas'] === []) {
             return response()->json([
                 'ok' => true,
@@ -213,8 +223,11 @@ class ProyeccionesVentasController extends Controller
                 'from' => 0,
                 'to' => 0,
                 'alcance_restringido' => true,
+                'solo_asignados' => $soloAsignados,
                 'empresas_permitidas' => [],
-                'mensaje' => 'No tienes clientes asignados en este año de proyección.',
+                'mensaje' => $soloAsignados
+                    ? 'No hay productos asignados a usuarios en este año de proyección.'
+                    : 'No tienes clientes asignados en este año de proyección.',
             ]);
         }
         if ($restringido && $empresa !== '' && empty($alcance['empresas'][$empresa])) {
@@ -369,8 +382,12 @@ class ProyeccionesVentasController extends Controller
                             'a.cliente_nombre',
                             'ap.producto_codigo',
                             'ap.producto_nombre'
-                        )
-                        ->where('a.user_id', (int) auth()->id());
+                        );
+                    // Solo asignados (global): todas las asignaciones del año.
+                    // Alcance personal: solo las del usuario autenticado.
+                    if (! $soloAsignados) {
+                        $asigQ->where('a.user_id', (int) auth()->id());
+                    }
                     if (Schema::hasTable('tbl_pv_ciclos')) {
                         $asigQ->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
                             ->where('c.anio_presupuesto', $anio);
@@ -520,10 +537,33 @@ class ProyeccionesVentasController extends Controller
             'from' => $total === 0 ? 0 : ($offset + 1),
             'to' => $total === 0 ? 0 : min($offset + $perPage, $total),
             'alcance_restringido' => $restringido,
+            'solo_asignados' => $soloAsignados,
             'empresas_permitidas' => $restringido
                 ? array_values(array_keys($alcance['empresas']))
                 : [],
         ]);
+    }
+
+    /**
+     * Botón «Solo asignados» en /Ventas/Costos: Master, Rene Vizcaino, Luis Betancourt.
+     */
+    protected function puedeFiltrarSoloAsignadosCostos(): bool
+    {
+        $user = auth()->user();
+        if (! $user) {
+            return false;
+        }
+        $uid = (int) $user->id;
+        if (in_array($uid, [524, 587, 592], true)) {
+            return true;
+        }
+        $email = strtolower(trim((string) ($user->email ?? '')));
+
+        return in_array($email, [
+            'master@mbntas.com',
+            'rene.vizcaino@austinpowder.com',
+            'luis.betancourt@austinpowder.com',
+        ], true);
     }
 
     /**
@@ -547,10 +587,39 @@ class ProyeccionesVentasController extends Controller
             ];
         }
 
+        return $this->construirAlcanceCostosAsignaciones($anio, $uid);
+    }
+
+    /**
+     * Alcance global: productos asignados a cualquier usuario en ciclos del año.
+     *
+     * @return array{empresas: array<string, true>, clientes: array<string, true>, triples: array<string, true>, productos_emp: array<string, true>}
+     */
+    protected function alcanceCostosAsignadosTodosUsuarios(int $anio): array
+    {
+        if (! Schema::hasTable('tbl_pv_asignaciones')) {
+            return [
+                'empresas' => [],
+                'clientes' => [],
+                'triples' => [],
+                'productos_emp' => [],
+            ];
+        }
+
+        return $this->construirAlcanceCostosAsignaciones($anio, null);
+    }
+
+    /**
+     * @return array{empresas: array<string, true>, clientes: array<string, true>, triples: array<string, true>, productos_emp: array<string, true>}
+     */
+    protected function construirAlcanceCostosAsignaciones(int $anio, ?int $userId): array
+    {
         $q = DB::table('tbl_pv_asignaciones as a')
             ->leftJoin('tbl_pv_asignacion_productos as ap', 'ap.asignacion_id', '=', 'a.id')
-            ->where('a.user_id', $uid)
             ->select('a.empresa', 'a.cliente_codigo', 'ap.producto_codigo');
+        if ($userId !== null && $userId > 0) {
+            $q->where('a.user_id', $userId);
+        }
         if (Schema::hasTable('tbl_pv_ciclos')) {
             $q->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
                 ->where('c.anio_presupuesto', $anio);
@@ -1605,7 +1674,9 @@ class ProyeccionesVentasController extends Controller
         $q = trim((string) $request->get('q', ''));
         $anio = $this->anioProyeccionCostos((int) $request->get('anio', 0));
         // Misma consulta que la tabla (sin paginar): respeta filtros de pantalla.
-        $listReq = Request::create('/ProyeccionesVentas/api/costos', 'GET', [
+        $soloAsignados = in_array(strtolower((string) $request->get('solo_asignados', '')), ['1', 'true', 'yes'], true)
+            && $this->puedeFiltrarSoloAsignadosCostos();
+        $listParams = [
             'empresa' => $empresa,
             'cliente' => $cliente,
             'itemcode' => $itemcode,
@@ -1615,7 +1686,11 @@ class ProyeccionesVentasController extends Controller
             'sin_paginar' => 1,
             'per_page' => 50000,
             'page' => 1,
-        ]);
+        ];
+        if ($soloAsignados) {
+            $listParams['solo_asignados'] = 1;
+        }
+        $listReq = Request::create('/ProyeccionesVentas/api/costos', 'GET', $listParams);
         $listJson = $this->listCostos($listReq)->getData(true);
         $items = is_array($listJson['items'] ?? null) ? $listJson['items'] : [];
 
@@ -1650,6 +1725,9 @@ class ProyeccionesVentasController extends Controller
         $suffix = $empresa !== '' ? '_'.$empresa : '';
         if ($cliente !== '') {
             $suffix .= '_'.preg_replace('/[^A-Za-z0-9_-]+/', '', $cliente);
+        }
+        if ($soloAsignados) {
+            $suffix .= '_asignados';
         }
         $filename = 'Formato_Precios'.$suffix.'_'.now()->format('Ymd').'.xlsx';
 
