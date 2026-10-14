@@ -119,6 +119,12 @@
                         <strong id="kpi-ctl-ppto">—</strong>
                     </div>
                 </div>
+                <div class="cc-nav-auto">
+                    <button type="button" class="cc-btn cc-btn-ink" id="ctl-completar-vacias"
+                        title="Pone 0 en todas las cuentas del centro que aún no tienen valor y las guarda">
+                        <i class="fa-solid fa-check-double"></i> Autocompletar vacías
+                    </button>
+                </div>
                 <span id="kpi-ctl-pend" hidden></span>
                 <span id="ctl-perms" hidden></span>
             </aside>

@@ -1331,6 +1331,19 @@ class CentrosCostosController extends Controller
             if ($desdeCopia !== null) {
                 return response()->json($desdeCopia);
             }
+            // Con copia local disponible: no ir a SAP (Detalle/Captura deben ser rápidos).
+            // Para forzar SAP usar refresh=1 o sincronizar gasto del centro.
+            $snap = app(CcGastoRealSnapshot::class);
+            if ($snap->disponible() && ! $request->boolean('sap')) {
+                return response()->json([
+                    'ok' => true,
+                    'completo' => true,
+                    'year' => $year,
+                    'por_cuenta' => (object) [],
+                    'origen' => 'copia',
+                    'mensaje' => null,
+                ]);
+            }
         }
 
         $cacheSuffix = $empresa . '.' . $cc . '.' . $year . '.' . md5(json_encode($cuentas));
@@ -1435,6 +1448,261 @@ class CentrosCostosController extends Controller
             'year' => $year,
             'por_centro' => (object) $porCentro,
             'copias' => (object) $this->gastoCopiaEmpresas,
+        ]);
+    }
+
+    /**
+     * Encabezados del Visor: 1 fila por centro (totales), sin mapa de cuentas.
+     */
+    public function visorResumen(Request $request): JsonResponse
+    {
+        @set_time_limit(60);
+        $year = (int) $request->input('year', $request->input('anio', 0));
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+        $ciclo = strtoupper(trim((string) $request->input('ciclo', '')));
+        $centros = $request->input('centros', []);
+        if (! is_array($centros)) {
+            $centros = [];
+        }
+
+        $alias = ['ABSA' => 'AUSTIN'];
+        $grupos = [];
+        $vistos = [];
+        $clavesOrden = [];
+        foreach (array_slice($centros, 0, 500) as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $raw = strtoupper(trim((string) ($item['empresa'] ?? '')));
+            $cc = trim((string) ($item['cc'] ?? ''));
+            if ($raw === '' || $cc === '') {
+                continue;
+            }
+            $clave = $raw.'|'.$cc;
+            if (isset($vistos[$clave])) {
+                continue;
+            }
+            $vistos[$clave] = true;
+            $clavesOrden[] = $clave;
+            $cuentas = $item['cuentas'] ?? [];
+            if (is_string($cuentas)) {
+                $cuentas = preg_split('/\s*,\s*/', $cuentas) ?: [];
+            }
+            if (! is_array($cuentas)) {
+                $cuentas = [];
+            }
+            $sap = $alias[$raw] ?? $raw;
+            $grupos[$sap][] = [
+                'raw' => $raw,
+                'cc' => $cc,
+                'clave' => $clave,
+                'cuentas' => array_values(array_filter(array_map(function ($c) {
+                    return trim((string) $c);
+                }, $cuentas))),
+            ];
+        }
+
+        $snap = app(CcGastoRealSnapshot::class);
+        $porCentro = [];
+        foreach ($clavesOrden as $clave) {
+            $porCentro[$clave] = [
+                'tot_gasto' => 0.0,
+                'tot_gasto_usd' => 0.0,
+                'tot_ppto' => 0.0,
+                'total' => 0,
+                'capturadas' => 0,
+                'depto' => '',
+                'estado' => null,
+                'fecha' => null,
+            ];
+        }
+
+        foreach ($grupos as $empresa => $lista) {
+            $ccs = [];
+            $cuentasPorCc = [];
+            foreach ($lista as $item) {
+                $ccs[] = $item['cc'];
+                $cuentasPorCc[$item['cc']] = $item['cuentas'];
+            }
+            $totales = [];
+            try {
+                if ($snap->disponible()) {
+                    $totales = $snap->totalesVisorPorCentro($empresa, $year, $ccs, $cuentasPorCc, 9);
+                }
+            } catch (Throwable $e) {
+                $totales = [];
+            }
+            foreach ($lista as $item) {
+                $hit = $totales[$item['cc']] ?? null;
+                if (! $hit) {
+                    foreach ($totales as $ccKey => $vals) {
+                        if ($this->mismoCentroCodigo((string) $ccKey, $item['cc'])) {
+                            $hit = $vals;
+                            break;
+                        }
+                    }
+                }
+                if ($hit) {
+                    $porCentro[$item['clave']]['tot_gasto'] = (float) ($hit['tot_gasto'] ?? 0);
+                    $porCentro[$item['clave']]['tot_gasto_usd'] = (float) ($hit['tot_gasto_usd'] ?? 0);
+                    if (! empty($hit['depto'])) {
+                        $porCentro[$item['clave']]['depto'] = (string) $hit['depto'];
+                    }
+                }
+                $porCentro[$item['clave']]['total'] = count($item['cuentas']);
+            }
+        }
+
+        if ($ciclo !== '' && Schema::hasTable('tbl_cc_presupuestos') && $clavesOrden) {
+            $hasDone = Schema::hasColumn('tbl_cc_presupuestos', 'completado');
+            $cols = ['empresa', 'centro_codigo', 'cuenta_codigo'];
+            for ($i = 1; $i <= 12; $i++) {
+                $cols[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            }
+            if ($hasDone) {
+                $cols[] = 'completado';
+            }
+            $pptoByClave = [];
+            foreach (DB::table('tbl_cc_presupuestos')->where('ciclo_codigo', $ciclo)->get($cols) as $row) {
+                $emp = strtoupper(trim((string) $row->empresa));
+                $cc = trim((string) $row->centro_codigo);
+                $clave = $emp.'|'.$cc;
+                if (! isset($porCentro[$clave])) {
+                    foreach ($porCentro as $k => $_) {
+                        $parts = explode('|', $k, 2);
+                        if (count($parts) === 2
+                            && strtoupper($parts[0]) === $emp
+                            && $this->mismoCentroCodigo($parts[1], $cc)) {
+                            $clave = $k;
+                            break;
+                        }
+                    }
+                }
+                if (! isset($porCentro[$clave])) {
+                    continue;
+                }
+                $ck = $this->codigoCuentaKey((string) $row->cuenta_codigo);
+                $tot = 0.0;
+                $meses = [];
+                for ($i = 1; $i <= 12; $i++) {
+                    $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                    $val = $row->{$col} ?? null;
+                    $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
+                    if ($val !== null && $val !== '') {
+                        $tot += (float) $val;
+                    }
+                }
+                $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
+                if (! isset($pptoByClave[$clave])) {
+                    $pptoByClave[$clave] = [];
+                }
+                $pptoByClave[$clave][$ck] = ['tot' => round($tot, 2), 'done' => $done];
+            }
+
+            foreach ($grupos as $lista) {
+                foreach ($lista as $item) {
+                    $clave = $item['clave'];
+                    $map = $pptoByClave[$clave] ?? [];
+                    $sumP = 0.0;
+                    $capt = 0;
+                    $seen = [];
+                    foreach ($item['cuentas'] as $cta) {
+                        $ck = $this->codigoCuentaKey($cta);
+                        if ($ck === '' || isset($seen[$ck])) {
+                            continue;
+                        }
+                        $seen[$ck] = true;
+                        $hit = $map[$ck] ?? null;
+                        if (! $hit) {
+                            $alt = ltrim($ck, '0');
+                            $hit = ($alt !== '' && $alt !== $ck) ? ($map[$alt] ?? null) : null;
+                        }
+                        if ($hit) {
+                            $sumP += (float) $hit['tot'];
+                            if (! empty($hit['done'])) {
+                                $capt++;
+                            }
+                        }
+                    }
+                    $porCentro[$clave]['tot_ppto'] = round($sumP, 2);
+                    $porCentro[$clave]['capturadas'] = $capt;
+                    if ($porCentro[$clave]['total'] <= 0) {
+                        $porCentro[$clave]['total'] = count($seen) ?: count($item['cuentas']);
+                    }
+                }
+            }
+        }
+
+        if ($ciclo !== '' && Schema::hasTable('tbl_cc_captura_centros') && $clavesOrden) {
+            foreach (DB::table('tbl_cc_captura_centros')->where('ciclo_codigo', $ciclo)->get(['empresa', 'centro_codigo', 'estado', 'updated_at']) as $row) {
+                $emp = strtoupper(trim((string) $row->empresa));
+                $cc = trim((string) $row->centro_codigo);
+                $clave = $emp.'|'.$cc;
+                if (! isset($porCentro[$clave])) {
+                    foreach (array_keys($porCentro) as $k) {
+                        $parts = explode('|', $k, 2);
+                        if (count($parts) === 2
+                            && strtoupper($parts[0]) === $emp
+                            && $this->mismoCentroCodigo($parts[1], $cc)) {
+                            $clave = $k;
+                            break;
+                        }
+                    }
+                }
+                if (! isset($porCentro[$clave])) {
+                    continue;
+                }
+                $fecha = null;
+                if (! empty($row->updated_at)) {
+                    $ts = strtotime((string) $row->updated_at);
+                    $fecha = $ts ? date('d/m/Y', $ts) : null;
+                }
+                $porCentro[$clave]['estado'] = $row->estado ?: 'en_proceso';
+                $porCentro[$clave]['fecha'] = $fecha;
+            }
+        }
+
+        $local = app(CcCatalogoLocal::class);
+        if ($local->disponible() && Schema::hasTable('tbl_cc_catalogo_centros')) {
+            foreach ($grupos as $lista) {
+                foreach ($lista as $item) {
+                    if ($porCentro[$item['clave']]['depto'] !== '') {
+                        continue;
+                    }
+                    $emps = array_values(array_unique(array_filter([
+                        $item['raw'],
+                        $alias[$item['raw']] ?? null,
+                    ])));
+                    $row = DB::table('tbl_cc_catalogo_centros')
+                        ->where(function ($q) use ($emps) {
+                            foreach ($emps as $emp) {
+                                $q->orWhereRaw('UPPER(empresa) = ?', [strtoupper($emp)]);
+                            }
+                        })
+                        ->where(function ($q) use ($item) {
+                            $cc = $item['cc'];
+                            $alt = ltrim($cc, '0');
+                            $q->where('codigo', $cc);
+                            if ($alt !== '' && $alt !== $cc) {
+                                $q->orWhere('codigo', $alt);
+                            }
+                        })
+                        ->value('departamento');
+                    $d = trim((string) $row);
+                    if ($d !== '' && ! preg_match('/^\d+$/', $d)) {
+                        $porCentro[$item['clave']]['depto'] = $d;
+                    }
+                }
+            }
+        }
+
+        return response()->json([
+            'ok' => true,
+            'year' => $year,
+            'ciclo' => $ciclo,
+            'por_centro' => (object) $porCentro,
         ]);
     }
 
@@ -3771,6 +4039,7 @@ class CentrosCostosController extends Controller
             'catalogoSyncUrl' => route('centros.api.catalogo_sync'),
             'gastoUrl' => route('centros.api.gasto_real'),
             'gastoBatchUrl' => route('centros.api.gasto_real_analisis'),
+            'visorResumenUrl' => route('centros.api.visor_resumen'),
             'sapOk' => false,
             'sapMensaje' => null,
             'catalogoLocal' => $catalogoLocalOk,
