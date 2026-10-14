@@ -1232,6 +1232,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::post('/CentrosCostos/api/catalogo/sincronizar', [CentrosCostosController::class, 'sincronizarCatalogo'])->name('centros.api.catalogo_sync');
     Route::get('/CentrosCostos/api/gasto-real', [CentrosCostosController::class, 'gastoReal'])->name('centros.api.gasto_real');
     Route::post('/CentrosCostos/api/gasto-real-analisis', [CentrosCostosController::class, 'gastoRealAnalisis'])->name('centros.api.gasto_real_analisis');
+    Route::post('/CentrosCostos/api/visor-resumen', [CentrosCostosController::class, 'visorResumen'])->name('centros.api.visor_resumen');
     Route::get('/CentrosCostos/api/gasto-real/estado', [CentrosCostosController::class, 'estadoGastoSap'])->name('centros.api.gasto_real_estado');
     Route::post('/CentrosCostos/api/gasto-real/sincronizar', [CentrosCostosController::class, 'sincronizarGastoSap'])->name('centros.api.gasto_real_sincronizar');
     Route::post('/CentrosCostos/api/gasto-real/sincronizar-centro', [CentrosCostosController::class, 'sincronizarGastoCentro'])->name('centros.api.gasto_real_sincronizar_centro');

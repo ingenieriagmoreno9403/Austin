@@ -631,7 +631,8 @@
         return rememberGastoMaps(key, por).usdMap;
     }
 
-    function applyGastoMap(porCuenta) {
+    function applyGastoMap(porCuenta, opts) {
+        opts = opts || {};
         var built = mapFromPorCuenta(porCuenta);
         control._gastoMap = built.map;
         control._gastoUsdMap = built.usdMap;
@@ -643,8 +644,21 @@
             CC.state.gastoUsdLookup[control._gastoReq] = built.usdMap;
         }
         if (!control.centro) return;
-        control._allCtas = cuentasEnriquecidas(control.centro);
+        // Captura: solo la cuenta elegida. Visor/otras: centro completo.
+        if (CC.state.page === 'control' && control.vista !== 'visor' && control.cuenta) {
+            var one = enriquecerCuentaDesdeMaps(control.centro, currentCta() || { codigo: control.cuenta });
+            patchCuentaEnLista(control.cuenta, one);
+        } else {
+            control._allCtas = cuentasEnriquecidas(control.centro);
+        }
+        if (opts.quiet) return;
         updateControlProgress();
+        if (CC.state.page === 'control' && control.vista !== 'visor') {
+            renderCapturaForm();
+            renderControlTable();
+            renderControlCharts();
+            return;
+        }
         renderNavCuentas();
         renderCtaChips();
         renderCapturaForm();
@@ -654,6 +668,130 @@
         renderDetalleChart();
         renderVisorTable();
         paintDetalleHeader();
+    }
+
+    function filaGastoCero(codigo, nombre) {
+        return {
+            codigo: codigo,
+            nombre: nombre || '',
+            gasto: zeros12(),
+            gasto_usd: zeros12()
+        };
+    }
+
+    function porCentroDeRespuesta(json, c) {
+        var emp = String(c.empresa || '').toUpperCase();
+        var cc = String(c.codigo || '').trim();
+        var porCentro = (json && json.por_centro) || {};
+        var keys = [
+            emp + '|' + cc,
+            emp + '|' + cc.replace(/^0+/, ''),
+            String(c.empresa || '') + '|' + cc
+        ];
+        for (var i = 0; i < keys.length; i++) {
+            if (porCentro[keys[i]]) return porCentro[keys[i]];
+        }
+        // Fallback: primer centro de la respuesta.
+        var first = Object.keys(porCentro)[0];
+        return first ? porCentro[first] : {};
+    }
+
+    /** Asegura fila de la cuenta en el mapa (aunque venga vacío → $0, no «Cargando…»). */
+    function asegurarFilaGastoCuenta(por, codigo, nombre) {
+        por = Object.assign({}, por || {});
+        var ck = codigoCuentaKey(codigo);
+        var hit = null;
+        Object.keys(por).forEach(function (k) {
+            if (hit) return;
+            var row = por[k] || {};
+            var rowCk = codigoCuentaKey(row.codigo || (/^\d/.test(String(k)) ? k : ''));
+            if (String(k) === String(codigo) || String(k) === String(ck)
+                || (ck && rowCk && ck === rowCk)) {
+                hit = row;
+            }
+        });
+        if (hit) {
+            if (!hit.gasto || !hit.gasto.length) hit.gasto = zeros12();
+            if (!hit.gasto_usd || !hit.gasto_usd.length) hit.gasto_usd = zeros12();
+            hit.codigo = codigo;
+            por[ck || codigo] = hit;
+            return por;
+        }
+        por[ck || codigo] = filaGastoCero(codigo, nombre);
+        return por;
+    }
+
+    function aplicarGastoCuentaLocal(c, codigo, por, ctaLite) {
+        var key = gastoCacheKey(c);
+        por = asegurarFilaGastoCuenta(por, codigo, (ctaLite && ctaLite.nombre) || '');
+        CC.state.gastoCache = CC.state.gastoCache || {};
+        CC.state.gastoCache[key] = Object.assign({}, CC.state.gastoCache[key] || {}, por);
+        rememberGastoMaps(key, CC.state.gastoCache[key]);
+        control._gastoReq = key;
+        control._gastoMap = (CC.state.gastoLookup && CC.state.gastoLookup[key]) || {};
+        control._gastoUsdMap = (CC.state.gastoUsdLookup && CC.state.gastoUsdLookup[key]) || {};
+        confirmarGastoCuentas(c, por);
+        var enriched = enriquecerCuentaDesdeMaps(c, ctaLite || { codigo: codigo });
+        patchCuentaEnLista(codigo, enriched);
+        return enriched;
+    }
+
+    /** Carga gasto local de UNA cuenta al seleccionarla (rápido, sin dejar «Cargando…»). */
+    function ensureGastoCuenta(c, codigo, done) {
+        done = done || function () {};
+        if (!c || !codigo) {
+            done(false);
+            return;
+        }
+        var key = gastoCacheKey(c);
+        control._gastoReq = key;
+        var ctaLite = (control._allCtas || []).filter(function (x) {
+            return String(x.codigo) === String(codigo);
+        })[0] || { codigo: codigo };
+        if (gastoDeCuentaCargado(ctaLite)) {
+            patchCuentaEnLista(codigo, enriquecerCuentaDesdeMaps(c, ctaLite));
+            done(true);
+            return;
+        }
+        // Cache del centro ya trae esta cuenta (o zeros).
+        if (CC.state.gastoCache && CC.state.gastoCache[key]) {
+            aplicarGastoCuentaLocal(c, codigo, CC.state.gastoCache[key], ctaLite);
+            if (gastoDeCuentaCargado(currentCta() || ctaLite)) {
+                done(true);
+                return;
+            }
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        var batchUrl = CC.state.gastoBatchUrl || '/CentrosCostos/api/gasto-real-analisis';
+        var reqToken = key + '|' + codigo;
+        control._cuentaGastoReq = reqToken;
+        marcarGastoInflight(c, 1);
+        fetch(batchUrl, {
+            method: 'POST',
+            headers: apiJsonHeaders(),
+            body: JSON.stringify({
+                year: year,
+                centros: [{
+                    empresa: c.empresa || '',
+                    cc: c.codigo || '',
+                    cuentas: [codigo]
+                }]
+            })
+        }).then(function (res) {
+            if (!res.ok) throw new Error('batch');
+            return res.json();
+        }).then(function (json) {
+            marcarGastoInflight(c, -1);
+            if (control._cuentaGastoReq !== reqToken) return;
+            var por = porCentroDeRespuesta(json, c);
+            aplicarGastoCuentaLocal(c, codigo, por, ctaLite);
+            done(true);
+        }).catch(function () {
+            marcarGastoInflight(c, -1);
+            // Sin red/copia: cierra el loading con $0 para no quedarse en «Cargando…».
+            aplicarGastoCuentaLocal(c, codigo, {}, ctaLite);
+            done(false);
+        });
     }
 
     function marcarGastoInflight(c, delta) {
@@ -800,8 +938,9 @@
         }
         control._gastoMap = {};
         control._gastoNombres = [];
+        // Solo el centro elegido (copia local), no batch de todos al cambiar select.
         if (CC.state.page === 'control' || CC.state.page === 'detalle') {
-            cargarGastoLocalControl();
+            cargarGastoLocalUnCentro(c);
             return;
         }
         if (!CC.state.gastoUrl) return;
@@ -814,6 +953,67 @@
         fetchGastoCuentas(c, pend, function (ok) {
             if (ok && control._gastoReq === key) markGastoReady(c);
         });
+    }
+
+    function cargarGastoLocalUnCentro(c) {
+        if (!c) return;
+        var key = gastoCacheKey(c);
+        if (CC.state.gastoCache && CC.state.gastoCache[key]) {
+            applyGastoMap(CC.state.gastoCache[key]);
+            markGastoReady(c);
+            if (CC.state.page === 'detalle') maybeHideDetalleBusy();
+            return;
+        }
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        // Detalle/control: preferir GET gasto-real (copia local del centro), sin SAP si hay snap.
+        var cuentas = cuentasAsignadasCentro(c).map(function (cta) { return cta && cta.codigo; }).filter(Boolean);
+        marcarGastoInflight(c, 1);
+        var params = new URLSearchParams();
+        params.set('empresa', c.empresa || '');
+        params.set('cc', c.codigo || '');
+        params.set('year', String(year));
+        cuentas.forEach(function (codigo) { params.append('cuentas[]', codigo); });
+        var url = (CC.state.gastoUrl || '/CentrosCostos/api/gasto-real') + '?' + params.toString();
+        fetch(url, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (res) {
+            if (!res.ok) throw new Error('gasto');
+            return res.json();
+        }).then(function (json) {
+            marcarGastoInflight(c, -1);
+            if (control._gastoReq !== key) return;
+            var por = porConCuentasAsignadas(c, (json && json.por_cuenta) || {});
+            CC.state.gastoCache = CC.state.gastoCache || {};
+            CC.state.gastoCache[key] = por;
+            rememberGastoMaps(key, por);
+            confirmarGastoCuentas(c, por);
+            applyGastoMap(por);
+            markGastoReady(c);
+            if (control.centro && gastoCacheKey(control.centro) === key) {
+                control._allCtas = cuentasEnriquecidas(control.centro);
+                updateControlProgress();
+                renderCapturaForm();
+                renderControlTable();
+                renderControlCharts();
+            }
+            if (CC.state.page === 'detalle') maybeHideDetalleBusy();
+        }).catch(function () {
+            marcarGastoInflight(c, -1);
+            // Sin copia: cierra loading con $0 en cuentas pedidas.
+            var por = porConCuentasAsignadas(c, {});
+            CC.state.gastoCache = CC.state.gastoCache || {};
+            CC.state.gastoCache[key] = por;
+            rememberGastoMaps(key, por);
+            confirmarGastoCuentas(c, por);
+            applyGastoMap(por);
+            markGastoReady(c);
+            if (CC.state.page === 'detalle') maybeHideDetalleBusy();
+        });
+    }
+
+    /** En Detalle: solo cuentas con ppto del ciclo actual > 0. */
+    function ctaDetalleConPpto(cta) {
+        return !!cta && (Number(cta.totP) || 0) > 0;
     }
 
     function firmaCentrosLocales(centros) {
@@ -858,23 +1058,39 @@
         renderVisorTable();
     }
 
-    function cargarGastoLocalControl() {
-        if (CC.state.page !== 'control' && CC.state.page !== 'detalle') return;
-        var centros = CC.state.page === 'detalle'
-            ? (control.centro ? [control.centro] : [])
-            : (CC.state.centros || []);
-        var firma = firmaCentrosLocales(centros);
-        if (!centros.length || CC._ctlLocalFirma === firma || CC._ctlLocalCargando) return;
-        CC._ctlLocalFirma = firma;
-        CC._ctlLocalCargando = true;
+    function visorResumenKey(c) {
+        return String(c && c.empresa || '').toUpperCase() + '|' + String(c && c.codigo || '').trim();
+    }
+
+    function visorResumenDe(c) {
+        if (!c || !CC.state.visorResumen) return null;
+        return CC.state.visorResumen[visorResumenKey(c)] || null;
+    }
+
+    function invalidateVisorResumen() {
+        CC._visorResumenFirma = '';
+        CC.state.visorResumen = {};
+        CC.state.visorResumenReady = false;
+    }
+
+    /** Visor: solo encabezados (totales por centro), sin mapa de cuentas. */
+    function cargarVisorResumen() {
+        if (CC.state.page !== 'control') return;
+        var centros = CC.state.centros || [];
+        var ciclo = cicloActualCodigo();
         var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
-        centros.forEach(function (c) { marcarGastoInflight(c, 1); });
-        var batchUrl = CC.state.gastoBatchUrl || '/CentrosCostos/api/gasto-real-analisis';
-        fetch(batchUrl, {
+        var firma = firmaCentrosLocales(centros) + '|' + ciclo + '|' + year;
+        if (!centros.length || CC._visorResumenFirma === firma || CC._visorResumenCargando) return;
+        CC._visorResumenFirma = firma;
+        CC._visorResumenCargando = true;
+        CC.state.visorResumenReady = false;
+        var url = CC.state.visorResumenUrl || '/CentrosCostos/api/visor-resumen';
+        fetch(url, {
             method: 'POST',
             headers: apiJsonHeaders(),
             body: JSON.stringify({
                 year: year,
+                ciclo: ciclo,
                 centros: centros.map(function (c) {
                     return {
                         empresa: c.empresa || '',
@@ -884,40 +1100,40 @@
                 })
             })
         }).then(function (res) {
-            if (!res.ok) throw new Error('batch');
+            if (!res.ok) throw new Error('resumen');
             return res.json();
         }).then(function (json) {
-            var porCentro = (json && json.por_centro) || {};
+            var por = (json && json.por_centro) || {};
+            CC.state.visorResumen = {};
             centros.forEach(function (c) {
-                var emp = String(c.empresa || '').toUpperCase();
-                var clave = emp + '|' + String(c.codigo || '').trim();
-                var key = gastoCacheKey(c);
-                var por = porConCuentasAsignadas(c, porCentro[clave] || {});
-                CC.state.gastoCache = CC.state.gastoCache || {};
-                CC.state.gastoCache[key] = por;
-                rememberGastoMaps(key, por);
-                confirmarGastoCuentas(c, por);
-                CC.state.gastoReady = CC.state.gastoReady || {};
-                CC.state.gastoReady[key] = true;
+                var clave = visorResumenKey(c);
+                var row = por[clave] || {
+                    tot_gasto: 0,
+                    tot_gasto_usd: 0,
+                    tot_ppto: 0,
+                    total: cuentasAsignadasCentro(c).length,
+                    capturadas: 0,
+                    depto: ''
+                };
+                CC.state.visorResumen[clave] = row;
+                if (row.depto) c.departamento = row.depto;
+                if (row.estado) {
+                    CC.state.overlays = CC.state.overlays || {};
+                    var ov = CC.state.overlays[centroKey(c)] || {};
+                    if (!ov.estado) ov.estado = row.estado;
+                    if (row.fecha && !ov.fecha) ov.fecha = row.fecha;
+                    CC.state.overlays[centroKey(c)] = ov;
+                }
             });
-            CC._ctlLocalCargando = false;
-            centros.forEach(function (c) { marcarGastoInflight(c, -1); });
-            pintarGastoLocalControl();
-            if (CC.state.page === 'detalle') maybeHideDetalleBusy();
-        }).catch(function () {
-            CC._ctlLocalCargando = false;
-            CC._ctlLocalFirma = '';
-            centros.forEach(function (c) { marcarGastoInflight(c, -1); });
-            var status = document.getElementById('ctl-sap-status');
-            if (status) status.textContent = 'No se pudo leer la copia local.';
-            var hint = document.getElementById('ctl-detalle-hint');
-            if (hint && CC.state.page === 'detalle') hint.textContent = 'No se pudo leer el gasto guardado.';
+            CC._visorResumenCargando = false;
+            CC.state.visorResumenReady = true;
+            fillVisorFilters();
             renderVisorTable();
-            if (CC.state.page === 'detalle') {
-                renderDetalleTable();
-                renderDetalleChart();
-                maybeHideDetalleBusy();
-            }
+        }).catch(function () {
+            CC._visorResumenCargando = false;
+            CC._visorResumenFirma = '';
+            CC.state.visorResumenReady = false;
+            renderVisorTable();
         });
     }
 
@@ -933,6 +1149,11 @@
     function gastoCentroReady(c) {
         if (!c || !CC.state.gastoUrl) return true;
         if (!cuentasAsignadasCentro(c).length) return true;
+        if (CC.state.page === 'control') {
+            if (CC._visorResumenCargando) return false;
+            if (CC.state.visorResumen && Object.prototype.hasOwnProperty.call(CC.state.visorResumen, visorResumenKey(c))) return true;
+            return !!CC.state.visorResumenReady;
+        }
         CC.state.gastoReady = CC.state.gastoReady || {};
         return !!CC.state.gastoReady[gastoCacheKey(c)];
     }
@@ -943,7 +1164,7 @@
 
     function queueVisorGastos() {
         if (CC.state.page !== 'control') return;
-        cargarGastoLocalControl();
+        cargarVisorResumen();
     }
 
     function visorMontoHtml(n, listo) {
@@ -990,14 +1211,13 @@
         return (gasto || (cuenta && cuenta.gasto) || [0,0,0,0,0,0,0,0,0,0,0,0]).map(function () { return null; });
     }
 
-    function persistBudget(empresa, cc, cuenta, months, opts) {
+    /** Solo memoria/UI. No llama al servidor (el guardado va con Guardar / Autocompletar vacías). */
+    function applyBudgetLocal(empresa, cc, cuenta, months, opts) {
         opts = opts || {};
         syncCurrencyState();
         months = (months || []).map(function (v) { return mesLleno(v) ? round2(v) : v; });
-        CC.state.budgets[budgetKey(empresa, cc, cuenta)] = months.slice();
-        var ciclo = cicloActualCodigo();
-        if (!ciclo) return;
         var key = budgetKey(empresa, cc, cuenta);
+        CC.state.budgets[key] = months.slice();
         CC.state.completados = CC.state.completados || {};
         var allFilled = mesesTodosLlenos(months);
         var done = Object.prototype.hasOwnProperty.call(opts, 'completado')
@@ -1005,11 +1225,22 @@
             : allFilled;
         if (done && !allFilled) {
             months = months.map(function (v) { return mesLleno(v) ? v : 0; });
-            CC.state.budgets[budgetKey(empresa, cc, cuenta)] = months.slice();
+            CC.state.budgets[key] = months.slice();
         }
         if (done) CC.state.completados[key] = true;
         else delete CC.state.completados[key];
         rebuildBudgetIndex();
+        return { months: months.slice(), done: done, key: key };
+    }
+
+    function persistBudget(empresa, cc, cuenta, months, opts) {
+        opts = opts || {};
+        var applied = applyBudgetLocal(empresa, cc, cuenta, months, opts);
+        months = applied.months;
+        var done = applied.done;
+        var key = applied.key;
+        var ciclo = cicloActualCodigo();
+        if (!ciclo) return;
         if (CC._budgetSaveTimers && CC._budgetSaveTimers[key]) clearTimeout(CC._budgetSaveTimers[key]);
         CC._budgetSaveTimers = CC._budgetSaveTimers || {};
         CC._budgetSaveTimers[key] = setTimeout(function () {
@@ -1039,11 +1270,26 @@
                     CC.state.completados = CC.state.completados || {};
                     if (json.completado) CC.state.completados[key] = true;
                     else delete CC.state.completados[key];
+                    patchVisorResumenCentro(empresa, cc);
                 });
             }).catch(function (err) {
                 toast('error', 'No se guardó el presupuesto', err && err.message ? err.message : 'Error de red');
             });
         }, 350);
+    }
+
+    function patchVisorResumenCentro(empresa, cc) {
+        if (!CC.state.visorResumen) return;
+        var c = { empresa: empresa, codigo: cc };
+        var clave = visorResumenKey(c);
+        var row = CC.state.visorResumen[clave];
+        if (!row) return;
+        var st = statsDesdeLista(cuentasListadoLigero(c));
+        row.tot_ppto = st.totP;
+        row.total = st.total;
+        row.capturadas = st.capturadas;
+        CC.state.visorResumen[clave] = row;
+        if (CC.state.page === 'control') renderVisorTable();
     }
 
     function persistOverlay(c, patch) {
@@ -2517,18 +2763,120 @@
         });
     }
 
-    function statsDeCentro(c) {
-        var ctas = cuentasEnriquecidas(c);
+    /**
+     * Listado rápido para el select de cuentas (sin gasto SAP/local ni catálogo completo).
+     * Solo asignación + presupuesto ya capturado.
+     */
+    function cuentasListadoLigero(c) {
+        if (!c) return [];
+        var asig = CC.state.page === 'analisis'
+            ? { cuentas: cuentasAnalisisDe(c) }
+            : asigDe(c);
+        var rows = (asig && asig.cuentas) ? asig.cuentas : [];
+        return rows.map(function (x) {
+            var codigo = x.codigo;
+            var nombre = x.nombre || codigo;
+            var ppto = pptoDe(c.empresa, c.codigo, { codigo: codigo }, null);
+            return {
+                codigo: codigo,
+                nombre: nombre,
+                grupo: x.agrupacion || 'Asignadas',
+                empresa: c.empresa,
+                gasto: zeros12(),
+                gastoUsd: zeros12(),
+                ppto: ppto,
+                totG: 0,
+                totGUsd: 0,
+                totP: sum(ppto),
+                listo: mesesTodosLlenos(ppto) || cuentaMarcada(c.empresa, c.codigo, codigo),
+                _light: true
+            };
+        });
+    }
+
+    function enriquecerCuentaDesdeMaps(c, cta) {
+        if (!c || !cta) return cta;
+        var gmap = gastoLookupDeCentro(c);
+        var umap = gastoUsdLookupDeCentro(c);
+        var nombre = cta.nombre || cta.codigo;
+        var gasto = gastoMensualDe(cta.codigo, nombre, gmap);
+        var gastoUsd = gastoMensualDe(cta.codigo, nombre, umap);
+        if (CC.state.page === 'control' || CC.state.page === 'analisis') {
+            gasto = gastoNueveMeses(gasto);
+            gastoUsd = gastoNueveMeses(gastoUsd);
+        }
+        var ppto = pptoDe(c.empresa, c.codigo, cta, gasto);
+        return Object.assign({}, cta, {
+            gasto: gasto,
+            gastoUsd: gastoUsd,
+            ppto: ppto,
+            totG: sum(gasto),
+            totGUsd: sum(gastoUsd),
+            totP: sum(ppto),
+            listo: mesesTodosLlenos(ppto) || cuentaMarcada(c.empresa, c.codigo, cta.codigo),
+            _light: false
+        });
+    }
+
+    function patchCuentaEnLista(codigo, patch) {
+        var list = control._allCtas || [];
+        for (var i = 0; i < list.length; i++) {
+            if (String(list[i].codigo) !== String(codigo)) continue;
+            list[i] = Object.assign({}, list[i], patch);
+            return list[i];
+        }
+        return null;
+    }
+
+    function statsDesdeLista(ctas) {
+        ctas = ctas || [];
         var pend = ctas.filter(ctaPendiente).length;
         return {
             total: ctas.length,
             capturadas: ctas.length - pend,
             pendientes: pend,
-            totG: ctas.reduce(function (a, x) { return a + x.totG; }, 0),
+            totG: ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0),
             totGUsd: ctas.reduce(function (a, x) { return a + (x.totGUsd || 0); }, 0),
-            totP: ctas.reduce(function (a, x) { return a + x.totP; }, 0),
+            totP: ctas.reduce(function (a, x) { return a + (x.totP || 0); }, 0),
             avance: pct(ctas.length - pend, ctas.length || 1)
         };
+    }
+
+    function statsDeCentro(c) {
+        if (control.centro && c && mismoCentroCodigo(control.centro.codigo, c.codigo)
+            && String(control.centro.empresa || '').toUpperCase() === String(c.empresa || '').toUpperCase()
+            && control._allCtas && control._allCtas.length) {
+            return statsDesdeLista(control._allCtas);
+        }
+        var r = visorResumenDe(c);
+        if (r && CC.state.page === 'control') {
+            var total = Number(r.total) || 0;
+            var capt = Number(r.capturadas) || 0;
+            if (!total) {
+                var light = statsDesdeLista(cuentasListadoLigero(c));
+                total = light.total;
+                capt = light.capturadas;
+                return {
+                    total: total,
+                    capturadas: capt,
+                    pendientes: Math.max(0, total - capt),
+                    totG: Number(r.tot_gasto) || 0,
+                    totGUsd: Number(r.tot_gasto_usd) || 0,
+                    totP: Number(r.tot_ppto) || light.totP || 0,
+                    avance: pct(capt, total || 1)
+                };
+            }
+            return {
+                total: total,
+                capturadas: capt,
+                pendientes: Math.max(0, total - capt),
+                totG: Number(r.tot_gasto) || 0,
+                totGUsd: Number(r.tot_gasto_usd) || 0,
+                totP: Number(r.tot_ppto) || 0,
+                avance: pct(capt, total || 1)
+            };
+        }
+        return statsDesdeLista(cuentasListadoLigero(c));
     }
 
     function currentCta() {
@@ -2686,41 +3034,64 @@
         return Object.keys(asigsPorEmpresa(val('ctl-ciclo'))).sort();
     }
 
-    function markPendLabel(n) {
-        return n > 0 ? ('⚠  ' + n + (n === 1 ? ' pend' : ' pend')) : '✓  listo';
+    /** Solo color: true = hay pendientes, false = listo. Sin números. */
+    function markPendLabel(hasPend) {
+        return hasPend ? '⚠' : '✓';
     }
 
-    function optionPendAttrs(n) {
-        if (n > 0) return ' class="is-danger" style="color:#b91c1c;font-weight:650"';
+    function optionPendAttrs(hasPend) {
+        if (hasPend) return ' class="is-danger" style="color:#b91c1c;font-weight:650"';
         return ' class="is-ok" style="color:#047857;font-weight:650"';
     }
 
-    function paintNavStatus(id, n, selectEl) {
+    function paintNavStatus(id, hasPend, selectEl) {
         var el = document.getElementById(id);
-        var has = n !== null && n !== undefined && n !== '';
+        var has = hasPend !== null && hasPend !== undefined;
+        var pendiente = !!hasPend;
         if (el) {
             el.hidden = !has;
             if (has) {
-                el.textContent = n > 0 ? (n + (n === 1 ? ' pendiente' : ' pendientes')) : 'Listo';
-                el.className = 'cc-nav-status ' + (n > 0 ? 'is-danger' : 'is-ok');
+                // Sin números: solo estado + color.
+                el.textContent = pendiente ? 'Pendiente' : 'Listo';
+                el.className = 'cc-nav-status ' + (pendiente ? 'is-danger' : 'is-ok');
             }
         }
         if (selectEl) {
-            selectEl.classList.toggle('is-danger', has && n > 0);
-            selectEl.classList.toggle('is-ok', has && n === 0);
+            selectEl.classList.toggle('is-danger', has && pendiente);
+            selectEl.classList.toggle('is-ok', has && !pendiente);
             selectEl.classList.toggle('is-warn', false);
+            // Texto del combo: rojo si ≥1 pendiente, verde si 0.
+            if (has) {
+                selectEl.style.color = pendiente ? '#b91c1c' : '#047857';
+                selectEl.style.fontWeight = '650';
+            } else {
+                selectEl.style.color = '';
+                selectEl.style.fontWeight = '';
+            }
+            Array.prototype.forEach.call(selectEl.options || [], function (opt) {
+                opt.classList.remove('is-danger', 'is-ok');
+                if (!has || !opt.value || !opt.selected) return;
+                opt.classList.add(pendiente ? 'is-danger' : 'is-ok');
+                opt.style.color = pendiente ? '#b91c1c' : '#047857';
+            });
         }
     }
 
-    function pendientesDeEmpresa(emp) {
+    /** Sale en el primer pendiente (listado ligero, sin gasto). */
+    function centroTienePendientes(emp, cc) {
+        var ctas = cuentasListadoLigero({ empresa: emp, codigo: cc, nombre: cc });
+        for (var i = 0; i < ctas.length; i++) {
+            if (!ctas[i].listo) return true;
+        }
+        return false;
+    }
+
+    function empresaTienePendientes(emp) {
         var list = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
-        return list.reduce(function (n, a) {
-            return n + statsDeCentro({
-                codigo: a.centro_codigo,
-                nombre: a.centro_nombre || a.centro_codigo,
-                empresa: emp
-            }).pendientes;
-        }, 0);
+        for (var i = 0; i < list.length; i++) {
+            if (centroTienePendientes(emp, list[i].centro_codigo)) return true;
+        }
+        return false;
     }
 
     function renderNavEmpresas() {
@@ -2728,16 +3099,10 @@
         if (!el) return;
         var keys = empresasAsignadas();
         var cur = String(el.value || '').toUpperCase();
+        // Sin conteo ni badges por opción: solo nombres (rápido).
         var html = '<option value="">Elige empresa…</option>';
         keys.forEach(function (e) {
-            var label = e;
-            var attrs = '';
-            if (CC._capturaReady) {
-                var pendEmp = pendientesDeEmpresa(e);
-                label += '   ·   ' + markPendLabel(pendEmp);
-                attrs = optionPendAttrs(pendEmp);
-            }
-            html += '<option value="' + escapeHtml(e) + '"' + attrs + '>' + escapeHtml(label) + '</option>';
+            html += '<option value="' + escapeHtml(e) + '">' + escapeHtml(e) + '</option>';
         });
         el.innerHTML = html;
         if (cur && keys.indexOf(cur) !== -1) el.value = cur;
@@ -2746,7 +3111,7 @@
         } else if (keys.length === 1) el.value = keys[0];
         else el.value = '';
         var sel = String(el.value || '').toUpperCase();
-        paintNavStatus('ctl-emp-status', (CC._capturaReady && sel) ? pendientesDeEmpresa(sel) : null, el);
+        paintNavStatus('ctl-emp-status', (CC._capturaReady && sel) ? empresaTienePendientes(sel) : null, el);
     }
 
     function renderNavCentros() {
@@ -2762,20 +3127,11 @@
         }
         var list = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
         var cur = val('ctl-centro');
+        // Sin conteo por centro: solo nombres.
         var html = '<option value="">Elige centro…</option>';
         list.forEach(function (a) {
-            var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
-            var attrs = '';
-            if (CC._capturaReady) {
-                var st = statsDeCentro({
-                    codigo: a.centro_codigo,
-                    nombre: a.centro_nombre || a.centro_codigo,
-                    empresa: emp
-                });
-                label += '   ·   ' + markPendLabel(st.pendientes);
-                attrs = optionPendAttrs(st.pendientes);
-            }
-            html += '<option value="' + escapeHtml(a.centro_codigo) + '"' + attrs + '>' + escapeHtml(label) + '</option>';
+            html += '<option value="' + escapeHtml(a.centro_codigo) + '">' +
+                escapeHtml(labelNombreCodigo(a.centro_nombre, a.centro_codigo)) + '</option>';
         });
         el.innerHTML = html;
         el.disabled = !list.length;
@@ -2786,11 +3142,9 @@
         } else if (list.length === 1) el.value = list[0].centro_codigo;
         else el.value = '';
         var chosen = list.filter(function (a) { return String(a.centro_codigo) === String(el.value); })[0];
-        paintNavStatus('ctl-cc-status', (CC._capturaReady && chosen) ? statsDeCentro({
-            codigo: chosen.centro_codigo,
-            nombre: chosen.centro_nombre,
-            empresa: emp
-        }).pendientes : null, el);
+        paintNavStatus('ctl-cc-status', (CC._capturaReady && chosen)
+            ? centroTienePendientes(emp, chosen.centro_codigo)
+            : null, el);
     }
 
     function renderNavCuentas() {
@@ -2812,7 +3166,7 @@
         if (control.soloPendientes) ctas = ctas.filter(ctaPendiente);
         var html = '<option value="">Elige cuenta…</option>';
         ctas.forEach(function (cta) {
-            var pend = ctaPendiente(cta) ? 1 : 0;
+            var pend = ctaPendiente(cta);
             html += '<option value="' + escapeHtml(cta.codigo) + '"' + optionPendAttrs(pend) + '>' +
                 escapeHtml(labelNombreCodigo(cta.nombre, cta.codigo) + '   ·   ' + markPendLabel(pend)) + '</option>';
         });
@@ -2824,7 +3178,7 @@
             el.value = '';
         }
         var cta = ctas.filter(function (x) { return String(x.codigo) === String(el.value); })[0];
-        paintNavStatus('ctl-cta-status', cta ? (ctaPendiente(cta) ? 1 : 0) : null, el);
+        paintNavStatus('ctl-cta-status', cta ? ctaPendiente(cta) : null, el);
     }
 
     function renderCicloPicks() {
@@ -2852,26 +3206,37 @@
         var prevEmp = val('ctl-empresa');
         var prevCc = val('ctl-centro');
         var cicloChanged = ciclo && String(ciclo) !== String(prevCiclo);
+        var empChanged = !!(emp && String(emp).toUpperCase() !== String(prevEmp || '').toUpperCase());
         if (cicloSel && ciclo) cicloSel.value = ciclo;
-        function finishPath() {
+        function finishPath(mode) {
+            mode = mode || 'full';
             if (empEl && emp) empEl.value = emp;
-            renderNavCentros();
+            if (mode !== 'centro') renderNavCentros();
             if (ccEl && cc) {
                 ccEl.value = cc;
-            } else if (ccEl && (cicloChanged || (emp && emp !== prevEmp))) {
+            } else if (ccEl && (cicloChanged || empChanged)) {
                 ccEl.value = '';
                 control.cuenta = null;
             }
-            var centroChanged = cicloChanged || val('ctl-empresa') !== prevEmp || val('ctl-centro') !== prevCc;
-            if (centroChanged) control.cuenta = null;
-            renderCicloPicks();
-            renderControlNav();
-            syncImportTools();
-            loadControlCentro();
+            if (cicloChanged || val('ctl-empresa') !== prevEmp || val('ctl-centro') !== prevCc) {
+                control.cuenta = null;
+            }
+            if (mode === 'full') {
+                renderCicloPicks();
+                renderNavEmpresas();
+                renderNavCentros();
+                syncImportTools();
+            }
+            loadControlCentro({
+                rebuildNav: false,
+                paintVisor: mode === 'full' && control.vista === 'visor',
+                refreshEmpStatus: mode === 'full' || mode === 'empresa'
+            });
         }
         if (cicloChanged) {
             CC._cicloUserPicked = true;
             CC.state.cicloCodigo = ciclo;
+            invalidateVisorResumen();
             var period = findCiclo(ciclo);
             if (period) {
                 CC.state.period = Object.assign({}, CC.state.period, period);
@@ -2883,11 +3248,11 @@
             if (empEl && !emp) empEl.value = '';
             fillVisorFilters();
             var overlaysPend = loadOverlaysForCycle();
-            renderVisorTable();
-            overlaysPend.then(finishPath);
+            if (control.vista === 'visor') renderVisorTable();
+            overlaysPend.then(function () { finishPath('full'); });
             return;
         }
-        finishPath();
+        finishPath(empChanged || !cc ? 'empresa' : 'centro');
     }
 
     CC.initControl = function () {
@@ -2989,6 +3354,7 @@
         renderCicloPicks();
         renderMisCentros();
         syncImportTools();
+        invalidateVisorResumen();
         var overlaysPend = loadOverlaysForCycle();
         renderVisorTable();
         overlaysPend.then(function () {
@@ -2997,7 +3363,6 @@
             fillVisorFilters();
             renderVisorTable();
             setVista(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura');
-            loadDeptosVisor();
         });
     };
 
@@ -3101,7 +3466,10 @@
         renderNavCentros();
     }
 
-    function loadControlCentro() {
+    function loadControlCentro(opts) {
+        opts = opts || {};
+        var rebuildNav = !!opts.rebuildNav;
+        var paintVisor = opts.paintVisor != null ? !!opts.paintVisor : (control.vista === 'visor');
         paintCurrencyHint();
         var emp = val('ctl-empresa');
         var codigo = val('ctl-centro');
@@ -3112,12 +3480,20 @@
             control._ctas = [];
             setCapturaEnabled(false);
             updateControlProgress();
+            if (rebuildNav) {
+                renderNavEmpresas();
+                renderNavCentros();
+            } else {
+                var empEl0 = document.getElementById('ctl-empresa');
+                paintNavStatus('ctl-emp-status', (CC._capturaReady && emp) ? empresaTienePendientes(emp) : null, empEl0);
+                paintNavStatus('ctl-cc-status', null, document.getElementById('ctl-centro'));
+            }
             renderNavCuentas();
             renderCtaChips();
             renderCapturaForm();
             renderControlTable();
             renderControlCharts();
-            renderVisorTable();
+            if (paintVisor) renderVisorTable();
             return;
         }
         control.centro = CC.state.centros.map(mergedCentro).filter(function (c) {
@@ -3133,7 +3509,7 @@
             renderNavCuentas();
             renderCtaChips();
             renderCapturaForm();
-            renderVisorTable();
+            if (paintVisor) renderVisorTable();
             return;
         }
         var c = control.centro;
@@ -3149,20 +3525,42 @@
                 ? perms.map(function (p) { return '<span class="cc-badge cc-badge-abierto">' + escapeHtml(p) + '</span> '; }).join('')
                 : '<span class="text-muted">Sin permiso</span>';
         }
-        loadGastoRealCentro(c);
-        control._allCtas = cuentasEnriquecidas(c);
-        if (control.cuenta && !control._allCtas.filter(function (x) { return String(x.codigo) === String(control.cuenta); }).length) {
-            control.cuenta = null;
-        }
-        updateControlProgress();
-        renderNavEmpresas();
-        renderNavCentros();
+        // Parte 1: solo listado ligero de cuentas (sin gasto ni pantalla completa).
+        control.cuenta = null;
+        control._allCtas = cuentasListadoLigero(c);
+        var ctaSel = document.getElementById('ctl-cuenta');
+        if (ctaSel) ctaSel.value = '';
         renderNavCuentas();
         renderCtaChips();
+        updateControlProgress();
         renderCapturaForm();
         renderControlTable();
         renderControlCharts();
-        renderVisorTable();
+
+        var doVisor = paintVisor;
+        var refreshEmp = !!opts.refreshEmpStatus || rebuildNav;
+        // Detalle: pedir gasto local de este centro (antes no se pedía → «Cargando…» eterno).
+        if (CC.state.page === 'detalle') {
+            loadGastoRealCentro(c);
+        }
+        setTimeout(function () {
+            if (!control.centro || control.centro.codigo !== c.codigo) return;
+            if (rebuildNav) {
+                renderNavEmpresas();
+                renderNavCentros();
+            } else {
+                var empEl = document.getElementById('ctl-empresa');
+                var ccEl = document.getElementById('ctl-centro');
+                paintNavStatus('ctl-cc-status', CC._capturaReady ? centroTienePendientes(emp, codigo) : null, ccEl);
+                if (refreshEmp && empEl && CC._capturaReady) {
+                    paintNavStatus('ctl-emp-status', empresaTienePendientes(emp), empEl);
+                }
+            }
+            if (doVisor) {
+                loadGastoRealCentro(c);
+                renderVisorTable();
+            }
+        }, 0);
     }
 
     function updateControlProgress() {
@@ -3190,14 +3588,17 @@
         setText('ctl-progress-title', c.codigo + ' — ' + c.nombre);
         setText('kpi-ctl-avance', st.avance + '%');
         setText('ctl-progress-meta', st.capturadas + ' de ' + st.total + ' cuentas capturadas');
-        setText('ctl-pend-label', st.pendientes + (st.pendientes === 1 ? ' pendiente' : ' pendientes'));
-        var gastoListoKpi = gastoCentroListo(c);
+        setText('ctl-pend-label', st.pendientes ? 'Pendiente' : 'Listo');
+        // Gasto: solo de la cuenta elegida (lazy). Sin cuenta → guión (no carga todo el centro).
+        var ctaSel = currentCta();
+        var gastoListoKpi = !ctaSel || gastoDeCuentaCargado(ctaSel);
+        var totGShow = ctaSel ? (ctaSel.totG || 0) : null;
         var kpiGasto = document.getElementById('kpi-ctl-gasto');
         if (kpiGasto) {
-            kpiGasto.textContent = gastoListoKpi ? money(st.totG) : 'Cargando...';
-            kpiGasto.classList.toggle('is-loading', !gastoListoKpi);
+            kpiGasto.textContent = totGShow == null ? '—' : (gastoListoKpi ? money(totGShow) : 'Cargando...');
+            kpiGasto.classList.toggle('is-loading', !!(ctaSel && !gastoListoKpi));
         } else {
-            setText('kpi-ctl-gasto', gastoListoKpi ? money(st.totG) : 'Cargando...');
+            setText('kpi-ctl-gasto', totGShow == null ? '—' : (gastoListoKpi ? money(totGShow) : 'Cargando...'));
         }
         setText('kpi-ctl-ppto', money(st.totP));
         setText('kpi-ctl-pend', st.pendientes);
@@ -3248,17 +3649,48 @@
         if (el && String(el.value || '') !== String(control.cuenta || '')) {
             el.value = control.cuenta || '';
         }
+        paintNavStatus('ctl-cta-status', control.cuenta
+            ? !!(currentCta() && ctaPendiente(currentCta()))
+            : null, el);
         renderCtaChips();
+        paintScopeHints();
+
+        // Sin cuenta: pantalla vacía (parte 1).
+        if (!control.centro || !control.cuenta) {
+            renderCapturaForm();
+            renderControlTable();
+            renderControlCharts();
+            if (CC.state.page === 'detalle') {
+                renderDetalleTable();
+                renderDetalleChart();
+            }
+            return;
+        }
+
+        // Parte 2: pintar ya con datos ligeros, luego hidratar gasto de ESA cuenta.
         renderCapturaForm();
         renderControlTable();
         renderControlCharts();
-        renderDetalleTable();
-        renderDetalleChart();
-        paintScopeHints();
-        var cta = currentCta();
-        if (CC.state.page !== 'control' && CC.state.page !== 'detalle' && control.centro && cta && cta.codigo && !gastoDeCuentaCargado(cta)) {
-            fetchGastoCuentas(control.centro, [cta]);
+        if (CC.state.page === 'detalle') {
+            renderDetalleTable();
+            renderDetalleChart();
         }
+
+        var centro = control.centro;
+        var cuentaSel = control.cuenta;
+        ensureGastoCuenta(centro, cuentaSel, function () {
+            if (!control.centro || control.centro.codigo !== centro.codigo) return;
+            if (String(control.cuenta || '') !== String(cuentaSel)) return;
+            renderCapturaForm();
+            renderControlTable();
+            renderControlCharts();
+            paintNavStatus('ctl-cta-status', currentCta() ? ctaPendiente(currentCta()) : null, el);
+            updateControlProgress();
+            if (CC.state.page === 'detalle') {
+                renderDetalleTable();
+                renderDetalleChart();
+            }
+        });
     }
 
     function renderCapturaForm() {
@@ -3477,20 +3909,32 @@
         opts = opts || {};
         var c = control.centro;
         if (!c) return;
-        control._allCtas = cuentasEnriquecidas(c);
+        // Mantener listado ligero; refrescar solo la cuenta editada.
+        if (!control._allCtas || !control._allCtas.length) {
+            control._allCtas = cuentasListadoLigero(c);
+        }
+        var code = codigo || control.cuenta;
+        if (code) {
+            var base = (control._allCtas || []).filter(function (x) {
+                return String(x.codigo) === String(code);
+            })[0] || { codigo: code };
+            patchCuentaEnLista(code, enriquecerCuentaDesdeMaps(c, base));
+        }
         updateControlProgress();
-        renderControlNav();
+        renderNavCuentas();
         renderCtaChips();
         renderControlTable();
         renderControlCharts();
-        var cta = currentCta() || control._allCtas.filter(function (x) { return String(x.codigo) === String(codigo); })[0];
+        var cta = currentCta() || (control._allCtas || []).filter(function (x) {
+            return String(x.codigo) === String(code);
+        })[0];
         if (cta) {
             paintFormEstado(cta);
             paintCompletarBtn(cta);
             updateFormTotals(cta);
             if (!opts.skipFormGrid) drawMonthGrid(cta);
         }
-        renderVisorTable();
+        if (control.vista === 'visor') renderVisorTable();
     }
 
     function renderControlTable() {
@@ -3602,14 +4046,24 @@
             if (tbodyId === 'det-tbody') paintVisibleTableTotals(null, 'det');
             return;
         }
+        if (opts.scope === 'cuenta' && !control.cuenta && tbodyId === 'ctl-tbody') {
+            tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">Elige una cuenta para ver el detalle</div></td></tr>';
+            paintMonthTableFoot(tbodyId, null);
+            paintVisibleTableTotals(null, 'ctl');
+            return;
+        }
         var q = opts.readonly ? '' : (val('ctl-q') || '').toLowerCase();
-        var ctas = (control._allCtas || cuentasEnriquecidas(c)).filter(function (cta) {
+        var ctas = (control._allCtas || cuentasListadoLigero(c)).filter(function (cta) {
             var blob = (cta.codigo + ' ' + cta.nombre + ' ' + (cta.grupo || '')).toLowerCase();
             return !q || blob.indexOf(q) !== -1;
         });
         if (opts.scope) ctas = scopedCtas(opts.scope, ctas);
         if (!opts.readonly && control.soloPendientes && !(opts.scope === 'cuenta' && control.cuenta)) {
             ctas = ctas.filter(ctaPendiente);
+        }
+        // Detalle: solo cuentas con ppto del año de proyección > 0.
+        if (tbodyId === 'det-tbody' && !(opts.scope === 'cuenta' && control.cuenta)) {
+            ctas = ctas.filter(ctaDetalleConPpto);
         }
         if (!opts.readonly) control._ctas = ctas;
         if (tbodyId === 'ctl-tbody') paintVisibleTableTotals(ctas, 'ctl');
@@ -3669,7 +4123,9 @@
         });
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
             ? 'No hay filas para esta cuenta con los filtros actuales'
-            : 'Sin cuentas asignadas a este centro';
+            : (tbodyId === 'det-tbody'
+                ? ('No hay cuentas con ppto ' + CC.state.anioPresupuesto + ' mayor a 0 en este centro')
+                : 'Sin cuentas asignadas a este centro');
         if (tbodyId === 'det-tbody') hideUserTip();
         tbody.innerHTML = html || '<tr><td colspan="' + colCount + '"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
         paintMonthTableFoot(tbodyId, html ? ctas : null);
@@ -3702,10 +4158,13 @@
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         if (!c || !cta) return;
         var valN = parseCaptureInput(inp.value);
-        var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
-        var wasEmpty = !mesesTodosLlenos(months) && months.every(function (x) { return !mesLleno(x); });
+        // Antes de este cambio (si leemos el grid, enero ya viene lleno y no pregunta).
+        var prev = pptoDe(c.empresa, c.codigo, cta, cta.gasto).slice();
+        var wasEmpty = prev.every(function (x) { return !mesLleno(x); });
+        var months = monthsFromGrid(cta);
         months[m] = valN;
-        persistBudget(c.empresa, c.codigo, codigo, months);
+        // Sin autosave mes a mes: solo borrador local.
+        applyBudgetLocal(c.empresa, c.codigo, codigo, months);
 
         var cell = inp.closest('.cc-month-cell');
         if (cell) {
@@ -3716,24 +4175,25 @@
         if (wasEmpty && valN > 0 && m === 0 && !control.locked) {
             if (window.Swal) {
                 Swal.fire({
-                    title: '¿Gasto fijo mensual?',
-                    html: 'Capturaste <b>' + money(valN) + '</b> en enero para <b>' + escapeHtml(cta.nombre) + '</b>. ¿Lo replicamos en los 12 meses?',
+                    title: '¿Mismo monto en los 12 meses?',
+                    html: 'Capturaste <b>' + money(valN) + '</b> en enero para <b>' + escapeHtml(cta.nombre) + '</b>. ¿Lo pegamos en los 11 meses siguientes y lo guardamos?',
                     icon: 'question',
                     showCancelButton: true,
                     confirmButtonColor: '#0a0a0a',
-                    confirmButtonText: 'Sí, mantener mensual',
+                    confirmButtonText: 'Sí, pegar y guardar',
                     cancelButtonText: 'Solo enero'
                 }).then(function (res) {
                     if (res.isConfirmed) {
-                        persistBudget(c.empresa, c.codigo, codigo, months.map(function () { return valN; }));
-                        toast('success', 'Gasto fijo aplicado', 'Los 12 meses quedaron en ' + money(valN));
+                        var fijo = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(function () { return valN; });
+                        persistBudget(c.empresa, c.codigo, codigo, fijo, { completado: true });
+                        toast('success', 'Monto pegado', 'Los 12 meses quedaron en ' + money(valN) + ' y se guardaron');
                     }
                     refreshControlAfterEdit(codigo);
                 });
                 return;
             }
         }
-        refreshControlAfterEdit(codigo);
+        refreshControlAfterEdit(codigo, { skipFormGrid: true });
     }
 
     function actualizarCuentaSap() {
@@ -3786,6 +4246,63 @@
         });
     }
 
+    function cuentasSinValorDelCentro(c) {
+        c = c || control.centro;
+        if (!c) return [];
+        return (control._allCtas || cuentasListadoLigero(c)).filter(function (cta) {
+            var months = pptoDe(c.empresa, c.codigo, cta, null);
+            return !(months || []).some(function (v) { return mesLleno(v); });
+        });
+    }
+
+    function autocompletarCuentasVaciasCentro() {
+        var c = control.centro;
+        if (!c || control.locked) return;
+        var vacias = cuentasSinValorDelCentro(c);
+        if (!vacias.length) {
+            toast('info', 'Nada pendiente', 'Todas las cuentas de este centro ya tienen valor');
+            return;
+        }
+        var zeros = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        var go = function () {
+            vacias.forEach(function (cta) {
+                persistBudget(c.empresa, c.codigo, cta.codigo, zeros.slice(), { completado: true });
+            });
+            if (!control._allCtas || !control._allCtas.length) {
+                control._allCtas = cuentasListadoLigero(c);
+            } else {
+                vacias.forEach(function (cta) {
+                    patchCuentaEnLista(cta.codigo, enriquecerCuentaDesdeMaps(c, cta));
+                });
+            }
+            updateControlProgress();
+            renderNavCuentas();
+            renderCtaChips();
+            renderControlTable();
+            renderControlCharts();
+            if (control.cuenta) refreshControlAfterEdit(control.cuenta);
+            if (c) persistOverlay(c, { estado: c.estado === 'abierto' ? 'en_proceso' : c.estado });
+            toast('success', 'Cuentas autocompletadas', vacias.length + ' cuenta' + (vacias.length === 1 ? '' : 's') + ' en 0 y guardadas');
+            if (!(control._allCtas || []).some(ctaPendiente)) celebrarCentroCompleto();
+        };
+        if (window.Swal) {
+            Swal.fire({
+                title: '¿Autocompletar vacías?',
+                html: 'Se pondrán <b>0</b> en los 12 meses de <b>' + vacias.length + '</b> cuenta' +
+                    (vacias.length === 1 ? '' : 's') + ' sin valor en <b>' + escapeHtml(c.nombre || c.codigo) + '</b> y se guardarán.',
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonColor: '#0a0a0a',
+                confirmButtonText: 'Sí, completar y guardar',
+                cancelButtonText: 'Cancelar'
+            }).then(function (res) {
+                if (res.isConfirmed) go();
+            });
+            return;
+        }
+        if (window.confirm('¿Completar y guardar ' + vacias.length + ' cuentas vacías en 0?')) go();
+    }
+
     function bindCapturaQuick() {
         var copy = document.getElementById('ctl-copy-year');
         if (copy) copy.addEventListener('click', function () {
@@ -3796,20 +4313,18 @@
                 toast('info', 'Cargando gasto', 'Espera a que termine de cargar el gasto ' + CC.state.anioGasto + '.');
                 return;
             }
-            persistBudget(c.empresa, c.codigo, cta.codigo, (cta.gasto || []).slice());
+            applyBudgetLocal(c.empresa, c.codigo, cta.codigo, (cta.gasto || []).slice());
             refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Copiado', captureIsUsd()
-                ? ('Se copió el gasto ' + CC.state.anioGasto + ' en USD (se guarda en pesos)')
-                : ('Se copió el gasto ' + CC.state.anioGasto + ' a los 12 meses'));
+            toast('info', 'Copiado en pantalla', 'Pulsa Guardar para confirmar');
         });
         var clear = document.getElementById('ctl-clear-year');
         if (clear) clear.addEventListener('click', function () {
             var c = control.centro;
             var cta = currentCta();
             if (!c || !cta || control.locked) return;
-            persistBudget(c.empresa, c.codigo, cta.codigo, [null, null, null, null, null, null, null, null, null, null, null, null], { completado: false });
+            applyBudgetLocal(c.empresa, c.codigo, cta.codigo, [null, null, null, null, null, null, null, null, null, null, null, null], { completado: false });
             refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Limpio', 'Se quitó el presupuesto de ' + cta.nombre);
+            toast('info', 'Limpio en pantalla', 'Pulsa Guardar para confirmar');
         });
         var infl = document.getElementById('ctl-apply-infl');
         if (infl) infl.addEventListener('click', function () {
@@ -3823,11 +4338,9 @@
             var inflPct = Number(CC.state.period.inflacion) || 4;
             var rate = 1 + (inflPct / 100);
             var months = (cta.gasto || []).map(function (v) { return round2((Number(v) || 0) * rate); });
-            persistBudget(c.empresa, c.codigo, cta.codigo, months);
+            applyBudgetLocal(c.empresa, c.codigo, cta.codigo, months);
             refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Inflación aplicada', captureIsUsd()
-                ? ('Gasto ' + CC.state.anioGasto + ' en USD × ' + inflPct + '% (se guarda en pesos)')
-                : ('Gasto ' + CC.state.anioGasto + ' × ' + inflPct + '%'));
+            toast('info', 'Inflación en pantalla', 'Pulsa Guardar para confirmar');
         });
         var sap = document.getElementById('ctl-sap');
         if (sap) sap.addEventListener('click', actualizarCuentaSap);
@@ -3837,10 +4350,12 @@
             var cta = currentCta();
             if (!c || !cta || control.locked) return;
             var months = monthsFromGrid(cta, true);
-            persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
+            applyBudgetLocal(c.empresa, c.codigo, cta.codigo, months, { completado: true });
             refreshControlAfterEdit(cta.codigo);
-            toast('success', 'Completado', 'Los meses vacíos quedaron en 0');
+            toast('info', 'Completado en pantalla', 'Pulsa Guardar para confirmar');
         });
+        var autoVacias = document.getElementById('ctl-completar-vacias');
+        if (autoVacias) autoVacias.addEventListener('click', autocompletarCuentasVaciasCentro);
     }
 
     function empresaSapKey(emp) {
@@ -4023,11 +4538,20 @@
         document.querySelectorAll('#ctl-vistas [data-vista]').forEach(function (btn) {
             btn.classList.toggle('is-active', btn.getAttribute('data-vista') === name);
         });
-        if (name === 'visor') renderVisorTable();
+        if (name === 'visor') {
+            renderVisorTable();
+            loadDeptosVisorSiFaltan();
+        }
         if (name === 'captura') {
             renderControlTable();
             renderControlCharts();
         }
+    }
+
+    function loadDeptosVisorSiFaltan() {
+        if (CC.state.page !== 'control') return;
+        var falta = (CC.state.centros || []).some(function (c) { return deptoDeCentro(c) === '—'; });
+        if (falta) loadDeptosVisor();
     }
 
     function bindVistas() {
@@ -4271,14 +4795,15 @@
                     var tw = sum(weights) || n;
                     for (var j = from; j <= to; j++) months[j] = round2(monto * ((cta.gasto[j] || 0) / tw));
                 }
-                persistBudget(c.empresa, c.codigo, codigo, months);
+                applyBudgetLocal(c.empresa, c.codigo, codigo, months);
                 hideModal('modalDispersar');
                 control.cuenta = codigo;
                 refreshControlAfterEdit(codigo);
                 var rango = MONTHS[from] + '–' + MONTHS[to];
-                toast('success', modo === 'mismo' ? 'Gasto fijo' : 'Costo dispersado', modo === 'mismo'
-                    ? money(monto) + ' en cada mes (' + rango + ')'
-                    : money(monto) + ' en ' + cta.nombre);
+                toast('info', modo === 'mismo' ? 'Gasto fijo en pantalla' : 'Dispersado en pantalla',
+                    (modo === 'mismo'
+                        ? money(monto) + ' en cada mes (' + rango + ')'
+                        : money(monto) + ' en ' + cta.nombre) + ' · Pulsa Guardar');
             });
         }
         var save = document.getElementById('ctl-guardar');
@@ -5976,8 +6501,11 @@
         CC.state.detalleUrl = boot.detalleUrl || '/ControlCentros/detalle';
         CC.state.gastoUrl = boot.gastoUrl || '/CentrosCostos/api/gasto-real';
         CC.state.gastoBatchUrl = boot.gastoBatchUrl || '/CentrosCostos/api/gasto-real-analisis';
+        CC.state.visorResumenUrl = boot.visorResumenUrl || '/CentrosCostos/api/visor-resumen';
         CC.state.gastoCache = {};
         CC.state.gastoReady = {};
+        CC.state.visorResumen = {};
+        CC.state.visorResumenReady = false;
         CC.state.cicloCodigo = boot.cicloCodigo || boot.cicloInicial || '';
         CC.state.usuarioActual = boot.usuarioActual || '';
         CC.state.usuarioActualId = Number(boot.usuarioActualId || 0);

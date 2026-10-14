@@ -114,6 +114,114 @@ class CcGastoRealSnapshot
     }
 
     /**
+     * Encabezados de gasto por centro (suma ENE–mesMax) sin devolver el mapa de cuentas.
+     * $cuentasPorCentro: centro_pedido => lista de códigos de cuenta a incluir (vacío = todas).
+     *
+     * @param  array<int, string>  $centros
+     * @param  array<string, array<int, string>>  $cuentasPorCentro
+     * @return array<string, array{tot_gasto: float, tot_gasto_usd: float, depto: string}>
+     */
+    public function totalesVisorPorCentro(string $empresa, int $year, array $centros, array $cuentasPorCentro = [], int $mesMax = 9): array
+    {
+        if (! $this->disponible() || $centros === []) {
+            return [];
+        }
+        $mesMax = max(1, min(12, $mesMax));
+        $codigos = $this->codigosCentroEnCopia($empresa, $year, $centros);
+        if ($codigos === []) {
+            return [];
+        }
+
+        $sumMes = [];
+        $sumUsd = [];
+        for ($i = 1; $i <= $mesMax; $i++) {
+            $suf = str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            $sumMes[] = 'COALESCE(mes_'.$suf.',0)';
+            $sumUsd[] = 'COALESCE(usd_'.$suf.',0)';
+        }
+        $exprMes = '('.implode('+', $sumMes).')';
+        $exprUsd = '('.implode('+', $sumUsd).')';
+
+        $rows = DB::table('tbl_cc_gasto_real_snap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->whereIn('centro_codigo', $codigos)
+            ->selectRaw('centro_codigo, cuenta_codigo, depto, '.$exprMes.' as tot_gasto, '.$exprUsd.' as tot_gasto_usd')
+            ->get();
+
+        $filtros = [];
+        foreach ($cuentasPorCentro as $ccPedido => $cuentas) {
+            $keys = [];
+            foreach ($cuentas as $cta) {
+                $ck = $this->digitos(trim((string) $cta));
+                if ($ck === '') {
+                    $ck = strtoupper(trim((string) $cta));
+                }
+                if ($ck !== '') {
+                    $keys[$ck] = true;
+                    $alt = ltrim($ck, '0');
+                    if ($alt !== '' && $alt !== $ck) {
+                        $keys[$alt] = true;
+                    }
+                }
+            }
+            $filtros[strtoupper(trim((string) $ccPedido))] = $keys;
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            $ccGuardado = strtoupper(trim((string) $row->centro_codigo));
+            $ccPedido = $ccGuardado;
+            foreach ($centros as $pedido) {
+                $pedido = strtoupper(trim((string) $pedido));
+                if ($this->mismoCentro($ccGuardado, $pedido)) {
+                    $ccPedido = $pedido;
+                    break;
+                }
+            }
+
+            $filtro = $filtros[$ccPedido] ?? null;
+            if ($filtro === null) {
+                foreach ($filtros as $k => $f) {
+                    if ($this->mismoCentro($k, $ccPedido)) {
+                        $filtro = $f;
+                        break;
+                    }
+                }
+            }
+            if (is_array($filtro) && $filtro !== []) {
+                $ck = $this->digitos((string) $row->cuenta_codigo);
+                if ($ck === '') {
+                    $ck = strtoupper(trim((string) $row->cuenta_codigo));
+                }
+                $alt = ltrim($ck, '0');
+                if (! isset($filtro[$ck]) && ! ($alt !== '' && isset($filtro[$alt]))) {
+                    continue;
+                }
+            }
+
+            if (! isset($out[$ccPedido])) {
+                $out[$ccPedido] = ['tot_gasto' => 0.0, 'tot_gasto_usd' => 0.0, 'depto' => ''];
+            }
+            $out[$ccPedido]['tot_gasto'] += round((float) ($row->tot_gasto ?? 0), 2);
+            $out[$ccPedido]['tot_gasto_usd'] += round((float) ($row->tot_gasto_usd ?? 0), 2);
+            if ($out[$ccPedido]['depto'] === '') {
+                $d = trim((string) ($row->depto ?? ''));
+                if ($d !== '' && ! preg_match('/^\d+$/', $d)) {
+                    $out[$ccPedido]['depto'] = $d;
+                }
+            }
+        }
+
+        foreach ($out as $cc => $vals) {
+            $out[$cc]['tot_gasto'] = round($vals['tot_gasto'], 2);
+            $out[$cc]['tot_gasto_usd'] = round($vals['tot_gasto_usd'], 2);
+        }
+
+        return $out;
+    }
+
+    /**
      * @param  iterable<int, object>  $rows
      * @return array<string, array<string, array<string, mixed>>>
      */
