@@ -32,6 +32,28 @@ class CcGastoRealSnapshot
             ->exists();
     }
 
+    /** Hay alguna copia local del año (completa o parcial), sin ir a SAP. */
+    public function tieneCopia(string $empresa, int $year): bool
+    {
+        if (! $this->disponible()) {
+            return false;
+        }
+        if ($this->cubreEmpresa($empresa, $year)) {
+            return true;
+        }
+        if (DB::table('tbl_cc_gasto_real_carga')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->exists()) {
+            return true;
+        }
+
+        return DB::table('tbl_cc_gasto_real_cc')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->exists();
+    }
+
     /**
      * @return array<int, string>
      */

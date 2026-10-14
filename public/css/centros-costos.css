@@ -597,6 +597,10 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     padding: 0.4rem 0.55rem;
     font-size: 0.86rem;
 }
+.select2-container--default .cc-select-search-drop.is-no-search .select2-search--dropdown,
+.select2-container--bootstrap-5 .cc-select-search-drop.is-no-search .select2-search--dropdown {
+    display: none;
+}
 .cc-filter-field {
     position: relative;
     display: flex;

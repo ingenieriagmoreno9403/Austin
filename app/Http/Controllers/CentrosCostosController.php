@@ -99,6 +99,11 @@ class CentrosCostosController extends Controller
             'detalleUrl' => route('centros.detalle'),
             // Filtros al instante: solo lo asignado al usuario para revisión/captura.
             'misAsignaciones' => $this->misAsignacionesList(''),
+            // No incrustar catálogo/usuarios enteros: el HTML se vuelve enorme y lento.
+            'centros' => [],
+            'cuentas' => [],
+            'usuarios' => [],
+            'catalogoLocal' => true,
         ]);
     }
 
@@ -623,12 +628,17 @@ class CentrosCostosController extends Controller
     public function listAsignaciones(string $ciclo): JsonResponse
     {
         if (! Schema::hasTable('tbl_cc_asignaciones')) {
-            return response()->json(['asignaciones' => []]);
+            return response()->json(['asignaciones' => [], 'resumen' => false]);
         }
 
         $empresa = request('empresa');
         $userId = (int) request('user_id', 0);
-        $q = CcAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
+        $resumen = request()->boolean('resumen');
+        $with = ['usuario', 'permisos.tipo'];
+        if (! $resumen) {
+            $with[] = 'cuentas';
+        }
+        $q = CcAsignacion::query()->with($with)
             ->where('ciclo_codigo', $ciclo);
         if ($empresa) {
             $q->where('empresa', strtolower($empresa));
@@ -636,14 +646,37 @@ class CentrosCostosController extends Controller
         if ($userId > 0) {
             $q->where('user_id', $userId);
         }
+        $ccs = $this->listaRequest(request(), 'cc');
+        if ($ccs === []) {
+            $ccs = $this->listaRequest(request(), 'centros');
+        }
+        if ($ccs !== []) {
+            $codigos = [];
+            foreach ($ccs as $cc) {
+                $cc = trim((string) $cc);
+                if ($cc === '') {
+                    continue;
+                }
+                $codigos[$cc] = $cc;
+                $alt = ltrim($cc, '0');
+                if ($alt !== '' && $alt !== $cc) {
+                    $codigos[$alt] = $alt;
+                }
+            }
+            if ($codigos) {
+                $q->whereIn('centro_codigo', array_values($codigos));
+            }
+        }
 
-        $this->promoverCapturasIndependientes($ciclo);
+        if (! $resumen) {
+            $this->promoverCapturasIndependientes($ciclo);
+        }
 
-        $rows = $q->orderByDesc('id')->get()->map(function (CcAsignacion $a) {
-            return $this->asignacionPayload($a);
+        $rows = $q->orderByDesc('id')->get()->map(function (CcAsignacion $a) use ($resumen) {
+            return $this->asignacionPayload($a, $resumen);
         })->values()->all();
 
-        return response()->json(['asignaciones' => $rows]);
+        return response()->json(['asignaciones' => $rows, 'resumen' => $resumen]);
     }
 
     public function storeAsignacion(Request $request, string $ciclo): JsonResponse
@@ -1358,8 +1391,9 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * Gasto real de varios centros en una sola petición (análisis, sobre todo «Todas»).
-     * Una consulta por empresa si el año cabe en pocas páginas; si no, una por centro en paralelo.
+     * Gasto real de varios centros: solo copia local (BD).
+     * Si la empresa no tiene nada guardado, el front puede sembrar con /sincronizar
+     * (Buscar lo hace una vez; el botón «Actualizar gasto SAP» fuerza siempre).
      */
     public function gastoRealAnalisis(Request $request): JsonResponse
     {
@@ -1408,6 +1442,7 @@ class CentrosCostosController extends Controller
 
         $this->gastoCopiaEmpresas = [];
         $porCentro = [];
+        $sinCopia = [];
         foreach ($grupos as $empresa => $lista) {
             try {
                 $ccs = [];
@@ -1418,10 +1453,14 @@ class CentrosCostosController extends Controller
             } catch (Throwable $e) {
                 $mapa = [];
             }
+            $tieneCopia = ! empty($this->gastoCopiaEmpresas[$empresa]);
+            if (! $tieneCopia) {
+                $sinCopia[$empresa] = $empresa;
+            }
             foreach ($lista as $item) {
                 $todo = $this->porCuentaDeIndiceEmpresa($mapa, $item['cc']);
                 $porCentro[$item['clave']] = (object) $this->recortarGastoPedido($todo, $item['cuentas']);
-                if (! empty($this->gastoCopiaEmpresas[$empresa])) {
+                if ($tieneCopia) {
                     $raw = explode('|', (string) $item['clave'], 2)[0];
                     if ($raw !== '') {
                         $this->gastoCopiaEmpresas[$raw] = true;
@@ -1433,8 +1472,10 @@ class CentrosCostosController extends Controller
         return response()->json([
             'ok' => true,
             'year' => $year,
+            'origen' => 'copia',
             'por_centro' => (object) $porCentro,
             'copias' => (object) $this->gastoCopiaEmpresas,
+            'sin_copia' => array_values($sinCopia),
         ]);
     }
 
@@ -2979,7 +3020,7 @@ class CentrosCostosController extends Controller
      * @return array<string, array<string, array<string, mixed>>>
      */
     /**
-     * Lectura del análisis: solo la copia local, sin volver a SAP.
+     * Lectura del análisis/control: solo la copia local, sin volver a SAP.
      *
      * @return array<string, array<string, array<string, mixed>>>
      */
@@ -2992,7 +3033,9 @@ class CentrosCostosController extends Controller
         $mapa = $centros === []
             ? $snap->mapa($empresa, $year)
             : $snap->mapaDeCentros($empresa, $year, $centros);
-        if ($mapa !== [] || $snap->cubreEmpresa($empresa, $year)) {
+        // Empresa con cualquier dato local cuenta como "copia": no resembrar SAP
+        // solo porque el centro filtrado aún no tiene filas.
+        if ($mapa !== [] || $snap->tieneCopia($empresa, $year)) {
             $this->gastoCopiaEmpresas[$empresa] = true;
         }
 
@@ -5139,7 +5182,7 @@ class CentrosCostosController extends Controller
     /**
      * @return array<string, mixed>
      */
-    protected function asignacionPayload(CcAsignacion $a): array
+    protected function asignacionPayload(CcAsignacion $a, bool $resumen = false): array
     {
         $permisos = $a->permisos->map(function ($p) {
             return $p->tipo->clave ?? null;
@@ -5148,6 +5191,17 @@ class CentrosCostosController extends Controller
         })->values()->all();
 
         $esPrincipal = $this->asigHasRolColumns() ? (bool) $a->es_principal : true;
+
+        $cuentas = [];
+        if (! $resumen && $a->relationLoaded('cuentas')) {
+            $cuentas = $a->cuentas->map(function ($c) {
+                return [
+                    'codigo' => $c->cuenta_codigo,
+                    'nombre' => $c->cuenta_nombre,
+                    'agrupacion' => $c->agrupacion,
+                ];
+            })->values()->all();
+        }
 
         return [
             'id' => $a->id,
@@ -5160,18 +5214,12 @@ class CentrosCostosController extends Controller
             'centro_nombre' => $a->centro_nombre,
             'es_principal' => $esPrincipal,
             'parent_id' => $this->asigHasRolColumns() ? $a->parent_id : null,
-            'cuentas' => $a->cuentas->map(function ($c) {
-                return [
-                    'codigo' => $c->cuenta_codigo,
-                    'nombre' => $c->cuenta_nombre,
-                    'agrupacion' => $c->agrupacion,
-                ];
-            })->values()->all(),
+            'cuentas' => $cuentas,
             'permisos' => $permisos,
             'capturar' => in_array('capturar', $permisos, true),
             'editar' => in_array('editar', $permisos, true),
             'revisar' => in_array('revisar', $permisos, true),
-            'importar' => $this->usuarioTienePermiso((string) $a->ciclo_codigo, (int) $a->user_id, 'importar'),
+            'importar' => $resumen ? false : $this->usuarioTienePermiso((string) $a->ciclo_codigo, (int) $a->user_id, 'importar'),
         ];
     }
 
