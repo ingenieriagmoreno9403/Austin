@@ -44,7 +44,7 @@
         <div>
             <div class="cc-kicker" id="an-kicker">Supervisión · presupuesto {{ $bootstrap['anioPresupuesto'] }}</div>
             <h1 class="cc-title">Análisis de progreso</h1>
-            <p class="cc-sub" id="an-sub">Analíticas por empresa, centro, cuenta o usuario. El gasto sale de la BD local.</p>
+            <p class="cc-sub" id="an-sub">Analíticas por empresa, centro, cuenta o usuario.</p>
         </div>
         <div class="cc-header-actions">
             <span id="sap-flag" class="cc-sap-flag off" title="Fuente del catálogo de centros/cuentas">Catálogo local</span>
@@ -60,8 +60,7 @@
                     <option value="USD">USD</option>
                 </select>
             </label>
-            <button type="button" class="cc-btn" id="an-sap"
-                title="Fuerza bajar el gasto real desde SAP a la copia local. En Buscar ya se usa la BD; solo va a SAP si aún no hay copia.">
+            <button type="button" class="cc-btn" id="an-sap" title="Actualiza gasto real desde SAP a la copia local">
                 <i class="fa-solid fa-rotate"></i> Actualizar gasto SAP
             </button>
         </div>
@@ -71,7 +70,7 @@
         <div class="cc-filters cc-filters-asig cc-filters-buscar">
             <div class="cc-filter-field">
                 <label for="an-empresa">Empresa</label>
-                <select id="an-empresa" class="cc-select cc-select-search" data-hide-search="1" aria-label="Empresa">
+                <select id="an-empresa" class="cc-select cc-select-search">
                     <option value="">Seleccionar</option>
                     <option value="*">Todas</option>
                 </select>
