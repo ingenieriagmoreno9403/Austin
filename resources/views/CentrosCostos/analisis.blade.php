@@ -60,7 +60,8 @@
                     <option value="USD">USD</option>
                 </select>
             </label>
-            <button type="button" class="cc-btn" id="an-sap" title="Actualiza gasto real desde SAP a la copia local">
+            <button type="button" class="cc-btn" id="an-sap"
+                title="Fuerza bajar el gasto real desde SAP a la copia local. En Buscar ya se usa la BD; solo va a SAP si aún no hay copia.">
                 <i class="fa-solid fa-rotate"></i> Actualizar gasto SAP
             </button>
         </div>
@@ -70,7 +71,7 @@
         <div class="cc-filters cc-filters-asig cc-filters-buscar">
             <div class="cc-filter-field">
                 <label for="an-empresa">Empresa</label>
-                <select id="an-empresa" class="cc-select cc-select-search">
+                <select id="an-empresa" class="cc-select cc-select-search" data-hide-search="1" aria-label="Empresa">
                     <option value="">Seleccionar</option>
                     <option value="*">Todas</option>
                 </select>

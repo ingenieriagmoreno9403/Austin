@@ -285,12 +285,33 @@
             var cc = String(row.centro_codigo || '').trim().toUpperCase();
             if (!emp || !cc || cc === 'SIN_CC' || cc === 'EMPRESA') return;
             var key = emp.toUpperCase();
-            if (!grupos[key]) grupos[key] = { empresa: emp, centros: [] };
-            if (!grupos[key].centros.some(function (c) { return c.cc === cc; })) {
-                grupos[key].centros.push({ empresa: emp, cc: cc });
+            if (!grupos[key]) {
+                grupos[key] = { empresa: emp, centrosMap: {}, trabajos: [] };
             }
+            if (!grupos[key].centrosMap[cc]) {
+                grupos[key].centrosMap[cc] = { empresa: emp, cc: cc, cuentas: {} };
+            }
+            (row.cuentas || []).forEach(function (cta) {
+                var codigo = String((cta && (cta.codigo || cta.cuenta_codigo)) || '').trim();
+                if (!codigo) return;
+                grupos[key].centrosMap[cc].cuentas[codigo] = true;
+            });
         });
-        return Object.keys(grupos).sort().map(function (k) { return grupos[k]; });
+        return Object.keys(grupos).sort().map(function (k) {
+            var g = grupos[k];
+            var centros = Object.keys(g.centrosMap).sort().map(function (cc) {
+                var c = g.centrosMap[cc];
+                c.cuentas = Object.keys(c.cuentas).sort();
+                return c;
+            });
+            var trabajos = [];
+            centros.forEach(function (c) {
+                (c.cuentas || []).forEach(function (cuenta) {
+                    trabajos.push({ empresa: c.empresa, cc: c.cc, cuenta: cuenta });
+                });
+            });
+            return { empresa: g.empresa, centros: centros, trabajos: trabajos };
+        });
     }
 
     function pintarProgresoSap(hecho, total, texto) {
@@ -334,11 +355,14 @@
         var go = document.getElementById('ciclo-sap-go');
         var g = grupoSapElegido();
         if (meta) {
-            meta.textContent = g
-                ? (g.centros.length + ' centros asignados en ' + g.empresa + '.')
-                : 'Todavía no hay una empresa elegida.';
+            if (!g) {
+                meta.textContent = 'Todavía no hay una empresa elegida.';
+            } else {
+                meta.textContent = g.centros.length + ' centros · ' + (g.trabajos || []).length
+                    + ' cuentas asignadas en ' + String(g.empresa || '').toUpperCase() + '.';
+            }
         }
-        if (go && !CCAsig._sapCorriendo) go.disabled = !g;
+        if (go && !CCAsig._sapCorriendo) go.disabled = !(g && (g.trabajos || []).length);
     }
 
     function abrirModalSap() {
@@ -347,22 +371,24 @@
             if (modal && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modal).show();
             return;
         }
-        var rows = filasSapEnPantalla();
-        if (rows.length) {
-            prepararModalSap(rows);
-            return;
-        }
         var ciclo = cicloCodigoPagina();
         getJSON('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones').then(function (json) {
             CCAsig._rows = (json && json.asignaciones) || [];
             prepararModalSap(CCAsig._rows);
         }).catch(function () {
-            if (window.Swal) Swal.fire({ icon: 'error', title: 'Sin asignaciones', text: 'No se pudieron leer los centros de este ciclo.' });
+            var rows = filasSapEnPantalla();
+            if (rows.length) {
+                prepararModalSap(rows);
+                return;
+            }
+            if (window.Swal) Swal.fire({ icon: 'error', title: 'Sin asignaciones', text: 'No se pudieron leer las asignaciones de este ciclo.' });
         });
     }
 
     function prepararModalSap(rows) {
-        CCAsig._sapGrupos = gruposSapDeAsignaciones(rows);
+        CCAsig._sapGrupos = gruposSapDeAsignaciones(rows).filter(function (g) {
+            return (g.trabajos || []).length > 0;
+        });
         CCAsig._sapStats = { registrados: 0, actualizados: 0, sinCambio: 0, fallidos: 0 };
         pintarContadoresSap();
         var sel = document.getElementById('ciclo-sap-empresa');
@@ -373,7 +399,8 @@
         if (sel) {
             var html = '<option value="">Seleccionar empresa</option>';
             CCAsig._sapGrupos.forEach(function (g, i) {
-                html += '<option value="' + i + '">' + escapeHtml(String(g.empresa || '').toUpperCase()) + ' · ' + g.centros.length + ' centros</option>';
+                html += '<option value="' + i + '">' + escapeHtml(String(g.empresa || '').toUpperCase())
+                    + ' · ' + g.centros.length + ' centros · ' + (g.trabajos || []).length + ' cuentas</option>';
             });
             sel.innerHTML = html;
             sel.disabled = !CCAsig._sapGrupos.length;
@@ -382,7 +409,11 @@
         var modal = document.getElementById('modalCicloSap');
         if (modal && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modal).show();
         if (!CCAsig._sapGrupos.length && window.Swal) {
-            Swal.fire({ icon: 'warning', title: 'Sin centros de SAP', text: 'Las asignaciones de este ciclo no tienen un centro de costo de SAP.' });
+            Swal.fire({
+                icon: 'warning',
+                title: 'Sin cuentas para actualizar',
+                text: 'Las asignaciones de este ciclo no tienen centro y cuentas de captura.'
+            });
         }
     }
 
@@ -392,9 +423,16 @@
         var cancel = document.getElementById('ciclo-sap-cancelar');
         var x = document.getElementById('ciclo-sap-x');
         if (sel) sel.disabled = corriendo || !(CCAsig._sapGrupos || []).length;
-        if (go) go.disabled = corriendo || !grupoSapElegido();
+        if (go) {
+            var g = grupoSapElegido();
+            go.disabled = corriendo || !(g && (g.trabajos || []).length);
+        }
         if (cancel) cancel.disabled = !corriendo;
         if (x) x.disabled = corriendo;
+    }
+
+    function etiquetaTrabajoSap(c) {
+        return String(c.cc || '') + ' · ' + String(c.cuenta || '');
     }
 
     function anotarFalloSap(c, texto) {
@@ -405,15 +443,16 @@
         var li = document.createElement('li');
         li.setAttribute('data-empresa', c.empresa || '');
         li.setAttribute('data-cc', c.cc || '');
+        li.setAttribute('data-cuenta', c.cuenta || '');
         var span = document.createElement('span');
         var btn = document.createElement('button');
-        span.textContent = c.cc + (texto ? ' — ' + texto : '');
+        span.textContent = etiquetaTrabajoSap(c) + (texto ? ' — ' + texto : '');
         btn.type = 'button';
         btn.className = 'cc-btn cc-sap-reintento';
         btn.textContent = 'Reintentar';
         btn.disabled = true;
         btn.addEventListener('click', function () {
-            reintentarCentroSap({ empresa: c.empresa, cc: c.cc }, li, span, btn);
+            reintentarCentroSap({ empresa: c.empresa, cc: c.cc, cuenta: c.cuenta }, li, span, btn);
         });
         li.appendChild(span);
         li.appendChild(btn);
@@ -443,7 +482,10 @@
             if (li && li.parentNode) li.remove();
             return true;
         }
-        if (span) span.textContent = c.cc + ' — ' + ((pack && pack.json && (pack.json.mensaje || pack.json.message)) || 'No se pudo guardar');
+        if (span) {
+            span.textContent = etiquetaTrabajoSap(c) + ' — '
+                + ((pack && pack.json && (pack.json.mensaje || pack.json.message)) || 'No se pudo guardar');
+        }
         return false;
     }
 
@@ -463,8 +505,8 @@
     }
 
     function correrCentroSap(c, year, corrida, onTexto) {
-        function postCentro(desdeJson) {
-            return fetch('/CentrosCostos/api/gasto-real/sincronizar-centro', {
+        function postCuenta(desdeJson) {
+            return fetch('/CentrosCostos/api/gasto-real/sincronizar-cuenta', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -476,6 +518,7 @@
                     year: year,
                     empresa: c.empresa,
                     cc: c.cc,
+                    cuenta: c.cuenta,
                     corrida: corrida,
                     desde_json: desdeJson ? 1 : 0
                 })
@@ -487,9 +530,10 @@
         }
         function esperarArchivo(intentos, sinCorrida, listoVeces) {
             if (CCAsig._sapParar) return Promise.reject(new Error('pausa'));
-            var url = '/CentrosCostos/api/gasto-real/sincronizar-centro/estado'
+            var url = '/CentrosCostos/api/gasto-real/sincronizar-cuenta/estado'
                 + '?empresa=' + encodeURIComponent(c.empresa)
                 + '&cc=' + encodeURIComponent(c.cc)
+                + '&cuenta=' + encodeURIComponent(c.cuenta)
                 + '&year=' + encodeURIComponent(year)
                 + '&corrida=' + encodeURIComponent(corrida);
             return getJSON(url).catch(function () { return {}; }).then(function (json) {
@@ -503,13 +547,13 @@
                 if (misma && json.listo && !json.insertado) {
                     sinCorrida = 0;
                     listoVeces += 1;
-                    if (listoVeces >= 6) return postCentro(true);
+                    if (listoVeces >= 6) return postCuenta(true);
                 } else {
                     listoVeces = 0;
                     if (!misma) sinCorrida += 1;
                 }
                 if (intentos <= 0 || sinCorrida >= 8) throw new Error('sin archivo');
-                if (onTexto) onTexto('La conexión de ' + c.cc + ' sigue en el archivo…');
+                if (onTexto) onTexto('La conexión de ' + etiquetaTrabajoSap(c) + ' sigue en el archivo…');
                 return new Promise(function (resolve, reject) {
                     setTimeout(function () {
                         esperarArchivo(intentos - 1, misma ? 0 : sinCorrida, listoVeces).then(resolve, reject);
@@ -517,7 +561,7 @@
                 });
             });
         }
-        return postCentro(false).then(function (pack) {
+        return postCuenta(false).then(function (pack) {
             var estado = pack.json && pack.json.estado;
             if (pack.ok && gastoListo(estado)) return pack;
             if (estado === 'fallo') return pack;
@@ -531,17 +575,17 @@
     function reintentarCentroSap(c, li, span, btn) {
         if (CCAsig._sapCorriendo) return;
         var year = anioGastoPagina();
-        if (!year) return;
+        if (!year || !c.cuenta) return;
         CCAsig._sapCorriendo = true;
         CCAsig._sapParar = false;
         marcarControlesSap(true);
         habilitarReintentosSap(false);
         btn.disabled = true;
-        span.textContent = c.cc + ' — actualizando…';
-        pintarProgresoSap(0, 1, 'Actualizando ' + c.cc + '…');
+        span.textContent = etiquetaTrabajoSap(c) + ' — actualizando…';
+        pintarProgresoSap(0, 1, 'Actualizando ' + etiquetaTrabajoSap(c) + '…');
         correrCentroSap(c, year, 'r' + Date.now().toString(36), function (texto) {
             pintarProgresoSap(0, 1, texto);
-            span.textContent = c.cc + ' — ' + texto;
+            span.textContent = etiquetaTrabajoSap(c) + ' — ' + texto;
         }).then(function (pack) {
             CCAsig._sapCorriendo = false;
             CCAsig._sapParar = false;
@@ -550,14 +594,15 @@
             if (avisarSiNoQuedanFallos()) return;
             habilitarReintentosSap(true);
             if (pack && pack.ok && gastoListo(pack.json && pack.json.estado)) {
-                pintarProgresoSap(1, 1, c.cc + ' quedó guardado.');
+                pintarProgresoSap(1, 1, etiquetaTrabajoSap(c) + ' quedó guardada.');
             }
         }).catch(function (err) {
             CCAsig._sapCorriendo = false;
             CCAsig._sapParar = false;
             marcarControlesSap(false);
             habilitarReintentosSap(true);
-            span.textContent = c.cc + ' — ' + ((err && err.message === 'pausa') ? 'pausado' : 'Se cortó antes de guardar el archivo');
+            span.textContent = etiquetaTrabajoSap(c) + ' — '
+                + ((err && err.message === 'pausa') ? 'pausado' : 'Se cortó antes de guardar el archivo');
         });
     }
 
@@ -590,21 +635,22 @@
             }
             var c = {
                 empresa: li.getAttribute('data-empresa') || '',
-                cc: li.getAttribute('data-cc') || ''
+                cc: li.getAttribute('data-cc') || '',
+                cuenta: li.getAttribute('data-cuenta') || ''
             };
             var span = li.querySelector('span');
-            if (span) span.textContent = c.cc + ' — actualizando…';
-            pintarProgresoSap(i, items.length, 'Reintentando ' + c.cc + ' (' + (i + 1) + ' de ' + items.length + ')…');
+            if (span) span.textContent = etiquetaTrabajoSap(c) + ' — actualizando…';
+            pintarProgresoSap(i, items.length, 'Reintentando ' + etiquetaTrabajoSap(c) + ' (' + (i + 1) + ' de ' + items.length + ')…');
             correrCentroSap(c, year, 'f' + Date.now().toString(36) + i, function (texto) {
                 pintarProgresoSap(i, items.length, texto + ' (' + (i + 1) + ' de ' + items.length + ')');
-                if (span) span.textContent = c.cc + ' — ' + texto;
+                if (span) span.textContent = etiquetaTrabajoSap(c) + ' — ' + texto;
             }).then(function (pack) {
                 cerrarIntentoSap(c, li, span, pack);
                 i += 1;
                 paso();
             }).catch(function (err) {
                 if (err && err.message === 'pausa') {
-                    if (span) span.textContent = c.cc + ' — pausado';
+                    if (span) span.textContent = etiquetaTrabajoSap(c) + ' — pausado';
                     CCAsig._sapCorriendo = false;
                     CCAsig._sapParar = false;
                     marcarControlesSap(false);
@@ -612,7 +658,7 @@
                     pintarProgresoSap(i, items.length, 'Reintento pausado.');
                     return;
                 }
-                if (span) span.textContent = c.cc + ' — Se cortó antes de guardar el archivo';
+                if (span) span.textContent = etiquetaTrabajoSap(c) + ' — Se cortó antes de guardar el archivo';
                 i += 1;
                 paso();
             });
@@ -653,8 +699,15 @@
         if (CCAsig._sapCorriendo) return;
         var g = grupoSapElegido();
         var year = anioGastoPagina();
-        if (!g || !g.centros.length) {
-            if (window.Swal) Swal.fire({ icon: 'warning', title: 'Elige la empresa', text: 'Selecciona la empresa que quieres actualizar.' });
+        var trabajos = (g && g.trabajos) || [];
+        if (!g || !trabajos.length) {
+            if (window.Swal) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Elige la empresa',
+                    text: 'Selecciona una empresa con centros y cuentas asignadas.'
+                });
+            }
             return;
         }
         if (!year) {
@@ -671,7 +724,7 @@
         marcarControlesSap(true);
         var corrida = 'c' + Date.now().toString(36);
         var i = 0;
-        var total = g.centros.length;
+        var total = trabajos.length;
         function aplicarResultado(c, pack) {
             var estado = pack.json && pack.json.estado;
             if (pack.ok && estado === 'registrado') statsSap().registrados += 1;
@@ -691,8 +744,8 @@
                 ? Swal.fire({
                     icon: s.fallidos ? 'warning' : 'success',
                     title: pausado ? 'Actualización pausada' : 'Gasto actualizado',
-                    html: '<p style="margin:0">' + s.registrados + ' registrados<br>' + s.actualizados + ' actualizados<br>' + (s.sinCambio || 0) + ' sin cambio<br>' + s.fallidos + ' fallaron'
-                        + (s.fallidos ? '<br><br>Cada centro de la lista tiene un botón para intentarlo de nuevo.' : '') + '</p>'
+                    html: '<p style="margin:0">' + s.registrados + ' registradas<br>' + s.actualizados + ' actualizadas<br>' + (s.sinCambio || 0) + ' sin cambio<br>' + s.fallidos + ' fallaron'
+                        + (s.fallidos ? '<br><br>Cada cuenta de la lista tiene un botón para intentarlo de nuevo.' : '') + '</p>'
                 })
                 : Promise.resolve();
             if (!s.fallidos) {
@@ -710,9 +763,9 @@
                 terminar(false);
                 return;
             }
-            var c = g.centros[i];
-            pintarProgresoSap(i, total, 'Actualizando ' + c.cc + ' (' + (i + 1) + ' de ' + total + ')…');
-            correrCentroSap(c, year, corrida, function (texto) {
+            var c = trabajos[i];
+            pintarProgresoSap(i, total, 'Actualizando ' + etiquetaTrabajoSap(c) + ' (' + (i + 1) + ' de ' + total + ')…');
+            correrCentroSap(c, year, corrida + '-' + i, function (texto) {
                 pintarProgresoSap(i, total, texto + ' (' + (i + 1) + ' de ' + total + ')');
             }).then(function (pack) {
                 aplicarResultado(c, pack || { ok: false, json: {} });
