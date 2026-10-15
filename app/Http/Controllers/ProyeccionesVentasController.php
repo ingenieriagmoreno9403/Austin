@@ -29,6 +29,8 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 use Throwable;
 
@@ -130,15 +132,202 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Descarga Excel con las proyecciones (cantidades) del ciclo seleccionado.
+     * Descarga Excel sincrónica (compatibilidad). Preferir start/status/file para evitar 504.
      */
     public function exportarInformacionExcel(Request $request)
     {
-        // El budget completo (todos los asignados × 12 meses) puede tardar varios minutos.
+        $prepared = $this->prepararExportBudgetParams($request);
+        if ($prepared instanceof JsonResponse || $prepared instanceof \Illuminate\Http\RedirectResponse) {
+            return $prepared;
+        }
+
+        try {
+            $this->boostExportBudgetLimits();
+            $pack = $this->generarArchivoExportBudget($prepared['ciclo'], $prepared['empresa']);
+
+            return response()->download($pack['absolute'], $pack['filename'], [
+                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ])->deleteFileAfterSend(true);
+        } catch (\Throwable $e) {
+            Log::error('Export budget Excel falló', [
+                'ciclo' => $prepared['ciclo'],
+                'empresa' => $prepared['empresa'],
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return $this->exportBudgetErrorResponse($request, $this->motivoErrorExportBudget($e), 500);
+        }
+    }
+
+    /**
+     * Inicia la generación en segundo plano (evita 504 del proxy).
+     * Responde al instante; el Excel se arma después de enviar la respuesta.
+     */
+    public function exportarInformacionExcelStart(Request $request): JsonResponse
+    {
+        $prepared = $this->prepararExportBudgetParams($request);
+        if ($prepared instanceof JsonResponse) {
+            return $prepared;
+        }
+        if ($prepared instanceof \Illuminate\Http\RedirectResponse) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Error al descargar',
+                'motivo' => 'Selecciona un ciclo para exportar.',
+            ], 422);
+        }
+
+        $token = (string) Str::uuid();
+        $userId = (int) (auth()->id() ?? 0);
+        $meta = [
+            'status' => 'pending',
+            'pct' => 5,
+            'motivo' => null,
+            'filename' => null,
+            'path' => null,
+            'user_id' => $userId,
+            'ciclo' => $prepared['ciclo'],
+            'empresa' => $prepared['empresa'],
+            'created_at' => now()->toIso8601String(),
+        ];
+        Cache::put($this->exportBudgetCacheKey($token), $meta, now()->addHours(2));
+
+        $ciclo = $prepared['ciclo'];
+        $empresa = $prepared['empresa'];
+
+        dispatch(function () use ($token, $ciclo, $empresa) {
+            $this->boostExportBudgetLimits();
+            $key = $this->exportBudgetCacheKey($token);
+            $meta = Cache::get($key);
+            if (! is_array($meta)) {
+                return;
+            }
+            try {
+                $meta['status'] = 'running';
+                $meta['pct'] = 15;
+                Cache::put($key, $meta, now()->addHours(2));
+
+                $pack = $this->generarArchivoExportBudget($ciclo, $empresa, $token);
+
+                $meta['status'] = 'ready';
+                $meta['pct'] = 100;
+                $meta['filename'] = $pack['filename'];
+                $meta['path'] = $pack['relative'];
+                $meta['motivo'] = null;
+                Cache::put($key, $meta, now()->addHours(2));
+            } catch (\Throwable $e) {
+                Log::error('Export budget Excel (async) falló', [
+                    'token' => $token,
+                    'ciclo' => $ciclo,
+                    'empresa' => $empresa,
+                    'message' => $e->getMessage(),
+                ]);
+                $meta['status'] = 'error';
+                $meta['pct'] = 0;
+                $meta['motivo'] = $this->motivoErrorExportBudget($e);
+                Cache::put($key, $meta, now()->addHours(2));
+            }
+        })->afterResponse();
+
+        return response()->json([
+            'ok' => true,
+            'token' => $token,
+            'message' => 'Generando Excel en segundo plano…',
+        ]);
+    }
+
+    public function exportarInformacionExcelStatus(string $token): JsonResponse
+    {
+        $token = trim($token);
+        if ($token === '' || ! preg_match('/^[a-f0-9\-]{36}$/i', $token)) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'Token de exportación inválido.',
+            ], 422);
+        }
+
+        $meta = Cache::get($this->exportBudgetCacheKey($token));
+        if (! is_array($meta)) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'La exportación expiró o no existe. Vuelve a intentarlo.',
+            ], 404);
+        }
+
+        $userId = (int) (auth()->id() ?? 0);
+        if (! empty($meta['user_id']) && (int) $meta['user_id'] !== $userId) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'No tienes acceso a esta exportación.',
+            ], 403);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'status' => (string) ($meta['status'] ?? 'pending'),
+            'pct' => (int) ($meta['pct'] ?? 0),
+            'motivo' => $meta['motivo'] ?? null,
+            'filename' => $meta['filename'] ?? null,
+        ]);
+    }
+
+    public function exportarInformacionExcelFile(string $token)
+    {
+        $token = trim($token);
+        if ($token === '' || ! preg_match('/^[a-f0-9\-]{36}$/i', $token)) {
+            return $this->exportBudgetErrorResponse(request(), 'Token de exportación inválido.', 422);
+        }
+
+        $meta = Cache::get($this->exportBudgetCacheKey($token));
+        if (! is_array($meta) || ($meta['status'] ?? '') !== 'ready') {
+            return $this->exportBudgetErrorResponse(
+                request(),
+                is_array($meta) ? (string) ($meta['motivo'] ?: 'El archivo aún no está listo.') : 'La exportación expiró o no existe.',
+                409
+            );
+        }
+
+        $userId = (int) (auth()->id() ?? 0);
+        if (! empty($meta['user_id']) && (int) $meta['user_id'] !== $userId) {
+            return $this->exportBudgetErrorResponse(request(), 'No tienes acceso a esta exportación.', 403);
+        }
+
+        $relative = (string) ($meta['path'] ?? '');
+        if ($relative === '' || ! Storage::disk('local')->exists($relative)) {
+            return $this->exportBudgetErrorResponse(request(), 'No se encontró el archivo generado.', 404);
+        }
+
+        $filename = (string) ($meta['filename'] ?: basename($relative));
+        $absolute = Storage::disk('local')->path($relative);
+
+        return response()->download($absolute, $filename, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ])->deleteFileAfterSend(true);
+    }
+
+    protected function exportBudgetCacheKey(string $token): string
+    {
+        return 'pv_export_budget_'.$token;
+    }
+
+    protected function boostExportBudgetLimits(): void
+    {
         @set_time_limit(600);
         @ini_set('max_execution_time', '600');
         @ini_set('memory_limit', '1024M');
+        ignore_user_abort(true);
+    }
 
+    /**
+     * @return array{ciclo: string, empresa: string}|JsonResponse|\Illuminate\Http\RedirectResponse
+     */
+    protected function prepararExportBudgetParams(Request $request)
+    {
         $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
         if ($ciclo === '') {
             return $this->exportBudgetErrorResponse($request, 'Selecciona un ciclo para exportar.', 422);
@@ -158,25 +347,38 @@ class ProyeccionesVentasController extends Controller
             $empresa = $alias[$empresa];
         }
 
-        try {
-            $rows = $this->filasExportBudget($ciclo, $empresa !== '' ? $empresa : null);
-            $suffix = $empresa !== '' ? '_'.$empresa : '';
-            $filename = 'budget_ventas_'.$ciclo.$suffix.'_'.now()->format('Ymd_His').'.xlsx';
+        return [
+            'ciclo' => $ciclo,
+            'empresa' => $empresa,
+        ];
+    }
 
-            return Excel::download(new PvBudgetExport($rows, $ciclo), $filename);
-        } catch (\Throwable $e) {
-            Log::error('Export budget Excel falló', [
-                'ciclo' => $ciclo,
-                'empresa' => $empresa,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
-
-            $motivo = $this->motivoErrorExportBudget($e);
-
-            return $this->exportBudgetErrorResponse($request, $motivo, 500);
+    /**
+     * @return array{absolute: string, relative: string, filename: string}
+     */
+    protected function generarArchivoExportBudget(string $ciclo, string $empresa, ?string $token = null): array
+    {
+        $rows = $this->filasExportBudget($ciclo, $empresa !== '' ? $empresa : null);
+        $suffix = $empresa !== '' ? '_'.$empresa : '';
+        $filename = 'budget_ventas_'.$ciclo.$suffix.'_'.now()->format('Ymd_His').'.xlsx';
+        $dir = 'pv_exports';
+        if (! Storage::disk('local')->exists($dir)) {
+            Storage::disk('local')->makeDirectory($dir);
         }
+        $relative = $dir.'/'.($token ?: Str::uuid()).'.xlsx';
+
+        Excel::store(new PvBudgetExport($rows, $ciclo), $relative, 'local');
+
+        $absolute = Storage::disk('local')->path($relative);
+        if (! is_file($absolute)) {
+            throw new \RuntimeException('No se pudo guardar el archivo Excel en disco.');
+        }
+
+        return [
+            'absolute' => $absolute,
+            'relative' => $relative,
+            'filename' => $filename,
+        ];
     }
 
     /**

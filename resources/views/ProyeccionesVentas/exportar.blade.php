@@ -159,7 +159,9 @@
 (function () {
     var ciclosUrl = @json(route('pv.api.ciclos'));
     var empresasUrl = @json(route('pv.api.empresas'));
-    var downloadUrl = @json(route('pv.exportar.excel'));
+    var startUrl = @json(route('pv.exportar.excel.start'));
+    var statusUrlBase = @json(url('/ExportarInformacionVentas/excel/status'));
+    var fileUrlBase = @json(url('/ExportarInformacionVentas/excel/file'));
     var cicloSel = document.getElementById('exp-ciclo');
     var empresaSel = document.getElementById('exp-empresa');
     var btn = document.getElementById('exp-descargar');
@@ -174,9 +176,9 @@
     var btnErrorClose = document.getElementById('exp-error-cerrar');
     var exporting = false;
     var tickTimer = null;
-    var abortCtrl = null;
-    /** Límite cliente (ms). El servidor tiene hasta 10 min; aquí un poco más de margen. */
-    var CLIENT_TIMEOUT_MS = 11 * 60 * 1000;
+    var pollTimer = null;
+    /** Tiempo máximo esperando el archivo en segundo plano. */
+    var CLIENT_TIMEOUT_MS = 12 * 60 * 1000;
 
     function csrf() {
         var m = document.querySelector('meta[name="csrf-token"]');
@@ -293,10 +295,10 @@
         }
 
         if (status === 408 || status === 504 || status === 524) {
-            return 'La solicitud excedió el tiempo de espera del servidor (HTTP ' + status + '). Vuelve a intentar o exporta por empresa.';
+            return 'El proxy cortó la espera (HTTP ' + status + ' Gateway Timeout). Vuelve a intentar: ahora el Excel se genera en segundo plano. Si persiste, exporta por empresa.';
         }
         if (status === 502 || status === 503) {
-            return 'El servidor no pudo completar la descarga (HTTP ' + status + '). Es posible que se haya cortado por tiempo o carga; vuelve a intentar.';
+            return 'El servidor no pudo completar la descarga (HTTP ' + status + '). Vuelve a intentar; si tarda mucho, exporta por empresa.';
         }
         if (status === 419) {
             return 'La sesión expiró (CSRF). Recarga la página e intenta de nuevo.';
@@ -380,45 +382,30 @@
         }).catch(function () { /* opcional */ });
     }
 
+    function clearPoll() {
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
+    }
+
     function resetExportUi() {
         exporting = false;
-        abortCtrl = null;
+        clearPoll();
+        if (tickTimer) {
+            clearInterval(tickTimer);
+            tickTimer = null;
+        }
         if (btn) btn.innerHTML = '<i class="fa-solid fa-file-arrow-down"></i> Exportar Excel';
         syncBtn();
     }
 
-    function exportExcel() {
-        var ciclo = cicloSel ? cicloSel.value : '';
-        if (!ciclo || exporting) return;
-        var empresa = empresaSel ? empresaSel.value : '';
-        var url = downloadUrl + '?ciclo=' + encodeURIComponent(ciclo);
-        if (empresa) url += '&empresa=' + encodeURIComponent(empresa);
-
-        hideError();
-        exporting = true;
-        syncBtn();
-        if (btn) {
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Exportando…';
-        }
-        showProgress(true);
-        startFakeProgress();
-        if (hint) hint.textContent = 'Generando archivo del ciclo ' + ciclo + '…';
-
-        if (abortCtrl) {
-            try { abortCtrl.abort(); } catch (e) { /* ignore */ }
-        }
-        abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        var timeoutId = null;
-        if (abortCtrl) {
-            timeoutId = setTimeout(function () {
-                try { abortCtrl.abort(); } catch (e) { /* ignore */ }
-            }, CLIENT_TIMEOUT_MS);
-        }
-
-        fetch(url, {
+    function downloadReadyFile(token, fallbackName) {
+        var url = fileUrlBase + '/' + encodeURIComponent(token);
+        setProgress(95, 'Descargando archivo…');
+        return fetch(url, {
             method: 'GET',
             credentials: 'same-origin',
-            signal: abortCtrl ? abortCtrl.signal : undefined,
             headers: {
                 'X-CSRF-TOKEN': csrf(),
                 'X-Requested-With': 'XMLHttpRequest',
@@ -431,30 +418,14 @@
                     throw new Error(motivoDesdeRespuesta(res, body));
                 });
             }
-            var name = filenameFromDisposition(
-                res.headers.get('Content-Disposition'),
-                'budget_ventas_' + ciclo + '.xlsx'
-            );
-            setProgress(92, 'Descargando…');
+            var name = filenameFromDisposition(res.headers.get('Content-Disposition'), fallbackName || 'budget_ventas.xlsx');
             return res.blob().then(function (blob) {
                 if (!blob || blob.size < 32) {
                     throw new Error('El archivo recibido está vacío o incompleto. Vuelve a intentar.');
                 }
-                // A veces un error HTML/JSON llega con status 200 y content-type genérico.
-                if (blob.type && (blob.type.indexOf('json') >= 0 || blob.type.indexOf('html') >= 0)) {
-                    return blob.text().then(function (body) {
-                        throw new Error(motivoDesdeRespuesta(res, body));
-                    });
-                }
                 return { blob: blob, name: name };
             });
         }).then(function (pack) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (tickTimer) {
-                clearInterval(tickTimer);
-                tickTimer = null;
-            }
-            setProgress(100, 'Listo');
             var objectUrl = URL.createObjectURL(pack.blob);
             var a = document.createElement('a');
             a.href = objectUrl;
@@ -463,17 +434,113 @@
             a.click();
             a.remove();
             setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1500);
+            setProgress(100, 'Listo');
             if (hint) hint.textContent = 'Descarga completada.';
             setTimeout(function () {
                 showProgress(false);
                 resetExportUi();
             }, 900);
-        }).catch(function (err) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (tickTimer) {
-                clearInterval(tickTimer);
-                tickTimer = null;
+        });
+    }
+
+    function pollExportStatus(token, startedAt, fallbackName) {
+        clearPoll();
+        if (Date.now() - startedAt > CLIENT_TIMEOUT_MS) {
+            showError('Se agotó el tiempo de espera generando el Excel. Vuelve a intentar o exporta por empresa.');
+            resetExportUi();
+            return;
+        }
+
+        fetch(statusUrlBase + '/' + encodeURIComponent(token), {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': csrf(),
+                'X-Requested-With': 'XMLHttpRequest'
             }
+        }).then(function (res) {
+            return res.json().then(function (json) {
+                return { res: res, json: json };
+            }).catch(function () {
+                return { res: res, json: null };
+            });
+        }).then(function (pack) {
+            var json = pack.json || {};
+            if (!pack.res.ok) {
+                throw new Error(json.motivo || json.message || motivoDesdeRespuesta(pack.res, ''));
+            }
+            var status = String(json.status || '');
+            var pct = Number(json.pct);
+            if (!isFinite(pct)) pct = status === 'ready' ? 100 : 20;
+            if (status === 'ready') {
+                if (tickTimer) {
+                    clearInterval(tickTimer);
+                    tickTimer = null;
+                }
+                return downloadReadyFile(token, json.filename || fallbackName);
+            }
+            if (status === 'error') {
+                throw new Error(json.motivo || 'Error al generar el Excel.');
+            }
+            setProgress(Math.max(8, Math.min(90, pct)), status === 'running'
+                ? 'Generando Excel en segundo plano…'
+                : 'En cola…');
+            pollTimer = setTimeout(function () {
+                pollExportStatus(token, startedAt, fallbackName);
+            }, 1500);
+        }).catch(function (err) {
+            showError(motivoDesdeCatch(err));
+            resetExportUi();
+        });
+    }
+
+    function exportExcel() {
+        var ciclo = cicloSel ? cicloSel.value : '';
+        if (!ciclo || exporting) return;
+        var empresa = empresaSel ? empresaSel.value : '';
+        var fallbackName = 'budget_ventas_' + ciclo + (empresa ? ('_' + empresa) : '') + '.xlsx';
+
+        hideError();
+        exporting = true;
+        syncBtn();
+        if (btn) {
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Exportando…';
+        }
+        showProgress(true);
+        startFakeProgress();
+        if (hint) hint.textContent = 'Generando archivo del ciclo ' + ciclo + ' en segundo plano…';
+
+        var body = new FormData();
+        body.append('ciclo', ciclo);
+        if (empresa) body.append('empresa', empresa);
+
+        fetch(startUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-CSRF-TOKEN': csrf(),
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json'
+            },
+            body: body
+        }).then(function (res) {
+            return res.json().then(function (json) {
+                return { res: res, json: json };
+            }).catch(function () {
+                return res.text().then(function (bodyText) {
+                    throw new Error(motivoDesdeRespuesta(res, bodyText));
+                });
+            });
+        }).then(function (pack) {
+            if (!pack.res.ok || !pack.json || !pack.json.token) {
+                throw new Error((pack.json && (pack.json.motivo || pack.json.message))
+                    || motivoDesdeRespuesta(pack.res, ''));
+            }
+            setProgress(12, 'Generando Excel en segundo plano…');
+            if (hint) hint.textContent = 'El archivo se está armando; no cierres esta pestaña…';
+            pollExportStatus(pack.json.token, Date.now(), fallbackName);
+        }).catch(function (err) {
             setProgress(0, 'Error al descargar');
             showError(motivoDesdeCatch(err));
             resetExportUi();
