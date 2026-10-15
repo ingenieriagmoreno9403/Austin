@@ -2599,9 +2599,12 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Importa precios desde Excel.
+     * Importa precios desde Excel por lotes (progreso + reanudación).
      * Formato ancho: Empresa, CardCode, Cliente, ItemCode, Producto, Moneda, PrecioGlobal, Ene…Dic.
      * Formato legado: Empresa, CardCode, ItemCode, Mes, Precio.
+     *
+     * Primera llamada: archivo + anio → parsea, cachea y aplica el primer lote.
+     * Siguientes: token + offset (+ limit) → continúa desde ahí (timeout/error).
      */
     public function importarCostosExcel(Request $request): JsonResponse
     {
@@ -2612,285 +2615,616 @@ class ProyeccionesVentasController extends Controller
             return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
         }
 
-        $request->validate([
-            'archivo' => 'required|file|max:20480',
-        ]);
-        $ext = strtolower($request->file('archivo')->getClientOriginalExtension());
-        if (! in_array($ext, ['xlsx', 'xls', 'csv'], true)) {
-            return response()->json(['message' => 'El archivo debe ser Excel (.xlsx) o CSV.'], 422);
-        }
+        @set_time_limit(120);
 
-        try {
-            $sheets = Excel::toArray(new class implements \Maatwebsite\Excel\Concerns\ToArray
-            {
-                public function array(array $array)
-                {
-                }
-            }, $request->file('archivo'));
-        } catch (Throwable $e) {
-            return response()->json(['message' => 'No se pudo leer el archivo: '.$e->getMessage()], 422);
+        $token = trim((string) $request->input('token', ''));
+        $offset = max(0, (int) $request->input('offset', 0));
+        $limit = (int) $request->input('limit', 30);
+        if ($limit < 5) {
+            $limit = 5;
         }
-
-        $sheet = $sheets[0] ?? [];
-        if (count($sheet) < 2) {
-            return response()->json(['message' => 'El archivo no tiene filas para importar.'], 422);
-        }
-
-        $map = $this->mapearEncabezadosPrecios($sheet[0] ?? []);
-        $tieneMesesAnchos = count($map['meses']) > 0;
-        if ($map['empresa'] === null || $map['item'] === null) {
-            return response()->json([
-                'message' => 'Faltan columnas: Empresa e ItemCode (plantilla Formato Precios).',
-            ], 422);
-        }
-        if (! $tieneMesesAnchos && $map['precio'] === null) {
-            return response()->json([
-                'message' => 'Faltan columnas de precio: PrecioGlobal/Ene–Dic, o Precio (formato legado).',
-            ], 422);
+        if ($limit > 80) {
+            $limit = 80;
         }
 
         $userId = optional($request->user())->id;
-        $anio = $this->anioProyeccionCostos((int) $request->get('anio', 0));
+        $anio = $this->anioProyeccionCostos((int) $request->input('anio', 0));
         $hasAnio = $this->hasAnioCostos();
         $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
         $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
         $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+
+        $job = null;
+        if ($token !== '') {
+            $job = Cache::get($this->importPreciosExcelCacheKey($token));
+            if (! is_array($job) || empty($job['items']) || ! is_array($job['items'])) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'La sesión de importación expiró o no existe. Vuelve a subir el archivo.',
+                    'reanudable' => false,
+                ], 422);
+            }
+            $anio = (int) ($job['anio'] ?? $anio);
+        } else {
+            $request->validate([
+                'archivo' => 'required|file|max:20480',
+            ]);
+            $ext = strtolower($request->file('archivo')->getClientOriginalExtension());
+            if (! in_array($ext, ['xlsx', 'xls', 'csv'], true)) {
+                return response()->json(['message' => 'El archivo debe ser Excel (.xlsx) o CSV.'], 422);
+            }
+
+            try {
+                $sheets = Excel::toArray(new class implements \Maatwebsite\Excel\Concerns\ToArray
+                {
+                    public function array(array $array)
+                    {
+                    }
+                }, $request->file('archivo'));
+            } catch (Throwable $e) {
+                return response()->json(['message' => 'No se pudo leer el archivo: '.$e->getMessage()], 422);
+            }
+
+            $sheet = $sheets[0] ?? [];
+            if (count($sheet) < 2) {
+                return response()->json(['message' => 'El archivo no tiene filas para importar.'], 422);
+            }
+
+            $map = $this->mapearEncabezadosPrecios($sheet[0] ?? []);
+            $tieneMesesAnchos = count($map['meses']) > 0;
+            if ($map['empresa'] === null || $map['item'] === null) {
+                return response()->json([
+                    'message' => 'Faltan columnas: Empresa e ItemCode (plantilla Formato Precios).',
+                ], 422);
+            }
+            if (! $tieneMesesAnchos && $map['precio'] === null) {
+                return response()->json([
+                    'message' => 'Faltan columnas de precio: PrecioGlobal/Ene–Dic, o Precio (formato legado).',
+                ], 422);
+            }
+
+            $parsed = $this->parsearFilasPreciosExcel($sheet, $map, $tieneMesesAnchos);
+            $items = array_values($parsed['vistos']);
+            $resumenParse = [
+                'filas_excel' => (int) ($parsed['filas_excel'] ?? 0),
+                'filas_datos' => (int) ($parsed['filas_datos'] ?? 0),
+                'omitidos_vacias' => (int) ($parsed['omitidos_vacias'] ?? 0),
+                'omitidos_sin_precio' => (int) ($parsed['omitidos_sin_precio'] ?? 0),
+                'duplicados' => (int) ($parsed['duplicados'] ?? 0),
+                'errores_parse' => count($parsed['errores'] ?? []),
+                'productos' => count($items),
+            ];
+            if (! $items) {
+                return response()->json([
+                    'ok' => true,
+                    'done' => true,
+                    'token' => null,
+                    'total' => 0,
+                    'offset' => 0,
+                    'next_offset' => 0,
+                    'procesados' => 0,
+                    'actualizados' => 0,
+                    'creados' => 0,
+                    'sin_cambios' => 0,
+                    'omitidos' => $parsed['omitidos'],
+                    'proyecciones_actualizadas' => 0,
+                    'errores' => $parsed['errores'],
+                    'resumen_parse' => $resumenParse,
+                    'ultima_fila_excel' => null,
+                    'message' => 'No se encontró ninguna fila con precio para aplicar.'
+                        .$this->mensajeResumenParsePrecios($resumenParse),
+                ]);
+            }
+
+            $token = (string) Str::uuid();
+            $job = [
+                'anio' => $anio,
+                'user_id' => $userId,
+                'items' => $items,
+                'omitidos_parse' => $parsed['omitidos'],
+                'errores_parse' => $parsed['errores'],
+                'resumen_parse' => $resumenParse,
+                'created_at' => now()->toIso8601String(),
+            ];
+            Cache::put($this->importPreciosExcelCacheKey($token), $job, now()->addHours(2));
+            $offset = 0;
+        }
+
+        $items = array_values($job['items']);
+        $total = count($items);
+        if ($offset >= $total) {
+            Cache::forget($this->importPreciosExcelCacheKey($token));
+
+            return response()->json([
+                'ok' => true,
+                'done' => true,
+                'token' => $token,
+                'total' => $total,
+                'offset' => $offset,
+                'next_offset' => $total,
+                'procesados' => 0,
+                'actualizados' => 0,
+                'creados' => 0,
+                'sin_cambios' => 0,
+                'omitidos' => (int) ($job['omitidos_parse'] ?? 0),
+                'proyecciones_actualizadas' => 0,
+                'errores' => $job['errores_parse'] ?? [],
+                'ultima_fila_excel' => null,
+                'message' => 'Importación ya completada.',
+            ]);
+        }
+
+        $slice = array_slice($items, $offset, $limit);
         $actualizados = 0;
         $creados = 0;
-        $omitidos = 0;
+        $sinCambios = 0;
         $propagadasTot = 0;
+        $erroresLote = [];
+        $procesados = 0;
+        $ultimaFila = null;
+        $stoppedAt = null;
+
+        foreach ($slice as $localIdx => $hit) {
+            $absIdx = $offset + $localIdx;
+            $filaExcel = (int) ($hit['fila'] ?? ($absIdx + 2));
+            $ultimaFila = $filaExcel;
+            try {
+                $stats = $this->aplicarHitPrecioExcel(
+                    $hit,
+                    $anio,
+                    $userId,
+                    $hasAnio,
+                    $hasCard,
+                    $hasCardName,
+                    $hasMes
+                );
+                $creados += $stats['creados'];
+                $actualizados += $stats['actualizados'];
+                $sinCambios += $stats['sin_cambios'];
+                $propagadasTot += $stats['propagadas'];
+                $procesados++;
+            } catch (Throwable $e) {
+                $stoppedAt = $absIdx;
+                $erroresLote[] = [
+                    'fila' => $filaExcel,
+                    'mensaje' => $e->getMessage(),
+                    'empresa' => $hit['empresa'] ?? '',
+                    'card_code' => $hit['card_code'] ?? '',
+                    'item_code' => $hit['codigo'] ?? '',
+                ];
+                Log::warning('Import Excel precios detenido', [
+                    'token' => $token,
+                    'offset' => $absIdx,
+                    'fila' => $filaExcel,
+                    'error' => $e->getMessage(),
+                ]);
+                break;
+            }
+        }
+
+        $nextOffset = $stoppedAt !== null ? $stoppedAt : ($offset + $procesados);
+        $done = $stoppedAt === null && $nextOffset >= $total;
+        if ($done) {
+            Cache::forget($this->importPreciosExcelCacheKey($token));
+        } else {
+            // Renueva TTL mientras se importa.
+            Cache::put($this->importPreciosExcelCacheKey($token), $job, now()->addHours(2));
+        }
+
+        $resumenParse = is_array($job['resumen_parse'] ?? null) ? $job['resumen_parse'] : [];
+        $cambios = $actualizados + $creados;
+        $pct = $total > 0 ? (int) round(($nextOffset / $total) * 100) : 100;
+        if ($stoppedAt !== null) {
+            $msg = 'Importación detenida en la fila Excel '.$ultimaFila
+                .' (producto '.($nextOffset + 1).' de '.$total.').'
+                .' Ya se aplicaron '.$cambios.' precio(s) en este lote'
+                .($sinCambios ? (' · '.$sinCambios.' sin cambios') : '')
+                .'. Corrige esa fila o continúa desde el offset '.$nextOffset.'.';
+
+            return response()->json([
+                'ok' => false,
+                'done' => false,
+                'reanudable' => true,
+                'token' => $token,
+                'total' => $total,
+                'offset' => $offset,
+                'next_offset' => $nextOffset,
+                'procesados' => $procesados,
+                'actualizados' => $actualizados,
+                'creados' => $creados,
+                'sin_cambios' => $sinCambios,
+                'omitidos' => (int) ($job['omitidos_parse'] ?? 0),
+                'proyecciones_actualizadas' => $propagadasTot,
+                'errores' => array_merge($job['errores_parse'] ?? [], $erroresLote),
+                'resumen_parse' => $resumenParse,
+                'ultima_fila_excel' => $ultimaFila,
+                'porcentaje' => $pct,
+                'message' => $msg,
+            ], 422);
+        }
+
+        $msg = $done
+            ? ('Importación completa: '.$nextOffset.'/'.$total.' productos'
+                .($cambios ? (' · '.$cambios.' precio(s) aplicados') : '')
+                .($actualizados ? (' · '.$actualizados.' actualizado(s)') : '')
+                .($creados ? (' · '.$creados.' nuevo(s)') : '')
+                .($sinCambios ? (' · '.$sinCambios.' sin cambios') : '')
+                .($propagadasTot ? (' · '.$propagadasTot.' proyección(es)') : '')
+                .'.'
+                .$this->mensajeResumenParsePrecios($resumenParse))
+            : ('Lote '.$nextOffset.'/'.$total.' ('.$pct.'%)'
+                .($cambios ? (' · '.$cambios.' aplicados') : '')
+                .($sinCambios ? (' · '.$sinCambios.' sin cambios') : '')
+                .'.');
+
+        return response()->json([
+            'ok' => true,
+            'done' => $done,
+            'reanudable' => ! $done,
+            'token' => $token,
+            'total' => $total,
+            'offset' => $offset,
+            'next_offset' => $nextOffset,
+            'procesados' => $procesados,
+            'actualizados' => $actualizados,
+            'creados' => $creados,
+            'sin_cambios' => $sinCambios,
+            'omitidos' => (int) ($job['omitidos_parse'] ?? 0),
+            'proyecciones_actualizadas' => $propagadasTot,
+            'errores' => $done ? ($job['errores_parse'] ?? []) : $erroresLote,
+            'resumen_parse' => $resumenParse,
+            'ultima_fila_excel' => $ultimaFila,
+            'porcentaje' => $pct,
+            'message' => $msg,
+        ]);
+    }
+
+    /**
+     * @param  array<string, int>  $resumen
+     */
+    protected function mensajeResumenParsePrecios(array $resumen): string
+    {
+        if (! $resumen) {
+            return '';
+        }
+        $partes = [];
+        $filas = (int) ($resumen['filas_datos'] ?? 0);
+        $prod = (int) ($resumen['productos'] ?? 0);
+        if ($filas > 0) {
+            $partes[] = $filas.' fila(s) de datos en Excel';
+        }
+        if ($prod > 0) {
+            $partes[] = $prod.' producto(s) únicos';
+        }
+        $dup = (int) ($resumen['duplicados'] ?? 0);
+        if ($dup > 0) {
+            $partes[] = $dup.' duplicado(s) Empresa+CardCode+ItemCode (se quedó la última fila)';
+        }
+        $sinP = (int) ($resumen['omitidos_sin_precio'] ?? 0);
+        if ($sinP > 0) {
+            $partes[] = $sinP.' sin PrecioGlobal ni Ene–Dic';
+        }
+        $vac = (int) ($resumen['omitidos_vacias'] ?? 0);
+        if ($vac > 0) {
+            $partes[] = $vac.' vacía(s)';
+        }
+        $err = (int) ($resumen['errores_parse'] ?? 0);
+        if ($err > 0) {
+            $partes[] = $err.' con error de formato';
+        }
+
+        return $partes ? (' Excel: '.implode(' · ', $partes).'.') : '';
+    }
+
+    protected function importPreciosExcelCacheKey(string $token): string
+    {
+        return 'pv.import.precios.excel.'.$token;
+    }
+
+    /**
+     * Parsea la hoja Excel a items deduplicados listos para aplicar.
+     *
+     * @param  array<int, array<int, mixed>>  $sheet
+     * @param  array{empresa: ?int, card: ?int, cliente: ?int, item: ?int, producto: ?int, moneda: ?int, mes: ?int, precio: ?int, meses: array<int, int>}  $map
+     * @return array{
+     *   vistos: array<string, array<string, mixed>>,
+     *   omitidos: int,
+     *   omitidos_vacias: int,
+     *   omitidos_sin_precio: int,
+     *   duplicados: int,
+     *   filas_excel: int,
+     *   filas_datos: int,
+     *   errores: array<int, array{fila: int, mensaje: string}>
+     * }
+     */
+    protected function parsearFilasPreciosExcel(array $sheet, array $map, bool $tieneMesesAnchos): array
+    {
+        $omitidosVacias = 0;
+        $omitidosSinPrecio = 0;
+        $duplicados = 0;
         $errores = [];
         /** @var array<string, array<string, mixed>> $vistos */
         $vistos = [];
+        $filasExcel = count($sheet);
+        $filasDatos = max(0, $filasExcel - 1);
 
-        DB::transaction(function () use (
-            $sheet, $map, $userId, $anio, $hasAnio, $hasCard, $hasCardName, $hasMes,
-            $tieneMesesAnchos, &$actualizados, &$creados, &$omitidos, &$propagadasTot, &$errores, &$vistos
-        ) {
-            for ($i = 1; $i < count($sheet); $i++) {
-                $row = $sheet[$i];
-                $fila = $i + 1;
-                $empresa = strtoupper($this->celdaTexto($row[$map['empresa']] ?? ''));
-                $codigo = $this->celdaTexto($row[$map['item']] ?? '');
-                $card = $map['card'] !== null ? $this->celdaTexto($row[$map['card']] ?? '') : '';
-                $cardName = $map['cliente'] !== null ? $this->celdaTexto($row[$map['cliente']] ?? '') : '';
-                $nombre = $map['producto'] !== null ? $this->celdaTexto($row[$map['producto']] ?? '') : '';
-                $moneda = $map['moneda'] !== null
-                    ? strtoupper($this->celdaTexto($row[$map['moneda']] ?? '') ?: 'MXN')
-                    : 'MXN';
-                if (! in_array($moneda, ['MXN', 'USD'], true)) {
-                    $moneda = 'MXN';
-                }
+        for ($i = 1; $i < count($sheet); $i++) {
+            $row = $sheet[$i];
+            $fila = $i + 1;
+            $empresa = strtoupper($this->celdaTexto($row[$map['empresa']] ?? ''));
+            $codigo = $this->celdaTexto($row[$map['item']] ?? '');
+            $card = $map['card'] !== null ? $this->celdaTexto($row[$map['card']] ?? '') : '';
+            $cardName = $map['cliente'] !== null ? $this->celdaTexto($row[$map['cliente']] ?? '') : '';
+            $nombre = $map['producto'] !== null ? $this->celdaTexto($row[$map['producto']] ?? '') : '';
+            $moneda = $map['moneda'] !== null
+                ? strtoupper($this->celdaTexto($row[$map['moneda']] ?? '') ?: 'MXN')
+                : 'MXN';
+            if (! in_array($moneda, ['MXN', 'USD'], true)) {
+                $moneda = 'MXN';
+            }
 
-                if ($empresa === '' && $codigo === '') {
-                    $omitidos++;
-                    continue;
-                }
-                if ($empresa === '' || $codigo === '') {
-                    $errores[] = ['fila' => $fila, 'mensaje' => 'Empresa o ItemCode vacíos'];
-                    continue;
-                }
+            if ($empresa === '' && $codigo === '') {
+                $omitidosVacias++;
+                continue;
+            }
+            if ($empresa === '' || $codigo === '') {
+                $errores[] = ['fila' => $fila, 'mensaje' => 'Empresa o ItemCode vacíos'];
+                continue;
+            }
 
-                // Formato ancho: Ene…Dic (+ PrecioGlobal opcional).
-                if ($tieneMesesAnchos) {
-                    $mesesVals = array_fill(0, 12, null);
-                    $mesesLlenos = 0;
-                    foreach ($map['meses'] as $idx0 => $colIdx) {
-                        $precioMes = $this->celdaNumeroPrecio($row[$colIdx] ?? null);
-                        if ($precioMes === null) {
-                            continue;
-                        }
-                        if ($precioMes < 0) {
-                            $errores[] = ['fila' => $fila, 'mensaje' => 'Precio de mes inválido'];
-                            continue 2;
-                        }
-                        if ($precioMes <= 0) {
-                            continue;
-                        }
-                        $mesesVals[(int) $idx0] = round($precioMes, 4);
-                        $mesesLlenos++;
-                    }
-                    $globalRaw = $map['precio'] !== null ? ($row[$map['precio']] ?? null) : null;
-                    $global = $this->celdaNumeroPrecio($globalRaw);
-
-                    if ($mesesLlenos === 0 && ($global === null || $global <= 0)) {
-                        $omitidos++;
+            if ($tieneMesesAnchos) {
+                $mesesVals = array_fill(0, 12, null);
+                $mesesLlenos = 0;
+                foreach ($map['meses'] as $idx0 => $colIdx) {
+                    $precioMes = $this->celdaNumeroPrecio($row[$colIdx] ?? null);
+                    if ($precioMes === null) {
                         continue;
                     }
-
-                    // Solo PrecioGlobal (sin meses) → aplica a los 12 meses.
-                    if ($mesesLlenos === 0 && $global !== null && $global > 0) {
-                        $g = round($global, 4);
-                        for ($m = 0; $m < 12; $m++) {
-                            $mesesVals[$m] = $g;
-                        }
-                        $mesesLlenos = 12;
+                    if ($precioMes < 0) {
+                        $errores[] = ['fila' => $fila, 'mensaje' => 'Precio de mes inválido'];
+                        continue 2;
                     }
+                    if ($precioMes <= 0) {
+                        continue;
+                    }
+                    $mesesVals[(int) $idx0] = round($precioMes, 4);
+                    $mesesLlenos++;
+                }
+                $globalRaw = $map['precio'] !== null ? ($row[$map['precio']] ?? null) : null;
+                $global = $this->celdaNumeroPrecio($globalRaw);
 
-                    $key = $empresa.'|'.$card.'|'.$codigo;
-                    $vistos[$key] = [
-                        'modo' => 'ancho',
-                        'empresa' => $empresa,
-                        'card_code' => $card,
-                        'card_name' => $cardName,
-                        'codigo' => $codigo,
-                        'nombre' => $nombre !== '' ? $nombre : $codigo,
-                        'moneda' => $moneda,
-                        'meses' => $mesesVals,
-                        'global' => ($global !== null && $global > 0) ? round($global, 4) : null,
-                        'fila' => $fila,
-                    ];
+                if ($mesesLlenos === 0 && ($global === null || $global <= 0)) {
+                    $omitidosSinPrecio++;
                     continue;
                 }
 
-                // Formato legado: Mes + Precio.
-                $mesRaw = $map['mes'] !== null ? ($row[$map['mes']] ?? null) : null;
-                $mes = 0;
-                if ($mesRaw !== null && $mesRaw !== '') {
-                    $mes = (int) $mesRaw;
-                    if ($mes < 0 || $mes > 12) {
-                        $mes = 0;
+                // Solo PrecioGlobal (sin meses) → aplica a los 12 meses.
+                if ($mesesLlenos === 0 && $global !== null && $global > 0) {
+                    $g = round($global, 4);
+                    for ($m = 0; $m < 12; $m++) {
+                        $mesesVals[$m] = $g;
                     }
                 }
-                $precioRaw = $map['precio'] !== null ? ($row[$map['precio']] ?? null) : null;
-                $precio = $this->celdaNumeroPrecio($precioRaw);
-                if ($precio === null) {
-                    $omitidos++;
-                    continue;
-                }
-                if ($precio < 0) {
-                    $errores[] = ['fila' => $fila, 'mensaje' => 'Precio inválido'];
-                    continue;
-                }
 
-                $key = $empresa.'|'.$card.'|'.$codigo.'|'.$mes;
+                $key = $empresa.'|'.$card.'|'.$codigo;
+                if (isset($vistos[$key])) {
+                    $duplicados++;
+                }
                 $vistos[$key] = [
-                    'modo' => 'legado',
+                    'modo' => 'ancho',
                     'empresa' => $empresa,
                     'card_code' => $card,
                     'card_name' => $cardName,
                     'codigo' => $codigo,
                     'nombre' => $nombre !== '' ? $nombre : $codigo,
                     'moneda' => $moneda,
-                    'mes' => $mes,
-                    'precio' => round($precio, 4),
+                    'meses' => $mesesVals,
+                    'global' => ($global !== null && $global > 0) ? round($global, 4) : null,
                     'fila' => $fila,
                 ];
+                continue;
             }
 
-            foreach ($vistos as $hit) {
-                if (($hit['modo'] ?? '') === 'ancho') {
-                    $mesesHit = is_array($hit['meses'] ?? null) ? $hit['meses'] : array_fill(0, 12, null);
-                    $globalExplicit = $hit['global'] ?? null;
-                    $freq = [];
-                    foreach ($mesesHit as $idx0 => $pMes) {
-                        if ($pMes === null || ! ((float) $pMes > 0)) {
-                            continue;
-                        }
-                        $mesNum = ((int) $idx0) + 1;
-                        $keyP = number_format((float) $pMes, 4, '.', '');
-                        $freq[$keyP] = ($freq[$keyP] ?? 0) + 1;
-                        $this->upsertPrecioExcelFila(
-                            $hit['empresa'],
-                            $hit['card_code'],
-                            $hit['card_name'],
-                            $hit['codigo'],
-                            $hit['nombre'],
-                            $hit['moneda'],
-                            $mesNum,
-                            (float) $pMes,
-                            $anio,
-                            $userId,
-                            $hasAnio,
-                            $hasCard,
-                            $hasCardName,
-                            $hasMes,
-                            $creados,
-                            $actualizados
-                        );
-                    }
-                    $global = $globalExplicit;
-                    if ($global === null && $freq) {
-                        arsort($freq);
-                        $global = round((float) array_key_first($freq), 4);
-                    }
-                    if ($global !== null && $global > 0) {
-                        $this->upsertPrecioExcelFila(
-                            $hit['empresa'],
-                            $hit['card_code'],
-                            $hit['card_name'],
-                            $hit['codigo'],
-                            $hit['nombre'],
-                            $hit['moneda'],
-                            0,
-                            (float) $global,
-                            $anio,
-                            $userId,
-                            $hasAnio,
-                            $hasCard,
-                            $hasCardName,
-                            $hasMes,
-                            $creados,
-                            $actualizados
-                        );
-                        $propagadasTot += $this->propagarCostoACiclosAbiertos(
-                            $hit['empresa'],
-                            $hit['codigo'],
-                            (float) $global
-                        );
-                    }
+            $mesRaw = $map['mes'] !== null ? ($row[$map['mes']] ?? null) : null;
+            $mes = 0;
+            if ($mesRaw !== null && $mesRaw !== '') {
+                $mes = (int) $mesRaw;
+                if ($mes < 0 || $mes > 12) {
+                    $mes = 0;
+                }
+            }
+            $precioRaw = $map['precio'] !== null ? ($row[$map['precio']] ?? null) : null;
+            $precio = $this->celdaNumeroPrecio($precioRaw);
+            if ($precio === null) {
+                $omitidosSinPrecio++;
+                continue;
+            }
+            if ($precio < 0) {
+                $errores[] = ['fila' => $fila, 'mensaje' => 'Precio inválido'];
+                continue;
+            }
+
+            $key = $empresa.'|'.$card.'|'.$codigo.'|'.$mes;
+            if (isset($vistos[$key])) {
+                $duplicados++;
+            }
+            $vistos[$key] = [
+                'modo' => 'legado',
+                'empresa' => $empresa,
+                'card_code' => $card,
+                'card_name' => $cardName,
+                'codigo' => $codigo,
+                'nombre' => $nombre !== '' ? $nombre : $codigo,
+                'moneda' => $moneda,
+                'mes' => $mes,
+                'precio' => round($precio, 4),
+                'fila' => $fila,
+            ];
+        }
+
+        $omitidos = $omitidosVacias + $omitidosSinPrecio;
+
+        return [
+            'vistos' => $vistos,
+            'omitidos' => $omitidos,
+            'omitidos_vacias' => $omitidosVacias,
+            'omitidos_sin_precio' => $omitidosSinPrecio,
+            'duplicados' => $duplicados,
+            'filas_excel' => $filasExcel,
+            'filas_datos' => $filasDatos,
+            'errores' => $errores,
+        ];
+    }
+
+    /**
+     * Aplica un producto parseado del Excel (solo escribe si hay cambio real).
+     *
+     * @param  array<string, mixed>  $hit
+     * @return array{creados: int, actualizados: int, sin_cambios: int, propagadas: int}
+     */
+    protected function aplicarHitPrecioExcel(
+        array $hit,
+        int $anio,
+        $userId,
+        bool $hasAnio,
+        bool $hasCard,
+        bool $hasCardName,
+        bool $hasMes
+    ): array {
+        $creados = 0;
+        $actualizados = 0;
+        $sinCambios = 0;
+        $propagadas = 0;
+
+        if (($hit['modo'] ?? '') === 'ancho') {
+            $mesesHit = is_array($hit['meses'] ?? null) ? $hit['meses'] : array_fill(0, 12, null);
+            $globalExplicit = $hit['global'] ?? null;
+            $freq = [];
+            $huboCambioGlobal = false;
+            foreach ($mesesHit as $idx0 => $pMes) {
+                if ($pMes === null || ! ((float) $pMes > 0)) {
                     continue;
                 }
-
-                $this->upsertPrecioExcelFila(
+                $mesNum = ((int) $idx0) + 1;
+                $keyP = number_format((float) $pMes, 4, '.', '');
+                $freq[$keyP] = ($freq[$keyP] ?? 0) + 1;
+                $res = $this->upsertPrecioExcelFila(
                     $hit['empresa'],
                     $hit['card_code'],
-                    $hit['card_name'] ?? '',
+                    $hit['card_name'],
                     $hit['codigo'],
-                    $hit['nombre'] ?? $hit['codigo'],
-                    $hit['moneda'] ?? 'MXN',
-                    (int) ($hit['mes'] ?? 0),
-                    (float) $hit['precio'],
+                    $hit['nombre'],
+                    $hit['moneda'],
+                    $mesNum,
+                    (float) $pMes,
                     $anio,
                     $userId,
                     $hasAnio,
                     $hasCard,
                     $hasCardName,
-                    $hasMes,
-                    $creados,
-                    $actualizados
+                    $hasMes
                 );
-                if ((int) ($hit['mes'] ?? 0) === 0) {
-                    $propagadasTot += $this->propagarCostoACiclosAbiertos(
+                if ($res === 'created') {
+                    $creados++;
+                } elseif ($res === 'updated') {
+                    $actualizados++;
+                } else {
+                    $sinCambios++;
+                }
+            }
+            $global = $globalExplicit;
+            if ($global === null && $freq) {
+                arsort($freq);
+                $global = round((float) array_key_first($freq), 4);
+            }
+            if ($global !== null && $global > 0) {
+                $resG = $this->upsertPrecioExcelFila(
+                    $hit['empresa'],
+                    $hit['card_code'],
+                    $hit['card_name'],
+                    $hit['codigo'],
+                    $hit['nombre'],
+                    $hit['moneda'],
+                    0,
+                    (float) $global,
+                    $anio,
+                    $userId,
+                    $hasAnio,
+                    $hasCard,
+                    $hasCardName,
+                    $hasMes
+                );
+                if ($resG === 'created') {
+                    $creados++;
+                    $huboCambioGlobal = true;
+                } elseif ($resG === 'updated') {
+                    $actualizados++;
+                    $huboCambioGlobal = true;
+                } else {
+                    $sinCambios++;
+                }
+                // Solo propaga a ciclos abiertos si el global cambió.
+                if ($huboCambioGlobal) {
+                    $propagadas += $this->propagarCostoACiclosAbiertos(
                         $hit['empresa'],
                         $hit['codigo'],
-                        (float) $hit['precio']
+                        (float) $global
                     );
                 }
             }
-        });
 
-        $total = $actualizados + $creados;
+            return [
+                'creados' => $creados,
+                'actualizados' => $actualizados,
+                'sin_cambios' => $sinCambios,
+                'propagadas' => $propagadas,
+            ];
+        }
 
-        return response()->json([
-            'ok' => true,
-            'actualizados' => $actualizados,
+        $res = $this->upsertPrecioExcelFila(
+            $hit['empresa'],
+            $hit['card_code'],
+            $hit['card_name'] ?? '',
+            $hit['codigo'],
+            $hit['nombre'] ?? $hit['codigo'],
+            $hit['moneda'] ?? 'MXN',
+            (int) ($hit['mes'] ?? 0),
+            (float) $hit['precio'],
+            $anio,
+            $userId,
+            $hasAnio,
+            $hasCard,
+            $hasCardName,
+            $hasMes
+        );
+        if ($res === 'created') {
+            $creados++;
+        } elseif ($res === 'updated') {
+            $actualizados++;
+        } else {
+            $sinCambios++;
+        }
+        if ((int) ($hit['mes'] ?? 0) === 0 && ($res === 'created' || $res === 'updated')) {
+            $propagadas += $this->propagarCostoACiclosAbiertos(
+                $hit['empresa'],
+                $hit['codigo'],
+                (float) $hit['precio']
+            );
+        }
+
+        return [
             'creados' => $creados,
-            'omitidos' => $omitidos,
-            'proyecciones_actualizadas' => $propagadasTot,
-            'errores' => $errores,
-            'message' => $total > 0
-                ? ('Se aplicaron '.$total.' precio(s) desde Excel'
-                    .($actualizados ? (' · '.$actualizados.' actualizado(s)') : '')
-                    .($creados ? (' · '.$creados.' nuevo(s)') : '')
-                    .($propagadasTot ? (' · '.$propagadasTot.' proyección(es) abiertas') : '')
-                    .'.')
-                : 'No se encontró ninguna fila con precio para aplicar.',
-        ]);
+            'actualizados' => $actualizados,
+            'sin_cambios' => $sinCambios,
+            'propagadas' => $propagadas,
+        ];
     }
 
     /**
      * Upsert de una fila de precio (mes 0 = global, 1–12 = mes) desde Excel.
+     * Solo escribe si el precio/moneda (u otros campos relevantes) cambiaron.
+     *
+     * @return 'created'|'updated'|'unchanged'
      */
     protected function upsertPrecioExcelFila(
         string $empresa,
@@ -2906,10 +3240,8 @@ class ProyeccionesVentasController extends Controller
         bool $hasAnio,
         bool $hasCard,
         bool $hasCardName,
-        bool $hasMes,
-        int &$creados,
-        int &$actualizados
-    ): void {
+        bool $hasMes
+    ): string {
         $lookup = [
             'empresa' => $empresa,
             'producto_codigo' => $codigo,
@@ -2925,8 +3257,31 @@ class ProyeccionesVentasController extends Controller
         }
         $row = PvProductoCosto::query()->firstOrNew($lookup);
         $esNuevo = ! $row->exists;
-        $precioAnterior = $esNuevo ? null : (float) $row->costo_unitario;
-        $monedaAnterior = $esNuevo ? null : (string) ($row->moneda ?: 'MXN');
+        $precio = round($precio, 4);
+        $moneda = $moneda !== '' ? strtoupper($moneda) : 'MXN';
+        if (! in_array($moneda, ['MXN', 'USD'], true)) {
+            $moneda = 'MXN';
+        }
+
+        $precioAnterior = $esNuevo ? null : round((float) $row->costo_unitario, 4);
+        $monedaAnterior = $esNuevo ? null : strtoupper((string) ($row->moneda ?: 'MXN'));
+        $nombreNuevo = $nombre !== '' ? $nombre : ($esNuevo ? $codigo : (string) $row->producto_nombre);
+        $cardNameNuevo = $cardName;
+
+        $mismoPrecio = ! $esNuevo
+            && $precioAnterior !== null
+            && $precioAnterior === $precio
+            && $monedaAnterior === $moneda;
+
+        $mismoNombre = ! $esNuevo && (string) $row->producto_nombre === (string) $nombreNuevo;
+        $mismoCardName = ! $hasCardName
+            || $cardNameNuevo === ''
+            || (! $esNuevo && (string) ($row->card_name ?? '') === (string) $cardNameNuevo);
+
+        if ($mismoPrecio && $mismoNombre && $mismoCardName) {
+            return 'unchanged';
+        }
+
         if ($nombre !== '') {
             $row->producto_nombre = $nombre;
         } elseif ($esNuevo) {
@@ -2945,29 +3300,30 @@ class ProyeccionesVentasController extends Controller
             $row->mes = $mes;
         }
         $row->costo_unitario = $precio;
-        $row->moneda = $moneda !== '' ? $moneda : 'MXN';
+        $row->moneda = $moneda;
         $row->updated_by = $userId;
         $row->save();
-        $this->registrarHistorialPrecio(
-            $empresa,
-            $codigo,
-            (string) $row->producto_nombre,
-            $precioAnterior,
-            $monedaAnterior,
-            (float) $row->costo_unitario,
-            (string) ($row->moneda ?: 'MXN'),
-            'excel',
-            $userId,
-            $cardCode,
-            $cardName,
-            $mes,
-            $anio
-        );
-        if ($esNuevo) {
-            $creados++;
-        } else {
-            $actualizados++;
+
+        // Historial solo si cambió precio/moneda (no por renombre).
+        if ($esNuevo || ! $mismoPrecio) {
+            $this->registrarHistorialPrecio(
+                $empresa,
+                $codigo,
+                (string) $row->producto_nombre,
+                $precioAnterior,
+                $monedaAnterior,
+                (float) $row->costo_unitario,
+                (string) ($row->moneda ?: 'MXN'),
+                'excel',
+                $userId,
+                $cardCode,
+                $cardName,
+                $mes,
+                $anio
+            );
         }
+
+        return $esNuevo ? 'created' : 'updated';
     }
 
     /**

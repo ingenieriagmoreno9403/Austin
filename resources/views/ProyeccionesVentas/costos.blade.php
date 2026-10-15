@@ -287,12 +287,36 @@
                 </div>
                 <label class="form-label">Subir Excel editado</label>
                 <input type="file" class="form-control" id="pv-precios-archivo" accept=".xlsx,.xls,.csv">
+                <div class="mb-2 mt-3" id="pv-precios-progress-wrap" style="display:none">
+                    <div class="d-flex justify-content-between" style="font-size:.78rem;margin-bottom:.35rem">
+                        <span id="pv-precios-progress-label">—</span>
+                        <span id="pv-precios-progress-pct">0%</span>
+                    </div>
+                    <div style="height:.55rem;background:#e5e7eb;border-radius:999px;overflow:hidden">
+                        <div id="pv-precios-progress-bar" style="height:100%;width:0%;background:#0a0a0a;transition:width .2s ease"></div>
+                    </div>
+                    <div class="text-muted mt-2" style="font-size:.75rem" id="pv-precios-progress-detail"></div>
+                </div>
+                <div class="alert alert-warning py-2 px-3 mb-0 mt-2" id="pv-precios-resume-box" style="display:none;font-size:.82rem">
+                    <div id="pv-precios-resume-msg"></div>
+                    <div class="d-flex flex-wrap gap-2 mt-2">
+                        <button type="button" class="cc-btn cc-btn-sm cc-btn-ink" id="pv-precios-reanudar">
+                            <i class="fa-solid fa-play"></i> Continuar desde aquí
+                        </button>
+                        <button type="button" class="cc-btn cc-btn-sm" id="pv-precios-saltar">
+                            Saltar fila y continuar
+                        </button>
+                    </div>
+                </div>
                 <div class="text-muted mt-2" style="font-size:.78rem" id="pv-precios-excel-hint">
-                    Se actualiza por Empresa + CardCode + ItemCode; meses en columnas Ene–Dic.
+                    Solo se escriben filas con cambios. Por lotes (barra de progreso); si hay timeout o error puedes reanudar.
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cerrar</button>
+                <button type="button" class="cc-btn" data-bs-dismiss="modal" id="pv-precios-cerrar">Cerrar</button>
+                <button type="button" class="cc-btn" id="pv-precios-cancelar" style="display:none">
+                    Pausar
+                </button>
                 <button type="button" class="cc-btn cc-btn-ink" id="pv-precios-subir">
                     <i class="fa-solid fa-upload"></i> Subir y actualizar
                 </button>

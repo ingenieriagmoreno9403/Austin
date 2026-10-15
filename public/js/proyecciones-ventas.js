@@ -12039,54 +12039,435 @@
         var upBtn = document.getElementById('pv-precios-subir');
         var fileEl = document.getElementById('pv-precios-archivo');
         var excelHint = document.getElementById('pv-precios-excel-hint');
+        var excelProgWrap = document.getElementById('pv-precios-progress-wrap');
+        var excelProgLabel = document.getElementById('pv-precios-progress-label');
+        var excelProgPct = document.getElementById('pv-precios-progress-pct');
+        var excelProgBar = document.getElementById('pv-precios-progress-bar');
+        var excelProgDetail = document.getElementById('pv-precios-progress-detail');
+        var excelResumeBox = document.getElementById('pv-precios-resume-box');
+        var excelResumeMsg = document.getElementById('pv-precios-resume-msg');
+        var excelReanudarBtn = document.getElementById('pv-precios-reanudar');
+        var excelSaltarBtn = document.getElementById('pv-precios-saltar');
+        var excelCancelarBtn = document.getElementById('pv-precios-cancelar');
+        var excelImportBusy = false;
+        var excelImportAbort = false;
+        var excelImportState = null;
+        var excelBatchLimit = 30;
+
+        function setExcelProgress(done, total, extra) {
+            var pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            if (excelProgWrap) excelProgWrap.style.display = '';
+            if (excelProgLabel) {
+                excelProgLabel.textContent = total > 0
+                    ? ('Producto único ' + done + ' / ' + total)
+                    : 'Preparando…';
+            }
+            if (excelProgPct) excelProgPct.textContent = pct + '%';
+            if (excelProgBar) excelProgBar.style.width = pct + '%';
+            if (excelProgDetail) excelProgDetail.textContent = extra || '';
+        }
+
+        function hideExcelResume() {
+            if (excelResumeBox) excelResumeBox.style.display = 'none';
+            if (excelResumeMsg) excelResumeMsg.textContent = '';
+        }
+
+        function showExcelResume(msg, state) {
+            excelImportState = state;
+            if (excelResumeBox) excelResumeBox.style.display = '';
+            if (excelResumeMsg) excelResumeMsg.textContent = msg || '';
+            if (excelCancelarBtn) excelCancelarBtn.style.display = 'none';
+            if (upBtn) upBtn.disabled = false;
+            if (fileEl) fileEl.disabled = false;
+        }
+
+        function resetExcelImportUi() {
+            excelImportBusy = false;
+            excelImportAbort = false;
+            if (upBtn) {
+                upBtn.disabled = false;
+                upBtn.innerHTML = '<i class="fa-solid fa-upload"></i> Subir y actualizar';
+            }
+            if (fileEl) fileEl.disabled = false;
+            if (excelCancelarBtn) excelCancelarBtn.style.display = 'none';
+            if (excelHint) {
+                excelHint.textContent = 'Solo se escriben filas con cambios. Por lotes (barra de progreso); si hay timeout o error puedes reanudar.';
+            }
+        }
+
+        function parseExcelImportResp(r) {
+            return r.text().then(function (txt) {
+                var json = null;
+                try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                var timedOut = r.status === 504 || r.status === 502
+                    || /maximum execution|timeout|Gateway/i.test(txt || '');
+                if (!r.ok) {
+                    var err = new Error((json && json.message) || ('HTTP ' + r.status));
+                    err.status = r.status;
+                    err.json = json;
+                    err.timedOut = timedOut;
+                    err.reanudable = !!(json && json.reanudable);
+                    throw err;
+                }
+                return json || {};
+            });
+        }
+
+        function acumularExcelStats(acc, json) {
+            acc.actualizados += Number(json.actualizados) || 0;
+            acc.creados += Number(json.creados) || 0;
+            acc.sin_cambios += Number(json.sin_cambios) || 0;
+            acc.omitidos = Number(json.omitidos) || acc.omitidos;
+            acc.proyecciones += Number(json.proyecciones_actualizadas) || 0;
+            if (json.resumen_parse && typeof json.resumen_parse === 'object') {
+                acc.resumen_parse = json.resumen_parse;
+            }
+            if (json.errores && json.errores.length) {
+                acc.errores = acc.errores.concat(json.errores);
+            }
+            return acc;
+        }
+
+        function textoResumenParse(rp) {
+            if (!rp) return '';
+            var parts = [];
+            if (rp.filas_datos) parts.push(rp.filas_datos + ' filas Excel');
+            if (rp.productos) parts.push(rp.productos + ' únicos');
+            if (rp.duplicados) parts.push(rp.duplicados + ' duplicados');
+            if (rp.omitidos_sin_precio) parts.push(rp.omitidos_sin_precio + ' sin precio');
+            if (rp.omitidos_vacias) parts.push(rp.omitidos_vacias + ' vacías');
+            if (rp.errores_parse) parts.push(rp.errores_parse + ' con error');
+            return parts.length ? parts.join(' · ') : '';
+        }
+
+        function resumenExcelStats(acc) {
+            var base = (acc.actualizados + acc.creados) + ' aplicados'
+                + (acc.actualizados ? (' · ' + acc.actualizados + ' act.') : '')
+                + (acc.creados ? (' · ' + acc.creados + ' nuevos') : '')
+                + (acc.sin_cambios ? (' · ' + acc.sin_cambios + ' sin cambios') : '')
+                + (acc.proyecciones ? (' · ' + acc.proyecciones + ' proy.') : '')
+                + (acc.errores.length ? (' · ' + acc.errores.length + ' avisos') : '');
+            var parseTxt = textoResumenParse(acc.resumen_parse);
+            return parseTxt ? (base + ' | ' + parseTxt) : base;
+        }
+
+        function postExcelLote(opts) {
+            var importUrl = CC.state.costosImportExcelUrl || (url + '/importar-excel');
+            var fd = new FormData();
+            fd.append('anio', String(costosAnio()));
+            fd.append('offset', String(opts.offset || 0));
+            fd.append('limit', String(opts.limit || excelBatchLimit));
+            if (opts.token) {
+                fd.append('token', opts.token);
+            } else if (opts.file) {
+                fd.append('archivo', opts.file);
+            }
+            return fetch(importUrl, {
+                method: 'POST',
+                headers: {
+                    Accept: 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrfToken()
+                },
+                body: fd
+            }).then(parseExcelImportResp);
+        }
+
+        function correrImportExcel(startOpts) {
+            var acc = startOpts.acc || {
+                actualizados: 0,
+                creados: 0,
+                sin_cambios: 0,
+                omitidos: 0,
+                proyecciones: 0,
+                errores: []
+            };
+            var token = startOpts.token || null;
+            var offset = Number(startOpts.offset) || 0;
+            var file = startOpts.file || null;
+            var first = !token;
+            var timeoutRetries = 0;
+
+            function next() {
+                if (excelImportAbort) {
+                    return Promise.resolve({
+                        aborted: true,
+                        token: token,
+                        offset: offset,
+                        acc: acc
+                    });
+                }
+                setExcelProgress(offset, startOpts.totalHint || offset || 1,
+                    first ? 'Leyendo Excel y aplicando primer lote…' : resumenExcelStats(acc));
+                if (excelHint) {
+                    excelHint.textContent = first
+                        ? 'Subiendo archivo y parseando…'
+                        : ('Aplicando lote desde ' + offset + '…');
+                }
+
+                return postExcelLote({
+                    file: first ? file : null,
+                    token: token,
+                    offset: offset,
+                    limit: excelBatchLimit
+                }).then(function (json) {
+                    first = false;
+                    timeoutRetries = 0;
+                    token = json.token || token;
+                    acumularExcelStats(acc, json);
+                    var total = Number(json.total) || 0;
+                    var nextOff = Number(json.next_offset);
+                    if (isNaN(nextOff)) nextOff = offset;
+                    offset = nextOff;
+                    startOpts.totalHint = total;
+                    setExcelProgress(offset, total || 1, resumenExcelStats(acc)
+                        + (json.ultima_fila_excel ? (' · última fila Excel: ' + json.ultima_fila_excel) : ''));
+
+                    if (json.done) {
+                        return { aborted: false, done: true, token: token, offset: offset, acc: acc, json: json };
+                    }
+                    return next();
+                }).catch(function (err) {
+                    var json = err && err.json ? err.json : null;
+                    // Timeout o gateway: reintenta el mismo offset (idempotente: sin cambios se omiten).
+                    if (err && err.timedOut && token && timeoutRetries < 3) {
+                        timeoutRetries++;
+                        if (excelHint) {
+                            excelHint.textContent = 'Timeout · reintento ' + timeoutRetries
+                                + '/3 desde producto ' + offset + '…';
+                        }
+                        return new Promise(function (resolve) { setTimeout(resolve, 800); }).then(next);
+                    }
+                    if (json) {
+                        acumularExcelStats(acc, json);
+                        token = json.token || token;
+                        var nextOff = Number(json.next_offset);
+                        if (!isNaN(nextOff)) offset = nextOff;
+                        var total = Number(json.total) || startOpts.totalHint || 0;
+                        setExcelProgress(offset, total || 1, resumenExcelStats(acc));
+                    }
+                    var fila = json && json.ultima_fila_excel
+                        ? json.ultima_fila_excel
+                        : null;
+                    var msg = (err && err.message) || 'Error al importar';
+                    if (fila) {
+                        msg = 'Detenido en fila Excel ' + fila + '. ' + msg;
+                    }
+                    msg += ' · Avance: ' + offset + (startOpts.totalHint ? ('/' + startOpts.totalHint) : '')
+                        + ' · ' + resumenExcelStats(acc);
+
+                    return {
+                        aborted: false,
+                        done: false,
+                        error: true,
+                        reanudable: !!(token && (err.reanudable || (json && json.reanudable) || token)),
+                        token: token,
+                        offset: offset,
+                        fila: fila,
+                        message: msg,
+                        acc: acc,
+                        json: json
+                    };
+                });
+            }
+
+            return next();
+        }
+
+        function htmlResumenImportExcel(acc, mensaje) {
+            var rp = acc.resumen_parse || {};
+            var aplicados = (acc.actualizados || 0) + (acc.creados || 0);
+            var rows = [
+                ['Actualizados', acc.actualizados || 0],
+                ['Nuevos', acc.creados || 0],
+                ['Sin cambios', acc.sin_cambios || 0],
+                ['Proyecciones', acc.proyecciones || 0]
+            ];
+            if (rp.filas_datos) rows.push(['Filas Excel', rp.filas_datos]);
+            if (rp.productos) rows.push(['Productos únicos', rp.productos]);
+            if (rp.duplicados) rows.push(['Duplicados consolidados', rp.duplicados]);
+            if (rp.omitidos_sin_precio) rows.push(['Sin precio', rp.omitidos_sin_precio]);
+            if (rp.omitidos_vacias) rows.push(['Vacías', rp.omitidos_vacias]);
+            if (acc.errores && acc.errores.length) rows.push(['Avisos', acc.errores.length]);
+
+            var table = '<table style="width:100%;border-collapse:collapse;font-size:1rem;margin-top:.75rem">'
+                + rows.map(function (r) {
+                    return '<tr>'
+                        + '<td style="padding:.4rem .2rem;color:#52525b;text-align:left">' + r[0] + '</td>'
+                        + '<td style="padding:.4rem .2rem;font-weight:700;text-align:right;font-size:1.15rem">' + r[1] + '</td>'
+                        + '</tr>';
+                }).join('')
+                + '</table>';
+
+            return '<div style="text-align:left">'
+                + '<p style="margin:0;font-size:1.15rem;line-height:1.45">'
+                + escapeHtml(mensaje || ('Se aplicaron ' + aplicados + ' precio(s).'))
+                + '</p>'
+                + table
+                + '</div>';
+        }
+
+        function mostrarExitoImportExcel(titulo, acc, mensaje) {
+            var html = htmlResumenImportExcel(acc, mensaje);
+            if (window.Swal) {
+                return Swal.fire({
+                    icon: 'success',
+                    title: titulo || 'Excel aplicado',
+                    html: html,
+                    width: '36rem',
+                    confirmButtonText: 'Entendido',
+                    confirmButtonColor: '#0a0a0a'
+                });
+            }
+            window.alert((titulo || 'Excel aplicado') + '\n\n' + (mensaje || resumenExcelStats(acc)));
+            return Promise.resolve();
+        }
+
+        function finalizarImportExcelOk(res) {
+            var acc = res.acc || {};
+            var extra = resumenExcelStats(acc);
+            var msgServer = (res.json && res.json.message) || extra;
+            hideExcelResume();
+            if (!res.aborted) {
+                if (fileEl) fileEl.value = '';
+                excelImportState = null;
+                var modal = document.getElementById('modalPvPreciosExcel');
+                if (modal && window.bootstrap && bootstrap.Modal) {
+                    var inst = bootstrap.Modal.getInstance(modal);
+                    if (inst) inst.hide();
+                }
+                mostrarExitoImportExcel('Importación completada', acc, msgServer);
+            } else if (res.token) {
+                showExcelResume(
+                    'Pausado en producto ' + (res.offset || 0) + '. ' + extra + '. Puedes continuar.',
+                    { token: res.token, offset: res.offset || 0, acc: acc }
+                );
+            }
+            if ((acc.actualizados || 0) + (acc.creados || 0) > 0) {
+                load();
+            }
+        }
+
         if (upBtn && fileEl) {
             upBtn.addEventListener('click', function () {
+                if (excelImportBusy) return;
                 var file = fileEl.files && fileEl.files[0];
                 if (!file) {
                     toast('warning', 'Falta archivo', 'Selecciona el Excel editado.');
                     return;
                 }
-                var importUrl = CC.state.costosImportExcelUrl || (url + '/importar-excel');
-                var fd = new FormData();
-                fd.append('archivo', file);
-                fd.append('anio', String(costosAnio()));
+                excelImportBusy = true;
+                excelImportAbort = false;
+                excelImportState = null;
+                hideExcelResume();
                 upBtn.disabled = true;
-                if (excelHint) excelHint.textContent = 'Subiendo y actualizando…';
-                fetch(importUrl, {
-                    method: 'POST',
-                    headers: {
-                        Accept: 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'X-CSRF-TOKEN': csrfToken()
-                    },
-                    body: fd
-                }).then(function (r) {
-                    return r.json().then(function (json) {
-                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo importar');
-                        return json;
+                fileEl.disabled = true;
+                upBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Importando…';
+                if (excelCancelarBtn) excelCancelarBtn.style.display = '';
+                setExcelProgress(0, 1, 'Subiendo archivo…');
+
+                correrImportExcel({ file: file, offset: 0 })
+                    .then(function (res) {
+                        if (res.error) {
+                            toast('error', 'Importación detenida', res.message || 'Error');
+                            if (res.reanudable && res.token) {
+                                showExcelResume(res.message, {
+                                    token: res.token,
+                                    offset: res.offset || 0,
+                                    acc: res.acc,
+                                    fila: res.fila
+                                });
+                                if ((res.acc.actualizados || 0) + (res.acc.creados || 0) > 0) {
+                                    load();
+                                }
+                            } else if (excelHint) {
+                                excelHint.textContent = res.message || 'Error al importar.';
+                            }
+                            return;
+                        }
+                        finalizarImportExcelOk(res);
+                    })
+                    .catch(function (err) {
+                        toast('error', 'No se importó', err && err.message ? err.message : 'Error');
+                        if (excelHint) {
+                            excelHint.textContent = 'Error al importar. Revisa columnas Empresa, ItemCode y Precio.';
+                        }
+                    })
+                    .then(function () {
+                        resetExcelImportUi();
+                        if (excelImportState && excelResumeBox && excelResumeBox.style.display !== 'none') {
+                            // Deja botones de reanudar activos.
+                            if (excelCancelarBtn) excelCancelarBtn.style.display = 'none';
+                        }
                     });
-                }).then(function (json) {
-                    var extra = '';
-                    if (json.errores && json.errores.length) {
-                        extra = ' · ' + json.errores.length + ' fila(s) con aviso';
+            });
+        }
+
+        if (excelCancelarBtn) {
+            excelCancelarBtn.addEventListener('click', function () {
+                if (excelImportBusy) excelImportAbort = true;
+            });
+        }
+
+        function reanudarExcelDesde(skipOne) {
+            if (excelImportBusy || !excelImportState || !excelImportState.token) {
+                toast('warning', 'Nada que reanudar', 'Sube el archivo de nuevo o inicia una importación.');
+                return;
+            }
+            var st = excelImportState;
+            var off = Number(st.offset) || 0;
+            if (skipOne) off += 1;
+            excelImportBusy = true;
+            excelImportAbort = false;
+            hideExcelResume();
+            if (upBtn) {
+                upBtn.disabled = true;
+                upBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Continuando…';
+            }
+            if (fileEl) fileEl.disabled = true;
+            if (excelCancelarBtn) excelCancelarBtn.style.display = '';
+            setExcelProgress(off, off + 1, 'Reanudando…');
+
+            correrImportExcel({
+                token: st.token,
+                offset: off,
+                acc: st.acc || {
+                    actualizados: 0, creados: 0, sin_cambios: 0,
+                    omitidos: 0, proyecciones: 0, errores: []
+                },
+                totalHint: st.total || off
+            }).then(function (res) {
+                if (res.error) {
+                    toast('error', 'Importación detenida', res.message || 'Error');
+                    if (res.reanudable && res.token) {
+                        showExcelResume(res.message, {
+                            token: res.token,
+                            offset: res.offset || 0,
+                            acc: res.acc,
+                            fila: res.fila
+                        });
+                        if ((res.acc.actualizados || 0) + (res.acc.creados || 0) > 0) {
+                            load();
+                        }
                     }
-                    toast('success', 'Excel aplicado', (json.message || 'Precios actualizados.') + extra);
-                    fileEl.value = '';
-                    if (excelHint) {
-                        excelHint.textContent = 'Se actualiza por Empresa + ItemCode y se propaga a ciclos abiertos.';
-                    }
-                    var modal = document.getElementById('modalPvPreciosExcel');
-                    if (modal && window.bootstrap && bootstrap.Modal) {
-                        var inst = bootstrap.Modal.getInstance(modal);
-                        if (inst) inst.hide();
-                    }
-                    load();
-                }).catch(function (err) {
-                    toast('error', 'No se importó', err && err.message ? err.message : 'Error');
-                    if (excelHint) excelHint.textContent = 'Error al importar. Revisa columnas Empresa, ItemCode y Precio.';
-                }).then(function () {
-                    upBtn.disabled = false;
-                });
+                    return;
+                }
+                finalizarImportExcelOk(res);
+            }).catch(function (err) {
+                toast('error', 'No se pudo continuar', err && err.message ? err.message : 'Error');
+            }).then(function () {
+                resetExcelImportUi();
+            });
+        }
+
+        if (excelReanudarBtn) {
+            excelReanudarBtn.addEventListener('click', function () {
+                reanudarExcelDesde(false);
+            });
+        }
+        if (excelSaltarBtn) {
+            excelSaltarBtn.addEventListener('click', function () {
+                reanudarExcelDesde(true);
             });
         }
 
