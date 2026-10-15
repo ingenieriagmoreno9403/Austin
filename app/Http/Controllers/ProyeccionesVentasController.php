@@ -226,7 +226,7 @@ class ProyeccionesVentasController extends Controller
                 'solo_asignados' => $soloAsignados,
                 'empresas_permitidas' => [],
                 'mensaje' => $soloAsignados
-                    ? 'No hay productos asignados a usuarios en este año de proyección.'
+                    ? 'No hay productos asignados con cantidad registrada en este año de proyección.'
                     : 'No tienes clientes asignados en este año de proyección.',
             ]);
         }
@@ -516,6 +516,11 @@ class ProyeccionesVentasController extends Controller
             $items = $this->agruparCostosPorProductoCliente($items);
         }
 
+        // Solo asignados: además ocultar productos sin cantidad capturada (todos los meses en 0).
+        if ($soloAsignados) {
+            $items = $this->filtrarItemsCostosConCantidadRegistrada($items, $anio);
+        }
+
         $total = count($items);
         $lastPage = max(1, (int) ceil($total / $perPage));
         if ($page > $lastPage) {
@@ -546,6 +551,7 @@ class ProyeccionesVentasController extends Controller
 
     /**
      * Botón «Solo asignados» en /Ventas/Costos: Master, Rene Vizcaino, Luis Betancourt.
+     * Esos usuarios ven el maestro completo; el botón filtra a asignados con cantidad > 0.
      */
     protected function puedeFiltrarSoloAsignadosCostos(): bool
     {
@@ -567,8 +573,77 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * Triples Empresa|CardCode|ItemCode con cantidad proyectada > 0 en el año.
+     *
+     * @return array<string, true>
+     */
+    protected function triplesConCantidadRegistrada(int $anio): array
+    {
+        if (! Schema::hasTable('tbl_pv_proyecciones')) {
+            return [];
+        }
+        $sumParts = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            if (Schema::hasColumn('tbl_pv_proyecciones', $col)) {
+                $sumParts[] = 'COALESCE(p.'.$col.',0)';
+            }
+        }
+        if ($sumParts === []) {
+            return [];
+        }
+        $sumExpr = implode('+', $sumParts);
+
+        $q = DB::table('tbl_pv_proyecciones as p')
+            ->select('p.empresa', 'p.cliente_codigo', 'p.producto_codigo')
+            ->selectRaw('SUM('.$sumExpr.') as tot_qty')
+            ->groupBy('p.empresa', 'p.cliente_codigo', 'p.producto_codigo')
+            ->havingRaw('SUM('.$sumExpr.') > 0');
+        if (Schema::hasTable('tbl_pv_ciclos')) {
+            $q->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(p.ciclo_codigo)'))
+                ->where('c.anio_presupuesto', $anio);
+        }
+
+        $out = [];
+        foreach ($q->get() as $row) {
+            $emp = strtoupper(trim((string) ($row->empresa ?? '')));
+            $card = trim((string) ($row->cliente_codigo ?? ''));
+            $cod = trim((string) ($row->producto_codigo ?? ''));
+            if ($emp === '' || $card === '' || $cod === '') {
+                continue;
+            }
+            $out[$emp.'|'.$card.'|'.$cod] = true;
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $items
+     * @return array<int, array<string, mixed>>
+     */
+    protected function filtrarItemsCostosConCantidadRegistrada(array $items, int $anio): array
+    {
+        $conQty = $this->triplesConCantidadRegistrada($anio);
+        if ($conQty === []) {
+            return [];
+        }
+
+        return array_values(array_filter($items, function ($it) use ($conQty) {
+            $emp = strtoupper(trim((string) ($it['empresa'] ?? '')));
+            $card = trim((string) ($it['card_code'] ?? ''));
+            $cod = trim((string) ($it['producto_codigo'] ?? ''));
+            if ($emp === '' || $card === '' || $cod === '') {
+                return false;
+            }
+
+            return isset($conQty[$emp.'|'.$card.'|'.$cod]);
+        }));
+    }
+
+    /**
      * Alcance de Costos según asignaciones del usuario en ciclos del año.
-     * null = ver todo (Master/Administrador). Array = restringido.
+     * null = ver todo (Master/Administrador / Rene / Luis). Array = restringido.
      *
      * @return array{empresas: array<string, true>, clientes: array<string, true>, triples: array<string, true>, productos_emp: array<string, true>}|null
      */
@@ -657,6 +732,10 @@ class ProyeccionesVentasController extends Controller
         $user = auth()->user();
         if (! $user) {
             return false;
+        }
+        // Master / Rene / Luis: ven todos los productos; el botón «Solo asignados» filtra.
+        if ($this->puedeFiltrarSoloAsignadosCostos()) {
+            return true;
         }
         // Acción puntual: Ver todo el maestro de precios (vista Precios).
         if ($this->forpermisos('ver_ventas_costos_todos') === 'ver_ventas_costos_todos') {

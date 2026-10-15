@@ -12,7 +12,8 @@
             <h1 class="cc-title">Precios de productos</h1>
             <p class="cc-sub">
                 Maestro local por <strong>año de proyección</strong>, <strong>Empresa</strong>, <strong>CardCode</strong> e <strong>ItemCode</strong>
-                (1 fila). Si no eres Master/Administrador, solo ves <strong>empresas, clientes y productos de tus asignaciones</strong>.
+                (1 fila). Master / Rene / Luis ven <strong>todos los productos</strong>; el resto solo sus asignaciones.
+                El botón <strong>Solo asignados</strong> deja productos asignados con <strong>cantidad capturada &gt; 0</strong>.
                 Los precios mensuales se editan en el modal; en BD siguen guardados por mes y año.
             </p>
         </div>
@@ -43,7 +44,7 @@
                 <i class="fa-solid fa-rotate"></i> Actualizar
             </button>
             <button type="button" class="cc-btn" id="pv-costos-solo-asignados" hidden
-                title="Mostrar solo productos asignados a usuarios (cualquier asignación del año)">
+                title="Solo productos asignados a usuarios y con cantidad registrada (oculta los de 0 en todos los meses)">
                 <i class="fa-solid fa-user-check"></i> Solo asignados
             </button>
             <button type="button" class="cc-btn" id="pv-costos-excel" title="Descargar o subir plantilla Excel (Formato Precios)">

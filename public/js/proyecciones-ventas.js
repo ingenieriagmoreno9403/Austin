@@ -1884,7 +1884,11 @@
                     return json;
                 });
             }).catch(function (err) {
-                toast('error', 'No se guardó la proyección', err && err.message ? err.message : 'Error de red');
+                // En lote (Completado / flush) el caller muestra un solo mensaje.
+                if (!CC._budgetSaveBatch) {
+                    toast('error', 'No se guardó la proyección', err && err.message ? err.message : 'Error de red');
+                }
+                return Promise.reject(err);
             });
         }
 
@@ -1896,27 +1900,54 @@
             delete CC._budgetSaveTimers[timerKey];
             var fn = CC._budgetSavePending[timerKey];
             delete CC._budgetSavePending[timerKey];
-            if (fn) fn();
+            if (fn) enqueueBudgetSave(fn);
         }, 350);
     }
 
-    /** Antes de cambiar de ciclo: manda a guardar lo pendiente al ciclo correcto. */
+    /**
+     * Cola serial de guardados: evita ráfagas de PUT que saturan MySQL/sesión
+     * (SQLSTATE 2002 Operation not permitted) y dejan toasts de éxito falsos.
+     */
+    function enqueueBudgetSave(fn) {
+        CC._budgetSaveChain = (CC._budgetSaveChain || Promise.resolve()).then(function () {
+            return Promise.resolve(fn()).catch(function () {
+                return null;
+            });
+        });
+        return CC._budgetSaveChain;
+    }
+
+    /** Antes de cambiar de ciclo: manda a guardar lo pendiente al ciclo correcto (en serie). */
     function flushPendingBudgetSaves() {
         var pending = CC._budgetSavePending || {};
         var timers = CC._budgetSaveTimers || {};
         var keys = Object.keys(pending);
-        var jobs = keys.map(function (k) {
+        var chain = CC._budgetSaveChain || Promise.resolve();
+        var results = [];
+        keys.forEach(function (k) {
             if (timers[k]) clearTimeout(timers[k]);
             delete timers[k];
             var fn = pending[k];
             delete pending[k];
-            try {
-                return fn ? Promise.resolve(fn()) : Promise.resolve();
-            } catch (e) {
-                return Promise.resolve();
-            }
+            if (!fn) return;
+            chain = chain.then(function () {
+                return Promise.resolve(fn()).then(
+                    function (r) {
+                        results.push({ ok: true, key: k, result: r });
+                    },
+                    function (err) {
+                        results.push({
+                            ok: false,
+                            key: k,
+                            error: err,
+                            message: (err && err.message) ? err.message : 'Error de red'
+                        });
+                    }
+                );
+            });
         });
-        return Promise.all(jobs);
+        CC._budgetSaveChain = chain.then(function () { return results; });
+        return CC._budgetSaveChain;
     }
 
     function cancelPendingBudgetSaves() {
@@ -6738,6 +6769,10 @@
             var qty = readQtyInput(inp.value);
             months[m] = qty === null ? (fillEmpty ? 0 : null) : qty;
         });
+        // Si no hay inputs en DOM (fila filtrada) o faltan meses, fillEmpty aún rellena.
+        if (fillEmpty) {
+            months = months.map(function (v) { return mesLleno(v) ? v : 0; });
+        }
         return months;
     }
 
@@ -7217,7 +7252,7 @@
         var completar = document.getElementById('ctl-completar');
         if (completar) completar.addEventListener('click', function () {
             var c = control.centro;
-            if (!c || control.locked) return;
+            if (!c || control.locked || CC._completandoCaptura) return;
             // Completado: todos los productos del cliente. Lo no capturado → 0 y se guarda.
             var list = (control._allCtas || cuentasEnriquecidas(c) || []).slice();
             if (!list.length) {
@@ -7226,16 +7261,37 @@
             }
             var pendientes = list.filter(ctaPendiente);
             var run = function () {
+                CC._completandoCaptura = true;
+                CC._budgetSaveBatch = true;
+                completar.disabled = true;
                 list.forEach(function (cta) {
                     var months = monthsFromGrid(cta, true); // vacíos → 0
                     persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
                 });
-                flushPendingBudgetSaves().then(function () {
+                // UI inmediata con ceros; el servidor se confirma en serie abajo.
+                refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                flushPendingBudgetSaves().then(function (results) {
+                    var failed = (results || []).filter(function (r) { return !r.ok; });
                     refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                    if (failed.length) {
+                        var detail = (failed[0] && failed[0].message) || 'Error de red';
+                        toast('error', 'No se guardó completo',
+                            failed.length === 1
+                                ? detail
+                                : (failed.length + ' producto(s) fallaron. ' + detail + ' Vuelve a pulsar Completado.'));
+                        return;
+                    }
                     toast('success', 'Completado',
                         list.length === 1
                             ? 'Los meses vacíos quedaron en 0 y se guardaron'
                             : ('Se completaron ' + list.length + ' productos: lo no capturado quedó en 0 y se guardó'));
+                }).catch(function (err) {
+                    toast('error', 'No se guardó completo', err && err.message ? err.message : 'Error de red');
+                }).then(function () {
+                    CC._budgetSaveBatch = false;
+                    CC._completandoCaptura = false;
+                    var btn = document.getElementById('ctl-completar');
+                    if (btn) btn.disabled = false;
                 });
             };
             if (list.length > 1 && window.Swal) {
@@ -10152,8 +10208,8 @@
             soloAsigBtn.classList.toggle('cc-btn-ink', !!soloAsignados);
             soloAsigBtn.setAttribute('aria-pressed', soloAsignados ? 'true' : 'false');
             soloAsigBtn.title = soloAsignados
-                ? 'Filtro activo: solo productos asignados a usuarios. Clic para ver el maestro completo.'
-                : 'Mostrar solo productos asignados a usuarios (cualquier asignación del año)';
+                ? 'Filtro activo: solo asignados con cantidad capturada (> 0). Clic para ver todos los productos.'
+                : 'Mostrar solo productos asignados a usuarios y con cantidad registrada (oculta meses en 0)';
         }
         paintSoloAsignadosBtn();
         if (soloAsigBtn && puedeSoloAsignados) {
@@ -10240,7 +10296,7 @@
             if (hint) {
                 var base = total + (total === 1 ? ' registro' : ' registros');
                 hint.textContent = soloAsignados
-                    ? (base + ' · solo asignados a usuarios')
+                    ? (base + ' · solo asignados con cantidad > 0')
                     : base;
             }
             if (pageInfo) {
