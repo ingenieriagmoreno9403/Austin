@@ -38,6 +38,42 @@
     .exp-progress-wrap .cc-progress {
         height: 10px;
     }
+    .exp-error {
+        display: none;
+        margin-top: 1rem;
+        padding: .9rem 1rem;
+        border: 1px solid #fecaca;
+        background: #fef2f2;
+        border-radius: 8px;
+        color: #7f1d1d;
+        max-width: 560px;
+    }
+    .exp-error.is-on {
+        display: block;
+    }
+    .exp-error-title {
+        display: flex;
+        align-items: center;
+        gap: .45rem;
+        font-weight: 700;
+        font-size: .92rem;
+        margin-bottom: .35rem;
+    }
+    .exp-error-motivo {
+        margin: 0 0 .75rem;
+        font-size: .84rem;
+        line-height: 1.4;
+        color: #991b1b;
+        word-break: break-word;
+    }
+    .exp-error-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .5rem;
+    }
+    .exp-error-actions .cc-btn {
+        min-width: 0;
+    }
 </style>
 @endsection
 
@@ -47,7 +83,7 @@
         <div>
             <div class="cc-kicker">Ventas · exportación</div>
             <h1 class="cc-title">Exportar información del budget</h1>
-            <p class="cc-sub">Elige el ciclo (y opcionalmente una empresa) para descargar en Excel las cantidades capturadas del presupuesto.</p>
+            <p class="cc-sub">Elige el ciclo (y opcionalmente una empresa) para descargar en Excel las cantidades capturadas de productos asignados a captura. Precios e importes siguen la misma regla que Análisis / Captura.</p>
         </div>
         <div class="cc-header-actions">
             <a class="cc-btn" href="{{ route('pv.control') }}">
@@ -89,14 +125,29 @@
             <div class="cc-progress" id="exp-progress-bar"><span style="width:0%"></span></div>
         </div>
 
+        <div class="exp-error" id="exp-error" role="alert">
+            <div class="exp-error-title">
+                <i class="fa-solid fa-circle-exclamation"></i>
+                <span>Error al descargar</span>
+            </div>
+            <p class="exp-error-motivo" id="exp-error-motivo"></p>
+            <div class="exp-error-actions">
+                <button type="button" class="cc-btn cc-btn-ink" id="exp-reintentar">
+                    <i class="fa-solid fa-rotate-right"></i> Volver a descargar
+                </button>
+                <button type="button" class="cc-btn" id="exp-error-cerrar">Cerrar</button>
+            </div>
+        </div>
+
         <div class="cc-empty" id="exp-empty" style="padding:1.6rem 1rem;margin-top:.5rem">
             <i class="fa-solid fa-circle-info"></i>
             <div>
-                El Excel sale en formato largo (1 fila por mes):
+                El Excel sale en formato largo (1 fila por mes, incluidos productos asignados con QTY 0):
                 <strong>COMPANY</strong>, <strong>ITEMCODE</strong>/<strong>ITEMNAME</strong> (producto),
                 <strong>CARDCODE</strong>/<strong>CARDNAME</strong> (cliente),
                 <strong>MONTH</strong>, <strong>YEAR</strong>, <strong>QTY</strong>, <strong>QTY PREVIOUS</strong> (venta del año pasado),
-                <strong>ORIGEN</strong>, <strong>IMPORTEUSD</strong>, <strong>IMPORTEMXN</strong>, <strong>TC</strong>, <strong>PRICE</strong>.
+                <strong>ORIGEN</strong>, <strong>IMPORTEUSD</strong>, <strong>IMPORTEMXN</strong>, <strong>TC</strong>,
+                <strong>PRICEUSD</strong>, <strong>PRICEMXN</strong>.
             </div>
         </div>
     </div>
@@ -117,8 +168,15 @@
     var progressLabel = document.getElementById('exp-progress-label');
     var progressPct = document.getElementById('exp-progress-pct');
     var progressBar = document.getElementById('exp-progress-bar');
+    var errorBox = document.getElementById('exp-error');
+    var errorMotivo = document.getElementById('exp-error-motivo');
+    var btnRetry = document.getElementById('exp-reintentar');
+    var btnErrorClose = document.getElementById('exp-error-cerrar');
     var exporting = false;
     var tickTimer = null;
+    var abortCtrl = null;
+    /** Límite cliente (ms). El servidor tiene hasta 10 min; aquí un poco más de margen. */
+    var CLIENT_TIMEOUT_MS = 11 * 60 * 1000;
 
     function csrf() {
         var m = document.querySelector('meta[name="csrf-token"]');
@@ -149,6 +207,19 @@
         }
     }
 
+    function hideError() {
+        if (errorBox) errorBox.classList.remove('is-on');
+        if (errorMotivo) errorMotivo.textContent = '';
+    }
+
+    function showError(motivo) {
+        var text = String(motivo || 'Error desconocido al generar el Excel.').trim();
+        if (errorMotivo) errorMotivo.textContent = text;
+        if (errorBox) errorBox.classList.add('is-on');
+        if (hint) hint.textContent = 'Error al descargar.';
+        showProgress(false);
+    }
+
     function startFakeProgress() {
         var pct = 4;
         setProgress(pct, 'Generando Excel…');
@@ -156,14 +227,15 @@
         tickTimer = setInterval(function () {
             if (pct >= 88) return;
             pct += Math.max(1, Math.round((90 - pct) * 0.08));
-            setProgress(pct, 'Generando Excel…');
+            setProgress(pct, 'Generando Excel… esto puede tardar varios minutos');
         }, 350);
     }
 
     function syncBtn() {
         var ok = !!(cicloSel && cicloSel.value) && !exporting;
         if (btn) btn.disabled = !ok;
-        if (hint && !exporting) {
+        if (btnRetry) btnRetry.disabled = !ok && !cicloSel.value;
+        if (hint && !exporting && !(errorBox && errorBox.classList.contains('is-on'))) {
             hint.textContent = (cicloSel && cicloSel.value)
                 ? 'Listo para descargar el budget del ciclo ' + cicloSel.value + '.'
                 : 'Selecciona un ciclo para exportar.';
@@ -179,6 +251,82 @@
         } catch (e) {
             return (m[1] || m[2] || fallback).trim();
         }
+    }
+
+    function looksLikeHtml(text) {
+        var t = String(text || '').trim().slice(0, 200).toLowerCase();
+        return t.indexOf('<!doctype') === 0 || t.indexOf('<html') === 0 || t.indexOf('<body') >= 0;
+    }
+
+    function extractMotivoFromHtml(html) {
+        var text = String(html || '');
+        var m = /Maximum execution time of \d+ seconds exceeded/i.exec(text);
+        if (m) return 'Se agotó el tiempo de ejecución al generar el Excel. Vuelve a intentar; si persiste, exporta por empresa.';
+        m = /Allowed memory size of \d+ bytes exhausted/i.exec(text);
+        if (m) return 'Se agotó la memoria del servidor al generar el Excel. Intenta exportar filtrando por una empresa.';
+        m = /<title[^>]*>([^<]+)<\/title>/i.exec(text);
+        if (m && m[1]) {
+            var title = m[1].replace(/\s+/g, ' ').trim();
+            if (title && title.toLowerCase().indexOf('laravel') === -1) return title;
+        }
+        return '';
+    }
+
+    function motivoDesdeRespuesta(res, bodyText) {
+        var status = res && res.status ? res.status : 0;
+        var text = String(bodyText || '').trim();
+
+        if (text) {
+            try {
+                var json = JSON.parse(text);
+                if (json && (json.motivo || json.message || json.error)) {
+                    return String(json.motivo || json.message || json.error);
+                }
+            } catch (e) { /* no JSON */ }
+
+            if (looksLikeHtml(text)) {
+                var fromHtml = extractMotivoFromHtml(text);
+                if (fromHtml) return fromHtml;
+            } else if (text.length < 400 && text.indexOf('<') === -1) {
+                return text;
+            }
+        }
+
+        if (status === 408 || status === 504 || status === 524) {
+            return 'La solicitud excedió el tiempo de espera del servidor (HTTP ' + status + '). Vuelve a intentar o exporta por empresa.';
+        }
+        if (status === 502 || status === 503) {
+            return 'El servidor no pudo completar la descarga (HTTP ' + status + '). Es posible que se haya cortado por tiempo o carga; vuelve a intentar.';
+        }
+        if (status === 419) {
+            return 'La sesión expiró (CSRF). Recarga la página e intenta de nuevo.';
+        }
+        if (status === 403) {
+            return 'No tienes permiso para exportar este budget (HTTP 403).';
+        }
+        if (status === 422) {
+            return 'Datos inválidos para exportar. Revisa el ciclo seleccionado.';
+        }
+        if (status >= 500) {
+            return 'Error interno del servidor al generar el Excel (HTTP ' + status + ').';
+        }
+        if (status) {
+            return 'No se pudo generar el Excel (HTTP ' + status + ').';
+        }
+        return 'No se pudo generar el Excel.';
+    }
+
+    function motivoDesdeCatch(err) {
+        if (!err) return 'Error desconocido al descargar.';
+        if (err.name === 'AbortError') {
+            return 'Se canceló o se agotó el tiempo de espera en el navegador al descargar. Vuelve a intentar; si tarda mucho, exporta por empresa.';
+        }
+        var msg = String(err.message || err);
+        var lower = msg.toLowerCase();
+        if (lower.indexOf('failed to fetch') >= 0 || lower.indexOf('networkerror') >= 0) {
+            return 'Error de red o el servidor cortó la conexión (a veces por tiempo de ejecución). Vuelve a intentar.';
+        }
+        return msg || 'Error desconocido al descargar.';
     }
 
     function loadCiclos() {
@@ -232,6 +380,13 @@
         }).catch(function () { /* opcional */ });
     }
 
+    function resetExportUi() {
+        exporting = false;
+        abortCtrl = null;
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-file-arrow-down"></i> Exportar Excel';
+        syncBtn();
+    }
+
     function exportExcel() {
         var ciclo = cicloSel ? cicloSel.value : '';
         if (!ciclo || exporting) return;
@@ -239,6 +394,7 @@
         var url = downloadUrl + '?ciclo=' + encodeURIComponent(ciclo);
         if (empresa) url += '&empresa=' + encodeURIComponent(empresa);
 
+        hideError();
         exporting = true;
         syncBtn();
         if (btn) {
@@ -248,14 +404,31 @@
         startFakeProgress();
         if (hint) hint.textContent = 'Generando archivo del ciclo ' + ciclo + '…';
 
+        if (abortCtrl) {
+            try { abortCtrl.abort(); } catch (e) { /* ignore */ }
+        }
+        abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        var timeoutId = null;
+        if (abortCtrl) {
+            timeoutId = setTimeout(function () {
+                try { abortCtrl.abort(); } catch (e) { /* ignore */ }
+            }, CLIENT_TIMEOUT_MS);
+        }
+
         fetch(url, {
             method: 'GET',
             credentials: 'same-origin',
-            headers: { 'X-CSRF-TOKEN': csrf(), 'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,*/*' }
+            signal: abortCtrl ? abortCtrl.signal : undefined,
+            headers: {
+                'X-CSRF-TOKEN': csrf(),
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,application/json,*/*'
+            }
         }).then(function (res) {
-            if (!res.ok) {
-                return res.text().then(function () {
-                    throw new Error('No se pudo generar el Excel (' + res.status + ').');
+            var ct = String(res.headers.get('Content-Type') || '').toLowerCase();
+            if (!res.ok || ct.indexOf('json') >= 0 || ct.indexOf('text/html') >= 0) {
+                return res.text().then(function (body) {
+                    throw new Error(motivoDesdeRespuesta(res, body));
                 });
             }
             var name = filenameFromDisposition(
@@ -264,9 +437,19 @@
             );
             setProgress(92, 'Descargando…');
             return res.blob().then(function (blob) {
+                if (!blob || blob.size < 32) {
+                    throw new Error('El archivo recibido está vacío o incompleto. Vuelve a intentar.');
+                }
+                // A veces un error HTML/JSON llega con status 200 y content-type genérico.
+                if (blob.type && (blob.type.indexOf('json') >= 0 || blob.type.indexOf('html') >= 0)) {
+                    return blob.text().then(function (body) {
+                        throw new Error(motivoDesdeRespuesta(res, body));
+                    });
+                }
                 return { blob: blob, name: name };
             });
         }).then(function (pack) {
+            if (timeoutId) clearTimeout(timeoutId);
             if (tickTimer) {
                 clearInterval(tickTimer);
                 tickTimer = null;
@@ -283,31 +466,40 @@
             if (hint) hint.textContent = 'Descarga completada.';
             setTimeout(function () {
                 showProgress(false);
-                exporting = false;
-                if (btn) btn.innerHTML = '<i class="fa-solid fa-file-arrow-down"></i> Exportar Excel';
-                syncBtn();
+                resetExportUi();
             }, 900);
         }).catch(function (err) {
+            if (timeoutId) clearTimeout(timeoutId);
             if (tickTimer) {
                 clearInterval(tickTimer);
                 tickTimer = null;
             }
-            setProgress(0, 'Error al exportar');
-            if (hint) hint.textContent = (err && err.message) ? err.message : 'Error al exportar.';
-            exporting = false;
-            if (btn) btn.innerHTML = '<i class="fa-solid fa-file-arrow-down"></i> Exportar Excel';
-            syncBtn();
-            setTimeout(function () { showProgress(false); }, 1800);
+            setProgress(0, 'Error al descargar');
+            showError(motivoDesdeCatch(err));
+            resetExportUi();
         });
     }
 
     if (cicloSel) {
         cicloSel.addEventListener('change', function () {
+            hideError();
             syncBtn();
             loadEmpresas();
         });
     }
+    if (empresaSel) {
+        empresaSel.addEventListener('change', function () {
+            hideError();
+        });
+    }
     if (btn) btn.addEventListener('click', exportExcel);
+    if (btnRetry) btnRetry.addEventListener('click', exportExcel);
+    if (btnErrorClose) {
+        btnErrorClose.addEventListener('click', function () {
+            hideError();
+            syncBtn();
+        });
+    }
 
     loadCiclos().then(loadEmpresas);
 })();

@@ -43,7 +43,8 @@ class PvBudgetExport implements FromArray, WithHeadings, ShouldAutoSize, WithEve
             'IMPORTEUSD',
             'IMPORTEMXN',
             'TC',
-            'PRICE',
+            'PRICEUSD',
+            'PRICEMXN',
         ];
     }
 
@@ -64,12 +65,12 @@ class PvBudgetExport implements FromArray, WithHeadings, ShouldAutoSize, WithEve
                 $sheet = $event->sheet->getDelegate();
                 $lastRow = max(2, (int) $sheet->getHighestRow());
                 $sheet->freezePane('A2');
-                $sheet->getStyle('A1:N1')->getFont()->setBold(true);
-                $sheet->getStyle('A1:N1')->getFill()
+                $sheet->getStyle('A1:O1')->getFont()->setBold(true);
+                $sheet->getStyle('A1:O1')->getFill()
                     ->setFillType(Fill::FILL_SOLID)
                     ->getStartColor()->setRGB('111827');
-                $sheet->getStyle('A1:N1')->getFont()->getColor()->setRGB('FFFFFF');
-                $sheet->getStyle('A1:N1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+                $sheet->getStyle('A1:O1')->getFont()->getColor()->setRGB('FFFFFF');
+                $sheet->getStyle('A1:O1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
                 // QTY + QTY ANTERIOR
                 $sheet->getStyle('H2:I'.$lastRow)
                     ->getNumberFormat()
@@ -78,8 +79,8 @@ class PvBudgetExport implements FromArray, WithHeadings, ShouldAutoSize, WithEve
                 $sheet->getStyle('K2:L'.$lastRow)
                     ->getNumberFormat()
                     ->setFormatCode(NumberFormat::FORMAT_NUMBER_COMMA_SEPARATED1);
-                // TC + PRICE
-                $sheet->getStyle('M2:N'.$lastRow)
+                // TC + PRICEUSD + PRICEMXN
+                $sheet->getStyle('M2:O'.$lastRow)
                     ->getNumberFormat()
                     ->setFormatCode('#,##0.0000');
             },

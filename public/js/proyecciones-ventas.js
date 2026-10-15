@@ -6088,42 +6088,20 @@
         return total;
     }
 
-    /** Importe MXN de un mes proyectado: unidades × precio del mes (override o lista) × TC.
-     *  Si no hay precio de lista, usa el precio implícito de la venta real de ese mes. */
+    /**
+     * Importe MXN de un mes proyectado: unidades × precio proy. (columna PRECIO proy.) × TC.
+     * Solo usa precioUnitarioMes (override mes → maestro mes → global). Sin precio → 0.
+     * No deriva precio de la venta real.
+     */
     function importeMesProyMxn(cta, i) {
         if (!cta || !mesLleno(cta.ppto && cta.ppto[i])) return null;
         var uds = Number(cta.ppto[i]) || 0;
         if (!uds) return 0;
         var precio = precioUnitarioMes(cta, i);
-        if (precio > 0) {
-            var mon = canonMoneda(cta.precioMoneda || 'MXN');
-            var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
-            return uds * precioMxn;
-        }
-        var qtyVenta = Number((cta.gasto && cta.gasto[i]) || 0);
-        var impVenta = Number((cta.importe && cta.importe[i]) || 0);
-        if (qtyVenta > 0 && impVenta > 0) {
-            return uds * (impVenta / qtyVenta);
-        }
-        var precioImp = precioImplicitoVenta(cta);
-        if (precioImp > 0) return uds * precioImp;
-        return null;
-    }
-
-    /** Precio MXN/unidad promedio de la venta real (importe ÷ unidades). */
-    function precioImplicitoVenta(cta) {
-        if (!cta) return 0;
-        var qty = 0;
-        var imp = 0;
-        for (var i = 0; i < 12; i++) {
-            var q = Number((cta.gasto && cta.gasto[i]) || 0);
-            var m = Number((cta.importe && cta.importe[i]) || 0);
-            if (q > 0 && m > 0) {
-                qty += q;
-                imp += m;
-            }
-        }
-        return qty > 0 ? (imp / qty) : 0;
+        if (!(precio > 0)) return 0;
+        var mon = canonMoneda(cta.precioMoneda || 'MXN');
+        var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
+        return uds * precioMxn;
     }
 
     function moneyLista(precio, monedaNativa, monthIdx, decimals) {
