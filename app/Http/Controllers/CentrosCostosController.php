@@ -95,10 +95,17 @@ class CentrosCostosController extends Controller
 
     public function analisis()
     {
+        $localCat = app(CcCatalogoLocal::class);
+
         return $this->page('analisis', 'CentrosCostos.analisis', [
             'detalleUrl' => route('centros.detalle'),
             // Filtros al instante: solo lo asignado al usuario para revisión/captura.
             'misAsignaciones' => $this->misAsignacionesList(''),
+            // No incrustar catálogo entero en el HTML (se hidrata por API local).
+            'centros' => [],
+            'cuentas' => [],
+            'usuarios' => [],
+            'catalogoLocal' => $localCat->disponible() && $localCat->tieneDatos(),
         ]);
     }
 
@@ -623,12 +630,17 @@ class CentrosCostosController extends Controller
     public function listAsignaciones(string $ciclo): JsonResponse
     {
         if (! Schema::hasTable('tbl_cc_asignaciones')) {
-            return response()->json(['asignaciones' => []]);
+            return response()->json(['asignaciones' => [], 'resumen' => false]);
         }
 
         $empresa = request('empresa');
         $userId = (int) request('user_id', 0);
-        $q = CcAsignacion::query()->with(['usuario', 'cuentas', 'permisos.tipo'])
+        $resumen = request()->boolean('resumen');
+        $with = ['usuario', 'permisos.tipo'];
+        if (! $resumen) {
+            $with[] = 'cuentas';
+        }
+        $q = CcAsignacion::query()->with($with)
             ->where('ciclo_codigo', $ciclo);
         if ($empresa) {
             $q->where('empresa', strtolower($empresa));
@@ -636,14 +648,37 @@ class CentrosCostosController extends Controller
         if ($userId > 0) {
             $q->where('user_id', $userId);
         }
+        $ccs = $this->listaRequest(request(), 'cc');
+        if ($ccs === []) {
+            $ccs = $this->listaRequest(request(), 'centros');
+        }
+        if ($ccs !== []) {
+            $codigos = [];
+            foreach ($ccs as $cc) {
+                $cc = trim((string) $cc);
+                if ($cc === '') {
+                    continue;
+                }
+                $codigos[$cc] = $cc;
+                $alt = ltrim($cc, '0');
+                if ($alt !== '' && $alt !== $cc) {
+                    $codigos[$alt] = $alt;
+                }
+            }
+            if ($codigos) {
+                $q->whereIn('centro_codigo', array_values($codigos));
+            }
+        }
 
-        $this->promoverCapturasIndependientes($ciclo);
+        if (! $resumen) {
+            $this->promoverCapturasIndependientes($ciclo);
+        }
 
-        $rows = $q->orderByDesc('id')->get()->map(function (CcAsignacion $a) {
-            return $this->asignacionPayload($a);
+        $rows = $q->orderByDesc('id')->get()->map(function (CcAsignacion $a) use ($resumen) {
+            return $this->asignacionPayload($a, $resumen);
         })->values()->all();
 
-        return response()->json(['asignaciones' => $rows]);
+        return response()->json(['asignaciones' => $rows, 'resumen' => $resumen]);
     }
 
     public function storeAsignacion(Request $request, string $ciclo): JsonResponse
@@ -1055,7 +1090,7 @@ class CentrosCostosController extends Controller
             ->pluck('cuenta_codigo');
         $tienen = [];
         foreach ($guardadas as $codigo) {
-            $key = ltrim($this->codigoCuentaKey((string) $codigo), '0');
+            $key = trim((string) $codigo);
             if ($key !== '') {
                 $tienen[$key] = true;
             }
@@ -1063,8 +1098,7 @@ class CentrosCostosController extends Controller
         $faltan = [];
         foreach ($cuentas as $cuenta) {
             $cuenta = trim((string) $cuenta);
-            $key = ltrim($this->codigoCuentaKey($cuenta), '0');
-            if ($cuenta === '' || $key === '' || isset($tienen[$key])) {
+            if ($cuenta === '' || isset($tienen[$cuenta])) {
                 continue;
             }
             $faltan[] = $cuenta;
@@ -1374,6 +1408,11 @@ class CentrosCostosController extends Controller
      * Gasto real de varios centros en una sola petición (análisis, sobre todo «Todas»).
      * Una consulta por empresa si el año cabe en pocas páginas; si no, una por centro en paralelo.
      */
+    /**
+     * Gasto real de varios centros: solo copia local (BD).
+     * Si la empresa no tiene nada guardado, el front siembra con /sincronizar
+     * (Buscar lo hace una vez; el botón «Actualizar gasto SAP» fuerza siempre).
+     */
     public function gastoRealAnalisis(Request $request): JsonResponse
     {
         @set_time_limit(180);
@@ -1404,7 +1443,8 @@ class CentrosCostosController extends Controller
                 continue;
             }
             $vistos[$clave] = true;
-            $cuentas = $item['cuentas'] ?? [];
+            $tieneCuentas = array_key_exists('cuentas', $item) && $item['cuentas'] !== null;
+            $cuentas = $tieneCuentas ? ($item['cuentas'] ?? []) : [];
             if (is_string($cuentas)) {
                 $cuentas = preg_split('/\s*,\s*/', $cuentas) ?: [];
             }
@@ -1413,14 +1453,24 @@ class CentrosCostosController extends Controller
             }
             $sap = $alias[$raw] ?? $raw;
             $grupos[$sap][] = [
+                'raw' => $raw,
                 'cc' => $cc,
                 'clave' => $clave,
-                'cuentas' => array_values($cuentas),
+                'filtrar_cuentas' => $tieneCuentas,
+                'cuentas' => array_values(array_filter(array_map(function ($c) {
+                    return trim((string) $c);
+                }, $cuentas))),
             ];
+        }
+
+        // Modo ligero: totales + serie mensual por centro (sin mapa de cuentas).
+        if ($request->boolean('totales')) {
+            return $this->gastoRealAnalisisTotales($request, $year, $grupos);
         }
 
         $this->gastoCopiaEmpresas = [];
         $porCentro = [];
+        $sinCopia = [];
         foreach ($grupos as $empresa => $lista) {
             try {
                 $ccs = [];
@@ -1431,10 +1481,22 @@ class CentrosCostosController extends Controller
             } catch (Throwable $e) {
                 $mapa = [];
             }
+            $tieneCopia = ! empty($this->gastoCopiaEmpresas[$empresa]);
+            if (! $tieneCopia) {
+                $sinCopia[$empresa] = $empresa;
+            }
             foreach ($lista as $item) {
                 $todo = $this->porCuentaDeIndiceEmpresa($mapa, $item['cc']);
-                $porCentro[$item['clave']] = (object) $this->recortarGastoPedido($todo, $item['cuentas']);
-                if (! empty($this->gastoCopiaEmpresas[$empresa])) {
+                $pedido = is_array($item['cuentas'] ?? null) ? $item['cuentas'] : [];
+                // Sin cuentas pedidas (o sin match de códigos): devolver el snap completo del centro.
+                $por = $pedido === []
+                    ? $todo
+                    : $this->recortarGastoPedido($todo, $pedido);
+                if ($por === [] && $todo !== []) {
+                    $por = $todo;
+                }
+                $porCentro[$item['clave']] = (object) $por;
+                if ($tieneCopia) {
                     $raw = explode('|', (string) $item['clave'], 2)[0];
                     if ($raw !== '') {
                         $this->gastoCopiaEmpresas[$raw] = true;
@@ -1446,8 +1508,208 @@ class CentrosCostosController extends Controller
         return response()->json([
             'ok' => true,
             'year' => $year,
+            'origen' => 'copia',
             'por_centro' => (object) $porCentro,
             'copias' => (object) $this->gastoCopiaEmpresas,
+            'sin_copia' => array_values($sinCopia),
+        ]);
+    }
+
+    /**
+     * Totales reales del snap local por centro (+ ppto/captura del ciclo si viene).
+     *
+     * @param  array<string, array<int, array{raw: string, cc: string, clave: string, cuentas: array<int, string>}>>  $grupos
+     */
+    protected function gastoRealAnalisisTotales(Request $request, int $year, array $grupos): JsonResponse
+    {
+        @set_time_limit(60);
+        $ciclo = strtoupper(trim((string) $request->input('ciclo', '')));
+        $snap = app(CcGastoRealSnapshot::class);
+        $porCentro = [];
+        $copias = [];
+        $sinCopia = [];
+
+        foreach ($grupos as $empresa => $lista) {
+            $tiene = false;
+            try {
+                $tiene = $snap->disponible() && $snap->tieneCopia($empresa, $year);
+            } catch (Throwable $e) {
+                $tiene = false;
+            }
+            if ($tiene) {
+                $copias[$empresa] = true;
+                foreach ($lista as $item) {
+                    $raw = (string) ($item['raw'] ?? '');
+                    if ($raw !== '') {
+                        $copias[$raw] = true;
+                    }
+                }
+            } else {
+                $sinCopia[$empresa] = $empresa;
+            }
+
+            $ccs = [];
+            $cuentasPorCc = [];
+            foreach ($lista as $item) {
+                $ccs[] = $item['cc'];
+                // null = todas las cuentas del centro; [] = nada asignado; lista = filtro.
+                $cuentasPorCc[$item['cc']] = ! empty($item['filtrar_cuentas'])
+                    ? $item['cuentas']
+                    : null;
+                $porCentro[$item['clave']] = [
+                    'tot_gasto' => 0.0,
+                    'tot_gasto_usd' => 0.0,
+                    'tot_ppto' => 0.0,
+                    'total' => ! empty($item['filtrar_cuentas']) ? count($item['cuentas']) : 0,
+                    'capturadas' => 0,
+                    'depto' => '',
+                    'months' => array_fill(0, 12, 0.0),
+                    'months_usd' => array_fill(0, 12, 0.0),
+                ];
+            }
+
+            $totales = [];
+            try {
+                if ($tiene) {
+                    $totales = $snap->totalesVisorPorCentro($empresa, $year, $ccs, $cuentasPorCc, 9);
+                }
+            } catch (Throwable $e) {
+                $totales = [];
+            }
+
+            foreach ($lista as $item) {
+                // Sin cuentas asignadas (filtro vacío): dejar en ceros.
+                if (! empty($item['filtrar_cuentas']) && $item['cuentas'] === []) {
+                    continue;
+                }
+                $hit = $totales[$item['cc']] ?? null;
+                if (! $hit) {
+                    foreach ($totales as $ccKey => $vals) {
+                        if ($this->mismoCentroCodigo((string) $ccKey, $item['cc'])) {
+                            $hit = $vals;
+                            break;
+                        }
+                    }
+                }
+                if (! $hit) {
+                    continue;
+                }
+                $porCentro[$item['clave']]['tot_gasto'] = (float) ($hit['tot_gasto'] ?? 0);
+                $porCentro[$item['clave']]['tot_gasto_usd'] = (float) ($hit['tot_gasto_usd'] ?? 0);
+                $porCentro[$item['clave']]['months'] = array_values($hit['months'] ?? array_fill(0, 12, 0.0));
+                $porCentro[$item['clave']]['months_usd'] = array_values($hit['months_usd'] ?? array_fill(0, 12, 0.0));
+                if (! empty($hit['depto'])) {
+                    $porCentro[$item['clave']]['depto'] = (string) $hit['depto'];
+                }
+            }
+        }
+
+        if ($ciclo !== '' && Schema::hasTable('tbl_cc_presupuestos') && $porCentro !== []) {
+            $hasDone = Schema::hasColumn('tbl_cc_presupuestos', 'completado');
+            $cols = ['empresa', 'centro_codigo', 'cuenta_codigo'];
+            for ($i = 1; $i <= 12; $i++) {
+                $cols[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            }
+            if ($hasDone) {
+                $cols[] = 'completado';
+            }
+
+            $pptoByClave = [];
+            foreach (DB::table('tbl_cc_presupuestos')->where('ciclo_codigo', $ciclo)->get($cols) as $row) {
+                $emp = strtoupper(trim((string) $row->empresa));
+                $cc = trim((string) $row->centro_codigo);
+                $clave = $emp.'|'.$cc;
+                if (! isset($porCentro[$clave])) {
+                    foreach (array_keys($porCentro) as $k) {
+                        $parts = explode('|', $k, 2);
+                        if (count($parts) === 2
+                            && strtoupper($parts[0]) === $emp
+                            && $this->mismoCentroCodigo($parts[1], $cc)) {
+                            $clave = $k;
+                            break;
+                        }
+                    }
+                }
+                if (! isset($porCentro[$clave])) {
+                    continue;
+                }
+                $ck = $this->codigoCuentaKey((string) $row->cuenta_codigo);
+                if ($ck === '') {
+                    continue;
+                }
+                $tot = 0.0;
+                $meses = [];
+                for ($i = 1; $i <= 12; $i++) {
+                    $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                    $val = $row->{$col} ?? null;
+                    $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
+                    if ($val !== null && $val !== '') {
+                        $tot += (float) $val;
+                    }
+                }
+                $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
+                if (! isset($pptoByClave[$clave])) {
+                    $pptoByClave[$clave] = [];
+                }
+                $pptoByClave[$clave][$ck] = ['tot' => round($tot, 2), 'done' => $done];
+            }
+
+            foreach ($grupos as $lista) {
+                foreach ($lista as $item) {
+                    $clave = $item['clave'];
+                    $map = $pptoByClave[$clave] ?? [];
+                    if ($map === []) {
+                        continue;
+                    }
+                    $filtrar = ! empty($item['filtrar_cuentas']);
+                    if ($filtrar && $item['cuentas'] === []) {
+                        $porCentro[$clave]['tot_ppto'] = 0.0;
+                        $porCentro[$clave]['capturadas'] = 0;
+                        $porCentro[$clave]['total'] = 0;
+
+                        continue;
+                    }
+                    $filtro = [];
+                    if ($filtrar) {
+                        foreach ($item['cuentas'] as $cta) {
+                            $ck = $this->codigoCuentaKey($cta);
+                            if ($ck !== '') {
+                                $filtro[$ck] = true;
+                            }
+                        }
+                    }
+                    $sumP = 0.0;
+                    $capt = 0;
+                    $total = 0;
+                    foreach ($map as $ck => $hit) {
+                        if ($filtrar && ! isset($filtro[$ck])) {
+                            continue;
+                        }
+                        $total++;
+                        $sumP += (float) ($hit['tot'] ?? 0);
+                        if (! empty($hit['done'])) {
+                            $capt++;
+                        }
+                    }
+                    $porCentro[$clave]['tot_ppto'] = round($sumP, 2);
+                    $porCentro[$clave]['capturadas'] = $capt;
+                    if ($total > 0) {
+                        $porCentro[$clave]['total'] = $total;
+                    } elseif ($filtrar) {
+                        $porCentro[$clave]['total'] = count($item['cuentas']);
+                    }
+                }
+            }
+        }
+
+        return response()->json([
+            'ok' => true,
+            'year' => $year,
+            'modo' => 'totales',
+            'origen' => 'copia',
+            'por_centro' => (object) $porCentro,
+            'copias' => (object) $copias,
+            'sin_copia' => array_values($sinCopia),
         ]);
     }
 
@@ -1524,7 +1786,8 @@ class CentrosCostosController extends Controller
             $cuentasPorCc = [];
             foreach ($lista as $item) {
                 $ccs[] = $item['cc'];
-                $cuentasPorCc[$item['cc']] = $item['cuentas'];
+                // Vacío en Visor = todas las cuentas del centro (aún no hay desglose).
+                $cuentasPorCc[$item['cc']] = $item['cuentas'] === [] ? null : $item['cuentas'];
             }
             $totales = [];
             try {
@@ -1615,10 +1878,6 @@ class CentrosCostosController extends Controller
                         }
                         $seen[$ck] = true;
                         $hit = $map[$ck] ?? null;
-                        if (! $hit) {
-                            $alt = ltrim($ck, '0');
-                            $hit = ($alt !== '' && $alt !== $ck) ? ($map[$alt] ?? null) : null;
-                        }
                         if ($hit) {
                             $sumP += (float) $hit['tot'];
                             if (! empty($hit['done'])) {
@@ -1792,7 +2051,13 @@ class CentrosCostosController extends Controller
             return $this->recuperarGastoCentroDesdeJson($empresa, $year, $cc, $corrida, $snap, 'SAP no devolvió este centro.');
         }
 
-        $filas = $this->filasGastoSapDesdeRegistros(is_array($remoto['rows'] ?? null) ? $remoto['rows'] : [], $empresa, $year);
+        $filas = array_values(array_filter(
+            $this->filasGastoSapDesdeRegistros(is_array($remoto['rows'] ?? null) ? $remoto['rows'] : [], $empresa, $year),
+            function ($fila) use ($cc) {
+                return is_array($fila)
+                    && strtoupper(trim((string) ($fila['centro'] ?? ''))) === $cc;
+            }
+        ));
         if (! $this->guardarJsonGastoCentro($empresa, $year, $cc, [$cc => $mapa[$cc]], $filas, $corrida)) {
             return response()->json([
                 'ok' => false,
@@ -1830,6 +2095,114 @@ class CentrosCostosController extends Controller
     }
 
     /**
+     * Baja una sola cuenta (empresa + centro + cuenta de la asignación),
+     * la guarda en archivo y luego la inserta. Si se corta la red, se reanuda desde el JSON.
+     */
+    public function sincronizarGastoCuentaArchivo(Request $request): JsonResponse
+    {
+        @ignore_user_abort(true);
+        @set_time_limit(0);
+        $pedido = $this->pedidoGastoCuenta($request);
+        if ($pedido instanceof JsonResponse) {
+            return $pedido;
+        }
+        [$empresa, $cc, $cuenta, $year, $corrida] = $pedido;
+
+        $snap = app(CcGastoRealSnapshot::class);
+        if (! $snap->disponible()) {
+            return response()->json(['ok' => false, 'estado' => 'fallo', 'mensaje' => 'La copia local no está disponible.'], 200);
+        }
+
+        if ($request->boolean('desde_json')) {
+            return $this->insertarGastoCuentaDesdeJson($empresa, $year, $cc, $cuenta, $corrida, $snap);
+        }
+
+        $this->escribirEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta, [
+            'corrida' => $corrida,
+            'listo' => false,
+            'insertado' => false,
+            'estado' => 'descargando',
+            'mensaje' => null,
+        ]);
+
+        try {
+            $api = app(AutinApiClient::class);
+            $res = $api->gastoRealPorCuentas($empresa, $year, [$cuenta], 40, 2, $cc, '6');
+        } catch (Throwable $e) {
+            return $this->recuperarGastoCuentaDesdeJson($empresa, $year, $cc, $cuenta, $corrida, $snap, 'SAP no respondió para esta cuenta.');
+        }
+
+        if (empty($res['ok']) && empty($res['rows'])) {
+            return $this->recuperarGastoCuentaDesdeJson(
+                $empresa,
+                $year,
+                $cc,
+                $cuenta,
+                $corrida,
+                $snap,
+                $res['message'] ?? 'No se pudo leer esa cuenta en SAP.'
+            );
+        }
+
+        $todo = [];
+        foreach ($res['rows'] ?? [] as $row) {
+            if (is_array($row)) {
+                $this->acumularGastoRealFila($todo, $row, $empresa, $year, [$cuenta], $cc);
+            }
+        }
+        $hit = $this->gastoDesdeIndice($todo, $cuenta);
+        if (! is_array($hit)) {
+            $hit = $this->itemGastoVacio($cuenta);
+        }
+        $hit['codigo'] = $cuenta;
+
+        $filas = array_values(array_filter(
+            $this->filasGastoSapDesdeRegistros(is_array($res['rows'] ?? null) ? $res['rows'] : [], $empresa, $year),
+            function ($fila) use ($cc, $cuenta) {
+                return is_array($fila)
+                    && strtoupper(trim((string) ($fila['centro'] ?? ''))) === $cc
+                    && trim((string) ($fila['cuenta'] ?? '')) === $cuenta;
+            }
+        ));
+
+        if (! $this->guardarJsonGastoCuenta($empresa, $year, $cc, $cuenta, $hit, $filas, $corrida)) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'cuenta' => $cuenta,
+                'mensaje' => 'No se pudo escribir el archivo de esta cuenta.',
+            ], 200);
+        }
+
+        return $this->insertarGastoCuentaDesdeJson($empresa, $year, $cc, $cuenta, $corrida, $snap);
+    }
+
+    public function estadoJsonGastoCuenta(Request $request): JsonResponse
+    {
+        $pedido = $this->pedidoGastoCuenta($request);
+        if ($pedido instanceof JsonResponse) {
+            return $pedido;
+        }
+        [$empresa, $cc, $cuenta, $year] = $pedido;
+        $estado = $this->leerEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta);
+
+        return response()->json(array_merge([
+            'ok' => true,
+            'empresa' => $empresa,
+            'cc' => $cc,
+            'cuenta' => $cuenta,
+            'year' => $year,
+            'corrida' => '',
+            'listo' => false,
+            'insertado' => false,
+            'estado' => '',
+            'mensaje' => null,
+        ], $estado));
+    }
+
+    /**
      * @return array{0: string, 1: string, 2: int, 3: string}|JsonResponse
      */
     protected function pedidoGastoCentro(Request $request)
@@ -1855,6 +2228,24 @@ class CentrosCostosController extends Controller
         return [$empresa, $cc, $year, $corrida];
     }
 
+    /**
+     * @return array{0: string, 1: string, 2: string, 3: int, 4: string}|JsonResponse
+     */
+    protected function pedidoGastoCuenta(Request $request)
+    {
+        $base = $this->pedidoGastoCentro($request);
+        if ($base instanceof JsonResponse) {
+            return $base;
+        }
+        [$empresa, $cc, $year, $corrida] = $base;
+        $cuenta = trim((string) $request->input('cuenta', ''));
+        if ($cuenta === '' || strlen($cuenta) > 40) {
+            return response()->json(['ok' => false, 'estado' => 'fallo', 'mensaje' => 'Falta la cuenta.'], 422);
+        }
+
+        return [$empresa, $cc, $cuenta, $year, $corrida];
+    }
+
     protected function carpetaJsonGasto(string $empresa, int $year): string
     {
         $dir = storage_path('app/cc-gasto-sap/'.$empresa.'/'.$year);
@@ -1865,9 +2256,286 @@ class CentrosCostosController extends Controller
         return $dir;
     }
 
+    protected function carpetaJsonGastoCuenta(string $empresa, int $year, string $cc): string
+    {
+        $dir = $this->carpetaJsonGasto($empresa, $year).'/'.$cc;
+        if (! is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        return $dir;
+    }
+
+    protected function archivoSeguroCuenta(string $cuenta): string
+    {
+        $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', trim($cuenta)) ?? '';
+        $safe = trim($safe, '._-');
+        if ($safe === '') {
+            $safe = 'cuenta';
+        }
+
+        return substr($safe, 0, 80);
+    }
+
     protected function rutaJsonGastoCentro(string $empresa, int $year, string $cc, bool $estado = false): string
     {
         return $this->carpetaJsonGasto($empresa, $year).'/'.$cc.($estado ? '.estado.json' : '.json');
+    }
+
+    protected function rutaJsonGastoCuenta(string $empresa, int $year, string $cc, string $cuenta, bool $estado = false): string
+    {
+        return $this->carpetaJsonGastoCuenta($empresa, $year, $cc).'/'.$this->archivoSeguroCuenta($cuenta).($estado ? '.estado.json' : '.json');
+    }
+
+    /**
+     * @param  array<string, mixed>  $estado
+     */
+    protected function escribirEstadoJsonGastoCuenta(string $empresa, int $year, string $cc, string $cuenta, array $estado): void
+    {
+        $path = $this->rutaJsonGastoCuenta($empresa, $year, $cc, $cuenta, true);
+        $estado['empresa'] = $empresa;
+        $estado['cc'] = $cc;
+        $estado['cuenta'] = $cuenta;
+        $estado['year'] = $year;
+        $estado['actualizado_en'] = now()->toIso8601String();
+        $json = json_encode($estado, JSON_UNESCAPED_UNICODE);
+        if ($json !== false) {
+            @file_put_contents($path, $json, LOCK_EX);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function leerEstadoJsonGastoCuenta(string $empresa, int $year, string $cc, string $cuenta): array
+    {
+        $path = $this->rutaJsonGastoCuenta($empresa, $year, $cc, $cuenta, true);
+        if (! is_file($path)) {
+            return [];
+        }
+        $data = json_decode((string) @file_get_contents($path), true);
+
+        return is_array($data) ? $data : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $item
+     * @param  array<int, array<string, mixed>>  $filas
+     */
+    protected function guardarJsonGastoCuenta(string $empresa, int $year, string $cc, string $cuenta, array $item, array $filas, string $corrida): bool
+    {
+        $path = $this->rutaJsonGastoCuenta($empresa, $year, $cc, $cuenta);
+        $json = json_encode([
+            'empresa' => $empresa,
+            'anio' => $year,
+            'cc' => $cc,
+            'cuenta' => $cuenta,
+            'corrida' => $corrida,
+            'item' => $item,
+            'filas' => $filas,
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            return false;
+        }
+        $tmp = $path.'.tmp';
+        if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
+            return false;
+        }
+        if (is_file($path)) {
+            @unlink($path);
+        }
+        if (! @rename($tmp, $path)) {
+            $ok = @file_put_contents($path, $json, LOCK_EX) !== false;
+            @unlink($tmp);
+            if (! $ok) {
+                return false;
+            }
+        }
+        $this->escribirEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta, [
+            'corrida' => $corrida,
+            'listo' => true,
+            'insertado' => false,
+            'estado' => 'archivo',
+            'mensaje' => null,
+        ]);
+
+        return true;
+    }
+
+    protected function insertarGastoCuentaDesdeJson(string $empresa, int $year, string $cc, string $cuenta, string $corrida, CcGastoRealSnapshot $snap): JsonResponse
+    {
+        $estado = $this->leerEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta);
+        if ($corrida !== '' && (string) ($estado['corrida'] ?? '') !== $corrida) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'cuenta' => $cuenta,
+                'mensaje' => 'El archivo de esta cuenta todavía no está listo.',
+            ], 200);
+        }
+        if (empty($estado['listo'])) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'cuenta' => $cuenta,
+                'mensaje' => 'Todavía no hay archivo de esta cuenta.',
+            ], 200);
+        }
+        if (! empty($estado['insertado']) && in_array((string) ($estado['estado'] ?? ''), ['registrado', 'actualizado', 'sin_cambio'], true)) {
+            return response()->json([
+                'ok' => true,
+                'estado' => (string) $estado['estado'],
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'cuenta' => $cuenta,
+                'year' => $year,
+                'origen' => 'json',
+                'mensaje' => null,
+            ]);
+        }
+
+        $path = $this->rutaJsonGastoCuenta($empresa, $year, $cc, $cuenta);
+        $data = json_decode((string) @file_get_contents($path), true);
+        $item = is_array($data['item'] ?? null) ? $data['item'] : null;
+        $filas = is_array($data['filas'] ?? null) ? $data['filas'] : [];
+        if (! is_array($item)) {
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'cuenta' => $cuenta,
+                'mensaje' => 'El archivo de esta cuenta no se puede leer.',
+            ], 200);
+        }
+
+        $existia = DB::table('tbl_cc_gasto_real_snap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->where('cuenta_codigo', $cuenta)
+            ->exists();
+
+        if ($existia && $this->cuentaGastoSnapIgual($empresa, $year, $cc, $cuenta, $item)) {
+            $this->escribirEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta, [
+                'corrida' => $corrida !== '' ? $corrida : (string) ($estado['corrida'] ?? ''),
+                'listo' => true,
+                'insertado' => true,
+                'estado' => 'sin_cambio',
+                'mensaje' => null,
+            ]);
+
+            return response()->json([
+                'ok' => true,
+                'estado' => 'sin_cambio',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'cuenta' => $cuenta,
+                'year' => $year,
+                'origen' => 'json',
+                'mensaje' => null,
+            ]);
+        }
+
+        try {
+            $snap->reemplazarCuenta($empresa, $year, $cc, $cuenta, $item, $filas, auth()->id());
+        } catch (Throwable $e) {
+            $this->escribirEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta, [
+                'corrida' => $corrida !== '' ? $corrida : (string) ($estado['corrida'] ?? ''),
+                'listo' => true,
+                'insertado' => false,
+                'estado' => 'archivo',
+                'mensaje' => 'No se pudo insertar desde el archivo.',
+            ]);
+
+            return response()->json([
+                'ok' => false,
+                'estado' => 'fallo',
+                'empresa' => $empresa,
+                'cc' => $cc,
+                'cuenta' => $cuenta,
+                'mensaje' => 'No se pudo insertar desde el archivo.',
+            ], 200);
+        }
+
+        $marca = $existia ? 'actualizado' : 'registrado';
+        $this->escribirEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta, [
+            'corrida' => $corrida !== '' ? $corrida : (string) ($estado['corrida'] ?? ''),
+            'listo' => true,
+            'insertado' => true,
+            'estado' => $marca,
+            'mensaje' => null,
+        ]);
+
+        return response()->json([
+            'ok' => true,
+            'estado' => $marca,
+            'empresa' => $empresa,
+            'cc' => $cc,
+            'cuenta' => $cuenta,
+            'year' => $year,
+            'origen' => 'json',
+            'mensaje' => null,
+        ]);
+    }
+
+    protected function recuperarGastoCuentaDesdeJson(string $empresa, int $year, string $cc, string $cuenta, string $corrida, CcGastoRealSnapshot $snap, string $mensaje): JsonResponse
+    {
+        $estado = $this->leerEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta);
+        if (! empty($estado['listo']) && (string) ($estado['corrida'] ?? '') === $corrida) {
+            return $this->insertarGastoCuentaDesdeJson($empresa, $year, $cc, $cuenta, $corrida, $snap);
+        }
+        $this->escribirEstadoJsonGastoCuenta($empresa, $year, $cc, $cuenta, [
+            'corrida' => $corrida,
+            'listo' => false,
+            'insertado' => false,
+            'estado' => 'fallo',
+            'mensaje' => $mensaje,
+        ]);
+
+        return response()->json([
+            'ok' => false,
+            'estado' => 'fallo',
+            'empresa' => $empresa,
+            'cc' => $cc,
+            'cuenta' => $cuenta,
+            'mensaje' => $mensaje,
+        ], 200);
+    }
+
+    /**
+     * @param  array<string, mixed>  $item
+     */
+    protected function cuentaGastoSnapIgual(string $empresa, int $year, string $cc, string $cuenta, array $item): bool
+    {
+        $row = DB::table('tbl_cc_gasto_real_snap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->where('cuenta_codigo', $cuenta)
+            ->first();
+        if (! $row) {
+            return false;
+        }
+        $gasto = array_values(is_array($item['gasto'] ?? null) ? $item['gasto'] : []);
+        $usd = array_values(is_array($item['gasto_usd'] ?? null) ? $item['gasto_usd'] : []);
+        for ($i = 1; $i <= 9; $i++) {
+            $suf = str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            $g = round((float) ($gasto[$i - 1] ?? 0), 2);
+            $u = round((float) ($usd[$i - 1] ?? 0), 2);
+            if (round((float) ($row->{'mes_'.$suf} ?? 0), 2) !== $g) {
+                return false;
+            }
+            if (round((float) ($row->{'usd_'.$suf} ?? 0), 2) !== $u) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -1992,11 +2660,7 @@ class CentrosCostosController extends Controller
             ], 200);
         }
 
-        $existia = DB::table('tbl_cc_gasto_real_cc')
-            ->where('empresa', $empresa)
-            ->where('anio', $year)
-            ->where('centro_codigo', $cc)
-            ->exists();
+        $existia = $snap->centroExiste($empresa, $year, $cc);
         if ($existia && $snap->centroIgual($empresa, $year, $cc, $mapa[$cc], $filas)) {
             $cuentas = (int) DB::table('tbl_cc_gasto_real_snap')
                 ->where('empresa', $empresa)
@@ -3247,7 +3911,7 @@ class CentrosCostosController extends Controller
      * @return array<string, array<string, array<string, mixed>>>
      */
     /**
-     * Lectura del análisis: solo la copia local, sin volver a SAP.
+     * Lectura del análisis/control: solo la copia local, sin volver a SAP.
      *
      * @return array<string, array<string, array<string, mixed>>>
      */
@@ -3260,7 +3924,9 @@ class CentrosCostosController extends Controller
         $mapa = $centros === []
             ? $snap->mapa($empresa, $year)
             : $snap->mapaDeCentros($empresa, $year, $centros);
-        if ($mapa !== [] || $snap->cubreEmpresa($empresa, $year)) {
+        // Cualquier dato local de la empresa cuenta como copia (no resembrar SAP
+        // solo porque el centro filtrado aún no tiene filas).
+        if ($mapa !== [] || $snap->tieneCopia($empresa, $year)) {
             $this->gastoCopiaEmpresas[$empresa] = true;
         }
 
@@ -3438,7 +4104,7 @@ class CentrosCostosController extends Controller
             if ($cc === '') {
                 continue;
             }
-            $cached = $forzar ? null : Cache::get('cc.gasto-indice.v3.'.$empresa.'.'.$cc.'.'.$year);
+            $cached = $forzar ? null : Cache::get('cc.gasto-indice.v4.'.$empresa.'.'.$cc.'.'.$year);
             if (is_array($cached)) {
                 $out[strtoupper($cc)] = $cached;
                 if ($cc !== strtoupper($cc)) {
@@ -3468,7 +4134,7 @@ class CentrosCostosController extends Controller
                 }
             }
             $por = $this->porCuentaDesdeFilas(is_array($rows) ? $rows : [], $empresa, $cc, $year);
-            Cache::put('cc.gasto-indice.v3.'.$empresa.'.'.$cc.'.'.$year, $por, 1800);
+            Cache::put('cc.gasto-indice.v4.'.$empresa.'.'.$cc.'.'.$year, $por, 1800);
             $out[strtoupper($cc)] = $por;
             $out[$cc] = $por;
         }
@@ -3496,16 +4162,8 @@ class CentrosCostosController extends Controller
             }
             $this->acumularGastoRealFila($porCc[$rowCc], $row, $empresa, $year, [], $rowCc);
         }
-        $extra = [];
-        foreach ($porCc as $key => $por) {
-            $porCc[$key] = $this->aliasCuentasIndice($por);
-            $alt = ltrim((string) $key, '0');
-            if ($alt !== '' && $alt !== (string) $key && ! isset($porCc[$alt])) {
-                $extra[$alt] = $porCc[$key];
-            }
-        }
 
-        return $porCc + $extra;
+        return $porCc;
     }
 
     /**
@@ -3530,13 +4188,6 @@ class CentrosCostosController extends Controller
      */
     protected function aliasCuentasIndice(array $por): array
     {
-        foreach (array_keys($por) as $key) {
-            $alt = ltrim((string) $key, '0');
-            if ($alt !== '' && $alt !== (string) $key && ! isset($por[$alt])) {
-                $por[$alt] = $por[$key];
-            }
-        }
-
         return $por;
     }
 
@@ -3551,7 +4202,7 @@ class CentrosCostosController extends Controller
             return $porCc[$cc];
         }
         $up = strtoupper($cc);
-        if (isset($porCc[$up]) && is_array($porCc[$up])) {
+        if ($up !== '' && isset($porCc[$up]) && is_array($porCc[$up])) {
             return $porCc[$up];
         }
         $alt = ltrim($up, '0');
@@ -3591,9 +4242,8 @@ class CentrosCostosController extends Controller
             if (! $hit) {
                 continue;
             }
-            $propia = ltrim($this->codigoCuentaKey((string) ($hit['codigo'] ?? '')), '0');
-            $needle = ltrim($this->codigoCuentaKey($ck), '0');
-            if ($propia !== '' && $needle !== '' && $propia !== $needle) {
+            $propia = trim((string) ($hit['codigo'] ?? ''));
+            if ($propia !== '' && $propia !== trim((string) $cuenta) && $propia !== trim((string) $ck)) {
                 continue;
             }
             $hit['codigo'] = $cuenta;
@@ -3611,7 +4261,7 @@ class CentrosCostosController extends Controller
      */
     protected function indiceGastoPorCentro(string $empresa, string $cc, int $year, bool $permitirLegacy = true): array
     {
-        $cacheKey = 'cc.gasto-indice.v3.' . $empresa . '.' . $cc . '.' . $year;
+        $cacheKey = 'cc.gasto-indice.v4.' . $empresa . '.' . $cc . '.' . $year;
         $cached = $permitirLegacy ? Cache::get($cacheKey) : null;
         if (is_array($cached)) {
             return ['ok' => true, 'por_cuenta' => $cached, 'mensaje' => null];
@@ -3641,12 +4291,6 @@ class CentrosCostosController extends Controller
                 $this->acumularGastoRealFila($por, $row, $empresa, $year, [], $cc);
             }
         }
-        foreach (array_keys($por) as $key) {
-            $alt = ltrim((string) $key, '0');
-            if ($alt !== '' && $alt !== (string) $key && ! isset($por[$alt])) {
-                $por[$alt] = $por[$key];
-            }
-        }
         Cache::put($cacheKey, $por, 1800);
 
         return ['ok' => true, 'por_cuenta' => $por, 'mensaje' => null];
@@ -3658,25 +4302,9 @@ class CentrosCostosController extends Controller
      */
     protected function gastoDesdeIndice(array $por, string $ck): ?array
     {
-        if (isset($por[$ck])) {
+        $ck = trim($ck);
+        if ($ck !== '' && isset($por[$ck]) && is_array($por[$ck])) {
             return $por[$ck];
-        }
-        $alt = ltrim($ck, '0');
-        if ($alt !== '' && isset($por[$alt])) {
-            return $por[$alt];
-        }
-        $needle = ltrim($this->codigoCuentaKey($ck), '0');
-        if ($needle === '') {
-            return null;
-        }
-        foreach ($por as $key => $item) {
-            if (! is_array($item)) {
-                continue;
-            }
-            $propia = ltrim($this->codigoCuentaKey((string) ($item['codigo'] ?? $key)), '0');
-            if ($propia !== '' && $propia === $needle) {
-                return $item;
-            }
         }
 
         return null;
@@ -3715,13 +4343,7 @@ class CentrosCostosController extends Controller
         }
         $q = CcAsignacion::query()->with('cuentas')->whereRaw('UPPER(empresa) = ?', [$empresa]);
         if ($cc !== '') {
-            $alt = ltrim($cc, '0');
-            $q->where(function ($w) use ($cc, $alt) {
-                $w->where('centro_codigo', $cc);
-                if ($alt !== '' && $alt !== $cc) {
-                    $w->orWhere('centro_codigo', $alt)->orWhere('centro_codigo', str_pad($alt, strlen($cc), '0', STR_PAD_LEFT));
-                }
-            });
+            $q->where('centro_codigo', $cc);
         }
         foreach ($q->get() as $asig) {
             foreach ($asig->cuentas as $cta) {
@@ -3754,8 +4376,8 @@ class CentrosCostosController extends Controller
             return;
         }
 
-        $codigo = $this->campoFila($row, ['Cuenta', 'FormatCode', 'AcctCode', 'CUENTA', 'codigo']);
-        $key = $this->codigoCuentaKey($codigo);
+        $codigo = trim($this->campoFila($row, ['Cuenta', 'FormatCode', 'AcctCode', 'CUENTA', 'codigo']));
+        $key = $codigo;
         if ($key === '' || ($cuentasPedido && ! $this->cuentaGastoPedida($key, $cuentasPedido))) {
             return;
         }
@@ -3795,11 +4417,12 @@ class CentrosCostosController extends Controller
      */
     protected function cuentaGastoPedida(string $key, array $cuentas): bool
     {
+        $key = trim($key);
         if ($key === '') {
             return false;
         }
         foreach ($cuentas as $req) {
-            if ($this->codigoCuentaKey((string) $req) === $key) {
+            if (trim((string) $req) === $key) {
                 return true;
             }
         }
@@ -3893,13 +4516,8 @@ class CentrosCostosController extends Controller
     {
         $a = strtoupper(trim($a));
         $b = strtoupper(trim($b));
-        if ($a === $b) {
-            return true;
-        }
-        $na = ltrim($a, '0');
-        $nb = ltrim($b, '0');
 
-        return $na !== '' && $na === $nb;
+        return $a !== '' && $a === $b;
     }
 
     protected function mismaEmpresaSap(string $a, string $b): bool
@@ -3917,23 +4535,13 @@ class CentrosCostosController extends Controller
     {
         $a = strtoupper(trim($a));
         $b = strtoupper(trim($b));
-        if ($a === '' || $b === '') {
-            return false;
-        }
-        if ($a === $b) {
-            return true;
-        }
-        $na = ltrim($a, '0');
-        $nb = ltrim($b, '0');
 
-        return $na !== '' && $na === $nb;
+        return $a !== '' && $a === $b;
     }
 
     protected function codigoCuentaKey(string $codigo): string
     {
-        $digits = preg_replace('/\D+/', '', $codigo);
-
-        return $digits !== '' ? $digits : $codigo;
+        return trim($codigo);
     }
 
     protected function mesDeFecha(string $fecha): int
@@ -5408,7 +6016,7 @@ class CentrosCostosController extends Controller
     /**
      * @return array<string, mixed>
      */
-    protected function asignacionPayload(CcAsignacion $a): array
+    protected function asignacionPayload(CcAsignacion $a, bool $resumen = false): array
     {
         $permisos = $a->permisos->map(function ($p) {
             return $p->tipo->clave ?? null;
@@ -5417,6 +6025,17 @@ class CentrosCostosController extends Controller
         })->values()->all();
 
         $esPrincipal = $this->asigHasRolColumns() ? (bool) $a->es_principal : true;
+
+        $cuentas = [];
+        if (! $resumen && $a->relationLoaded('cuentas')) {
+            $cuentas = $a->cuentas->map(function ($c) {
+                return [
+                    'codigo' => $c->cuenta_codigo,
+                    'nombre' => $c->cuenta_nombre,
+                    'agrupacion' => $c->agrupacion,
+                ];
+            })->values()->all();
+        }
 
         return [
             'id' => $a->id,
@@ -5429,18 +6048,12 @@ class CentrosCostosController extends Controller
             'centro_nombre' => $a->centro_nombre,
             'es_principal' => $esPrincipal,
             'parent_id' => $this->asigHasRolColumns() ? $a->parent_id : null,
-            'cuentas' => $a->cuentas->map(function ($c) {
-                return [
-                    'codigo' => $c->cuenta_codigo,
-                    'nombre' => $c->cuenta_nombre,
-                    'agrupacion' => $c->agrupacion,
-                ];
-            })->values()->all(),
+            'cuentas' => $cuentas,
             'permisos' => $permisos,
             'capturar' => in_array('capturar', $permisos, true),
             'editar' => in_array('editar', $permisos, true),
             'revisar' => in_array('revisar', $permisos, true),
-            'importar' => $this->usuarioTienePermiso((string) $a->ciclo_codigo, (int) $a->user_id, 'importar'),
+            'importar' => $resumen ? false : $this->usuarioTienePermiso((string) $a->ciclo_codigo, (int) $a->user_id, 'importar'),
         ];
     }
 

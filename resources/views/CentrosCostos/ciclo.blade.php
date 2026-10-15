@@ -189,7 +189,7 @@
             </div>
             <div class="modal-body">
                 <p class="text-muted mb-3" style="font-size:.85rem">
-                    Elige una empresa. Cada centro se guarda en un archivo y de ahí se inserta. Si la conexión se corta, sigue con lo que ya quedó escrito.
+                    Elige una empresa. Se agrupan las asignaciones por centro y cuenta; cada cuenta se consulta en SAP, se guarda en archivo y luego se inserta. Si se corta la conexión, continúa con lo ya escrito.
                 </p>
                 <label class="cc-filter-field" for="ciclo-sap-empresa">Empresa
                     <select id="ciclo-sap-empresa" class="cc-select" aria-label="Empresa a actualizar">
