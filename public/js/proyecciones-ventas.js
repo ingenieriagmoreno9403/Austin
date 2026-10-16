@@ -12133,6 +12133,8 @@
             var parts = [];
             if (rp.filas_datos) parts.push(rp.filas_datos + ' filas Excel');
             if (rp.productos) parts.push(rp.productos + ' únicos');
+            if (rp.meses_columnas) parts.push(rp.meses_columnas + ' cols mes');
+            if (rp.productos_con_meses) parts.push(rp.productos_con_meses + ' con Ene–Dic');
             if (rp.duplicados) parts.push(rp.duplicados + ' duplicados');
             if (rp.omitidos_sin_precio) parts.push(rp.omitidos_sin_precio + ' sin precio');
             if (rp.omitidos_vacias) parts.push(rp.omitidos_vacias + ' vacías');

@@ -277,7 +277,7 @@
                 </p>
                 <ol class="mb-3" style="font-size:.85rem; padding-left:1.2rem">
                     <li>Descarga la plantilla con los datos de tu búsqueda actual (empresa, cliente, ItemCode).</li>
-                    <li>Edita <b>Ene–Dic</b> para precio por mes (vacío = no se toca). Solo <b>PrecioGlobal</b> aplica a los 12 meses.</li>
+                    <li>Edita <b>Ene–Dic</b> para precio por mes (<b>vacío = no se toca</b>). <b>PrecioGlobal</b> solo actualiza el precio global, no pisa los meses.</li>
                     <li>Sube el archivo para actualizar el maestro local.</li>
                 </ol>
                 <div class="d-grid gap-2 mb-3">

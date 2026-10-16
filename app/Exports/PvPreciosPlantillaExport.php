@@ -9,6 +9,7 @@ use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithStrictNullComparison;
 use Maatwebsite\Excel\Concerns\WithTitle;
 use Maatwebsite\Excel\Events\AfterSheet;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
@@ -75,6 +76,14 @@ class PvPreciosPlantillaExport implements FromArray, WithHeadings, ShouldAutoSiz
                     ->getStartColor()->setRGB('111827');
                 $sheet->getStyle('A1:S1')->getFont()->getColor()->setRGB('FFFFFF');
                 $sheet->getStyle('A1:S1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+                // Forzar Ene–Dic como texto: Excel a veces convierte "Ene"/"Feb" en fechas
+                // y al reimportar se pierde el mapeo de meses (queda solo PrecioGlobal).
+                $mesHeads = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+                foreach ($mesHeads as $i => $label) {
+                    $col = chr(ord('H') + $i); // H..S
+                    $sheet->setCellValueExplicit($col.'1', $label, DataType::TYPE_STRING);
+                    $sheet->getStyle($col.'1')->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
+                }
                 // PrecioGlobal + 12 meses
                 $sheet->getStyle('G2:S'.$lastRow)
                     ->getNumberFormat()
@@ -82,7 +91,7 @@ class PvPreciosPlantillaExport implements FromArray, WithHeadings, ShouldAutoSiz
                 // Hint en fila de instrucciones (columna oculta no; usamos comentario en G1 vía nota en hoja).
                 $sheet->getComment('G1')->getText()->createTextRun(
                     'Precio global (mes=0). Si un mes está vacío al subir, no se toca. '.
-                    'Si llenas Ene–Dic, se guardan esos meses. Si solo llenas PrecioGlobal, aplica a los 12.'
+                    'Si llenas Ene–Dic, se guardan esos meses. PrecioGlobal NO pisa los meses.'
                 );
             },
         ];

@@ -2615,7 +2615,8 @@ class ProyeccionesVentasController extends Controller
             return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
         }
 
-        @set_time_limit(120);
+        // Lectura con cálculo de fórmulas (~30s en plantillas grandes) + lotes.
+        @set_time_limit(300);
 
         $token = trim((string) $request->input('token', ''));
         $offset = max(0, (int) $request->input('offset', 0));
@@ -2655,17 +2656,13 @@ class ProyeccionesVentasController extends Controller
             }
 
             try {
-                $sheets = Excel::toArray(new class implements \Maatwebsite\Excel\Concerns\ToArray
-                {
-                    public function array(array $array)
-                    {
-                    }
-                }, $request->file('archivo'));
+                // Calcula fórmulas (p.ej. Ene–Dic = =G2*1.04). Excel::toArray
+                // devolvía la fórmula como texto y celdaNumeroPrecio la ignoraba.
+                $sheet = $this->leerPrimeraHojaExcelCalculada($request->file('archivo'));
             } catch (Throwable $e) {
                 return response()->json(['message' => 'No se pudo leer el archivo: '.$e->getMessage()], 422);
             }
 
-            $sheet = $sheets[0] ?? [];
             if (count($sheet) < 2) {
                 return response()->json(['message' => 'El archivo no tiene filas para importar.'], 422);
             }
@@ -2685,6 +2682,12 @@ class ProyeccionesVentasController extends Controller
 
             $parsed = $this->parsearFilasPreciosExcel($sheet, $map, $tieneMesesAnchos);
             $items = array_values($parsed['vistos']);
+            $conMeses = 0;
+            foreach ($items as $it) {
+                if (! empty($it['meses_llenos'])) {
+                    $conMeses++;
+                }
+            }
             $resumenParse = [
                 'filas_excel' => (int) ($parsed['filas_excel'] ?? 0),
                 'filas_datos' => (int) ($parsed['filas_datos'] ?? 0),
@@ -2693,6 +2696,8 @@ class ProyeccionesVentasController extends Controller
                 'duplicados' => (int) ($parsed['duplicados'] ?? 0),
                 'errores_parse' => count($parsed['errores'] ?? []),
                 'productos' => count($items),
+                'meses_columnas' => count($map['meses']),
+                'productos_con_meses' => $conMeses,
             ];
             if (! $items) {
                 return response()->json([
@@ -2896,9 +2901,17 @@ class ProyeccionesVentasController extends Controller
         if ($prod > 0) {
             $partes[] = $prod.' producto(s) únicos';
         }
+        $mesesCols = (int) ($resumen['meses_columnas'] ?? 0);
+        if ($mesesCols > 0) {
+            $partes[] = $mesesCols.' col(s) de mes';
+        }
+        $conMeses = (int) ($resumen['productos_con_meses'] ?? 0);
+        if ($conMeses > 0) {
+            $partes[] = $conMeses.' con precio en Ene–Dic';
+        }
         $dup = (int) ($resumen['duplicados'] ?? 0);
         if ($dup > 0) {
-            $partes[] = $dup.' duplicado(s) Empresa+CardCode+ItemCode (se quedó la última fila)';
+            $partes[] = $dup.' duplicado(s) fusionados';
         }
         $sinP = (int) ($resumen['omitidos_sin_precio'] ?? 0);
         if ($sinP > 0) {
@@ -2947,9 +2960,20 @@ class ProyeccionesVentasController extends Controller
         $vistos = [];
         $filasExcel = count($sheet);
         $filasDatos = max(0, $filasExcel - 1);
+        $headerWidth = 0;
+        if (isset($sheet[0]) && is_array($sheet[0])) {
+            $headerWidth = count($sheet[0]);
+        }
+        // Asegura leer hasta la última columna de mes mapeada.
+        foreach ($map['meses'] as $colIdx) {
+            $headerWidth = max($headerWidth, ((int) $colIdx) + 1);
+        }
+        if ($map['precio'] !== null) {
+            $headerWidth = max($headerWidth, ((int) $map['precio']) + 1);
+        }
 
         for ($i = 1; $i < count($sheet); $i++) {
-            $row = $sheet[$i];
+            $row = $this->normalizarFilaExcel(is_array($sheet[$i]) ? $sheet[$i] : [], $headerWidth);
             $fila = $i + 1;
             $empresa = strtoupper($this->celdaTexto($row[$map['empresa']] ?? ''));
             $codigo = $this->celdaTexto($row[$map['item']] ?? '');
@@ -2976,6 +3000,10 @@ class ProyeccionesVentasController extends Controller
                 $mesesVals = array_fill(0, 12, null);
                 $mesesLlenos = 0;
                 foreach ($map['meses'] as $idx0 => $colIdx) {
+                    // Filas cortas / celdas vacías al final: no inventar precio.
+                    if (! array_key_exists($colIdx, $row) && ! isset($row[$colIdx])) {
+                        continue;
+                    }
                     $precioMes = $this->celdaNumeroPrecio($row[$colIdx] ?? null);
                     if ($precioMes === null) {
                         continue;
@@ -2998,17 +3026,36 @@ class ProyeccionesVentasController extends Controller
                     continue;
                 }
 
-                // Solo PrecioGlobal (sin meses) → aplica a los 12 meses.
-                if ($mesesLlenos === 0 && $global !== null && $global > 0) {
-                    $g = round($global, 4);
-                    for ($m = 0; $m < 12; $m++) {
-                        $mesesVals[$m] = $g;
-                    }
-                }
+                // IMPORTANTE: mes vacío = no se toca. Ya NO se copia PrecioGlobal
+                // a Ene–Dic (eso pisaba los meses al fallar la lectura de columnas
+                // en plantillas grandes). PrecioGlobal solo actualiza mes=0.
 
                 $key = $empresa.'|'.$card.'|'.$codigo;
                 if (isset($vistos[$key])) {
                     $duplicados++;
+                    // Fusionar: no dejar que una fila posterior vacía borre meses ya leídos.
+                    $prev = $vistos[$key];
+                    $prevMeses = is_array($prev['meses'] ?? null) ? $prev['meses'] : array_fill(0, 12, null);
+                    for ($m = 0; $m < 12; $m++) {
+                        if ($mesesVals[$m] === null && $prevMeses[$m] !== null) {
+                            $mesesVals[$m] = $prevMeses[$m];
+                        }
+                    }
+                    $mesesLlenos = 0;
+                    for ($m = 0; $m < 12; $m++) {
+                        if ($mesesVals[$m] !== null) {
+                            $mesesLlenos++;
+                        }
+                    }
+                    if (($global === null || $global <= 0) && ! empty($prev['global'])) {
+                        $global = (float) $prev['global'];
+                    }
+                    if ($cardName === '' && ! empty($prev['card_name'])) {
+                        $cardName = (string) $prev['card_name'];
+                    }
+                    if ($nombre === '' && ! empty($prev['nombre'])) {
+                        $nombre = (string) $prev['nombre'];
+                    }
                 }
                 $vistos[$key] = [
                     'modo' => 'ancho',
@@ -3021,6 +3068,7 @@ class ProyeccionesVentasController extends Controller
                     'meses' => $mesesVals,
                     'global' => ($global !== null && $global > 0) ? round($global, 4) : null,
                     'fila' => $fila,
+                    'meses_llenos' => $mesesLlenos,
                 ];
                 continue;
             }
@@ -3359,14 +3407,23 @@ class ProyeccionesVentasController extends Controller
         ];
 
         foreach ($header as $idx => $raw) {
+            // Excel/PhpSpreadsheet a veces convierte "Ene"/"Feb" en fecha.
+            $mesDesdeFecha = $this->indiceMesDesdeCeldaEncabezado($raw);
+            if ($mesDesdeFecha !== null && ! isset($map['meses'][$mesDesdeFecha])) {
+                $map['meses'][$mesDesdeFecha] = (int) $idx;
+                continue;
+            }
+
             $h = mb_strtolower(trim((string) $raw));
             $h = str_replace([' ', '_', '-'], '', $h);
             if ($h === '') {
                 continue;
             }
-            if (isset($aliasMes[$h])) {
-                $map['meses'][$aliasMes[$h]] = (int) $idx;
-            } elseif ($map['empresa'] === null && in_array($h, ['empresa', 'company', 'empr'], true)) {
+            if (isset($mesAlias[$h])) {
+                $map['meses'][$mesAlias[$h]] = (int) $idx;
+                continue;
+            }
+            if ($map['empresa'] === null && in_array($h, ['empresa', 'company', 'empr'], true)) {
                 $map['empresa'] = (int) $idx;
                 continue;
             }
@@ -3402,6 +3459,9 @@ class ProyeccionesVentasController extends Controller
             }
             $mesKey = preg_replace('/[^a-z0-9]+/', '', $h);
             $mesKey = preg_replace('/\d{4}$/', '', (string) $mesKey);
+            // "ene2027" / "enero27" → quitar año residual.
+            $mesKey = preg_replace('/(ene|enero|feb|febrero|mar|marzo|abr|abril|may|mayo|jun|junio|jul|julio|ago|agosto|sep|sept|septiembre|oct|octubre|nov|noviembre|dic|diciembre|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\d+$/i', '$1', (string) $mesKey);
+            $mesKey = mb_strtolower((string) $mesKey);
             if (isset($mesAlias[$mesKey]) && ! isset($map['meses'][$mesAlias[$mesKey]])) {
                 $map['meses'][$mesAlias[$mesKey]] = (int) $idx;
             }
@@ -3413,9 +3473,121 @@ class ProyeccionesVentasController extends Controller
             $map['producto'] = null;
         }
 
+        // Plantilla ancha fija: SIEMPRE Ene…Dic = las 12 columnas inmediatamente
+        // después de PrecioGlobal. No confiar en el texto del encabezado (Excel
+        // convierte "Ene"/"Feb" a fechas al guardar archivos grandes).
+        // No aplica al formato legado (columna Mes + Precio).
+        if ($map['precio'] !== null && $map['mes'] === null) {
+            $headerCount = count($header);
+            $remaining = $headerCount - ((int) $map['precio'] + 1);
+            if ($remaining >= 12) {
+                for ($m = 0; $m < 12; $m++) {
+                    $map['meses'][$m] = (int) $map['precio'] + 1 + $m;
+                }
+            }
+        }
+
         ksort($map['meses']);
 
         return $map;
+    }
+
+    /**
+     * Si Excel convirtió el encabezado de mes a fecha, obtiene índice 0–11.
+     *
+     * @param  mixed  $raw
+     */
+    protected function indiceMesDesdeCeldaEncabezado($raw): ?int
+    {
+        if ($raw instanceof \DateTimeInterface) {
+            $n = (int) $raw->format('n');
+
+            return ($n >= 1 && $n <= 12) ? ($n - 1) : null;
+        }
+
+        if (is_numeric($raw) && class_exists(\PhpOffice\PhpSpreadsheet\Shared\Date::class)) {
+            $serial = (float) $raw;
+            // Solo seriales de fecha recientes (≈2000–2100), no códigos/precios.
+            if ($serial >= 36526 && $serial <= 80000) {
+                try {
+                    $dt = \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject($serial);
+                    $n = (int) $dt->format('n');
+
+                    return ($n >= 1 && $n <= 12) ? ($n - 1) : null;
+                } catch (Throwable $e) {
+                    // No era fecha serial usable.
+                }
+            }
+        }
+
+        $txt = trim((string) $raw);
+        if ($txt === '') {
+            return null;
+        }
+        // "2026-01-01", "01/01/2026", etc.
+        if (preg_match('/^(\d{4})-(\d{1,2})-(\d{1,2})/', $txt, $m)) {
+            $n = (int) $m[2];
+
+            return ($n >= 1 && $n <= 12) ? ($n - 1) : null;
+        }
+        if (preg_match('/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/', $txt, $m2)) {
+            $n = (int) $m2[1];
+            if ($n > 12) {
+                $n = (int) $m2[2];
+            }
+
+            return ($n >= 1 && $n <= 12) ? ($n - 1) : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Lee la primera hoja calculando fórmulas (Ene–Dic suelen ser =G2*1.04).
+     *
+     * @param  \Illuminate\Http\UploadedFile|string  $file
+     * @return array<int, array<int, mixed>>
+     */
+    protected function leerPrimeraHojaExcelCalculada($file): array
+    {
+        $path = is_string($file) ? $file : $file->getRealPath();
+        if (! is_string($path) || $path === '' || ! is_file($path)) {
+            throw new \RuntimeException('No se encontró el archivo temporal del Excel.');
+        }
+
+        $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReaderForFile($path);
+        if (method_exists($reader, 'setReadDataOnly')) {
+            // false: necesitamos fórmulas para calcularlas.
+            $reader->setReadDataOnly(false);
+        }
+        $spreadsheet = $reader->load($path);
+        try {
+            $ws = $spreadsheet->getActiveSheet();
+            // nullValue, calculateFormulas=true, formatData=false, returnCellRef=false
+            $rows = $ws->toArray(null, true, false, false);
+        } finally {
+            $spreadsheet->disconnectWorksheets();
+            unset($spreadsheet);
+        }
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    /**
+     * Rellena índices 0..$width-1 para que columnas de mes no “desaparezcan”
+     * cuando PhpSpreadsheet omite celdas vacías al final de la fila.
+     *
+     * @param  array<int|string, mixed>  $row
+     * @return array<int, mixed>
+     */
+    protected function normalizarFilaExcel(array $row, int $width): array
+    {
+        $out = [];
+        for ($c = 0; $c < max(0, $width); $c++) {
+            $out[$c] = array_key_exists($c, $row) ? $row[$c] : null;
+        }
+
+        return $out;
     }
 
     /** @param  mixed  $raw */
@@ -3424,14 +3596,26 @@ class ProyeccionesVentasController extends Controller
         if ($raw === null || $raw === '') {
             return null;
         }
+        if ($raw instanceof \DateTimeInterface) {
+            // Una celda de precio no debería ser fecha; ignorar.
+            return null;
+        }
         if (is_numeric($raw)) {
             return (float) $raw;
         }
         $txt = trim((string) $raw);
-        if ($txt === '') {
+        if ($txt === '' || str_starts_with($txt, '=')) {
+            // Fórmula sin calcular: no es un precio usable.
             return null;
         }
-        $txt = str_replace(['$', 'US$', ' ', ','], ['', '', '', ''], $txt);
+        // Soporta 1,234.56 y 1.234,56
+        $txt = str_replace(['$', 'US$', ' '], ['', '', ''], $txt);
+        if (preg_match('/^\d{1,3}(\.\d{3})+,\d+$/', $txt)) {
+            $txt = str_replace('.', '', $txt);
+            $txt = str_replace(',', '.', $txt);
+        } else {
+            $txt = str_replace(',', '', $txt);
+        }
         if (! is_numeric($txt)) {
             return null;
         }
