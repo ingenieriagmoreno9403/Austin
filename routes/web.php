@@ -1228,6 +1228,11 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/ControlCentros', [CentrosCostosController::class, 'control'])->name('centros.control');
     Route::get('/ControlCentros/detalle', [CentrosCostosController::class, 'detalle'])->name('centros.detalle');
     Route::get('/AnalisisProgreso', [CentrosCostosController::class, 'analisis'])->name('centros.analisis');
+    Route::get('/ExportarInformacionGastos', [CentrosCostosController::class, 'exportarInformacion'])->name('centros.exportar');
+    Route::get('/ExportarInformacionGastos/excel', [CentrosCostosController::class, 'exportarInformacionExcel'])->name('centros.exportar.excel');
+    Route::post('/ExportarInformacionGastos/excel/start', [CentrosCostosController::class, 'exportarInformacionExcelStart'])->name('centros.exportar.excel.start');
+    Route::get('/ExportarInformacionGastos/excel/status/{token}', [CentrosCostosController::class, 'exportarInformacionExcelStatus'])->name('centros.exportar.excel.status');
+    Route::get('/ExportarInformacionGastos/excel/file/{token}', [CentrosCostosController::class, 'exportarInformacionExcelFile'])->name('centros.exportar.excel.file');
     Route::get('/CentrosCostos/api/catalogo', [CentrosCostosController::class, 'catalogo'])->name('centros.catalogo');
     Route::post('/CentrosCostos/api/catalogo/sincronizar', [CentrosCostosController::class, 'sincronizarCatalogo'])->name('centros.api.catalogo_sync');
     Route::get('/CentrosCostos/api/gasto-real', [CentrosCostosController::class, 'gastoReal'])->name('centros.api.gasto_real');

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\CcBudgetXlsxStreamer;
 use App\Exports\CcCapturaPlantillaExport;
 use App\Models\CcAsignacion;
 use App\Models\CcAsignacionCuenta;
@@ -23,7 +24,9 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 use Throwable;
@@ -107,6 +110,662 @@ class CentrosCostosController extends Controller
             'usuarios' => [],
             'catalogoLocal' => $localCat->disponible() && $localCat->tieneDatos(),
         ]);
+    }
+
+    public function exportarInformacion()
+    {
+        return $this->page('exportar', 'CentrosCostos.exportar', [
+            'exportExcelUrl' => route('centros.exportar.excel'),
+        ]);
+    }
+
+    /**
+     * Descarga Excel sincrónica (compatibilidad). Preferir start/status/file para evitar 504.
+     */
+    public function exportarInformacionExcel(Request $request)
+    {
+        $prepared = $this->prepararExportBudgetGastosParams($request);
+        if ($prepared instanceof JsonResponse || $prepared instanceof \Illuminate\Http\RedirectResponse) {
+            return $prepared;
+        }
+
+        try {
+            $this->boostExportBudgetGastosLimits();
+            $pack = $this->generarArchivoExportBudgetGastos(
+                $prepared['ciclo'],
+                $prepared['empresa'],
+                null,
+                (int) (auth()->id() ?? 0)
+            );
+
+            return response()->download($pack['absolute'], $pack['filename'], [
+                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ])->deleteFileAfterSend(true);
+        } catch (Throwable $e) {
+            Log::error('Export budget gastos Excel falló', [
+                'ciclo' => $prepared['ciclo'],
+                'empresa' => $prepared['empresa'],
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return $this->exportBudgetGastosErrorResponse($request, $this->motivoErrorExportBudgetGastos($e), 500);
+        }
+    }
+
+    /**
+     * Inicia la generación en segundo plano (evita 504 del proxy).
+     */
+    public function exportarInformacionExcelStart(Request $request): JsonResponse
+    {
+        $prepared = $this->prepararExportBudgetGastosParams($request);
+        if ($prepared instanceof JsonResponse) {
+            return $prepared;
+        }
+        if ($prepared instanceof \Illuminate\Http\RedirectResponse) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Error al descargar',
+                'motivo' => 'Selecciona un ciclo para exportar.',
+            ], 422);
+        }
+
+        $token = (string) Str::uuid();
+        $userId = (int) (auth()->id() ?? 0);
+        $meta = [
+            'status' => 'pending',
+            'pct' => 5,
+            'motivo' => null,
+            'filename' => null,
+            'path' => null,
+            'user_id' => $userId,
+            'ciclo' => $prepared['ciclo'],
+            'empresa' => $prepared['empresa'],
+            'created_at' => now()->toIso8601String(),
+        ];
+        Cache::put($this->exportBudgetGastosCacheKey($token), $meta, now()->addHours(2));
+
+        $ciclo = $prepared['ciclo'];
+        $empresa = $prepared['empresa'];
+
+        dispatch(function () use ($token, $ciclo, $empresa, $userId) {
+            $this->boostExportBudgetGastosLimits();
+            $key = $this->exportBudgetGastosCacheKey($token);
+
+            register_shutdown_function(function () use ($key) {
+                $err = error_get_last();
+                if (! is_array($err)) {
+                    return;
+                }
+                $msg = strtolower((string) ($err['message'] ?? ''));
+                $fatal = in_array((int) ($err['type'] ?? 0), [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)
+                    || str_contains($msg, 'allowed memory size')
+                    || str_contains($msg, 'maximum execution time');
+                if (! $fatal) {
+                    return;
+                }
+                $meta = Cache::get($key);
+                if (! is_array($meta) || in_array(($meta['status'] ?? ''), ['ready', 'error'], true)) {
+                    return;
+                }
+                $meta['status'] = 'error';
+                $meta['pct'] = 0;
+                $meta['motivo'] = str_contains($msg, 'memory')
+                    ? 'Se agotó la memoria del servidor al generar el archivo. Exporta filtrando por una empresa.'
+                    : 'Se agotó el tiempo de ejecución al generar el archivo. Exporta filtrando por una empresa.';
+                Cache::put($key, $meta, now()->addHours(2));
+            });
+
+            $meta = Cache::get($key);
+            if (! is_array($meta)) {
+                return;
+            }
+            try {
+                $meta['status'] = 'running';
+                $meta['pct'] = 15;
+                Cache::put($key, $meta, now()->addHours(2));
+
+                $pack = $this->generarArchivoExportBudgetGastos($ciclo, $empresa, $token, $userId);
+
+                $meta['status'] = 'ready';
+                $meta['pct'] = 100;
+                $meta['filename'] = $pack['filename'];
+                $meta['path'] = $pack['relative'];
+                $meta['motivo'] = null;
+                $meta['rows'] = $pack['rows'] ?? null;
+                Cache::put($key, $meta, now()->addHours(2));
+            } catch (Throwable $e) {
+                Log::error('Export budget gastos Excel (async) falló', [
+                    'token' => $token,
+                    'ciclo' => $ciclo,
+                    'empresa' => $empresa,
+                    'user_id' => $userId,
+                    'message' => $e->getMessage(),
+                ]);
+                $meta['status'] = 'error';
+                $meta['pct'] = 0;
+                $meta['motivo'] = $this->motivoErrorExportBudgetGastos($e);
+                Cache::put($key, $meta, now()->addHours(2));
+            }
+        })->afterResponse();
+
+        return response()->json([
+            'ok' => true,
+            'token' => $token,
+            'message' => 'Generando Excel en segundo plano…',
+        ]);
+    }
+
+    public function exportarInformacionExcelStatus(string $token): JsonResponse
+    {
+        $token = trim($token);
+        if ($token === '' || ! preg_match('/^[a-f0-9\-]{36}$/i', $token)) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'Token de exportación inválido.',
+            ], 422);
+        }
+
+        $meta = Cache::get($this->exportBudgetGastosCacheKey($token));
+        if (! is_array($meta)) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'La exportación expiró o no existe. Vuelve a intentarlo.',
+            ], 404);
+        }
+
+        $userId = (int) (auth()->id() ?? 0);
+        if (! empty($meta['user_id']) && (int) $meta['user_id'] !== $userId) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'No tienes acceso a esta exportación.',
+            ], 403);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'status' => (string) ($meta['status'] ?? 'pending'),
+            'pct' => (int) ($meta['pct'] ?? 0),
+            'motivo' => $meta['motivo'] ?? null,
+            'filename' => $meta['filename'] ?? null,
+        ]);
+    }
+
+    public function exportarInformacionExcelFile(string $token)
+    {
+        $token = trim($token);
+        if ($token === '' || ! preg_match('/^[a-f0-9\-]{36}$/i', $token)) {
+            return $this->exportBudgetGastosErrorResponse(request(), 'Token de exportación inválido.', 422);
+        }
+
+        $meta = Cache::get($this->exportBudgetGastosCacheKey($token));
+        if (! is_array($meta) || ($meta['status'] ?? '') !== 'ready') {
+            return $this->exportBudgetGastosErrorResponse(
+                request(),
+                is_array($meta) ? (string) ($meta['motivo'] ?: 'El archivo aún no está listo.') : 'La exportación expiró o no existe.',
+                409
+            );
+        }
+
+        $userId = (int) (auth()->id() ?? 0);
+        if (! empty($meta['user_id']) && (int) $meta['user_id'] !== $userId) {
+            return $this->exportBudgetGastosErrorResponse(request(), 'No tienes acceso a esta exportación.', 403);
+        }
+
+        $relative = (string) ($meta['path'] ?? '');
+        if ($relative === '' || ! Storage::disk('local')->exists($relative)) {
+            return $this->exportBudgetGastosErrorResponse(request(), 'No se encontró el archivo generado.', 404);
+        }
+
+        $filename = (string) ($meta['filename'] ?: basename($relative));
+        $absolute = Storage::disk('local')->path($relative);
+        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        $contentType = $ext === 'csv'
+            ? 'text/csv; charset=UTF-8'
+            : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+        return response()->download($absolute, $filename, [
+            'Content-Type' => $contentType,
+        ])->deleteFileAfterSend(true);
+    }
+
+    protected function exportBudgetGastosCacheKey(string $token): string
+    {
+        return 'cc_export_budget_'.$token;
+    }
+
+    protected function boostExportBudgetGastosLimits(): void
+    {
+        @set_time_limit(900);
+        @ini_set('max_execution_time', '900');
+        @ini_set('memory_limit', '512M');
+        ignore_user_abort(true);
+    }
+
+    /**
+     * @return array{ciclo: string, empresa: string}|JsonResponse|\Illuminate\Http\RedirectResponse
+     */
+    protected function prepararExportBudgetGastosParams(Request $request)
+    {
+        $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
+        if ($ciclo === '') {
+            return $this->exportBudgetGastosErrorResponse($request, 'Selecciona un ciclo para exportar.', 422);
+        }
+
+        if (! Schema::hasTable('tbl_cc_asignaciones')) {
+            return $this->exportBudgetGastosErrorResponse(
+                $request,
+                'Falta ejecutar la migración de asignaciones (tbl_cc_asignaciones).',
+                422
+            );
+        }
+
+        $empresa = strtoupper(trim((string) $request->get('empresa', '')));
+        $alias = ['ABSA' => 'AUSTIN'];
+        if (isset($alias[$empresa])) {
+            $empresa = $alias[$empresa];
+        }
+
+        return [
+            'ciclo' => $ciclo,
+            'empresa' => $empresa,
+        ];
+    }
+
+    /**
+     * Genera .xlsx en streaming (evita OOM de PhpSpreadsheet con cientos de miles de filas).
+     *
+     * @return array{absolute: string, relative: string, filename: string, rows: int}
+     */
+    protected function generarArchivoExportBudgetGastos(string $ciclo, string $empresa, ?string $token = null, int $userId = 0): array
+    {
+        $suffix = $empresa !== '' ? '_'.$empresa : '';
+        $filename = 'budget_gastos_'.$ciclo.$suffix.'_'.now()->format('Ymd_His').'.xlsx';
+        $dir = 'cc_exports';
+        if (! Storage::disk('local')->exists($dir)) {
+            Storage::disk('local')->makeDirectory($dir);
+        }
+        $relative = $dir.'/'.($token ?: (string) Str::uuid()).'.xlsx';
+        $absolute = Storage::disk('local')->path($relative);
+
+        $rowCount = $this->escribirXlsxExportBudgetGastos(
+            $absolute,
+            $ciclo,
+            $empresa !== '' ? $empresa : null,
+            $userId
+        );
+
+        if ($rowCount <= 0) {
+            if (is_file($absolute)) {
+                @unlink($absolute);
+            }
+            throw new \RuntimeException(
+                'No hay cuentas asignadas para exportar en este ciclo'
+                .($empresa !== '' ? ' / empresa '.$empresa : '')
+                .'. Revisa asignaciones o el filtro de empresa.'
+            );
+        }
+
+        if (! is_file($absolute)) {
+            throw new \RuntimeException('No se pudo guardar el archivo Excel en disco.');
+        }
+
+        Log::info('Export budget gastos listo', [
+            'ciclo' => $ciclo,
+            'empresa' => $empresa,
+            'user_id' => $userId,
+            'rows' => $rowCount,
+            'file' => $relative,
+        ]);
+
+        return [
+            'absolute' => $absolute,
+            'relative' => $relative,
+            'filename' => $filename,
+            'rows' => $rowCount,
+        ];
+    }
+
+    /**
+     * Escribe el export a XLSX fila a fila (bajo consumo de memoria).
+     */
+    protected function escribirXlsxExportBudgetGastos(string $absolute, string $ciclo, ?string $empresa, int $userId): int
+    {
+        $cicloCodigo = strtoupper(trim($ciclo));
+        $cicloRow = Schema::hasTable('tbl_cc_ciclos')
+            ? CcCiclo::query()->whereRaw('UPPER(codigo) = ?', [$cicloCodigo])->first()
+            : null;
+
+        $anioBudget = (int) ($cicloRow->anio_presupuesto ?? 0);
+        if ($anioBudget < 2000 || $anioBudget > 2100) {
+            if (preg_match('/(20\d{2}|19\d{2})/', $cicloCodigo, $m)) {
+                $anioBudget = (int) $m[1];
+            } else {
+                $anioBudget = (int) date('Y');
+            }
+        }
+
+        $tc = (float) ($cicloRow->tipo_cambio ?? 0);
+        if ($tc <= 0) {
+            $tc = 20.0;
+        }
+        $tc = round($tc, 4);
+
+        if ($userId <= 0) {
+            $userId = (int) (auth()->id() ?? 0);
+        }
+
+        $asignados = $this->listaCuentasAsignadasExportGastos(
+            $cicloCodigo,
+            ($empresa !== null && $empresa !== '') ? $empresa : null,
+            $userId
+        );
+        if ($asignados === []) {
+            return 0;
+        }
+
+        $pptoByKey = $this->mapaPresupuestosExportGastos(
+            $cicloCodigo,
+            ($empresa !== null && $empresa !== '') ? $empresa : null
+        );
+
+        $headings = [
+            'COMPANY', 'CC', 'NAME CC', 'CUENTA', 'NAME CUENTA',
+            'YEAR', 'MONTH', 'ORIGIN', 'IMPORTEUSD', 'IMPORTEMXN', 'TC',
+        ];
+
+        $rowGenerator = function () use ($asignados, $pptoByKey, $anioBudget, $tc) {
+            foreach ($asignados as $item) {
+                $emp = $item['empresa'];
+                $centro = $item['centro'];
+                $centroNombre = $item['centro_nombre'];
+                $cuenta = $item['cuenta'];
+                $cuentaNombre = $item['cuenta_nombre'];
+
+                $info = null;
+                foreach ($this->clavesCuentaCaptura($emp, $centro, $cuenta) as $key) {
+                    if (isset($pptoByKey[$key])) {
+                        $info = $pptoByKey[$key];
+                        break;
+                    }
+                }
+
+                $meses = $info['meses'] ?? array_fill(0, 12, null);
+                if ($cuentaNombre === '' && ! empty($info['cuenta_nombre'])) {
+                    $cuentaNombre = $info['cuenta_nombre'];
+                }
+
+                for ($i = 0; $i < 12; $i++) {
+                    $raw = $meses[$i] ?? null;
+                    // MXN como en captura (2 decimales).
+                    $importeMxn = ($raw === null || $raw === '') ? 0.0 : $this->ccRound2Money((float) $raw);
+                    // USD = MXN/TC sin redondear a centavos por fila.
+                    // Si se redondea cada mes a 2 decimales, la SUMA del Excel no coincide
+                    // con el total del sistema (que hace money(totMxn) = round2(totMxn/TC) una vez).
+                    $importeUsd = $tc > 0 ? ($importeMxn / $tc) : 0.0;
+
+                    yield [
+                        $emp,
+                        $centro,
+                        $centroNombre,
+                        $cuenta,
+                        $cuentaNombre,
+                        $anioBudget,
+                        $i + 1,
+                        'BUDGET',
+                        $importeUsd,
+                        $importeMxn,
+                        $tc,
+                    ];
+                }
+            }
+        };
+
+        $streamer = new CcBudgetXlsxStreamer();
+
+        return $streamer->write(
+            $absolute,
+            'Budget '.$cicloCodigo,
+            $headings,
+            $rowGenerator()
+        );
+    }
+
+    /**
+     * @return array<string, array{meses: array<int, float|null>, cuenta_nombre: string}>
+     */
+    protected function mapaPresupuestosExportGastos(string $cicloCodigo, ?string $empresa = null): array
+    {
+        $pptoByKey = [];
+        if (! Schema::hasTable('tbl_cc_presupuestos')) {
+            return $pptoByKey;
+        }
+
+        $cols = ['empresa', 'centro_codigo', 'cuenta_codigo', 'cuenta_nombre'];
+        for ($i = 1; $i <= 12; $i++) {
+            $cols[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+        }
+
+        $q = DB::table('tbl_cc_presupuestos')->whereRaw('UPPER(ciclo_codigo) = ?', [$cicloCodigo]);
+        if ($empresa !== null && $empresa !== '') {
+            $emp = strtoupper(trim($empresa));
+            $empresas = [$emp];
+            if ($emp === 'AUSTIN') {
+                $empresas[] = 'ABSA';
+            } elseif ($emp === 'ABSA') {
+                $empresas[] = 'AUSTIN';
+            }
+            $q->where(function ($w) use ($empresas) {
+                foreach ($empresas as $e) {
+                    $w->orWhereRaw('UPPER(empresa) = ?', [$e]);
+                }
+            });
+        }
+
+        foreach ($q->select($cols)->cursor() as $row) {
+            $emp = strtoupper(trim((string) $row->empresa));
+            if ($emp === 'ABSA') {
+                $emp = 'AUSTIN';
+            }
+            $centro = trim((string) $row->centro_codigo);
+            $cuenta = trim((string) $row->cuenta_codigo);
+            if ($emp === '' || $centro === '' || $cuenta === '') {
+                continue;
+            }
+            $meses = [];
+            for ($i = 1; $i <= 12; $i++) {
+                $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                $val = $row->{$col} ?? null;
+                $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
+            }
+            $info = [
+                'meses' => $meses,
+                'cuenta_nombre' => trim((string) ($row->cuenta_nombre ?? '')),
+            ];
+            foreach ($this->clavesCuentaCaptura($emp, $centro, $cuenta) as $key) {
+                if (! isset($pptoByKey[$key])) {
+                    $pptoByKey[$key] = $info;
+                }
+            }
+        }
+
+        return $pptoByKey;
+    }
+
+    /**
+     * @return \Illuminate\Http\JsonResponse|\Illuminate\Http\RedirectResponse
+     */
+    protected function exportBudgetGastosErrorResponse(Request $request, string $motivo, int $status = 500)
+    {
+        $wantsJson = $request->expectsJson()
+            || $request->ajax()
+            || str_contains(strtolower((string) $request->header('Accept', '')), 'application/json')
+            || $request->header('X-Requested-With') === 'XMLHttpRequest';
+
+        if ($wantsJson) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Error al descargar',
+                'motivo' => $motivo,
+            ], $status);
+        }
+
+        return redirect()
+            ->route('centros.exportar')
+            ->with('error_msg', 'Error al descargar: '.$motivo);
+    }
+
+    protected function motivoErrorExportBudgetGastos(Throwable $e): string
+    {
+        $msg = trim((string) $e->getMessage());
+        $lower = strtolower($msg);
+
+        if (
+            str_contains($lower, 'maximum execution time')
+            || str_contains($lower, 'max_execution_time')
+            || str_contains($lower, 'execution time')
+            || str_contains($lower, 'timed out')
+            || str_contains($lower, 'timeout')
+        ) {
+            return 'Se agotó el tiempo de ejecución al generar el Excel. Vuelve a intentar; si persiste, exporta por empresa.';
+        }
+
+        if (
+            str_contains($lower, 'allowed memory size')
+            || str_contains($lower, 'out of memory')
+            || str_contains($lower, 'memory')
+        ) {
+            return 'Se agotó la memoria del servidor al generar el Excel. Intenta exportar filtrando por una empresa.';
+        }
+
+        if ($msg === '') {
+            return 'Error interno al generar el archivo ('.class_basename($e).').';
+        }
+
+        if (mb_strlen($msg) > 280) {
+            $msg = mb_substr($msg, 0, 277).'…';
+        }
+
+        return $msg;
+    }
+
+    /**
+     * Misma regla que round2() en public/js/centros-costos.js (money / captura).
+     */
+    protected function ccRound2Money($n): float
+    {
+        $v = (float) $n;
+        if (! is_finite($v)) {
+            return 0.0;
+        }
+        $abs = abs($v);
+        $s = rtrim(rtrim(sprintf('%.8F', $abs), '0'), '.');
+        $dot = strpos($s, '.');
+        $decimals = $dot === false ? 0 : (strlen($s) - $dot - 1);
+        $sign = $v < 0 ? -1.0 : 1.0;
+        if ($decimals > 3) {
+            return $sign * floor($abs * 100 + 1e-8) / 100;
+        }
+
+        return round($v, 2);
+    }
+
+    /**
+     * Cuentas únicas asignadas para export.
+     * Primero las del usuario; si no tiene, todas las del ciclo (admins / consulta).
+     *
+     * @return array<int, array{empresa: string, centro: string, centro_nombre: string, cuenta: string, cuenta_nombre: string}>
+     */
+    protected function listaCuentasAsignadasExportGastos(string $ciclo, ?string $empresa = null, int $userId = 0): array
+    {
+        if (! Schema::hasTable('tbl_cc_asignaciones')) {
+            return [];
+        }
+
+        $ciclo = strtoupper(trim($ciclo));
+        $out = $this->cargarCuentasAsignadasExportGastos($ciclo, $empresa, $userId > 0 ? $userId : null);
+
+        // Sin asignaciones propias: exportar todas las del ciclo (igual espíritu que ventas).
+        if ($out === [] && $userId > 0) {
+            $out = $this->cargarCuentasAsignadasExportGastos($ciclo, $empresa, null);
+        }
+
+        return $out;
+    }
+
+    /**
+     * @return array<int, array{empresa: string, centro: string, centro_nombre: string, cuenta: string, cuenta_nombre: string}>
+     */
+    protected function cargarCuentasAsignadasExportGastos(string $ciclo, ?string $empresa = null, ?int $userId = null): array
+    {
+        if (! Schema::hasTable('tbl_cc_asignacion_cuentas')) {
+            return [];
+        }
+
+        $q = DB::table('tbl_cc_asignaciones as a')
+            ->join('tbl_cc_asignacion_cuentas as c', 'c.asignacion_id', '=', 'a.id')
+            ->whereRaw('UPPER(a.ciclo_codigo) = ?', [$ciclo])
+            ->whereNotNull('c.cuenta_codigo')
+            ->where('c.cuenta_codigo', '!=', '');
+
+        if ($userId !== null && $userId > 0) {
+            $q->where('a.user_id', $userId);
+        }
+
+        if ($empresa !== null && $empresa !== '') {
+            $emp = strtoupper(trim($empresa));
+            $empresas = [$emp];
+            if ($emp === 'AUSTIN') {
+                $empresas[] = 'ABSA';
+            } elseif ($emp === 'ABSA') {
+                $empresas[] = 'AUSTIN';
+            }
+            $q->where(function ($w) use ($empresas) {
+                foreach ($empresas as $e) {
+                    $w->orWhereRaw('UPPER(a.empresa) = ?', [$e]);
+                }
+            });
+        }
+
+        $seen = [];
+        $out = [];
+        foreach ($q->orderBy('a.empresa')->orderBy('a.centro_codigo')->orderBy('c.cuenta_codigo')
+            ->select([
+                'a.empresa',
+                'a.centro_codigo',
+                'a.centro_nombre',
+                'c.cuenta_codigo',
+                'c.cuenta_nombre',
+            ])
+            ->cursor() as $row) {
+            $emp = strtoupper(trim((string) $row->empresa));
+            if ($emp === 'ABSA') {
+                $emp = 'AUSTIN';
+            }
+            $centro = trim((string) $row->centro_codigo);
+            $cuenta = trim((string) $row->cuenta_codigo);
+            if ($emp === '' || $centro === '' || $cuenta === '') {
+                continue;
+            }
+            $canon = $this->capturaBudgetKey($emp, $centro, $cuenta);
+            if (isset($seen[$canon])) {
+                continue;
+            }
+            $seen[$canon] = true;
+            $out[] = [
+                'empresa' => $emp,
+                'centro' => $centro,
+                'centro_nombre' => trim((string) ($row->centro_nombre ?? '')),
+                'cuenta' => $cuenta,
+                'cuenta_nombre' => trim((string) ($row->cuenta_nombre ?? '')),
+            ];
+        }
+
+        return $out;
     }
 
     public function grupos()

@@ -1,6 +1,6 @@
 @php
-    $ccPage = 'control';
-    $ccNavOmitAdmin = 'inactive';
+    $ccPage = $ccPage ?? 'control';
+    $ccNavOmitAdmin = $ccNavOmitAdmin ?? 'inactive';
 @endphp
 <!-- 
     
@@ -18,6 +18,9 @@
         </a>
         <a href="{{ route('centros.analisis') }}" class="{{ $ccPage === 'analisis' ? 'is-active' : '' }}">
             <i class="fa-solid fa-chart-line me-1"></i> Análisis de Progreso
+        </a>
+        <a href="{{ route('centros.exportar') }}" class="{{ $ccPage === 'exportar' ? 'is-active' : '' }}">
+            <i class="fa-solid fa-file-excel me-1"></i> Exportar budget
         </a>
     </nav> 
 
