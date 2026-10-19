@@ -1808,17 +1808,15 @@
         return out;
     }
 
-    function persistBudget(empresa, cc, cuenta, months, opts) {
+    /** Solo memoria (sin PUT). Edición de meses usa esto; Guardar confirma al servidor. */
+    function applyBudgetLocal(empresa, cc, cuenta, months, opts) {
         opts = opts || {};
         months = protectLockedMonths(empresa, cc, cuenta, months, opts);
         months = (months || []).map(function (v) {
             if (!mesLleno(v)) return null;
             return toStoreQty(v);
         });
-        var ciclo = cicloActualCodigo();
-        if (!ciclo) return;
         var key = budgetKey(empresa, cc, cuenta);
-        var timerKey = String(ciclo).toUpperCase() + '|' + key;
         CC.state.budgets = CC.state.budgets || {};
         CC.state.budgets[key] = months.slice();
         CC.state.completados = CC.state.completados || {};
@@ -1832,7 +1830,21 @@
         }
         if (done) CC.state.completados[key] = true;
         else delete CC.state.completados[key];
+        return { months: months.slice(), done: done, key: key };
+    }
 
+    function persistBudget(empresa, cc, cuenta, months, opts) {
+        opts = opts || {};
+        var applied = applyBudgetLocal(empresa, cc, cuenta, months, opts);
+        months = applied.months;
+        var done = applied.done;
+        var key = applied.key;
+        var ciclo = cicloActualCodigo();
+        if (!ciclo) return;
+        // Edición de celdas / réplica enero: no autosave; Guardar / Completado sí hacen PUT.
+        if (opts.localOnly) return;
+
+        var timerKey = String(ciclo).toUpperCase() + '|' + key;
         var monthsToSave = months.slice();
             var nombre = '';
             var list = (control && control._allCtas) || [];
@@ -7073,7 +7085,8 @@
         var valN = readQtyInput(shown);
         var wasEmpty = !mesesTodosLlenos(months) && months.every(function (x) { return !mesLleno(x); });
         months[m] = valN;
-        persistBudget(c.empresa, c.codigo, codigo, months);
+        // Sin autosave al cambiar de mes: solo memoria. Guardar / Guardar y seguir confirman.
+        persistBudget(c.empresa, c.codigo, codigo, months, { localOnly: true });
 
         var cell = inp.closest('.cc-month-cell, .cc-matrix-cell, td');
         if (cell) {
@@ -7086,6 +7099,7 @@
             }
         }
 
+        // Si capturas enero en un producto vacío: pregunta si replicar el mismo monto en feb–dic.
         if (wasEmpty && valN > 0 && m === 0 && !control.locked && !budgetLockCount()) {
             if (window.Swal) {
                 Swal.fire({
@@ -7101,8 +7115,8 @@
                         var filled = months.map(function (v, idx) {
                             return mesBloqueadoBudget(idx) ? v : valN;
                         });
-                        persistBudget(c.empresa, c.codigo, codigo, filled);
-                        toast('success', 'Cantidad fija aplicada', 'Los meses editables quedaron en ' + qtyLabel(valN));
+                        persistBudget(c.empresa, c.codigo, codigo, filled, { localOnly: true });
+                        toast('success', 'Cantidad fija aplicada', 'Los 12 meses quedaron en ' + qtyLabel(valN) + '. Pulsa Guardar para confirmar.');
                     }
                     refreshControlAfterEdit(codigo);
                 });

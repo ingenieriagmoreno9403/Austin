@@ -1259,6 +1259,8 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::post('/Ventas/Asignaciones/{ciclo}/asignaciones', [ProyeccionesVentasController::class, 'storeAsignacion'])->name('pv.asignaciones.store');
     Route::put('/Ventas/Asignaciones/{ciclo}/asignaciones/{id}', [ProyeccionesVentasController::class, 'updateAsignacion'])->name('pv.asignaciones.update');
     Route::delete('/Ventas/Asignaciones/{ciclo}/asignaciones/{id}', [ProyeccionesVentasController::class, 'destroyAsignacion'])->name('pv.asignaciones.destroy');
+    Route::get('/Ventas/Asignaciones/{ciclo}/copiar-fuentes', [ProyeccionesVentasController::class, 'listCopiarFuentesSiop'])->name('pv.asignaciones.copiar_fuentes');
+    Route::post('/Ventas/Asignaciones/{ciclo}/copiar-desde', [ProyeccionesVentasController::class, 'copiarDesdeBudgetSiop'])->name('pv.asignaciones.copiar_desde');
     Route::get('/Ventas/Asignaciones/{ciclo}/importar-usuarios', [ProyeccionesVentasController::class, 'listImportarUsuarios'])->name('pv.importar.usuarios');
     Route::put('/Ventas/Asignaciones/{ciclo}/importar-usuarios', [ProyeccionesVentasController::class, 'syncImportarUsuarios'])->name('pv.importar.usuarios.sync');
     Route::get('/Ventas/Asignaciones/{ciclo}', [ProyeccionesVentasController::class, 'ciclo'])->name('pv.ciclo');

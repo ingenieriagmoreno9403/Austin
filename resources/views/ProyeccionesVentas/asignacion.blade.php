@@ -16,6 +16,11 @@
             <p class="cc-sub" id="asig-sub">Primero el usuario y el permiso. Con Capturar sigue empresa, cliente y productos. Con Revisar, toda la empresa usa los productos que ya tienen los usuarios; si eliges clientes, los productos no son obligatorios.</p>
         </div>
         <div class="cc-header-actions">
+            @if(!empty($bootstrap['esSiop']))
+            <button type="button" class="cc-btn cc-btn-ink" id="asig-copiar-budget" title="Copia asignaciones y proyecciones desde un Budget al SIOP (el origen no se modifica)">
+                <i class="fa-solid fa-copy"></i> Copiar desde Budget
+            </button>
+            @endif
             <a class="cc-btn" href="{{ route('pv.ciclo', $ciclo) }}">
                 <i class="fa-solid fa-arrow-left"></i> Ciclo
             </a>
@@ -198,6 +203,9 @@
         cicloUrl: @json(route('pv.ciclo', $ciclo)),
         listUrl: @json(route('pv.asignaciones.index', $ciclo)),
         storeUrl: @json(route('pv.asignaciones.store', $ciclo)),
+        copiarFuentesUrl: @json(!empty($bootstrap['esSiop']) ? route('pv.asignaciones.copiar_fuentes', $ciclo) : null),
+        copiarDesdeUrl: @json(!empty($bootstrap['esSiop']) ? route('pv.asignaciones.copiar_desde', $ciclo) : null),
+        esSiop: @json(!empty($bootstrap['esSiop'])),
         csrf: @json(csrf_token()),
         usuarios: @json($bootstrap['usuarios'] ?? [])
     });

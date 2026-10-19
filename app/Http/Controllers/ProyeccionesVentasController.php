@@ -5926,6 +5926,11 @@ class ProyeccionesVentasController extends Controller
         $cicloRow = Schema::hasTable('tbl_pv_ciclos')
             ? PvCiclo::query()->where('codigo', $ciclo)->first()
             : null;
+        $tipoBudget = $cicloRow
+            ? $this->normalizeTipoBudget(
+                Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $cicloRow->tipo_budget : null
+            )
+            : null;
 
         return $this->page('asignacion', 'ProyeccionesVentas.asignacion', [
             'cicloCodigo' => $ciclo,
@@ -5934,7 +5939,447 @@ class ProyeccionesVentasController extends Controller
             'permisosCatalogo' => $this->permisosCatalogoAsignacion(),
             'anioGasto' => $cicloRow ? (int) $cicloRow->anio_referencia : null,
             'anioPresupuesto' => $cicloRow ? (int) $cicloRow->anio_presupuesto : null,
+            'tipoBudget' => $tipoBudget,
+            'esSiop' => $tipoBudget === 'SIOP',
         ]);
+    }
+
+    /**
+     * Ciclos Budget (u otros no-SIOP) disponibles para copiar a un ciclo SIOP.
+     */
+    public function listCopiarFuentesSiop(string $ciclo): JsonResponse
+    {
+        $destino = Schema::hasTable('tbl_pv_ciclos')
+            ? PvCiclo::query()->where('codigo', $ciclo)->first()
+            : null;
+        if (! $destino) {
+            return response()->json(['message' => 'Ciclo destino no encontrado.'], 404);
+        }
+        $tipoDest = $this->normalizeTipoBudget(
+            Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $destino->tipo_budget : null
+        );
+        if ($tipoDest !== 'SIOP') {
+            return response()->json(['message' => 'Solo ciclos SIOP pueden copiar desde un Budget.'], 422);
+        }
+
+        $anio = (int) ($destino->anio_presupuesto ?? 0);
+        $q = PvCiclo::query()->where('codigo', '!=', $ciclo);
+        if (Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget')) {
+            $q->where(function ($inner) {
+                $inner->where('tipo_budget', 'BUDGET')
+                    ->orWhereNull('tipo_budget')
+                    ->orWhere('tipo_budget', '');
+            });
+        }
+        if ($anio > 0) {
+            $q->orderByRaw('CASE WHEN anio_presupuesto = ? THEN 0 ELSE 1 END', [$anio]);
+        }
+        $q->orderByDesc('anio_presupuesto')->orderBy('codigo');
+
+        $fuentes = [];
+        foreach ($q->limit(80)->get() as $c) {
+            $codigo = (string) $c->codigo;
+            $stats = [
+                'asignaciones' => Schema::hasTable('tbl_pv_asignaciones')
+                    ? (int) PvAsignacion::query()->where('ciclo_codigo', $codigo)->count()
+                    : 0,
+                'productos' => 0,
+                'proyecciones' => Schema::hasTable('tbl_pv_proyecciones')
+                    ? (int) PvPresupuesto::query()->where('ciclo_codigo', $codigo)->count()
+                    : 0,
+                'captura_clientes' => Schema::hasTable('tbl_pv_captura_clientes')
+                    ? (int) DB::table('tbl_pv_captura_clientes')->where('ciclo_codigo', $codigo)->count()
+                    : 0,
+            ];
+            if (Schema::hasTable('tbl_pv_asignacion_productos') && Schema::hasTable('tbl_pv_asignaciones')) {
+                $stats['productos'] = (int) DB::table('tbl_pv_asignacion_productos as ap')
+                    ->join('tbl_pv_asignaciones as a', 'a.id', '=', 'ap.asignacion_id')
+                    ->where('a.ciclo_codigo', $codigo)
+                    ->count();
+            }
+            $fuentes[] = [
+                'codigo' => $codigo,
+                'nombre' => (string) ($c->nombre ?? $codigo),
+                'anio' => (int) ($c->anio_presupuesto ?? 0),
+                'estado' => $this->normalizeCicloEstado($c->estado ?? 'abierto'),
+                'tipoBudget' => $this->normalizeTipoBudget(
+                    Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $c->tipo_budget : null
+                ) ?: 'BUDGET',
+                'mismoAnio' => $anio > 0 && (int) ($c->anio_presupuesto ?? 0) === $anio,
+                'stats' => $stats,
+            ];
+        }
+
+        return response()->json([
+            'ok' => true,
+            'ciclo' => $ciclo,
+            'fuentes' => $fuentes,
+        ]);
+    }
+
+    /**
+     * Copia asignaciones + proyecciones (+ captura clientes / permisos usuario)
+     * desde un Budget hacia el ciclo SIOP destino. El origen no se modifica.
+     */
+    public function copiarDesdeBudgetSiop(Request $request, string $ciclo): JsonResponse
+    {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(300);
+        }
+
+        $data = $request->validate([
+            'ciclo_origen' => 'required|string|max:40',
+            'reemplazar' => 'nullable|boolean',
+        ]);
+        $origen = strtoupper(trim($data['ciclo_origen']));
+        $destino = strtoupper(trim($ciclo));
+        $reemplazar = (bool) ($data['reemplazar'] ?? false);
+
+        if ($origen === '' || $destino === '' || $origen === $destino) {
+            return response()->json(['message' => 'Ciclo origen y destino inválidos.'], 422);
+        }
+        if (! Schema::hasTable('tbl_pv_ciclos')) {
+            return response()->json(['message' => 'Falta catálogo de ciclos.'], 422);
+        }
+
+        $destRow = PvCiclo::query()->where('codigo', $destino)->first();
+        $origRow = PvCiclo::query()->where('codigo', $origen)->first();
+        if (! $destRow || ! $origRow) {
+            return response()->json(['message' => 'Ciclo origen o destino no encontrado.'], 404);
+        }
+
+        $tipoDest = $this->normalizeTipoBudget(
+            Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $destRow->tipo_budget : null
+        );
+        if ($tipoDest !== 'SIOP') {
+            return response()->json(['message' => 'El destino debe ser un ciclo SIOP.'], 422);
+        }
+
+        $tipoOrig = $this->normalizeTipoBudget(
+            Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $origRow->tipo_budget : null
+        );
+        if ($tipoOrig === 'SIOP') {
+            return response()->json(['message' => 'El origen no puede ser otro SIOP. Elige un Budget.'], 422);
+        }
+        if ($tipoOrig && $tipoOrig !== 'BUDGET') {
+            // Forecast permitido solo si el usuario insiste; por defecto pedimos Budget.
+            // Aceptamos cualquier no-SIOP para flexibilidad, pero etiquetamos.
+        }
+
+        try {
+            $stats = $this->ejecutarCopiaBudgetHaciaSiop($origen, $destino, $reemplazar);
+        } catch (Throwable $e) {
+            Log::error('PV copiar Budget→SIOP: '.$e->getMessage(), [
+                'origen' => $origen,
+                'destino' => $destino,
+            ]);
+
+            return response()->json([
+                'message' => 'No se pudo completar la copia: '.$e->getMessage(),
+            ], 500);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'origen' => $origen,
+            'destino' => $destino,
+            'reemplazar' => $reemplazar,
+            'stats' => $stats,
+        ]);
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    protected function ejecutarCopiaBudgetHaciaSiop(string $origen, string $destino, bool $reemplazar): array
+    {
+        $stats = [
+            'asignaciones_creadas' => 0,
+            'asignaciones_omitidas' => 0,
+            'asignaciones_reemplazadas' => 0,
+            'productos_copiados' => 0,
+            'permisos_copiados' => 0,
+            'proyecciones_creadas' => 0,
+            'proyecciones_omitidas' => 0,
+            'proyecciones_reemplazadas' => 0,
+            'captura_creadas' => 0,
+            'captura_omitidas' => 0,
+            'usuario_permisos_creados' => 0,
+            'usuario_permisos_omitidos' => 0,
+        ];
+
+        $idMap = [];
+
+        // 1) Asignaciones (+ productos + permisos) por lotes.
+        if (Schema::hasTable('tbl_pv_asignaciones')) {
+            PvAsignacion::query()
+                ->with(['productos', 'permisos'])
+                ->where('ciclo_codigo', $origen)
+                ->orderBy('id')
+                ->chunkById(80, function ($rows) use ($destino, $reemplazar, &$stats, &$idMap) {
+                    DB::transaction(function () use ($rows, $destino, $reemplazar, &$stats, &$idMap) {
+                        foreach ($rows as $src) {
+                            $empresa = strtolower((string) $src->empresa);
+                            $userId = (int) $src->user_id;
+                            $cliente = (string) $src->cliente_codigo;
+
+                            $existente = PvAsignacion::query()
+                                ->where('ciclo_codigo', $destino)
+                                ->where('empresa', $empresa)
+                                ->where('user_id', $userId)
+                                ->where('cliente_codigo', $cliente)
+                                ->first();
+
+                            if ($existente && ! $reemplazar) {
+                                $stats['asignaciones_omitidas']++;
+                                $idMap[(int) $src->id] = (int) $existente->id;
+
+                                continue;
+                            }
+
+                            if ($existente && $reemplazar) {
+                                if (Schema::hasTable('tbl_pv_asignacion_productos')) {
+                                    PvAsignacionProducto::query()->where('asignacion_id', $existente->id)->delete();
+                                }
+                                if (Schema::hasTable('tbl_pv_asignacion_permisos')) {
+                                    PvAsignacionPermiso::query()->where('asignacion_id', $existente->id)->delete();
+                                }
+                                $existente->cliente_nombre = $src->cliente_nombre;
+                                if (Schema::hasColumn('tbl_pv_asignaciones', 'es_principal')) {
+                                    $existente->es_principal = (bool) $src->es_principal;
+                                }
+                                $existente->parent_id = null;
+                                $existente->save();
+                                $nueva = $existente;
+                                $stats['asignaciones_reemplazadas']++;
+                            } else {
+                                $nueva = new PvAsignacion;
+                                $nueva->ciclo_codigo = $destino;
+                                $nueva->empresa = $empresa;
+                                $nueva->user_id = $userId;
+                                $nueva->cliente_codigo = $cliente;
+                                $nueva->cliente_nombre = $src->cliente_nombre;
+                                if (Schema::hasColumn('tbl_pv_asignaciones', 'es_principal')) {
+                                    $nueva->es_principal = (bool) $src->es_principal;
+                                }
+                                $nueva->parent_id = null;
+                                $nueva->created_by = auth()->id();
+                                $nueva->save();
+                                $stats['asignaciones_creadas']++;
+                            }
+
+                            $idMap[(int) $src->id] = (int) $nueva->id;
+
+                            if (Schema::hasTable('tbl_pv_asignacion_productos')) {
+                                $prodRows = [];
+                                $now = now();
+                                foreach ($src->productos as $p) {
+                                    $prodRows[] = [
+                                        'asignacion_id' => $nueva->id,
+                                        'producto_codigo' => $p->producto_codigo,
+                                        'producto_nombre' => $p->producto_nombre,
+                                        'linea' => Schema::hasColumn('tbl_pv_asignacion_productos', 'linea')
+                                            ? ($p->linea ?? null)
+                                            : null,
+                                        'created_at' => $now,
+                                        'updated_at' => $now,
+                                    ];
+                                }
+                                if ($prodRows) {
+                                    // Quitar linea si la columna no existe.
+                                    if (! Schema::hasColumn('tbl_pv_asignacion_productos', 'linea')) {
+                                        $prodRows = array_map(function ($r) {
+                                            unset($r['linea']);
+
+                                            return $r;
+                                        }, $prodRows);
+                                    }
+                                    foreach (array_chunk($prodRows, 100) as $chunk) {
+                                        DB::table('tbl_pv_asignacion_productos')->insert($chunk);
+                                        $stats['productos_copiados'] += count($chunk);
+                                    }
+                                }
+                            }
+
+                            if (Schema::hasTable('tbl_pv_asignacion_permisos')) {
+                                $permRows = [];
+                                $now = now();
+                                foreach ($src->permisos as $perm) {
+                                    $permRows[] = [
+                                        'asignacion_id' => $nueva->id,
+                                        'permiso_id' => (int) $perm->permiso_id,
+                                        'created_at' => $now,
+                                        'updated_at' => $now,
+                                    ];
+                                }
+                                if ($permRows) {
+                                    DB::table('tbl_pv_asignacion_permisos')->insert($permRows);
+                                    $stats['permisos_copiados'] += count($permRows);
+                                }
+                            }
+                        }
+                    });
+                });
+
+            // Remap parent_id en destino (sin tocar origen).
+            if (Schema::hasColumn('tbl_pv_asignaciones', 'parent_id') && $idMap) {
+                PvAsignacion::query()
+                    ->where('ciclo_codigo', $origen)
+                    ->whereNotNull('parent_id')
+                    ->orderBy('id')
+                    ->chunkById(100, function ($rows) use ($idMap, $destino) {
+                        foreach ($rows as $src) {
+                            $newId = $idMap[(int) $src->id] ?? null;
+                            $newParent = $idMap[(int) $src->parent_id] ?? null;
+                            if (! $newId || ! $newParent) {
+                                continue;
+                            }
+                            PvAsignacion::query()
+                                ->where('ciclo_codigo', $destino)
+                                ->where('id', $newId)
+                                ->update(['parent_id' => $newParent]);
+                        }
+                    });
+            }
+        }
+
+        // 2) Proyecciones (cantidades) por lotes.
+        if (Schema::hasTable('tbl_pv_proyecciones')) {
+            $cols = [
+                'empresa', 'cliente_codigo', 'producto_codigo', 'producto_nombre',
+                'mes_01', 'mes_02', 'mes_03', 'mes_04', 'mes_05', 'mes_06',
+                'mes_07', 'mes_08', 'mes_09', 'mes_10', 'mes_11', 'mes_12',
+                'costo_unitario', 'moneda', 'ajuste_pct', 'completado',
+            ];
+            foreach (['precio_meses', 'updated_by'] as $opt) {
+                if (Schema::hasColumn('tbl_pv_proyecciones', $opt)) {
+                    $cols[] = $opt;
+                }
+            }
+
+            PvPresupuesto::query()
+                ->where('ciclo_codigo', $origen)
+                ->orderBy('id')
+                ->chunkById(120, function ($rows) use ($destino, $reemplazar, $cols, &$stats) {
+                    DB::transaction(function () use ($rows, $destino, $reemplazar, $cols, &$stats) {
+                        $now = now();
+                        $uid = auth()->id();
+                        foreach ($rows as $src) {
+                            $existente = PvPresupuesto::query()
+                                ->where('ciclo_codigo', $destino)
+                                ->where('empresa', $src->empresa)
+                                ->where('cliente_codigo', $src->cliente_codigo)
+                                ->where('producto_codigo', $src->producto_codigo)
+                                ->first();
+
+                            if ($existente && ! $reemplazar) {
+                                $stats['proyecciones_omitidas']++;
+
+                                continue;
+                            }
+
+                            $payload = ['ciclo_codigo' => $destino, 'created_at' => $now, 'updated_at' => $now];
+                            foreach ($cols as $col) {
+                                $payload[$col] = $src->{$col};
+                            }
+                            if (array_key_exists('updated_by', $payload)) {
+                                $payload['updated_by'] = $uid;
+                            }
+                            if (isset($payload['precio_meses']) && is_array($payload['precio_meses'])) {
+                                $payload['precio_meses'] = json_encode($payload['precio_meses']);
+                            }
+
+                            if ($existente && $reemplazar) {
+                                unset($payload['created_at'], $payload['ciclo_codigo']);
+                                DB::table('tbl_pv_proyecciones')->where('id', $existente->id)->update($payload);
+                                $stats['proyecciones_reemplazadas']++;
+                            } else {
+                                DB::table('tbl_pv_proyecciones')->insert($payload);
+                                $stats['proyecciones_creadas']++;
+                            }
+                        }
+                    });
+                });
+        }
+
+        // 3) Estado de captura por cliente.
+        if (Schema::hasTable('tbl_pv_captura_clientes')) {
+            $capCols = ['empresa', 'cliente_codigo', 'estado'];
+            foreach (['cliente_nombre', 'centro_nombre', 'updated_by'] as $opt) {
+                if (Schema::hasColumn('tbl_pv_captura_clientes', $opt)) {
+                    $capCols[] = $opt;
+                }
+            }
+            DB::table('tbl_pv_captura_clientes')
+                ->where('ciclo_codigo', $origen)
+                ->orderBy('id')
+                ->chunkById(150, function ($rows) use ($destino, $reemplazar, $capCols, &$stats) {
+                    DB::transaction(function () use ($rows, $destino, $reemplazar, $capCols, &$stats) {
+                        $now = now();
+                        $uid = auth()->id();
+                        foreach ($rows as $src) {
+                            $q = DB::table('tbl_pv_captura_clientes')
+                                ->where('ciclo_codigo', $destino)
+                                ->where('empresa', $src->empresa)
+                                ->where('cliente_codigo', $src->cliente_codigo);
+                            $existId = (clone $q)->value('id');
+                            if ($existId && ! $reemplazar) {
+                                $stats['captura_omitidas']++;
+
+                                continue;
+                            }
+                            $payload = ['ciclo_codigo' => $destino, 'updated_at' => $now];
+                            foreach ($capCols as $col) {
+                                $payload[$col] = $src->{$col} ?? null;
+                            }
+                            if (array_key_exists('updated_by', $payload)) {
+                                $payload['updated_by'] = $uid;
+                            }
+                            if ($existId && $reemplazar) {
+                                DB::table('tbl_pv_captura_clientes')->where('id', $existId)->update($payload);
+                            } else {
+                                $payload['created_at'] = $now;
+                                DB::table('tbl_pv_captura_clientes')->insert($payload);
+                                $stats['captura_creadas']++;
+                            }
+                        }
+                    });
+                });
+        }
+
+        // 4) Permisos de importar por usuario (ciclo).
+        if (Schema::hasTable('tbl_pv_usuario_permisos')) {
+            DB::table('tbl_pv_usuario_permisos')
+                ->where('ciclo_codigo', $origen)
+                ->orderBy('id')
+                ->chunkById(200, function ($rows) use ($destino, &$stats) {
+                    DB::transaction(function () use ($rows, $destino, &$stats) {
+                        $now = now();
+                        foreach ($rows as $src) {
+                            $exists = DB::table('tbl_pv_usuario_permisos')
+                                ->where('ciclo_codigo', $destino)
+                                ->where('user_id', $src->user_id)
+                                ->where('permiso_id', $src->permiso_id)
+                                ->exists();
+                            if ($exists) {
+                                $stats['usuario_permisos_omitidos']++;
+
+                                continue;
+                            }
+                            DB::table('tbl_pv_usuario_permisos')->insert([
+                                'ciclo_codigo' => $destino,
+                                'user_id' => $src->user_id,
+                                'permiso_id' => $src->permiso_id,
+                                'created_at' => $now,
+                                'updated_at' => $now,
+                            ]);
+                            $stats['usuario_permisos_creados']++;
+                        }
+                    });
+                });
+        }
+
+        return $stats;
     }
 
     public function empresasSap(Request $request): JsonResponse
