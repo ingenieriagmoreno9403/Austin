@@ -147,7 +147,7 @@
                 <strong>YEAR</strong>, <strong>MONTH</strong>, <strong>ORIGIN</strong> (BUDGET),
                 <strong>IMPORTEUSD</strong>, <strong>IMPORTEMXN</strong>, <strong>TC</strong>.
                 La captura se guarda en MXN; <strong>IMPORTEUSD</strong> = MXN ÷ TC (sin redondear cada fila a centavos, para que la suma coincida con el total USD del sistema).
-                Si tienes cuentas asignadas se usan esas; si no, se exportan todas las del ciclo (puedes filtrar por empresa).
+                Se exportan todas las cuentas asignadas del ciclo (de cualquier usuario; puedes filtrar por empresa).
             </div>
         </div>
     </div>
@@ -239,7 +239,7 @@
         if (btnRetry) btnRetry.disabled = !ok && !cicloSel.value;
         if (hint && !exporting && !(errorBox && errorBox.classList.contains('is-on'))) {
             hint.textContent = (cicloSel && cicloSel.value)
-                ? 'Listo para descargar el budget del ciclo ' + cicloSel.value + ' (solo cuentas asignadas).'
+                ? 'Listo para descargar el budget del ciclo ' + cicloSel.value + ' (todas las cuentas asignadas del ciclo).'
                 : 'Selecciona un ciclo para exportar.';
         }
     }
