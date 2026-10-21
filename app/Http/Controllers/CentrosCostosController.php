@@ -461,8 +461,7 @@ class CentrosCostosController extends Controller
 
         $asignados = $this->listaCuentasAsignadasExportGastos(
             $cicloCodigo,
-            ($empresa !== null && $empresa !== '') ? $empresa : null,
-            $userId
+            ($empresa !== null && $empresa !== '') ? $empresa : null
         );
         if ($asignados === []) {
             return 0;
@@ -675,26 +674,17 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * Cuentas únicas asignadas para export.
-     * Primero las del usuario; si no tiene, todas las del ciclo (admins / consulta).
+     * Cuentas únicas asignadas para export: todas las del ciclo (cualquier usuario).
      *
      * @return array<int, array{empresa: string, centro: string, centro_nombre: string, cuenta: string, cuenta_nombre: string}>
      */
-    protected function listaCuentasAsignadasExportGastos(string $ciclo, ?string $empresa = null, int $userId = 0): array
+    protected function listaCuentasAsignadasExportGastos(string $ciclo, ?string $empresa = null): array
     {
         if (! Schema::hasTable('tbl_cc_asignaciones')) {
             return [];
         }
 
-        $ciclo = strtoupper(trim($ciclo));
-        $out = $this->cargarCuentasAsignadasExportGastos($ciclo, $empresa, $userId > 0 ? $userId : null);
-
-        // Sin asignaciones propias: exportar todas las del ciclo (igual espíritu que ventas).
-        if ($out === [] && $userId > 0) {
-            $out = $this->cargarCuentasAsignadasExportGastos($ciclo, $empresa, null);
-        }
-
-        return $out;
+        return $this->cargarCuentasAsignadasExportGastos(strtoupper(trim($ciclo)), $empresa, null);
     }
 
     /**
