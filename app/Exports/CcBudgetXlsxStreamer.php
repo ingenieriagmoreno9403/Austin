@@ -14,12 +14,18 @@ class CcBudgetXlsxStreamer
     /**
      * @param  array<int, string>  $headings
      * @param  iterable<int, array<int, mixed>>  $rows
+     * @param  array{widths?: array<int, float|int>, text_columns?: array<int, true>, should_abort?: callable(): bool}  $options
      */
-    public function write(string $absolutePath, string $sheetTitle, array $headings, iterable $rows): int
+    public function write(string $absolutePath, string $sheetTitle, array $headings, iterable $rows, array $options = []): int
     {
         $tmp = sys_get_temp_dir().DIRECTORY_SEPARATOR.'cc_xlsx_'.bin2hex(random_bytes(8));
         if (! @mkdir($tmp) && ! is_dir($tmp)) {
             throw new RuntimeException('No se pudo crear directorio temporal para el Excel.');
+        }
+
+        $prevTextColumns = $this->textColumns;
+        if (isset($options['text_columns']) && is_array($options['text_columns'])) {
+            $this->textColumns = $options['text_columns'];
         }
 
         try {
@@ -35,12 +41,13 @@ class CcBudgetXlsxStreamer
             $this->writeFile($tmp.DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'styles.xml', $this->stylesXml());
 
             $sheetPath = $tmp.DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'worksheets'.DIRECTORY_SEPARATOR.'sheet1.xml';
-            $rowCount = $this->writeSheet($sheetPath, $headings, $rows);
+            $rowCount = $this->writeSheet($sheetPath, $headings, $rows, $options);
 
             $this->zipDirectory($tmp, $absolutePath);
 
             return $rowCount;
         } finally {
+            $this->textColumns = $prevTextColumns;
             $this->deleteTree($tmp);
         }
     }
@@ -48,8 +55,9 @@ class CcBudgetXlsxStreamer
     /**
      * @param  array<int, string>  $headings
      * @param  iterable<int, array<int, mixed>>  $rows
+     * @param  array{widths?: array<int, float|int>, should_abort?: callable(): bool}  $options
      */
-    protected function writeSheet(string $sheetPath, array $headings, iterable $rows): int
+    protected function writeSheet(string $sheetPath, array $headings, iterable $rows, array $options = []): int
     {
         $fh = fopen($sheetPath, 'wb');
         if ($fh === false) {
@@ -61,7 +69,7 @@ class CcBudgetXlsxStreamer
         fwrite($fh, ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">');
         fwrite($fh, '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>');
         fwrite($fh, '<cols>');
-        $widths = [12, 12, 28, 14, 36, 8, 8, 10, 14, 14, 10];
+        $widths = $options['widths'] ?? [12, 12, 28, 14, 36, 8, 8, 10, 14, 14, 10];
         foreach ($widths as $i => $w) {
             $col = $i + 1;
             fwrite($fh, '<col min="'.$col.'" max="'.$col.'" width="'.$w.'" customWidth="1"/>');
@@ -72,8 +80,16 @@ class CcBudgetXlsxStreamer
         $this->writeRowXml($fh, $excelRow, $headings, true);
         $excelRow++;
 
+        $shouldAbort = isset($options['should_abort']) && is_callable($options['should_abort'])
+            ? $options['should_abort']
+            : null;
+
         $dataCount = 0;
         foreach ($rows as $row) {
+            if ($shouldAbort && ($dataCount % 200) === 0 && $shouldAbort()) {
+                fclose($fh);
+                throw new RuntimeException('EXPORT_CANCELLED');
+            }
             $this->writeRowXml($fh, $excelRow, $row, false);
             $excelRow++;
             $dataCount++;

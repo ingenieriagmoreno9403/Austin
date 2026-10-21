@@ -3593,6 +3593,12 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     min-width: 132px;
     max-width: 220px;
 }
+.cc-grupos-cta-tools > .cc-cta-traer {
+    flex: 0 0 auto;
+    height: 40px;
+    min-height: 40px;
+    white-space: nowrap;
+}
 .cc-grupos-cta-tools .cc-grupos-mask {
     display: flex;
     flex-direction: column;

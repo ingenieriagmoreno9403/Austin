@@ -31,6 +31,19 @@ class CcCatalogoLocal
         return $q->exists();
     }
 
+    public function tieneCuentas(?string $empresa = null): bool
+    {
+        if (! $this->disponible()) {
+            return false;
+        }
+        $q = DB::table('tbl_cc_catalogo_cuentas');
+        if ($empresa) {
+            $q->whereRaw('UPPER(empresa) = ?', [strtoupper($empresa)]);
+        }
+
+        return $q->exists();
+    }
+
     /**
      * @return array{centros: array<int, array<string, mixed>>, cuentas: array<int, array<string, mixed>>, empresas: array<int, string>, synced_at: string|null, fuente: string}
      */

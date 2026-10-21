@@ -5,15 +5,89 @@
 <style>
     .exp-actions {
         display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: .85rem;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: .55rem;
         margin-top: 1rem;
     }
     .exp-actions .cc-btn {
         min-width: 200px;
         justify-content: center;
         text-align: center;
+    }
+    .exp-cancel {
+        display: inline-flex;
+        min-width: 0 !important;
+    }
+    .exp-formatos {
+        margin: .35rem 0 1rem;
+        padding-top: .95rem;
+        border-top: 1px solid #e4e4e7;
+    }
+    .exp-formato-label {
+        font-size: .72rem;
+        font-weight: 700;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+        color: #64748b;
+        margin-bottom: .5rem;
+    }
+    .exp-formato-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: .55rem;
+        max-width: 720px;
+    }
+    .exp-formato-grid-sm {
+        max-width: 420px;
+    }
+    .exp-formato-card {
+        display: flex;
+        flex-direction: column;
+        gap: .22rem;
+        padding: .75rem .9rem;
+        border: 1px solid #e4e4e7;
+        border-radius: 12px;
+        cursor: pointer;
+        background: #fff;
+        margin: 0;
+        font-weight: 500;
+        letter-spacing: 0;
+        text-transform: none;
+        color: #334155;
+    }
+    .exp-formato-card:has(input:checked) {
+        border-color: #0a0a0a;
+        background: #fafafa;
+        box-shadow: 0 0 0 1px #0a0a0a;
+    }
+    .exp-formato-card strong {
+        font-size: .88rem;
+        color: #0f172a;
+        font-weight: 700;
+    }
+    .exp-formato-card span {
+        font-size: .78rem;
+        color: #64748b;
+        line-height: 1.35;
+        font-weight: 500;
+    }
+    .exp-formato-card input {
+        margin: 0 0 .2rem;
+        accent-color: #0a0a0a;
+        width: 16px;
+        height: 16px;
+    }
+    .exp-moneda-wrap {
+        display: none;
+        margin-top: .85rem;
+    }
+    .exp-moneda-wrap.is-on {
+        display: block;
+    }
+    .exp-help-block[hidden] {
+        display: none !important;
     }
     .exp-progress-wrap {
         width: min(420px, 100%);
@@ -83,7 +157,7 @@
         <div>
             <div class="cc-kicker">Gastos · exportación</div>
             <h1 class="cc-title">Exportar información del budget</h1>
-            <p class="cc-sub">Elige el ciclo (y opcionalmente una empresa) para descargar en Excel los importes de centros de costo y cuentas asignadas. Incluye cuentas sin captura con importe 0.</p>
+            <p class="cc-sub">Elige el ciclo (y opcionalmente una empresa) y el formato del Excel. Incluye cuentas asignadas sin captura con importe 0.</p>
         </div>
         <div class="cc-header-actions">
             <a class="cc-btn" href="{{ route('centros.control') }}">
@@ -110,18 +184,54 @@
                     <option value="">Todas</option>
                 </select>
             </label>
-            <div class="exp-actions">
-                <button type="button" class="cc-btn cc-btn-ink" id="exp-descargar" disabled>
-                    <i class="fa-solid fa-file-arrow-down"></i> Exportar Excel
-                </button>
+        </div>
+
+        <div class="exp-formatos">
+            <div class="exp-formato-label">Formato de descarga</div>
+            <div class="exp-formato-grid" role="radiogroup" aria-label="Formato de descarga">
+                <label class="exp-formato-card">
+                    <input type="radio" name="exp-formato" value="normal" checked>
+                    <strong>Normal</strong>
+                    <span>El archivo actual: una fila por mes, con IMPORTEUSD e IMPORTEMXN.</span>
+                </label>
+                <label class="exp-formato-card">
+                    <input type="radio" name="exp-formato" value="estructurado">
+                    <strong>Estructurado</strong>
+                    <span>Una fila por cuenta, con columnas ENE–DIC e importe total.</span>
+                </label>
+            </div>
+            <div class="exp-moneda-wrap" id="exp-moneda-wrap">
+                <div class="exp-formato-label">Moneda del archivo estructurado</div>
+                <div class="exp-formato-grid exp-formato-grid-sm" role="radiogroup" aria-label="Moneda">
+                    <label class="exp-formato-card">
+                        <input type="radio" name="exp-moneda" value="MXN" checked>
+                        <strong>Pesos MXN</strong>
+                        <span>Los meses y el total salen en pesos.</span>
+                    </label>
+                    <label class="exp-formato-card">
+                        <input type="radio" name="exp-moneda" value="USD">
+                        <strong>Dólares USD</strong>
+                        <span>Los meses y el total salen en dólares (MXN ÷ TC).</span>
+                    </label>
+                </div>
             </div>
         </div>
+        
+        <div class="exp-actions">
+            <button type="button" class="cc-btn cc-btn-ink" id="exp-descargar" disabled>
+                <i class="fa-solid fa-file-arrow-down"></i> Exportar Excel
+            </button>
+        </div>
+
         <div class="exp-progress-wrap" id="exp-progress-wrap" aria-live="polite" style="margin-top:.85rem">
             <div class="exp-progress-top">
                 <span id="exp-progress-label">Preparando archivo…</span>
                 <strong id="exp-progress-pct">0%</strong>
             </div>
             <div class="cc-progress" id="exp-progress-bar"><span style="width:0%"></span></div>
+            <button type="button" class="cc-btn cc-btn-danger exp-cancel is-on" id="exp-cancelar" style="margin-top:.7rem">
+                <i class="fa-solid fa-xmark"></i> Cancelar descarga
+            </button>
         </div>
 
         <div class="exp-error" id="exp-error" role="alert">
@@ -141,13 +251,24 @@
         <div class="cc-empty" id="exp-empty" style="padding:1.6rem 1rem;margin-top:.5rem">
             <i class="fa-solid fa-circle-info"></i>
             <div>
-                Se descarga un <strong>Excel (.xlsx)</strong> en formato largo (1 fila por mes, solo cuentas asignadas; importe 0 si aún no hay captura):
-                <strong>COMPANY</strong>, <strong>CC</strong>/<strong>NAME CC</strong> (centro de costo),
-                <strong>CUENTA</strong>/<strong>NAME CUENTA</strong>,
-                <strong>YEAR</strong>, <strong>MONTH</strong>, <strong>ORIGIN</strong> (BUDGET),
-                <strong>IMPORTEUSD</strong>, <strong>IMPORTEMXN</strong>, <strong>TC</strong>.
-                La captura se guarda en MXN; <strong>IMPORTEUSD</strong> = MXN ÷ TC (sin redondear cada fila a centavos, para que la suma coincida con el total USD del sistema).
-                Se exportan todas las cuentas asignadas del ciclo (de cualquier usuario; puedes filtrar por empresa).
+                <div class="exp-help-block" id="exp-help-normal">
+                    Se descarga un <strong>Excel (.xlsx)</strong> en formato largo (1 fila por mes, solo cuentas asignadas; importe 0 si aún no hay captura):
+                    <strong>COMPANY</strong>, <strong>CC</strong>/<strong>NAME CC</strong> (centro de costo),
+                    <strong>CUENTA</strong>/<strong>NAME CUENTA</strong>,
+                    <strong>YEAR</strong>, <strong>MONTH</strong>, <strong>ORIGIN</strong> (BUDGET),
+                    <strong>IMPORTEUSD</strong>, <strong>IMPORTEMXN</strong>, <strong>TC</strong>.
+                    La captura se guarda en MXN; <strong>IMPORTEUSD</strong> = MXN ÷ TC (sin redondear cada fila a centavos, para que la suma coincida con el total USD del sistema).
+                    Se exportan todas las cuentas asignadas del ciclo (de cualquier usuario; puedes filtrar por empresa).
+                </div>
+                <div class="exp-help-block" id="exp-help-estructurado" hidden>
+                    Se descarga un <strong>Excel (.xlsx)</strong> estructurado (1 fila por cuenta, meses en columnas):
+                    <strong>COMPANY</strong>, <strong>CC</strong>, <strong>NAME CC</strong>,
+                    <strong>CUENTA</strong>, <strong>NAME CUENTA</strong>,
+                    <strong>ORIGIN</strong>, <strong>TC</strong>, <strong>YEAR</strong>,
+                    <strong>ENE</strong>–<strong>DIC</strong> e <strong>IMPORTE TOTAL</strong>.
+                    Eliges si los importes van en <strong>MXN</strong> o <strong>USD</strong> (USD = MXN ÷ TC).
+                    Se exportan todas las cuentas asignadas del ciclo (de cualquier usuario; puedes filtrar por empresa).
+                </div>
             </div>
         </div>
     </div>
@@ -162,9 +283,14 @@
     var startUrl = @json(route('centros.exportar.excel.start'));
     var statusUrlBase = @json(url('/ExportarInformacionGastos/excel/status'));
     var fileUrlBase = @json(url('/ExportarInformacionGastos/excel/file'));
+    var cancelUrlBase = @json(url('/ExportarInformacionGastos/excel/cancel'));
     var cicloSel = document.getElementById('exp-ciclo');
     var empresaSel = document.getElementById('exp-empresa');
     var btn = document.getElementById('exp-descargar');
+    var btnCancel = document.getElementById('exp-cancelar');
+    var monedaWrap = document.getElementById('exp-moneda-wrap');
+    var helpNormal = document.getElementById('exp-help-normal');
+    var helpEstructurado = document.getElementById('exp-help-estructurado');
     var hint = document.getElementById('exp-hint');
     var progressWrap = document.getElementById('exp-progress-wrap');
     var progressLabel = document.getElementById('exp-progress-label');
@@ -175,10 +301,42 @@
     var btnRetry = document.getElementById('exp-reintentar');
     var btnErrorClose = document.getElementById('exp-error-cerrar');
     var exporting = false;
+    var userCancelled = false;
+    var activeToken = null;
+    var activeAbort = null;
     var tickTimer = null;
     var pollTimer = null;
     /** Tiempo máximo esperando el archivo en segundo plano. */
     var CLIENT_TIMEOUT_MS = 12 * 60 * 1000;
+
+    function selectedFormato() {
+        var el = document.querySelector('input[name="exp-formato"]:checked');
+        return el && el.value === 'estructurado' ? 'estructurado' : 'normal';
+    }
+
+    function selectedMoneda() {
+        var el = document.querySelector('input[name="exp-moneda"]:checked');
+        var val = el ? String(el.value || 'MXN').toUpperCase() : 'MXN';
+        return val === 'USD' ? 'USD' : 'MXN';
+    }
+
+    function syncFormatoUi() {
+        var estructurado = selectedFormato() === 'estructurado';
+        if (monedaWrap) monedaWrap.classList.toggle('is-on', estructurado);
+        if (helpNormal) helpNormal.hidden = estructurado;
+        if (helpEstructurado) helpEstructurado.hidden = !estructurado;
+        document.querySelectorAll('input[name="exp-formato"], input[name="exp-moneda"]').forEach(function (el) {
+            el.disabled = exporting;
+        });
+    }
+
+    function abortSignal() {
+        if (activeAbort) {
+            try { activeAbort.abort(); } catch (e) { /* ignore */ }
+        }
+        activeAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        return activeAbort ? activeAbort.signal : undefined;
+    }
 
     function csrf() {
         var m = document.querySelector('meta[name="csrf-token"]');
@@ -198,8 +356,7 @@
     }
 
     function showProgress(on) {
-        if (!progressWrap) return;
-        progressWrap.classList.toggle('is-on', !!on);
+        if (progressWrap) progressWrap.classList.toggle('is-on', !!on);
         if (!on) {
             if (tickTimer) {
                 clearInterval(tickTimer);
@@ -238,10 +395,14 @@
         if (btn) btn.disabled = !ok;
         if (btnRetry) btnRetry.disabled = !ok && !cicloSel.value;
         if (hint && !exporting && !(errorBox && errorBox.classList.contains('is-on'))) {
+            var extra = selectedFormato() === 'estructurado'
+                ? ' en formato estructurado (' + selectedMoneda() + ')'
+                : '';
             hint.textContent = (cicloSel && cicloSel.value)
-                ? 'Listo para descargar el budget del ciclo ' + cicloSel.value + ' (todas las cuentas asignadas del ciclo).'
+                ? 'Listo para descargar el budget del ciclo ' + cicloSel.value + extra + ' (todas las cuentas asignadas del ciclo).'
                 : 'Selecciona un ciclo para exportar.';
         }
+        syncFormatoUi();
     }
 
     function filenameFromDisposition(header, fallback) {
@@ -410,6 +571,7 @@
 
     function resetExportUi() {
         exporting = false;
+        activeToken = null;
         clearPoll();
         if (tickTimer) {
             clearInterval(tickTimer);
@@ -419,12 +581,42 @@
         syncBtn();
     }
 
+    function cancelExport() {
+        if (!exporting) return;
+        userCancelled = true;
+        var token = activeToken;
+        activeToken = null;
+        if (activeAbort) {
+            try { activeAbort.abort(); } catch (e) { /* ignore */ }
+        }
+        clearPoll();
+        if (tickTimer) {
+            clearInterval(tickTimer);
+            tickTimer = null;
+        }
+        if (token) {
+            fetch(cancelUrlBase + '/' + encodeURIComponent(token), {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-CSRF-TOKEN': csrf(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            }).catch(function () { /* ignore */ });
+        }
+        showProgress(false);
+        resetExportUi();
+        if (hint) hint.textContent = 'Descarga cancelada.';
+    }
+
     function downloadReadyFile(token, fallbackName) {
         var url = fileUrlBase + '/' + encodeURIComponent(token);
         setProgress(95, 'Descargando archivo…');
         return fetch(url, {
             method: 'GET',
             credentials: 'same-origin',
+            signal: activeAbort ? activeAbort.signal : undefined,
             headers: {
                 'X-CSRF-TOKEN': csrf(),
                 'X-Requested-With': 'XMLHttpRequest',
@@ -445,6 +637,7 @@
                 return { blob: blob, name: name };
             });
         }).then(function (pack) {
+            if (userCancelled) return;
             var objectUrl = URL.createObjectURL(pack.blob);
             var a = document.createElement('a');
             a.href = objectUrl;
@@ -464,6 +657,7 @@
 
     function pollExportStatus(token, startedAt, fallbackName) {
         clearPoll();
+        if (userCancelled) return;
         if (Date.now() - startedAt > CLIENT_TIMEOUT_MS) {
             showError('Se agotó el tiempo de espera generando el Excel. Vuelve a intentar o exporta por empresa.');
             resetExportUi();
@@ -473,6 +667,7 @@
         fetch(statusUrlBase + '/' + encodeURIComponent(token), {
             method: 'GET',
             credentials: 'same-origin',
+            signal: activeAbort ? activeAbort.signal : undefined,
             headers: {
                 'Accept': 'application/json',
                 'X-CSRF-TOKEN': csrf(),
@@ -481,6 +676,7 @@
         }).then(function (res) {
             return readJsonOnce(res);
         }).then(function (pack) {
+            if (userCancelled) return;
             var json = pack.json || {};
             if (!pack.res.ok) {
                 throw new Error(json.motivo || json.message || motivoDesdeRespuesta(pack.res, pack.bodyText));
@@ -488,6 +684,12 @@
             var status = String(json.status || '');
             var pct = Number(json.pct);
             if (!isFinite(pct)) pct = status === 'ready' ? 100 : 20;
+            if (status === 'cancelled') {
+                showProgress(false);
+                resetExportUi();
+                if (hint) hint.textContent = 'Descarga cancelada.';
+                return;
+            }
             if (status === 'ready') {
                 if (tickTimer) {
                     clearInterval(tickTimer);
@@ -505,6 +707,7 @@
                 pollExportStatus(token, startedAt, fallbackName);
             }, 1500);
         }).catch(function (err) {
+            if (userCancelled || (err && err.name === 'AbortError')) return;
             showError(motivoDesdeCatch(err));
             resetExportUi();
         });
@@ -514,10 +717,17 @@
         var ciclo = cicloSel ? cicloSel.value : '';
         if (!ciclo || exporting) return;
         var empresa = empresaSel ? empresaSel.value : '';
-        var fallbackName = 'budget_gastos_' + ciclo + (empresa ? ('_' + empresa) : '') + '.xlsx';
+        var formato = selectedFormato();
+        var moneda = selectedMoneda();
+        var fallbackName = 'budget_gastos_' + ciclo
+            + (empresa ? ('_' + empresa) : '')
+            + (formato === 'estructurado' ? ('_estructurado_' + moneda) : '')
+            + '.xlsx';
 
         hideError();
+        userCancelled = false;
         exporting = true;
+        abortSignal();
         syncBtn();
         if (btn) {
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Exportando…';
@@ -529,10 +739,13 @@
         var body = new FormData();
         body.append('ciclo', ciclo);
         if (empresa) body.append('empresa', empresa);
+        body.append('formato', formato);
+        if (formato === 'estructurado') body.append('moneda', moneda);
 
         fetch(startUrl, {
             method: 'POST',
             credentials: 'same-origin',
+            signal: activeAbort ? activeAbort.signal : undefined,
             headers: {
                 'X-CSRF-TOKEN': csrf(),
                 'X-Requested-With': 'XMLHttpRequest',
@@ -542,6 +755,7 @@
         }).then(function (res) {
             return readJsonOnce(res);
         }).then(function (pack) {
+            if (userCancelled) return;
             if (!pack.res.ok || !pack.json || !pack.json.token) {
                 var motivo = (pack.json && (pack.json.motivo || pack.json.message))
                     || motivoDesdeRespuesta(pack.res, pack.bodyText);
@@ -550,10 +764,12 @@
                 }
                 throw new Error(motivo);
             }
+            activeToken = pack.json.token;
             setProgress(12, 'Generando Excel en segundo plano…');
             if (hint) hint.textContent = 'El archivo se está armando; no cierres esta pestaña…';
             pollExportStatus(pack.json.token, Date.now(), fallbackName);
         }).catch(function (err) {
+            if (userCancelled || (err && err.name === 'AbortError')) return;
             setProgress(0, 'Error al descargar');
             showError(motivoDesdeCatch(err));
             resetExportUi();
@@ -574,13 +790,21 @@
     }
     if (btn) btn.addEventListener('click', exportExcel);
     if (btnRetry) btnRetry.addEventListener('click', exportExcel);
+    if (btnCancel) btnCancel.addEventListener('click', cancelExport);
     if (btnErrorClose) {
         btnErrorClose.addEventListener('click', function () {
             hideError();
             syncBtn();
         });
     }
+    document.querySelectorAll('input[name="exp-formato"], input[name="exp-moneda"]').forEach(function (el) {
+        el.addEventListener('change', function () {
+            hideError();
+            syncBtn();
+        });
+    });
 
+    syncFormatoUi();
     loadCiclos().then(loadEmpresas);
 })();
 </script>

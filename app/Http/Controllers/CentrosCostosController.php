@@ -135,7 +135,9 @@ class CentrosCostosController extends Controller
                 $prepared['ciclo'],
                 $prepared['empresa'],
                 null,
-                (int) (auth()->id() ?? 0)
+                (int) (auth()->id() ?? 0),
+                $prepared['formato'],
+                $prepared['moneda']
             );
 
             return response()->download($pack['absolute'], $pack['filename'], [
@@ -182,14 +184,18 @@ class CentrosCostosController extends Controller
             'user_id' => $userId,
             'ciclo' => $prepared['ciclo'],
             'empresa' => $prepared['empresa'],
+            'formato' => $prepared['formato'],
+            'moneda' => $prepared['moneda'],
             'created_at' => now()->toIso8601String(),
         ];
         Cache::put($this->exportBudgetGastosCacheKey($token), $meta, now()->addHours(2));
 
         $ciclo = $prepared['ciclo'];
         $empresa = $prepared['empresa'];
+        $formato = $prepared['formato'];
+        $moneda = $prepared['moneda'];
 
-        dispatch(function () use ($token, $ciclo, $empresa, $userId) {
+        dispatch(function () use ($token, $ciclo, $empresa, $userId, $formato, $moneda) {
             $this->boostExportBudgetGastosLimits();
             $key = $this->exportBudgetGastosCacheKey($token);
 
@@ -206,7 +212,7 @@ class CentrosCostosController extends Controller
                     return;
                 }
                 $meta = Cache::get($key);
-                if (! is_array($meta) || in_array(($meta['status'] ?? ''), ['ready', 'error'], true)) {
+                if (! is_array($meta) || in_array(($meta['status'] ?? ''), ['ready', 'error', 'cancelled'], true)) {
                     return;
                 }
                 $meta['status'] = 'error';
@@ -218,7 +224,7 @@ class CentrosCostosController extends Controller
             });
 
             $meta = Cache::get($key);
-            if (! is_array($meta)) {
+            if (! is_array($meta) || ($meta['status'] ?? '') === 'cancelled') {
                 return;
             }
             try {
@@ -226,7 +232,20 @@ class CentrosCostosController extends Controller
                 $meta['pct'] = 15;
                 Cache::put($key, $meta, now()->addHours(2));
 
-                $pack = $this->generarArchivoExportBudgetGastos($ciclo, $empresa, $token, $userId);
+                $pack = $this->generarArchivoExportBudgetGastos($ciclo, $empresa, $token, $userId, $formato, $moneda);
+
+                if ($this->exportBudgetGastosFueCancelado($token)) {
+                    $this->borrarArchivoExportBudgetGastos($pack['relative'] ?? null, $pack['absolute'] ?? null);
+
+                    return;
+                }
+
+                $meta = Cache::get($key);
+                if (! is_array($meta) || ($meta['status'] ?? '') === 'cancelled') {
+                    $this->borrarArchivoExportBudgetGastos($pack['relative'] ?? null, $pack['absolute'] ?? null);
+
+                    return;
+                }
 
                 $meta['status'] = 'ready';
                 $meta['pct'] = 100;
@@ -236,13 +255,22 @@ class CentrosCostosController extends Controller
                 $meta['rows'] = $pack['rows'] ?? null;
                 Cache::put($key, $meta, now()->addHours(2));
             } catch (Throwable $e) {
+                if ($this->esCancelacionExportBudgetGastos($e) || $this->exportBudgetGastosFueCancelado($token)) {
+                    return;
+                }
                 Log::error('Export budget gastos Excel (async) falló', [
                     'token' => $token,
                     'ciclo' => $ciclo,
                     'empresa' => $empresa,
+                    'formato' => $formato,
+                    'moneda' => $moneda,
                     'user_id' => $userId,
                     'message' => $e->getMessage(),
                 ]);
+                $meta = Cache::get($key);
+                if (! is_array($meta) || ($meta['status'] ?? '') === 'cancelled') {
+                    return;
+                }
                 $meta['status'] = 'error';
                 $meta['pct'] = 0;
                 $meta['motivo'] = $this->motivoErrorExportBudgetGastos($e);
@@ -333,9 +361,86 @@ class CentrosCostosController extends Controller
         ])->deleteFileAfterSend(true);
     }
 
+    public function exportarInformacionExcelCancel(string $token): JsonResponse
+    {
+        $token = trim($token);
+        if ($token === '' || ! preg_match('/^[a-f0-9\-]{36}$/i', $token)) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'Token de exportación inválido.',
+            ], 422);
+        }
+
+        $key = $this->exportBudgetGastosCacheKey($token);
+        $meta = Cache::get($key);
+        if (! is_array($meta)) {
+            return response()->json([
+                'ok' => true,
+                'status' => 'cancelled',
+                'message' => 'La exportación ya no existe o expiró.',
+            ]);
+        }
+
+        $userId = (int) (auth()->id() ?? 0);
+        if (! empty($meta['user_id']) && (int) $meta['user_id'] !== $userId) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'No tienes acceso a esta exportación.',
+            ], 403);
+        }
+
+        $this->borrarArchivoExportBudgetGastos($meta['path'] ?? null);
+        $meta['status'] = 'cancelled';
+        $meta['pct'] = 0;
+        $meta['motivo'] = 'Descarga cancelada.';
+        $meta['filename'] = null;
+        $meta['path'] = null;
+        Cache::put($key, $meta, now()->addHours(2));
+
+        return response()->json([
+            'ok' => true,
+            'status' => 'cancelled',
+            'message' => 'Descarga cancelada.',
+        ]);
+    }
+
     protected function exportBudgetGastosCacheKey(string $token): string
     {
         return 'cc_export_budget_'.$token;
+    }
+
+    protected function exportBudgetGastosFueCancelado(?string $token): bool
+    {
+        if ($token === null || $token === '') {
+            return false;
+        }
+
+        $meta = Cache::get($this->exportBudgetGastosCacheKey($token));
+
+        return is_array($meta) && ($meta['status'] ?? '') === 'cancelled';
+    }
+
+    protected function esCancelacionExportBudgetGastos(Throwable $e): bool
+    {
+        return trim($e->getMessage()) === 'EXPORT_CANCELLED';
+    }
+
+    protected function borrarArchivoExportBudgetGastos(?string $relative = null, ?string $absolute = null): void
+    {
+        if ($relative) {
+            try {
+                if (Storage::disk('local')->exists($relative)) {
+                    Storage::disk('local')->delete($relative);
+                }
+            } catch (Throwable $e) {
+                // ignore
+            }
+        }
+        if ($absolute && is_file($absolute)) {
+            @unlink($absolute);
+        }
     }
 
     protected function boostExportBudgetGastosLimits(): void
@@ -347,7 +452,7 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * @return array{ciclo: string, empresa: string}|JsonResponse|\Illuminate\Http\RedirectResponse
+     * @return array{ciclo: string, empresa: string, formato: string, moneda: string}|JsonResponse|\Illuminate\Http\RedirectResponse
      */
     protected function prepararExportBudgetGastosParams(Request $request)
     {
@@ -370,9 +475,21 @@ class CentrosCostosController extends Controller
             $empresa = $alias[$empresa];
         }
 
+        $formato = strtolower(trim((string) $request->get('formato', 'normal')));
+        if (! in_array($formato, ['normal', 'estructurado'], true)) {
+            $formato = 'normal';
+        }
+
+        $moneda = strtoupper(trim((string) $request->get('moneda', 'MXN')));
+        if (! in_array($moneda, ['MXN', 'USD'], true)) {
+            $moneda = 'MXN';
+        }
+
         return [
             'ciclo' => $ciclo,
             'empresa' => $empresa,
+            'formato' => $formato,
+            'moneda' => $moneda,
         ];
     }
 
@@ -381,9 +498,18 @@ class CentrosCostosController extends Controller
      *
      * @return array{absolute: string, relative: string, filename: string, rows: int}
      */
-    protected function generarArchivoExportBudgetGastos(string $ciclo, string $empresa, ?string $token = null, int $userId = 0): array
-    {
+    protected function generarArchivoExportBudgetGastos(
+        string $ciclo,
+        string $empresa,
+        ?string $token = null,
+        int $userId = 0,
+        string $formato = 'normal',
+        string $moneda = 'MXN'
+    ): array {
         $suffix = $empresa !== '' ? '_'.$empresa : '';
+        if ($formato === 'estructurado') {
+            $suffix .= '_estructurado_'.$moneda;
+        }
         $filename = 'budget_gastos_'.$ciclo.$suffix.'_'.now()->format('Ymd_His').'.xlsx';
         $dir = 'cc_exports';
         if (! Storage::disk('local')->exists($dir)) {
@@ -392,17 +518,23 @@ class CentrosCostosController extends Controller
         $relative = $dir.'/'.($token ?: (string) Str::uuid()).'.xlsx';
         $absolute = Storage::disk('local')->path($relative);
 
-        $rowCount = $this->escribirXlsxExportBudgetGastos(
-            $absolute,
-            $ciclo,
-            $empresa !== '' ? $empresa : null,
-            $userId
-        );
+        try {
+            $rowCount = $this->escribirXlsxExportBudgetGastos(
+                $absolute,
+                $ciclo,
+                $empresa !== '' ? $empresa : null,
+                $userId,
+                $formato,
+                $moneda,
+                $token
+            );
+        } catch (Throwable $e) {
+            $this->borrarArchivoExportBudgetGastos($relative, $absolute);
+            throw $e;
+        }
 
         if ($rowCount <= 0) {
-            if (is_file($absolute)) {
-                @unlink($absolute);
-            }
+            $this->borrarArchivoExportBudgetGastos($relative, $absolute);
             throw new \RuntimeException(
                 'No hay cuentas asignadas para exportar en este ciclo'
                 .($empresa !== '' ? ' / empresa '.$empresa : '')
@@ -417,6 +549,8 @@ class CentrosCostosController extends Controller
         Log::info('Export budget gastos listo', [
             'ciclo' => $ciclo,
             'empresa' => $empresa,
+            'formato' => $formato,
+            'moneda' => $moneda,
             'user_id' => $userId,
             'rows' => $rowCount,
             'file' => $relative,
@@ -433,8 +567,15 @@ class CentrosCostosController extends Controller
     /**
      * Escribe el export a XLSX fila a fila (bajo consumo de memoria).
      */
-    protected function escribirXlsxExportBudgetGastos(string $absolute, string $ciclo, ?string $empresa, int $userId): int
-    {
+    protected function escribirXlsxExportBudgetGastos(
+        string $absolute,
+        string $ciclo,
+        ?string $empresa,
+        int $userId,
+        string $formato = 'normal',
+        string $moneda = 'MXN',
+        ?string $token = null
+    ): int {
         $cicloCodigo = strtoupper(trim($ciclo));
         $cicloRow = Schema::hasTable('tbl_cc_ciclos')
             ? CcCiclo::query()->whereRaw('UPPER(codigo) = ?', [$cicloCodigo])->first()
@@ -472,12 +613,29 @@ class CentrosCostosController extends Controller
             ($empresa !== null && $empresa !== '') ? $empresa : null
         );
 
-        $headings = [
-            'COMPANY', 'CC', 'NAME CC', 'CUENTA', 'NAME CUENTA',
-            'YEAR', 'MONTH', 'ORIGIN', 'IMPORTEUSD', 'IMPORTEMXN', 'TC',
-        ];
+        $estructurado = $formato === 'estructurado';
+        $enUsd = $estructurado && $moneda === 'USD';
 
-        $rowGenerator = function () use ($asignados, $pptoByKey, $anioBudget, $tc) {
+        if ($estructurado) {
+            $headings = [
+                'COMPANY', 'CC', 'NAME CC', 'CUENTA', 'NAME CUENTA',
+                'ORIGIN', 'TC', 'YEAR',
+                'ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN',
+                'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC',
+                'IMPORTE TOTAL',
+            ];
+            $widths = [12, 12, 28, 14, 36, 10, 10, 8, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 16];
+            $textColumns = [1 => true, 2 => true, 3 => true, 4 => true, 5 => true, 6 => true];
+        } else {
+            $headings = [
+                'COMPANY', 'CC', 'NAME CC', 'CUENTA', 'NAME CUENTA',
+                'YEAR', 'MONTH', 'ORIGIN', 'IMPORTEUSD', 'IMPORTEMXN', 'TC',
+            ];
+            $widths = [12, 12, 28, 14, 36, 8, 8, 10, 14, 14, 10];
+            $textColumns = [1 => true, 2 => true, 3 => true, 4 => true, 5 => true, 8 => true];
+        }
+
+        $rowGenerator = function () use ($asignados, $pptoByKey, $anioBudget, $tc, $estructurado, $enUsd) {
             foreach ($asignados as $item) {
                 $emp = $item['empresa'];
                 $centro = $item['centro'];
@@ -496,6 +654,33 @@ class CentrosCostosController extends Controller
                 $meses = $info['meses'] ?? array_fill(0, 12, null);
                 if ($cuentaNombre === '' && ! empty($info['cuenta_nombre'])) {
                     $cuentaNombre = $info['cuenta_nombre'];
+                }
+
+                if ($estructurado) {
+                    $row = [
+                        $emp,
+                        $centro,
+                        $centroNombre,
+                        $cuenta,
+                        $cuentaNombre,
+                        'BUDGET',
+                        $tc,
+                        $anioBudget,
+                    ];
+                    $totalMxn = 0.0;
+                    for ($i = 0; $i < 12; $i++) {
+                        $raw = $meses[$i] ?? null;
+                        $importeMxn = ($raw === null || $raw === '') ? 0.0 : $this->ccRound2Money((float) $raw);
+                        $totalMxn += $importeMxn;
+                        $row[] = $enUsd
+                            ? ($tc > 0 ? ($importeMxn / $tc) : 0.0)
+                            : $importeMxn;
+                    }
+                    $row[] = $enUsd
+                        ? ($tc > 0 ? ($totalMxn / $tc) : 0.0)
+                        : $this->ccRound2Money($totalMxn);
+                    yield $row;
+                    continue;
                 }
 
                 for ($i = 0; $i < 12; $i++) {
@@ -530,7 +715,14 @@ class CentrosCostosController extends Controller
             $absolute,
             'Budget '.$cicloCodigo,
             $headings,
-            $rowGenerator()
+            $rowGenerator(),
+            [
+                'widths' => $widths,
+                'text_columns' => $textColumns,
+                'should_abort' => function () use ($token) {
+                    return $this->exportBudgetGastosFueCancelado($token);
+                },
+            ]
         );
     }
 
@@ -620,6 +812,10 @@ class CentrosCostosController extends Controller
 
     protected function motivoErrorExportBudgetGastos(Throwable $e): string
     {
+        if ($this->esCancelacionExportBudgetGastos($e)) {
+            return 'Descarga cancelada.';
+        }
+
         $msg = trim((string) $e->getMessage());
         $lower = strtolower($msg);
 
@@ -1090,7 +1286,7 @@ class CentrosCostosController extends Controller
         $local = app(CcCatalogoLocal::class);
         $empUp = strtoupper($empresa);
 
-        if (! $refresh && $local->disponible() && $local->tieneDatos($empUp)) {
+        if (! $refresh && $local->disponible() && $local->tieneCuentas($empUp)) {
             $data = $local->leer($empUp);
             $cuentas = $data['cuentas'];
             if ($groupMask !== '') {
@@ -1098,22 +1294,23 @@ class CentrosCostosController extends Controller
                     return (string) ($c['grupo_id'] ?? '') === $groupMask;
                 }));
             }
-
-            return response()->json([
-                'ok' => true,
-                'cuentas' => $cuentas,
-                'agrupaciones' => [],
-                'mensaje' => null,
-                'fuente' => 'local',
-                'synced_at' => $data['synced_at'],
-            ]);
+            if ($cuentas || $groupMask === '') {
+                return response()->json([
+                    'ok' => true,
+                    'cuentas' => $cuentas,
+                    'agrupaciones' => [],
+                    'mensaje' => null,
+                    'fuente' => 'local',
+                    'synced_at' => $data['synced_at'],
+                ]);
+            }
         }
 
         try {
             $cargadas = $this->cargarCuentasEmpresa($empresa, $todas, $groupMask);
-            if (! empty($cargadas['ok']) && $local->disponible() && ($todas || $groupMask === '')) {
+            if (! empty($cargadas['ok']) && $local->disponible() && $groupMask === '') {
                 $prev = $local->leer($empUp);
-                // Reemplaza cuentas del catálogo; conserva centros locales.
+                // Reemplaza cuentas del catálogo completo; conserva centros locales.
                 $local->reemplazarEmpresa($empUp, $prev['centros'], $cargadas['cuentas'] ?? [], auth()->id());
             }
 
@@ -4158,7 +4355,7 @@ class CentrosCostosController extends Controller
                 $rec = CcPresupuesto::query()->firstOrNew([
                     'ciclo_codigo' => $ciclo,
                     'empresa' => $empresa,
-                    'centro_codigo' => $centro,
+                    'centro_codigo' => (string) ($info['centro'] ?? $centro),
                     'cuenta_codigo' => $info['cuenta'],
                 ]);
                 $rec->setMeses($meses);
@@ -4428,6 +4625,7 @@ class CentrosCostosController extends Controller
                 $cuenta = trim((string) $cta->cuenta_codigo);
                 $payload = [
                     'cuenta' => $cuenta,
+                    'centro' => $centro,
                     'nombre' => (string) ($cta->cuenta_nombre ?: ''),
                     'capturar' => $capturar,
                 ];
@@ -4450,7 +4648,63 @@ class CentrosCostosController extends Controller
             }
         }
 
+        return $this->aliasCentrosNumericosCaptura($out);
+    }
+
+    /**
+     * Excel convierte 34.100 en 34.1. Si un solo centro asignado cae en ese número,
+     * la fila importada se reconoce y se guarda con el código original.
+     *
+     * @param  array<string, array{cuenta: string, centro?: string, nombre: string, capturar: bool}>  $out
+     * @return array<string, array{cuenta: string, centro?: string, nombre: string, capturar: bool}>
+     */
+    protected function aliasCentrosNumericosCaptura(array $out): array
+    {
+        $aliases = [];
+        foreach ($out as $key => $payload) {
+            $cc = trim((string) ($payload['centro'] ?? ''));
+            $leido = $this->centroComoLoLeeExcel($cc);
+            if ($leido === null || $leido === $cc) {
+                continue;
+            }
+            $parts = explode('|', $key, 3);
+            if (count($parts) < 3) {
+                continue;
+            }
+            $alias = $parts[0].'|'.$leido.'|'.$parts[2];
+            if (isset($out[$alias])) {
+                continue;
+            }
+            if (! array_key_exists($alias, $aliases)) {
+                $aliases[$alias] = $payload;
+                continue;
+            }
+            if (! is_array($aliases[$alias]) || (string) ($aliases[$alias]['centro'] ?? '') !== $cc) {
+                $aliases[$alias] = null;
+            }
+        }
+        foreach ($aliases as $alias => $payload) {
+            if (! is_array($payload) || isset($out[$alias])) {
+                continue;
+            }
+            $out[$alias] = $payload;
+        }
+
         return $out;
+    }
+
+    /**
+     * Misma lectura que celdaTexto cuando Excel guardó el centro como número.
+     */
+    protected function centroComoLoLeeExcel(string $centro): ?string
+    {
+        $centro = trim($centro);
+        if ($centro === '' || ! is_numeric($centro)) {
+            return null;
+        }
+        $leido = $this->celdaTexto((float) $centro);
+
+        return $leido === '' ? null : $leido;
     }
 
     /**
@@ -5456,44 +5710,67 @@ class CentrosCostosController extends Controller
     protected function cargarCuentasEmpresa(string $empresa, bool $todas = false, string $groupMask = ''): array
     {
         $api = app(AutinApiClient::class);
-        $cuentas = [];
         $ok = false;
         $mensaje = null;
-        $maxPages = $todas ? 40 : 1;
-        $perPage = 200;
         $empresaApi = strtoupper(trim($empresa));
 
-        for ($page = 1; $page <= $maxPages; $page++) {
-            // Endpoint global: trae FormatCode (número de cuenta). El /{db}/cuentas solo trae CUENTA=_SYS… (consecutivo).
-            $filtros = [
-                'per_page' => $perPage,
-                'page' => $page,
-                'Empresa' => $empresaApi,
-            ];
-            if ($groupMask !== '') {
-                $filtros['GroupMask'] = $groupMask;
-            }
-            $res = $api->cuentasGlobal($filtros);
-            if (empty($res['ok'])) {
-                if ($page === 1) {
-                    $mensaje = $res['message'] ?? 'Sin conexión a catálogo SAP';
+        $fetch = function (string $mask) use ($api, $empresaApi, $todas, &$ok, &$mensaje): array {
+            $cuentas = [];
+            $maxPages = $todas ? 40 : 1;
+            $perPage = 200;
+            for ($page = 1; $page <= $maxPages; $page++) {
+                // Endpoint global: trae FormatCode (número de cuenta). El /{db}/cuentas solo trae CUENTA=_SYS… (consecutivo).
+                $filtros = [
+                    'per_page' => $perPage,
+                    'page' => $page,
+                    'Empresa' => $empresaApi,
+                ];
+                if ($mask !== '') {
+                    $filtros['GroupMask'] = $mask;
                 }
-                break;
+                $res = $api->cuentasGlobal($filtros);
+                if (empty($res['ok'])) {
+                    if ($page === 1 && $mensaje === null) {
+                        $mensaje = $res['message'] ?? 'Sin conexión a catálogo SAP';
+                    }
+                    break;
+                }
+                $ok = true;
+                $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                $raw = is_array($body['data'] ?? null) ? $body['data'] : [];
+                $batch = $this->normalizarCuentas($raw);
+                if ($batch) {
+                    $cuentas = array_merge($cuentas, $batch);
+                }
+                $pag = $this->paginacionDe($body);
+                $lastPage = $pag['last_page'];
+                if ($lastPage > 0 && $page >= $lastPage) {
+                    break;
+                }
+                if ($lastPage < 1 && (count($raw) < $perPage || ! $batch)) {
+                    break;
+                }
             }
-            $ok = true;
-            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
-            $batch = $this->normalizarCuentas($body['data'] ?? []);
-            if (! $batch) {
-                break;
-            }
-            $cuentas = array_merge($cuentas, $batch);
-            $pag = $this->paginacionDe($body);
-            $lastPage = $pag['last_page'];
-            if ($lastPage > 0 && $page >= $lastPage) {
-                break;
-            }
-            if ($lastPage < 1 && count($batch) < $perPage) {
-                break;
+
+            return $cuentas;
+        };
+
+        $cuentas = $fetch($groupMask);
+        if ($todas && $groupMask === '' && $ok && ! $cuentas) {
+            @set_time_limit(180);
+            $seen = [];
+            foreach (['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] as $mask) {
+                foreach ($fetch($mask) as $c) {
+                    $code = trim((string) ($c['codigo'] ?? ''));
+                    if ($code === '' || isset($seen[$code])) {
+                        continue;
+                    }
+                    $seen[$code] = true;
+                    if (trim((string) ($c['grupo_id'] ?? '')) === '') {
+                        $c['grupo_id'] = $mask;
+                    }
+                    $cuentas[] = $c;
+                }
             }
         }
 
