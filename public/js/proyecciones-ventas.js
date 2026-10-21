@@ -2192,6 +2192,29 @@
                 CC._budgetsBaseLoaded = true;
                 return;
             }
+            if (CC.state.page === 'control') {
+                CC._capturaClienteKey = '';
+                return fetch('/ProyeccionesVentas/api/captura/resumen?ciclo=' + encodeURIComponent(ciclo), {
+                    headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                }).then(function (r) {
+                    if (!r.ok) throw new Error('resumen ' + r.status);
+                    return r.json();
+                }).then(function (json) {
+                    if (gen !== CC._capturaLoadGen) return;
+                    aplicarCapturaResumen(json);
+                    CC._budgetsBaseLoaded = true;
+                    CC._capturaReady = true;
+                    renderNavEmpresas();
+                    renderNavCentros();
+                    paintVisorResumen(resumenTotalesVisibles());
+                    if (val('ctl-empresa') && val('ctl-centro')) loadControlCentro();
+                }).catch(function (err) {
+                    if (gen !== CC._capturaLoadGen) return;
+                    console.warn('[PV] No se pudo cargar el resumen', ciclo, err);
+                    CC._resumenOk = false;
+                    CC._capturaReady = true;
+                });
+            }
             return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             }).then(function (r) {
@@ -2241,6 +2264,174 @@
         });
     }
 
+    function resumenKey(emp, cc) {
+        return String(emp || '').toUpperCase() + '|' + String(cc || '').trim();
+    }
+
+    function aplicarCapturaResumen(json) {
+        var rows = (json && json.clientes) || [];
+        CC.state.capturaResumenRows = rows;
+        CC.state.capturaResumen = {};
+        rows.forEach(function (r) {
+            CC.state.capturaResumen[resumenKey(r.empresa, r.cliente)] = r;
+        });
+        CC.state.overlays = (json && json.overlays) || {};
+        CC._resumenOk = true;
+    }
+
+    function resumenDeCliente(emp, cc) {
+        return (CC.state.capturaResumen || {})[resumenKey(emp, cc)] || null;
+    }
+
+    function resumenTotalesVisibles() {
+        var rows = CC.state.capturaResumenRows || [];
+        var capturadas = 0;
+        var totalCtas = 0;
+        var listos = 0;
+        rows.forEach(function (r) {
+            capturadas += Number(r.capturados) || 0;
+            totalCtas += Number(r.productos) || 0;
+            if (!(Number(r.pendientes) > 0)) listos++;
+        });
+        var n = rows.length;
+        return {
+            n: n,
+            totG: 0,
+            totP: 0,
+            ventaPend: n,
+            capturadas: capturadas,
+            totalCtas: totalCtas,
+            listos: listos,
+            pendientes: n - listos,
+            avance: pct(capturadas, totalCtas || 1)
+        };
+    }
+
+    function pendientesDesdeResumen(emp, codigo) {
+        if (!CC._capturaReady || !CC._resumenOk) return null;
+        if (control.centro && control._allCtas && control._allCtas.length
+            && String(control.centro.empresa || '').toUpperCase() === String(emp || '').toUpperCase()
+            && String(control.centro.codigo || '').trim() === String(codigo || '').trim()
+            && CC._capturaClienteKey === capturaClienteCacheKey(cicloActualCodigo(), emp, codigo)) {
+            return statsDeCentro(control.centro).pendientes;
+        }
+        var r = resumenDeCliente(emp, codigo);
+        if (!r) return null;
+        return Number(r.pendientes) || 0;
+    }
+
+    function syncResumenClienteAbierto() {
+        var c = control.centro;
+        if (!c || !CC._resumenOk || !control._allCtas) return;
+        var s = statsDeCentro(c);
+        var key = resumenKey(c.empresa, c.codigo);
+        var row = CC.state.capturaResumen[key] || {
+            empresa: String(c.empresa || '').toUpperCase(),
+            cliente: String(c.codigo || '').trim()
+        };
+        row.productos = s.total;
+        row.capturados = s.capturadas;
+        row.pendientes = s.pendientes;
+        row.listo = !s.pendientes;
+        CC.state.capturaResumen[key] = row;
+        var rows = CC.state.capturaResumenRows || [];
+        var found = false;
+        rows.forEach(function (r, i) {
+            if (resumenKey(r.empresa, r.cliente) === key) {
+                rows[i] = row;
+                found = true;
+            }
+        });
+        if (!found) rows.push(row);
+        CC.state.capturaResumenRows = rows;
+    }
+
+    function capturaClienteCacheKey(ciclo, emp, cc) {
+        return String(ciclo || '').toUpperCase() + '|' + resumenKey(emp, cc);
+    }
+
+    function aplicarDetalleCaptura(json, esBase) {
+        if (!json) return;
+        if (!esBase) {
+            CC.state.overlays = Object.assign({}, CC.state.overlays || {}, json.overlays || {});
+            CC.state.completados = CC.state.completados || {};
+            CC.state.ajustes = CC.state.ajustes || {};
+            CC.state.costos = CC.state.costos || {};
+            CC.state.preciosMeses = CC.state.preciosMeses || {};
+            CC.state.costosMaster = Object.assign({}, CC.state.costosMaster || {}, json.costosMaster || {});
+            CC.state.costosMeses = Object.assign({}, CC.state.costosMeses || {}, json.costosMeses || {});
+            var raw = json.budgets || {};
+            Object.keys(raw).forEach(function (k) {
+                var done = !!(json.completados && json.completados[k]);
+                CC.state.budgets[k] = normalizeLoadedMonths(raw[k], done);
+                CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+                CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+                if (done) CC.state.completados[k] = true;
+                else delete CC.state.completados[k];
+                if (json.costos && json.costos[k] != null) CC.state.costos[k] = json.costos[k];
+                if (json.ajustes && json.ajustes[k] != null) CC.state.ajustes[k] = json.ajustes[k];
+                if (json.preciosMeses && json.preciosMeses[k]) CC.state.preciosMeses[k] = json.preciosMeses[k];
+            });
+            Object.keys(json.completados || {}).forEach(function (k) {
+                if (json.completados[k]) {
+                    CC.state.completados[k] = true;
+                    CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+                }
+            });
+            unscaleQtyBudgetsIfNeeded();
+            return;
+        }
+        CC.state.budgetsBase = CC.state.budgetsBase || {};
+        var baseRaw = json.budgets || {};
+        Object.keys(baseRaw).forEach(function (k) {
+            CC.state.budgetsBase[k] = normalizeLoadedMonths(baseRaw[k], false);
+        });
+    }
+
+    function cargarDetalleCliente(c) {
+        var ciclo = cicloActualCodigo();
+        var key = capturaClienteCacheKey(ciclo, c.empresa, c.codigo);
+        control._capturaClienteLoading = key;
+        var tb = document.getElementById('ctl-tbody');
+        if (tb) tb.innerHTML = '<tr><td colspan="30"><div class="cc-empty">Cargando cliente…</div></td></tr>';
+        var qs = '?ciclo=' + encodeURIComponent(ciclo) +
+            '&empresa=' + encodeURIComponent(c.empresa || '') +
+            '&cliente=' + encodeURIComponent(c.codigo || '');
+        var jobs = [fetch('/ProyeccionesVentas/api/captura' + qs, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) {
+            if (!r.ok) throw new Error('captura ' + r.status);
+            return r.json();
+        })];
+        var base = cicloBaseProyeccion();
+        if (base) {
+            jobs.push(fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(base) +
+                '&empresa=' + encodeURIComponent(c.empresa || '') +
+                '&cliente=' + encodeURIComponent(c.codigo || ''), {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(function (r) {
+                if (!r.ok) throw new Error('base ' + r.status);
+                return r.json();
+            }).catch(function () { return null; }));
+        }
+        return Promise.all(jobs).then(function (pack) {
+            if (control._capturaClienteLoading !== key) return;
+            if (capturaClienteCacheKey(cicloActualCodigo(), val('ctl-empresa'), val('ctl-centro')) !== key) return;
+            aplicarDetalleCaptura(pack[0], false);
+            if (pack[1]) aplicarDetalleCaptura(pack[1], true);
+            CC.state.cicloBaseCodigo = base || '';
+            CC._budgetsBaseLoaded = true;
+            CC._capturaClienteKey = key;
+            control._capturaClienteLoading = '';
+            loadControlCentro();
+        }).catch(function (err) {
+            if (control._capturaClienteLoading !== key) return;
+            control._capturaClienteLoading = '';
+            console.warn('[PV] No se pudo cargar el cliente', err);
+            toast('error', 'No se cargó el cliente', err && err.message ? err.message : 'Error de red');
+        });
+    }
+
     function refreshCapturaAfterBudgetsLoaded() {
         if (!(val('ctl-empresa') && val('ctl-centro'))) return;
         if (!control.centro) return;
@@ -2253,6 +2444,7 @@
             applyPreciosMap(preciosMapDesdeMaestroLocal(control.centro));
         }
         control._allCtas = cuentasEnriquecidas(control.centro);
+        syncResumenClienteAbierto();
         seedPresupuestoDesdeVentaReal(control.centro);
         if (esBudgetTipo()) scrubProyeccionOctDicSiCopiaBudgetRef();
         control._allCtas = cuentasEnriquecidas(control.centro);
@@ -2352,6 +2544,13 @@
         if (plain.length) return plain[0].codigo;
         var other = sameYear.filter(function (c) { return !esForecastTipo(c.tipoBudget); });
         return (other[0] && other[0].codigo) || '';
+    }
+
+    /** Unidades vendidas del mes (misma serie que la columna Uds. venta). */
+    function ventaUdsMes(cta, monthIdx) {
+        var g = cta && cta.gasto;
+        var n = Number(g && g[monthIdx]);
+        return isFinite(n) ? n : 0;
     }
 
     /** Cantidad de referencia (fila de arriba). Budget: ene–sep = venta real; oct–dic = ventas-budget. */
@@ -4727,9 +4926,41 @@
     }
 
     function chartScopePref() {
-        if (control.scopeTabla === 'centro' && control.chartVerTodas) return 'centro';
-        if (control.cuenta) return 'cuenta';
+        if (control.scopeTabla === 'cuenta' && control.cuenta) return 'cuenta';
         return 'centro';
+    }
+
+    /** Misma lista que la tabla de detalle / captura (no un producto suelto). */
+    function ctasTablaActual(opts) {
+        opts = opts || {};
+        var c = control.centro;
+        if (!c) return [];
+        var readonly = !!opts.readonly;
+        var q = readonly ? '' : (val('ctl-q') || '').toLowerCase();
+        var ctas = (control._allCtas || cuentasEnriquecidas(c)).filter(function (cta) {
+            var blob = (cta.codigo + ' ' + cta.nombre + ' ' + (cta.grupo || '')).toLowerCase();
+            return !q || blob.indexOf(q) !== -1;
+        });
+        var scope = opts.scope || control.scopeTabla;
+        if (scope === 'cuenta') ctas = scopedCtas('cuenta', ctas);
+        if (!readonly && control.soloPendientes && !(scope === 'cuenta' && control.cuenta)) {
+            ctas = ctas.filter(ctaPendiente);
+        }
+        return ctas;
+    }
+
+    /** Venta y proyección por mes, en la moneda de la vista. Misma suma que la fila Totales. */
+    function seriesMesVista(ctas) {
+        var venta = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        var proy = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        (ctas || []).forEach(function (cta) {
+            for (var i = 0; i < 12; i++) {
+                venta[i] += Number(importeMesVentaVista(cta, i)) || 0;
+                var mp = importeMesProyVista(cta, i);
+                if (mp != null) proy[i] += Number(mp) || 0;
+            }
+        });
+        return { venta: venta, proy: proy };
     }
 
     function paintScopeToggle(id, current) {
@@ -4748,12 +4979,10 @@
                 hint.textContent = 'Solo el producto ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Cambia a Todo el cliente para ver todos los productos.';
             } else if (control.scopeTabla === 'cuenta' && !control.cuenta) {
                 hint.textContent = 'Elige un producto para filtrar el detalle, o cambia a Todo el cliente para verlos todos.';
-            } else if (control.chartVerTodas) {
-                hint.textContent = 'Productos asignados del cliente. La gráfica muestra el cliente completo.';
-            } else if (cta) {
-                hint.textContent = 'Productos asignados del cliente. La gráfica muestra ' + (cta.nombre || cta.codigo) + '. Marca Ver todas para ver el cliente completo.';
+            } else if (cta && control.scopeTabla === 'cuenta') {
+                hint.textContent = 'Solo el producto ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. La gráfica usa esos mismos meses.';
             } else {
-                hint.textContent = 'Productos asignados del cliente. Elige una fila para verla en la gráfica, o marca Ver todas.';
+                hint.textContent = 'Productos asignados del cliente. La gráfica usa los totales por mes de esta tabla.';
             }
         }
         var wrap = document.getElementById('ctl-chart-todas-wrap');
@@ -4767,7 +4996,7 @@
             if (chartScopePref() === 'cuenta' && cta) {
                 chartHint.textContent = base + ' · ' + (cta.nombre || cta.codigo);
             } else {
-                chartHint.textContent = base + ' · Todo el cliente';
+                chartHint.textContent = base + ' · mismos totales de la tabla';
             }
         });
         paintScopeToggle('ctl-scope-tabla', control.scopeTabla);
@@ -4829,15 +5058,9 @@
         setText(prefix + '-pend', pend);
 
         if (mesesEl) {
-            var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            ctas.forEach(function (cta) {
-                for (var i = 0; i < 12; i++) {
-                    mesG[i] += Number(importeMesVentaVista(cta, i)) || 0;
-                    var mp = importeMesProyVista(cta, i);
-                    if (mp != null) mesP[i] += Number(mp) || 0;
-                }
-            });
+            var seriesSticky = seriesMesVista(ctas);
+            var mesG = seriesSticky.venta;
+            var mesP = seriesSticky.proy;
             var yyG = String(CC.state.anioGasto).slice(2);
             var yyP = String(CC.state.anioPresupuesto).slice(2);
             mesesEl.innerHTML = MONTHS.map(function (m, i) {
@@ -4901,6 +5124,10 @@
         var list = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
         return list.reduce(function (n, a) {
             if (isEmpresaCompleta(a.centro_codigo)) return n;
+            if (CC.state.page === 'control' && CC._resumenOk) {
+                var p = pendientesDesdeResumen(emp, a.centro_codigo);
+                return n + (p || 0);
+            }
             return n + statsDeCentro({
                 codigo: a.centro_codigo,
                 nombre: a.centro_nombre || a.centro_codigo,
@@ -5031,11 +5258,15 @@
             var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
             var pend = null;
             if (CC._capturaReady) {
-                pend = statsDeCentro({
-                    codigo: a.centro_codigo,
-                    nombre: a.centro_nombre || a.centro_codigo,
-                    empresa: emp
-                }).pendientes;
+                if (CC.state.page === 'control' && CC._resumenOk) {
+                    pend = pendientesDesdeResumen(emp, a.centro_codigo);
+                } else {
+                    pend = statsDeCentro({
+                        codigo: a.centro_codigo,
+                        nombre: a.centro_nombre || a.centro_codigo,
+                        empresa: emp
+                    }).pendientes;
+                }
                 label += '   ·   ' + markPendLabel(pend);
             }
             var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
@@ -5050,11 +5281,17 @@
         } else if (list.length === 1) el.value = String(list[0].centro_codigo || '').trim();
         else el.value = '';
         var chosen = list.filter(function (a) { return String(a.centro_codigo || '').trim() === String(el.value || '').trim(); })[0];
-        paintNavStatus('ctl-cc-status', (CC._capturaReady && chosen) ? statsDeCentro({
-            codigo: chosen.centro_codigo,
-            nombre: chosen.centro_nombre,
-            empresa: emp
-        }).pendientes : null, el);
+        var statusPend = null;
+        if (CC._capturaReady && chosen) {
+            statusPend = (CC.state.page === 'control' && CC._resumenOk)
+                ? pendientesDesdeResumen(emp, chosen.centro_codigo)
+                : statsDeCentro({
+                    codigo: chosen.centro_codigo,
+                    nombre: chosen.centro_nombre,
+                    empresa: emp
+                }).pendientes;
+        }
+        paintNavStatus('ctl-cc-status', statusPend, el);
     }
 
     function renderNavCuentas() {
@@ -5606,6 +5843,13 @@
             return;
         }
         var c = control.centro;
+        if (CC.state.page === 'control') {
+            var detKey = capturaClienteCacheKey(c.ciclo || cicloNow, c.empresa, c.codigo);
+            if (CC._capturaClienteKey !== detKey) {
+                if (control._capturaClienteLoading !== detKey) cargarDetalleCliente(c);
+                return;
+            }
+        }
         var asig = asigDe(c) || c;
         var cicloCode = c.ciclo || cicloNow;
         var locked = !puedeEscribirAsig(asig, cicloCode);
@@ -5755,15 +5999,21 @@
         if (el && String(el.value || '') !== String(control.cuenta || '')) {
             el.value = control.cuenta || '';
         }
-        // Si el producto está en un grupo colapsado de la matriz, abrirlo.
+        // Si el producto está en un grupo colapsado o en otra página, mostrarlo.
         if (codigo) {
             var ctaSel = (control._allCtas || []).filter(function (x) {
                 return String(x.codigo) === String(codigo);
             })[0];
             var gName = ctaSel && (ctaSel.grupo || 'Sin agrupación');
-            if (gName && control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]) {
-                control.grupoCerradoMatrix[gName] = false;
+            var reopen = !!(gName && control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]);
+            if (reopen) control.grupoCerradoMatrix[gName] = false;
+            var pageOf = matrixPageOfCodigo(codigo);
+            var jump = pageOf >= 0 && pageOf !== (Number(control.matrixPage) || 0);
+            if (jump) control.matrixPage = pageOf;
+            if (reopen || jump) {
                 drawMatrixTable();
+                var rowSel = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
+                if (rowSel && rowSel.scrollIntoView) rowSel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }
         }
         renderCtaChips();
@@ -5775,6 +6025,87 @@
         renderDetalleTable();
         renderDetalleChart();
         paintScopeHints();
+    }
+
+    var MATRIX_PAGE_SIZE = 30;
+
+    function matrixPageKey() {
+        var c = control.centro;
+        return [
+            c ? c.empresa : '',
+            c ? c.codigo : '',
+            val('ctl-ciclo') || '',
+            control.soloPendientes ? '1' : '0',
+            normSearch(control.prodQuery || '')
+        ].join('|');
+    }
+
+    function syncMatrixPage(total) {
+        var key = matrixPageKey();
+        if (control._matrixPageKey !== key) {
+            control._matrixPageKey = key;
+            control.matrixPage = 0;
+        }
+        var pages = Math.max(1, Math.ceil((total || 0) / MATRIX_PAGE_SIZE));
+        var page = Number(control.matrixPage) || 0;
+        if (page >= pages) page = pages - 1;
+        if (page < 0) page = 0;
+        control.matrixPage = page;
+        return page;
+    }
+
+    function matrixPageOfCodigo(codigo, ctas) {
+        if (!codigo) return -1;
+        ctas = ctas || matrixCtas();
+        for (var i = 0; i < ctas.length; i++) {
+            if (String(ctas[i].codigo) === String(codigo)) return Math.floor(i / MATRIX_PAGE_SIZE);
+        }
+        return -1;
+    }
+
+    function bindMatrixPager() {
+        var box = document.getElementById('ctl-matrix-pager');
+        if (!box || box._bound) return;
+        box._bound = true;
+        box.addEventListener('click', function (ev) {
+            var btn = ev.target.closest('[data-matrix-page]');
+            if (!btn || btn.disabled) return;
+            var ctas = matrixCtas();
+            var pages = Math.max(1, Math.ceil(ctas.length / MATRIX_PAGE_SIZE));
+            var page = Number(control.matrixPage) || 0;
+            var dir = btn.getAttribute('data-matrix-page');
+            if (dir === 'prev') page = Math.max(0, page - 1);
+            else if (dir === 'next') page = Math.min(pages - 1, page + 1);
+            if (page === (Number(control.matrixPage) || 0)) return;
+            control.matrixPage = page;
+            drawMatrixTable(ctas);
+            var wrap = document.querySelector('.cc-matrix-wrap');
+            if (wrap) wrap.scrollTop = 0;
+        });
+    }
+
+    function paintMatrixPager(total) {
+        var box = document.getElementById('ctl-matrix-pager');
+        if (!box) return;
+        bindMatrixPager();
+        if (total <= MATRIX_PAGE_SIZE) {
+            box.hidden = true;
+            box.innerHTML = '';
+            return;
+        }
+        var page = Number(control.matrixPage) || 0;
+        var pages = Math.ceil(total / MATRIX_PAGE_SIZE);
+        var from = page * MATRIX_PAGE_SIZE + 1;
+        var to = Math.min(total, (page + 1) * MATRIX_PAGE_SIZE);
+        box.hidden = false;
+        box.innerHTML =
+            '<button type="button" class="cc-btn" data-matrix-page="prev"' + (page <= 0 ? ' disabled' : '') + '>Anterior</button>' +
+            '<span class="cc-matrix-pager-label">Productos ' + from + '–' + to + ' de ' + total + '</span>' +
+            '<button type="button" class="cc-btn" data-matrix-page="next"' + (page >= pages - 1 ? ' disabled' : '') + '>Siguiente</button>';
+        var grupo = document.getElementById('ctl-form-grupo');
+        if (grupo && control.centro) {
+            grupo.textContent = 'Productos ' + from + '–' + to + ' de ' + total;
+        }
     }
 
     function matrixCtas() {
@@ -5865,10 +6196,10 @@
         var ok = document.getElementById('ctl-legend-ok');
         var over = document.getElementById('ctl-legend-over');
         if (legend) legend.hidden = false;
+        var anioLeyenda = CC.state.anioGasto || '';
         if (esSiopTipo()) {
-            var src = pastQtyCaption();
-            if (ok) ok.textContent = 'Mayor o igual a ' + src;
-            if (over) over.textContent = 'Menor a ' + src;
+            if (ok) ok.textContent = 'Mayor o igual a venta' + (anioLeyenda ? (' ' + anioLeyenda) : '');
+            if (over) over.textContent = 'Menor a venta' + (anioLeyenda ? (' ' + anioLeyenda) : '');
             return;
         }
         var anio = CC.state.anioGasto || '';
@@ -5881,14 +6212,8 @@
         paintMatrixLegend();
         if (!hint) return;
         var cta = currentCta();
-        var arriba = pastQtyCaption();
-        if (esBudgetTipo()) {
-            hint.textContent = cta
-                ? ('Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
-                    '. Arriba = venta ' + (CC.state.anioGasto || '') + ' (ene–sep) y budget (oct–dic); abajo = proyección editable.')
-                : ('Budget: arriba = venta ' + (CC.state.anioGasto || '') + ' ene–sep + budget oct–dic. Abajo: captura la proyección.');
-            return;
-        }
+        var anioVenta = CC.state.anioGasto || '';
+        var arriba = 'unidades de venta' + (anioVenta ? (' ' + anioVenta) : '') + ' (suman la columna Uds. venta)';
         if (cta) {
             hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
                 '. Arriba = ' + arriba + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
@@ -6413,13 +6738,13 @@
         var cells = '';
         for (var i = 0; i < 12; i++) {
             var shown = formatInputQty(cta.ppto[i]);
-            var pastQty = pastQtyMes(cta, i);
+            var pastQty = ventaUdsMes(cta, i);
             var lockedMes = mesBloqueadoBudget(i);
             var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
             var pMes = precioUnitarioMes(cta, i);
             var pCustom = precioMesEsDistinto(cta, i);
             var mon = canonMoneda(cta.precioMoneda || 'MXN');
-            var pastCap = pastQtyCaption();
+            var pastCap = 'venta ' + (anioPast || '');
             cells += '<td class="' + pCls + '">' +
                 '<div class="cc-matrix-month">' +
                     '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
@@ -6592,12 +6917,24 @@
                     ? 'Sin productos con ese filtro'
                     : 'Usa Agregar producto, a la izquierda, para asignarlo y capturarlo aquí') +
                 '</div></td></tr>';
+            paintMatrixPager(0);
             return;
         }
 
+        syncMatrixPage(ctas.length);
+        var page = Number(control.matrixPage) || 0;
+        var visible = ctas.length > MATRIX_PAGE_SIZE
+            ? ctas.slice(page * MATRIX_PAGE_SIZE, page * MATRIX_PAGE_SIZE + MATRIX_PAGE_SIZE)
+            : ctas;
+        var fullByGroup = {};
+        ctas.forEach(function (cta) {
+            var fg = cta.grupo || 'Sin agrupación';
+            (fullByGroup[fg] = fullByGroup[fg] || []).push(cta);
+        });
+
         var groups = {};
         var groupOrder = [];
-        ctas.forEach(function (cta) {
+        visible.forEach(function (cta) {
             var g = cta.grupo || 'Sin agrupación';
             if (!groups[g]) {
                 groups[g] = [];
@@ -6609,16 +6946,17 @@
         var html = '';
         groupOrder.forEach(function (g) {
             var list = groups[g];
+            var full = fullByGroup[g] || list;
             var closed = !!closedMap[g];
-            var capturados = list.filter(function (x) { return !ctaPendiente(x); }).length;
-            var udsGrupo = list.reduce(function (a, x) {
+            var capturados = full.filter(function (x) { return !ctaPendiente(x); }).length;
+            var udsGrupo = full.reduce(function (a, x) {
                 return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto));
             }, 0);
             html += '<tr class="cc-group-row cc-matrix-group-row" data-group="' + escapeHtml(g) + '">' +
                 '<td class="sticky-col" colspan="6">' +
                     '<i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' +
-                    escapeHtml(g) + ' · ' + list.length + (list.length === 1 ? ' producto' : ' productos') +
-                    '<span class="cc-matrix-group-meta">' + capturados + '/' + list.length + ' capturados' +
+                    escapeHtml(g) + ' · ' + full.length + (full.length === 1 ? ' producto' : ' productos') +
+                    '<span class="cc-matrix-group-meta">' + capturados + '/' + full.length + ' capturados' +
                     (udsGrupo ? (' · ' + qtyLabel(udsGrupo) + ' uds proy.') : '') + '</span>' +
                 '</td>' +
                 '<td colspan="12" class="cc-matrix-group-spacer"></td>' +
@@ -6631,6 +6969,7 @@
         });
         tbody.innerHTML = html;
         bindMatrixTableEvents(tbody);
+        paintMatrixPager(ctas.length);
     }
 
     function paintMatrixSelection() {
@@ -6647,12 +6986,15 @@
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         var row = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
         if (!cta || !row) {
-            // Puede estar en un grupo cerrado: reabrir y redibujar.
             if (cta) {
                 var gName = cta.grupo || 'Sin agrupación';
                 if (control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]) {
                     control.grupoCerradoMatrix[gName] = false;
+                    drawMatrixTable();
+                    return;
                 }
+                var pageOf = matrixPageOfCodigo(codigo);
+                if (pageOf >= 0 && pageOf !== (Number(control.matrixPage) || 0)) return;
             }
             drawMatrixTable();
             return;
@@ -6741,7 +7083,7 @@
             return cls;
         }
         var val = Number(raw) || 0;
-        var past = pastQtyMes(cta, i);
+        var past = ventaUdsMes(cta, i);
         // Verde: proyección >= venta / proy. anterior.
         // Rojo: proyección < venta / proy. anterior.
         if (past > 0 && val < past) cls += ' is-over';
@@ -6865,6 +7207,7 @@
         var c = control.centro;
         if (!c) return;
         control._allCtas = cuentasEnriquecidas(c);
+        syncResumenClienteAbierto();
         updateControlProgress();
         renderControlNav();
         renderCtaChips();
@@ -6901,15 +7244,10 @@
             if (tbodyId === 'det-tbody') paintVisibleTableTotals(null, 'det');
             return;
         }
-        var q = opts.readonly ? '' : (val('ctl-q') || '').toLowerCase();
-        var ctas = (control._allCtas || cuentasEnriquecidas(c)).filter(function (cta) {
-            var blob = (cta.codigo + ' ' + cta.nombre + ' ' + (cta.grupo || '')).toLowerCase();
-            return !q || blob.indexOf(q) !== -1;
+        var ctas = ctasTablaActual({
+            readonly: !!opts.readonly,
+            scope: opts.scope || control.scopeTabla
         });
-        if (opts.scope) ctas = scopedCtas(opts.scope, ctas);
-        if (!opts.readonly && control.soloPendientes && !(opts.scope === 'cuenta' && control.cuenta)) {
-            ctas = ctas.filter(ctaPendiente);
-        }
         if (!opts.readonly) control._ctas = ctas;
         if (tbodyId === 'ctl-tbody') paintVisibleTableTotals(ctas, 'ctl');
         if (tbodyId === 'det-tbody') paintVisibleTableTotals(ctas, 'det');
@@ -7010,17 +7348,13 @@
             // Fila de totales por mes (todas las cuentas filtradas, aunque el grupo esté cerrado).
             var sumG = 0;
             var sumP = 0;
-            var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             ctas.forEach(function (cta) {
                 sumG += importeVentaVista(cta);
                 sumP += importeProyeccionVista(cta);
-                for (var mi = 0; mi < 12; mi++) {
-                    mesG[mi] += Number(importeMesVentaVista(cta, mi)) || 0;
-                    var mp = importeMesProyVista(cta, mi);
-                    if (mp != null) mesP[mi] += Number(mp) || 0;
-                }
             });
+            var seriesTot = seriesMesVista(ctas);
+            var mesG = seriesTot.venta;
+            var mesP = seriesTot.proy;
             var dTot = deltaPct(sumP, sumG);
             var dTotCls = deltaToneClass(dTot);
             html += '<tr class="cc-month-totals-row">' +
@@ -7646,6 +7980,10 @@
 
     function renderVisorTable() {
         var tb = document.getElementById('visor-tbody');
+        if (CC.state.page === 'control' && control.vista !== 'visor' && CC._resumenOk) {
+            paintVisorResumen(resumenTotalesVisibles());
+            return;
+        }
         if (!tb) return;
         var rows = visorRowsFiltradas();
         var tot = visorTotales(rows);
@@ -8183,32 +8521,27 @@
         renderMonthChart('chart-detalle', 'chart-detalle', chartScopePref());
     }
 
-    function renderMonthChart(canvasId, chartKey, scopePref) {
+    function renderMonthChart(canvasId, chartKey) {
         var canvas = document.getElementById(canvasId);
         if (!canvas || !window.Chart) return;
-        var ctas = scopedCtas(scopePref, control._allCtas || []);
-        // Importes en moneda de vista (igual que totales / sticky), no unidades.
-        var g = MONTHS.map(function (_, i) {
-            return ctas.reduce(function (a, x) {
-                return a + (Number(importeMesVentaVista(x, i)) || 0);
-            }, 0);
+        var ctas = ctasTablaActual({
+            readonly: canvasId === 'chart-detalle',
+            scope: chartScopePref()
         });
-        var p = MONTHS.map(function (_, i) {
-            return ctas.reduce(function (a, x) {
-                var mp = importeMesProyVista(x, i);
-                return a + (mp != null ? (Number(mp) || 0) : 0);
-            }, 0);
-        });
+        var series = seriesMesVista(ctas);
+        var g = series.venta;
+        var p = series.proy;
         var d = g.map(function (gv, i) { return deltaPct(p[i], gv); });
+        var anioVenta = CC.state.anioGasto || '';
+        var anioProy = CC.state.anioPresupuesto || '';
         if (CC.state.charts[chartKey]) CC.state.charts[chartKey].destroy();
         CC.state.charts[chartKey] = new Chart(canvas, {
             type: 'bar',
             data: {
                 labels: MONTHS,
                 datasets: [
-                    { type: 'bar', label: 'Ventas ' + CC.state.anioGasto, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
-                    { type: 'bar', label: 'Ppto ' + CC.state.anioPresupuesto, data: p, backgroundColor: '#a1a1aa', borderRadius: 4, yAxisID: 'y' },
-                    { type: 'line', label: 'Contraste %', data: d, borderColor: '#b45309', backgroundColor: 'transparent', tension: 0.3, yAxisID: 'y1', pointRadius: 3, borderWidth: 2 }
+                    { type: 'bar', label: 'Venta ' + anioVenta, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
+                    { type: 'bar', label: 'Proyección ' + anioProy, data: p, backgroundColor: '#71717a', borderRadius: 4, yAxisID: 'yProy' }
                 ]
             },
             options: {
@@ -8219,9 +8552,13 @@
                     tooltip: {
                         callbacks: {
                             label: function (ctx) {
-                                if (ctx.dataset.yAxisID === 'y1') return ctx.dataset.label + ': ' + ctx.parsed.y + '%';
-                                // Valores ya en moneda de vista: no volver a aplicar TC.
-                                return ctx.dataset.label + ': ' + moneyVista(ctx.parsed.y);
+                                return ctx.dataset.label + ': ' + moneyGasto(ctx.parsed.y);
+                            },
+                            afterBody: function (items) {
+                                var i = items[0] ? items[0].dataIndex : -1;
+                                if (i < 0) return '';
+                                var pct = d[i];
+                                return 'Contraste: ' + (pct > 0 ? '+' : '') + pct + '%';
                             }
                         }
                     }
@@ -8229,14 +8566,19 @@
                 scales: {
                     x: { grid: { display: false } },
                     y: {
-                        ticks: {
-                            callback: function (v) {
-                                return moneyVista(v);
-                            }
-                        },
+                        position: 'left',
+                        beginAtZero: true,
+                        title: { display: true, text: 'Venta ' + anioVenta, color: '#0a0a0a', font: { size: 11, weight: '600' } },
+                        ticks: { callback: function (v) { return moneyVista(v); } },
                         grid: { color: '#f1f1f3' }
                     },
-                    y1: { position: 'right', grid: { display: false }, ticks: { callback: function (v) { return v + '%'; } } }
+                    yProy: {
+                        position: 'right',
+                        beginAtZero: true,
+                        title: { display: true, text: 'Proyección ' + anioProy, color: '#52525b', font: { size: 11, weight: '600' } },
+                        ticks: { callback: function (v) { return moneyVista(v); } },
+                        grid: { display: false }
+                    }
                 }
             }
         });
@@ -8439,6 +8781,10 @@
         CC._anCapturaCiclo = null;
         CC._anAsigLoaded = false;
         CC._anAsigLoading = false;
+        CC._anCatalogo = [];
+        CC._anDetalleKey = '';
+        CC._anDetalleReady = false;
+        CC._capturaReady = false;
         CC._anGastoTried = {};
         CC._anVentasBudget = {};
         CC._anVentasBudgetTried = {};
@@ -8517,27 +8863,12 @@
         var cicloEl = document.getElementById('an-ciclo');
         if (cicloEl && ciclo) cicloEl.value = ciclo;
         CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
-        var cicloKey = String(CC.state.cicloCodigo || '');
-        if (CC._anCapturaCiclo !== cicloKey) {
-            CC._anCapturaCiclo = cicloKey;
-            paintAnalisisLoading();
-            loadOverlaysForCycle().then(function () {
-                if (CC.state.page !== 'analisis') return;
-                if (String(CC.state.cicloCodigo || '') !== cicloKey) return;
-                if (CC._anHoldBusy && analisisTieneFiltro()) {
-                    maybeQueueAnalisisGastos();
-                    return;
-                }
-                renderAnalisis();
-                maybeQueueAnalisisGastos();
-            });
-        }
-
         paintAnalisisLoading();
         if (!CC._anAsigLoaded) {
             if (CC._anAsigLoading) return;
             if (!ciclo) {
-                CC.state.misAsignaciones = CC.state.misAsignaciones || [];
+                CC._anCatalogo = [];
+                CC.state.misAsignaciones = [];
                 CC.state.centros = [];
                 CC._anAsigLoaded = true;
                 fillAnalisisFilters();
@@ -8547,32 +8878,42 @@
             CC._anAsigGen = (CC._anAsigGen || 0) + 1;
             var asigGen = CC._anAsigGen;
             CC._anAsigLoading = true;
-            fetchAnalisisAsignaciones(ciclo).then(function (list) {
+            fetchAnalisisCatalogo(ciclo).then(function (json) {
                 if (asigGen !== CC._anAsigGen) return;
                 CC._anAsigLoading = false;
                 if (String(val('an-ciclo') || CC.state.cicloCodigo || '').toUpperCase() !== String(ciclo).toUpperCase()) return;
-                CC.state.misAsignaciones = list || [];
-                CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                CC._anAsigLoaded = true;
-                fillAnalisisFilters();
-                if (analisisTieneFiltro()) {
-                    maybeQueueAnalisisGastos();
+                aplicarCatalogoAnalisis(json || {});
+                if (analisisTieneDetalle()) {
+                    kickAnalisisVista();
                     return;
                 }
+                hideAnalisisBusy();
                 renderAnalisis();
-                maybeQueueAnalisisGastos();
+            }).catch(function () {
+                if (asigGen !== CC._anAsigGen) return;
+                CC._anAsigLoading = false;
+                aplicarCatalogoAnalisis({ clientes: [], sin_revision: false });
+                hideAnalisisBusy();
+                renderAnalisis();
             });
             return;
         }
 
-        CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
+        CC.state.centros = centrosDesdeCatalogo(CC._anCatalogo || []);
         fillAnalisisFilters();
-        if (CC._anHoldBusy && analisisTieneFiltro()) {
-            maybeQueueAnalisisGastos();
+        if (analisisTieneDetalle()) {
+            if (CC._anDetalleReady && CC._anDetalleKey === detalleAnalisisKey()) {
+                if (!filtroAnalisisEnCache()) {
+                    maybeQueueAnalisisGastos();
+                    return;
+                }
+                renderAnalisis();
+                return;
+            }
+            kickAnalisisVista();
             return;
         }
         renderAnalisis();
-        maybeQueueAnalisisGastos();
     };
 
     function fetchJsonOk(url) {
@@ -8637,6 +8978,110 @@
         });
     }
 
+    function fetchAnalisisCatalogo(ciclo) {
+        return fetchJsonOk('/ProyeccionesVentas/api/analisis/catalogo?ciclo=' + encodeURIComponent(ciclo || ''));
+    }
+
+    function centrosDesdeCatalogo(list) {
+        var ciclo = val('an-ciclo') || CC.state.cicloCodigo || '';
+        return (list || []).map(function (c) {
+            var users = (c.usuarios || []).filter(Boolean);
+            return {
+                codigo: c.codigo,
+                nombre: c.nombre || c.codigo,
+                empresa: String(c.empresa || '').toUpperCase(),
+                usuario: users[0] || '',
+                usuarios: users,
+                estado: 'abierto',
+                modo: 'solo_revision',
+                departamento: '',
+                ciclo: ciclo,
+                capturar: false,
+                editar: false,
+                revisar: true,
+                permisos: ['revisar'],
+                cuentasN: 0,
+                sap: true
+            };
+        });
+    }
+
+    function aplicarCatalogoAnalisis(json) {
+        CC._anCatalogo = (json && json.clientes) || [];
+        CC._anSinRevision = !!(json && json.sin_revision);
+        CC.state.centros = centrosDesdeCatalogo(CC._anCatalogo);
+        CC.state.misAsignaciones = [];
+        CC._capturaReady = false;
+        CC._anDetalleKey = '';
+        CC._anDetalleReady = false;
+        CC._anAsigLoaded = true;
+        fillAnalisisFilters();
+    }
+
+    function analisisTieneDetalle() {
+        return !!(val('an-cliente') || val('an-user'));
+    }
+
+    function detalleAnalisisKey() {
+        var p = filtroDetalleParams();
+        return [p.ciclo, p.empresa, p.cliente, p.usuario].join('|');
+    }
+
+    function filtroDetalleParams() {
+        var ciclo = val('an-ciclo') || CC.state.cicloCodigo || '';
+        var emp = empresaAnalisisConcreta() || '';
+        var cli = val('an-cliente') || '';
+        var codigo = '';
+        if (cli) {
+            var i = cli.indexOf('|');
+            if (i >= 0) {
+                emp = cli.slice(0, i);
+                codigo = cli.slice(i + 1);
+            } else {
+                codigo = cli;
+            }
+        }
+        return {
+            ciclo: ciclo,
+            empresa: emp,
+            cliente: codigo,
+            usuario: val('an-user') || ''
+        };
+    }
+
+    function aplicarDetalleAnalisis(json) {
+        var cap = (json && json.captura) || {};
+        CC.state.budgets = {};
+        CC.state.budgetKeysFromServer = {};
+        CC.state.completados = {};
+        CC.state.costos = {};
+        CC.state.costosMaster = {};
+        CC.state.costosMeses = {};
+        CC.state.ajustes = {};
+        CC.state.preciosMeses = {};
+        CC.state.overlays = {};
+        aplicarDetalleCaptura(cap, false);
+        CC._capturaReady = true;
+        CC.state.misAsignaciones = (json && json.asignaciones) || [];
+    }
+
+    function cargarAnalisisDetalle(key) {
+        CC._anDetalleGen = (CC._anDetalleGen || 0) + 1;
+        var gen = CC._anDetalleGen;
+        var p = filtroDetalleParams();
+        var url = '/ProyeccionesVentas/api/analisis/detalle?ciclo=' + encodeURIComponent(p.ciclo)
+            + '&empresa=' + encodeURIComponent(p.empresa)
+            + '&cliente=' + encodeURIComponent(p.cliente)
+            + '&usuario=' + encodeURIComponent(p.usuario);
+        return fetchJsonOk(url).then(function (json) {
+            if (gen !== CC._anDetalleGen) return;
+            if (detalleAnalisisKey() !== key) return;
+            aplicarDetalleAnalisis(json || {});
+            CC._anDetalleKey = key;
+            CC._anDetalleReady = true;
+        });
+    }
+
     function analisisPageEl() {
         return document.querySelector('.cc-page');
     }
@@ -8670,7 +9115,7 @@
     function paintAnalisisLoading() {
         var loading = document.getElementById('an-loading');
         if (loading) loading.hidden = true;
-        if (CC._anHoldBusy && analisisTieneFiltro()) showAnalisisBusy();
+        if (CC._anHoldBusy && analisisTieneDetalle()) showAnalisisBusy();
         else hideAnalisisBusy();
     }
 
@@ -8697,23 +9142,34 @@
         if (CC._anFillingFilters) return;
         CC._anKickSeq = (CC._anKickSeq || 0) + 1;
         var seq = CC._anKickSeq;
-        if (!analisisTieneFiltro()) {
+        if (!analisisTieneDetalle()) {
+            CC._anDetalleKey = '';
+            CC._anDetalleReady = false;
+            CC.state.misAsignaciones = [];
+            CC._capturaReady = false;
             hideAnalisisBusy();
             afterAnalisisPaint(function () {
-                if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || analisisTieneFiltro()) return;
+                if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || analisisTieneDetalle()) return;
                 renderAnalisis();
             });
             return;
         }
-        if (filtroAnalisisEnCache()) {
+        showAnalisisBusy();
+        var key = detalleAnalisisKey();
+        var detalleLista = CC._anDetalleReady && CC._anDetalleKey === key;
+        var paso = detalleLista ? Promise.resolve() : cargarAnalisisDetalle(key);
+        paso.then(function () {
+            if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || !analisisTieneDetalle()) return;
+            if (filtroAnalisisEnCache()) {
+                hideAnalisisBusy();
+                renderAnalisis();
+                return;
+            }
+            maybeQueueAnalisisGastos();
+        }).catch(function () {
+            if (seq !== CC._anKickSeq) return;
             hideAnalisisBusy();
             renderAnalisis();
-            return;
-        }
-        showAnalisisBusy();
-        afterAnalisisPaint(function () {
-            if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || !analisisTieneFiltro()) return;
-            maybeQueueAnalisisGastos();
         });
     }
 
@@ -8962,7 +9418,7 @@
             paintAnalisisLoading();
             return;
         }
-        if (!analisisTieneFiltro()) {
+        if (!analisisTieneDetalle()) {
             hideAnalisisBusy();
             return;
         }
@@ -9305,8 +9761,10 @@
     }
 
     function snapshotCentros() {
-        var light = !!CC._anLightPaint || !analisisTieneFiltro();
-        return CC.state.centros.map(mergedCentro).map(function (c) {
+        var light = !!CC._anLightPaint || !analisisTieneDetalle();
+        var fuente = CC.state.centros || [];
+        if (!light && CC.state.page === 'analisis') fuente = centrosObjetivoAnalisis();
+        return fuente.map(mergedCentro).map(function (c) {
             var users = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             if (light) {
                 return Object.assign({}, c, {
@@ -9596,16 +10054,16 @@
         var emptyIcon = document.getElementById('an-empty-icon');
         var work = document.getElementById('an-work');
         var all = CC._anAsigLoaded ? snapshotCentros() : [];
-        var needsFilter = CC._anAsigLoaded && !!all.length && !analisisTieneFiltro();
+        var needsFilter = CC._anAsigLoaded && !!(CC.state.centros && CC.state.centros.length) && !analisisTieneDetalle();
         paintAnalisisLoading();
         if (empty) {
             if (!CC._anAsigLoaded) {
                 empty.hidden = false;
-                if (analisisTieneFiltro()) {
+                if (analisisTieneDetalle()) {
                     if (emptyMsg) emptyMsg.innerHTML = htmlCargando('lg');
                     if (emptyIcon) emptyIcon.hidden = true;
                 } else {
-                    if (emptyMsg) emptyMsg.textContent = 'Selecciona una empresa, o Todas, para ver el análisis.';
+                    if (emptyMsg) emptyMsg.textContent = 'Elige una empresa y después un cliente o un usuario para cargar solo esa información.';
                     if (emptyIcon) {
                         emptyIcon.hidden = false;
                         emptyIcon.className = 'fa-solid fa-filter';
@@ -9625,7 +10083,7 @@
             } else if (needsFilter) {
                 empty.hidden = false;
                 if (emptyMsg) {
-                    emptyMsg.textContent = 'Selecciona una empresa, o Todas, para ver el análisis.';
+                    emptyMsg.textContent = 'Elige una empresa y después un cliente o un usuario para cargar solo esa información.';
                 }
                 if (emptyIcon) {
                     emptyIcon.hidden = false;
@@ -12575,8 +13033,8 @@
         if (CC.state.page === 'detalle') CC.initDetalle();
         if (CC.state.page === 'analisis') CC.initAnalisis();
         if (CC.state.page === 'costos') initCostos();
-        // Detalle: sin catálogo SAP (todo local vía captura/bootstrap).
-        if (CC.state.page === 'control') refreshSap(boot.catalogoUrl);
+        // Captura y Detalle arrancan en local (asignaciones, maestro, snapshot).
+        // El catálogo SAP no se pide al entrar; la venta SAP va en «Actualizar venta SAP».
     };
 
     function refreshSap(url) {

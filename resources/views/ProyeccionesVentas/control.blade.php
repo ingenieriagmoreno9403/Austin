@@ -226,6 +226,7 @@
                                 </tbody>
                             </table>
                         </div>
+                        <div class="cc-matrix-pager" id="ctl-matrix-pager" hidden></div>
                         <div id="ctl-month-grid" hidden></div>
                     </div>
                     <div class="cc-captura-save">

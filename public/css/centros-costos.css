@@ -3843,6 +3843,27 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     border-radius: 14px;
     background: #fff;
 }
+.cc-matrix-pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.65rem;
+}
+.cc-matrix-pager[hidden] {
+    display: none;
+}
+.cc-matrix-pager-label {
+    font-size: 0.82rem;
+    font-weight: 650;
+    color: var(--cc-muted);
+    min-width: 11rem;
+    text-align: center;
+}
+.cc-matrix-pager .cc-btn[disabled] {
+    opacity: 0.4;
+    pointer-events: none;
+}
 .cc-matrix-table {
     width: 100%;
     border-collapse: separate;
