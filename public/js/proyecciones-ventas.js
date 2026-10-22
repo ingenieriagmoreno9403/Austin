@@ -1929,6 +1929,128 @@
         return CC._budgetSaveChain;
     }
 
+    var CAPTURA_LOTE = 50;
+
+    function filaPresupuestoPayload(empresa, cc, cta, months, opts) {
+        var applied = applyBudgetLocal(empresa, cc, cta.codigo, months, opts || {});
+        var payload = {
+            cuenta: cta.codigo,
+            cuenta_nombre: cta.nombre || '',
+            meses: applied.months,
+            completado: applied.done,
+            ajuste_pct: Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0,
+            costo_unitario: Number(cta.costo) || 0
+        };
+        if (CC.state.puedeEditarPreciosCaptura) {
+            payload.precio_meses = preciosMesesDe(empresa, cc, cta.codigo);
+        }
+        return payload;
+    }
+
+    function filasCapturaParaGuardar(fillEmpty) {
+        var c = control.centro;
+        if (!c || control.locked) return null;
+        var ctas = control._allCtas || [];
+        var filas = [];
+        var completos = 0;
+        var parciales = 0;
+        ctas.forEach(function (cta) {
+            var months = monthsFromGrid(cta, !!fillEmpty);
+            var faltan = cuentaMesesVacios(months);
+            var tieneAlgo = (months || []).some(mesLleno);
+            if (!fillEmpty && !tieneAlgo) return;
+            var done = fillEmpty ? true : !faltan.length;
+            if (done) completos++;
+            else parciales++;
+            filas.push(filaPresupuestoPayload(c.empresa, c.codigo, cta, months, { completado: done }));
+        });
+        return {
+            filas: filas,
+            guardados: filas.length,
+            completos: completos,
+            parciales: parciales
+        };
+    }
+
+    function setCapturaSaveProgress(texto) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-completar'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (texto) {
+                if (!el.getAttribute('data-label')) el.setAttribute('data-label', el.innerHTML);
+                el.disabled = true;
+                el.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ' + escapeHtml(texto);
+                return;
+            }
+            var prev = el.getAttribute('data-label');
+            if (prev) el.innerHTML = prev;
+            el.disabled = false;
+        });
+    }
+
+    function aplicarRespuestaLote(items) {
+        (items || []).forEach(function (item) {
+            if (!item || !item.key) return;
+            CC.state.completados = CC.state.completados || {};
+            if (item.completado) CC.state.completados[item.key] = true;
+            else delete CC.state.completados[item.key];
+            if (!item.precio_meses) return;
+            var parts = String(item.key).split('|');
+            if (parts.length < 3) return;
+            setPrecioMesesLocal(parts[0], parts[1], parts.slice(2).join('|'), item.precio_meses);
+        });
+    }
+
+    /** Lotes de 50. Cada lote es una transacción; si uno falla, los anteriores quedan guardados. */
+    function enviarPresupuestoEnLotes(empresa, centro, filas, onStep) {
+        var total = (filas || []).length;
+        var ciclo = cicloActualCodigo();
+        function sendAt(offset) {
+            if (offset >= total) return Promise.resolve({ guardados: total, total: total });
+            var slice = filas.slice(offset, offset + CAPTURA_LOTE);
+            var hasta = offset + slice.length;
+            if (onStep) onStep(hasta, total);
+            return fetch('/ProyeccionesVentas/api/captura/presupuesto-lote', {
+                method: 'POST',
+                headers: apiJsonHeaders(),
+                body: JSON.stringify({
+                    ciclo: ciclo,
+                    empresa: empresa,
+                    centro: centro,
+                    productos: slice
+                })
+            }).then(function (res) {
+                return res.json().then(function (json) {
+                    if (!res.ok) {
+                        var err = new Error((json && json.message) || 'No se pudo guardar el lote');
+                        err.guardados = offset;
+                        err.total = total;
+                        throw err;
+                    }
+                    aplicarRespuestaLote(json && json.items);
+                    return sendAt(hasta);
+                });
+            }).catch(function (err) {
+                if (err && err.guardados == null) {
+                    err.guardados = offset;
+                    err.total = total;
+                }
+                throw err;
+            });
+        }
+        return sendAt(0);
+    }
+
+    function mensajeLoteFallido(err) {
+        var n = Number(err && err.guardados) || 0;
+        var total = Number(err && err.total) || 0;
+        var detail = (err && err.message) ? err.message : 'Error de red';
+        if (n > 0 && total > n) {
+            return 'Se guardaron ' + n + ' de ' + total + '. ' + detail + ' Vuelve a pulsar Guardar para el resto.';
+        }
+        return detail;
+    }
+
     /** Antes de cambiar de ciclo: manda a guardar lo pendiente al ciclo correcto (en serie). */
     function flushPendingBudgetSaves() {
         var pending = CC._budgetSavePending || {};
@@ -7171,35 +7293,16 @@
 
     function guardarCapturaActual() {
         var c = control.centro;
-        if (!c || control.locked) return true;
-        var ctas = control._allCtas || [];
-        var guardados = 0;
-        var completos = 0;
-        var parciales = 0;
-        ctas.forEach(function (cta) {
-            var months = monthsFromGrid(cta);
-            var faltan = cuentaMesesVacios(months);
-            var tieneAlgo = (months || []).some(mesLleno);
-            // Sin captura: queda pendiente; no se manda al servidor.
-            if (!tieneAlgo) return;
-            if (faltan.length) {
-                // Parcial: se guarda el avance y sigue pendiente.
-                persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: false });
-                parciales++;
-            } else {
-                persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
-                completos++;
-            }
-            guardados++;
-        });
-        if (!guardados) {
+        if (!c || control.locked) return null;
+        var pack = filasCapturaParaGuardar(false);
+        if (!pack || !pack.guardados) {
             toast('warning', 'Nada que guardar', 'Captura al menos un mes en algún producto. El resto puede quedar pendiente.');
-            return false;
+            return null;
         }
         persistOverlay(c, { estado: c.estado === 'abierto' ? 'en_proceso' : c.estado });
         renderVisorTable();
-        control._lastSaveInfo = { guardados: guardados, completos: completos, parciales: parciales };
-        return true;
+        control._lastSaveInfo = pack;
+        return pack;
     }
 
     function refreshControlAfterEdit(codigo, opts) {
@@ -7587,37 +7690,33 @@
             }
             var pendientes = list.filter(ctaPendiente);
             var run = function () {
+                var c = control.centro;
+                if (!c || CC._guardandoCaptura) return;
+                var pack = filasCapturaParaGuardar(true);
+                if (!pack || !pack.filas.length) {
+                    toast('warning', 'Sin productos', 'Este cliente no tiene productos para completar.');
+                    return;
+                }
+                CC._guardandoCaptura = true;
                 CC._completandoCaptura = true;
                 CC._budgetSaveBatch = true;
-                completar.disabled = true;
-                list.forEach(function (cta) {
-                    var months = monthsFromGrid(cta, true); // vacíos → 0
-                    persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
-                });
-                // UI inmediata con ceros; el servidor se confirma en serie abajo.
                 refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
-                flushPendingBudgetSaves().then(function (results) {
-                    var failed = (results || []).filter(function (r) { return !r.ok; });
+                enviarPresupuestoEnLotes(c.empresa, c.codigo, pack.filas, function (hasta, total) {
+                    setCapturaSaveProgress('Guardando ' + hasta + ' de ' + total);
+                }).then(function () {
                     refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
-                    if (failed.length) {
-                        var detail = (failed[0] && failed[0].message) || 'Error de red';
-                        toast('error', 'No se guardó completo',
-                            failed.length === 1
-                                ? detail
-                                : (failed.length + ' producto(s) fallaron. ' + detail + ' Vuelve a pulsar Completado.'));
-                        return;
-                    }
                     toast('success', 'Completado',
-                        list.length === 1
+                        pack.filas.length === 1
                             ? 'Los meses vacíos quedaron en 0 y se guardaron'
-                            : ('Se completaron ' + list.length + ' productos: lo no capturado quedó en 0 y se guardó'));
+                            : ('Se completaron ' + pack.filas.length + ' productos: lo no capturado quedó en 0 y se guardó'));
                 }).catch(function (err) {
-                    toast('error', 'No se guardó completo', err && err.message ? err.message : 'Error de red');
+                    refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                    toast('error', 'No se guardó completo', mensajeLoteFallido(err));
                 }).then(function () {
                     CC._budgetSaveBatch = false;
                     CC._completandoCaptura = false;
-                    var btn = document.getElementById('ctl-completar');
-                    if (btn) btn.disabled = false;
+                    CC._guardandoCaptura = false;
+                    setCapturaSaveProgress(null);
                 });
             };
             if (list.length > 1 && window.Swal) {
@@ -8301,9 +8400,15 @@
         }
         var save = document.getElementById('ctl-guardar');
         if (save) save.addEventListener('click', function () {
+            var c = control.centro;
             var codigo = control.cuenta;
-            if (!guardarCapturaActual()) return;
-            flushPendingBudgetSaves().then(function () {
+            if (CC._guardandoCaptura) return;
+            var pack = guardarCapturaActual();
+            if (!pack) return;
+            CC._guardandoCaptura = true;
+            enviarPresupuestoEnLotes(c.empresa, c.codigo, pack.filas, function (hasta, total) {
+                setCapturaSaveProgress('Guardando ' + hasta + ' de ' + total);
+            }).then(function () {
                 refreshControlAfterEdit(codigo);
                 if (!(control._allCtas || []).some(ctaPendiente)) {
                     celebrarCentroCompleto();
@@ -8314,16 +8419,32 @@
                 if (info.parciales) msg += ' · ' + info.parciales + ' parcial(es)';
                 msg += '. El resto sigue pendiente.';
                 toast('success', 'Captura guardada', msg);
+            }).catch(function (err) {
+                toast('error', 'No se guardó la captura', mensajeLoteFallido(err));
+            }).then(function () {
+                CC._guardandoCaptura = false;
+                setCapturaSaveProgress(null);
             });
         });
         var saveNext = document.getElementById('ctl-guardar-seguir');
         if (saveNext) saveNext.addEventListener('click', function () {
+            var c = control.centro;
             var codigo = control.cuenta;
-            if (!guardarCapturaActual()) return;
-            flushPendingBudgetSaves().then(function () {
+            if (CC._guardandoCaptura) return;
+            var pack = guardarCapturaActual();
+            if (!pack) return;
+            CC._guardandoCaptura = true;
+            enviarPresupuestoEnLotes(c.empresa, c.codigo, pack.filas, function (hasta, total) {
+                setCapturaSaveProgress('Guardando ' + hasta + ' de ' + total);
+            }).then(function () {
                 refreshControlAfterEdit(codigo);
                 if (!irSiguientePendiente(codigo)) return;
                 toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
+            }).catch(function (err) {
+                toast('error', 'No se guardó la captura', mensajeLoteFallido(err));
+            }).then(function () {
+                CC._guardandoCaptura = false;
+                setCapturaSaveProgress(null);
             });
         });
     }

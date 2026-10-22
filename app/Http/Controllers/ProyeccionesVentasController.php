@@ -8985,7 +8985,6 @@ class ProyeccionesVentasController extends Controller
         $ciclo = strtoupper(trim($data['ciclo']));
         $empresa = strtoupper(trim($data['empresa']));
         $centro = trim($data['centro']);
-        $cuenta = trim($data['cuenta']);
         $anioCostos = $this->anioProyeccionCostos(null, $ciclo);
 
         $motivo = $this->motivoBloqueoCaptura($ciclo, $empresa, $centro);
@@ -8993,12 +8992,81 @@ class ProyeccionesVentasController extends Controller
             return response()->json(['message' => $motivo], 403);
         }
 
-        // La captura de cantidades no requiere editar precios. Si no hay permiso,
-        // se ignoran precio_meses y se conservan los que ya están guardados.
         if (array_key_exists('precio_meses', $data) && ! $this->puedeEditarPreciosCaptura()) {
             unset($data['precio_meses']);
         }
 
+        $masters = $this->costosMaestroMap($empresa, $anioCostos);
+        $item = $this->aplicarFilaPresupuesto($ciclo, $empresa, $centro, $data, $masters, $anioCostos);
+
+        return response()->json(array_merge(['ok' => true], $item));
+    }
+
+    /**
+     * Guarda hasta 50 productos del mismo cliente en una transacción.
+     * Cada llamada confirma su lote; un lote anterior ya guardado no se revierte.
+     */
+    public function guardarPresupuestoLote(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_pv_proyecciones')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de presupuestos.'], 422);
+        }
+
+        $data = $request->validate([
+            'ciclo' => 'required|string|max:40',
+            'empresa' => 'required|string|max:40',
+            'centro' => 'required|string|max:40',
+            'productos' => 'required|array|min:1|max:50',
+            'productos.*.cuenta' => 'required|string|max:80',
+            'productos.*.cuenta_nombre' => 'nullable|string|max:180',
+            'productos.*.meses' => 'required|array|size:12',
+            'productos.*.meses.*' => 'nullable|numeric',
+            'productos.*.completado' => 'nullable|boolean',
+            'productos.*.ajuste_pct' => 'nullable|numeric',
+            'productos.*.costo_unitario' => 'nullable|numeric',
+            'productos.*.moneda' => 'nullable|string|max:8',
+            'productos.*.precio_meses' => 'nullable|array|size:12',
+            'productos.*.precio_meses.*' => 'nullable|numeric|min:0',
+        ]);
+
+        $ciclo = strtoupper(trim($data['ciclo']));
+        $empresa = strtoupper(trim($data['empresa']));
+        $centro = trim($data['centro']);
+        $anioCostos = $this->anioProyeccionCostos(null, $ciclo);
+
+        $motivo = $this->motivoBloqueoCaptura($ciclo, $empresa, $centro);
+        if ($motivo) {
+            return response()->json(['message' => $motivo], 403);
+        }
+
+        $puedePrecio = $this->puedeEditarPreciosCaptura();
+        $masters = $this->costosMaestroMap($empresa, $anioCostos);
+        $items = [];
+
+        DB::transaction(function () use ($data, $ciclo, $empresa, $centro, $masters, $anioCostos, $puedePrecio, &$items) {
+            foreach ($data['productos'] as $prod) {
+                if (! $puedePrecio) {
+                    unset($prod['precio_meses']);
+                }
+                $items[] = $this->aplicarFilaPresupuesto($ciclo, $empresa, $centro, $prod, $masters, $anioCostos);
+            }
+        });
+
+        return response()->json([
+            'ok' => true,
+            'guardados' => count($items),
+            'items' => $items,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @param  array<string, mixed>  $masters
+     * @return array<string, mixed>
+     */
+    protected function aplicarFilaPresupuesto(string $ciclo, string $empresa, string $centro, array $data, array $masters, int $anioCostos): array
+    {
+        $cuenta = trim((string) $data['cuenta']);
         $row = PvPresupuesto::query()->firstOrNew([
             'ciclo_codigo' => $ciclo,
             'empresa' => $empresa,
@@ -9014,12 +9082,10 @@ class ProyeccionesVentasController extends Controller
         }
         if (array_key_exists('costo_unitario', $data) && $data['costo_unitario'] !== null) {
             $incoming = (float) $data['costo_unitario'];
-            // Si el cliente manda 0, preferir maestro local (no borrar costo real).
             if ($incoming > 0) {
                 $row->costo_unitario = $incoming;
             } else {
                 $masterKey = $empresa.'|'.$cuenta;
-                $masters = $this->costosMaestroMap($empresa, $anioCostos);
                 if (! empty($masters[$masterKey]['costo'])) {
                     $row->costo_unitario = (float) $masters[$masterKey]['costo'];
                 } elseif ($row->costo_unitario === null) {
@@ -9027,7 +9093,6 @@ class ProyeccionesVentasController extends Controller
                 }
             }
         } else {
-            $masters = $this->costosMaestroMap($empresa, $anioCostos);
             $masterKey = $empresa.'|'.$cuenta;
             if (! $row->exists && ! empty($masters[$masterKey]['costo'])) {
                 $row->costo_unitario = (float) $masters[$masterKey]['costo'];
@@ -9064,15 +9129,15 @@ class ProyeccionesVentasController extends Controller
             );
         }
 
-        return response()->json([
-            'ok' => true,
+        return [
             'key' => $this->capturaBudgetKey($empresa, $centro, $cuenta),
+            'cuenta' => $cuenta,
             'meses' => $row->meses(),
             'precio_meses' => Schema::hasColumn('tbl_pv_proyecciones', 'precio_meses') ? $row->precioMeses() : array_fill(0, 12, null),
             'completado' => (bool) ($row->completado ?? false),
             'ajuste_pct' => (float) ($row->ajuste_pct ?? 0),
             'costo_unitario' => (float) ($row->costo_unitario ?? 0),
-        ]);
+        ];
     }
 
     public function guardarCapturaCentro(Request $request): JsonResponse
