@@ -352,6 +352,29 @@
         return out;
     }
 
+    function cuentaCatalogoDe(x, empresa) {
+        var list = CC.state.cuentas || [];
+        var emp = String(empresa || '').toUpperCase();
+        var code = String((x && x.codigo) || '').trim();
+        var porCodigo = list.filter(function (cta) {
+            if (code && String(cta.codigo) !== code) return false;
+            if (emp && cta.empresa && String(cta.empresa).toUpperCase() !== emp) return false;
+            return true;
+        });
+        if (porCodigo.length === 1) return porCodigo[0];
+        var nom = nombreCuentaKey((x && x.nombre) || '');
+        if (!nom) return porCodigo[0] || null;
+        var porNombre = list.filter(function (cta) {
+            if (emp && cta.empresa && String(cta.empresa).toUpperCase() !== emp) return false;
+            return nombreCuentaKey(cta.nombre) === nom;
+        });
+        if (porNombre.length === 1) return porNombre[0];
+        var gastos = porNombre.filter(function (cta) {
+            return String(cta.codigo || '').indexOf('6000') === 0;
+        });
+        return gastos.length === 1 ? gastos[0] : (porCodigo[0] || null);
+    }
+
     function cuentasDeCentro(c) {
         var asig = CC.state.page === 'analisis'
             ? { cuentas: cuentasAnalisisDe(c) }
@@ -360,20 +383,19 @@
             var gmap = gastoLookupDeCentro(c);
             var umap = gastoUsdLookupDeCentro(c);
             return asig.cuentas.map(function (x) {
-                var sap = (CC.state.cuentas || []).filter(function (cta) {
-                    return String(cta.codigo) === String(x.codigo);
-                })[0];
+                var sap = cuentaCatalogoDe(x, c.empresa);
+                var codigo = (sap && sap.codigo) || x.codigo;
                 var nombre = x.nombre || (sap && sap.nombre) || x.codigo;
-                var gasto = gastoMensualDe(x.codigo, nombre, gmap);
-                var gastoUsd = gastoMensualDe(x.codigo, nombre, umap);
+                var gasto = gastoMensualDe(codigo, nombre, gmap);
+                var gastoUsd = gastoMensualDe(codigo, nombre, umap);
                 if (CC.state.page === 'control' || CC.state.page === 'analisis') {
                     gasto = gastoNueveMeses(gasto);
                     gastoUsd = gastoNueveMeses(gastoUsd);
                 }
                 return {
-                    codigo: x.codigo,
+                    codigo: codigo,
                     nombre: nombre,
-                    grupo: x.agrupacion || (sap && sap.grupo) || 'Asignadas',
+                    grupo: (sap && sap.grupo) || x.agrupacion || 'Asignadas',
                     gasto: gasto,
                     gastoUsd: gastoUsd,
                     empresa: c.empresa

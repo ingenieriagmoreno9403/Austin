@@ -48,6 +48,9 @@ class CentrosCostosController extends Controller
     /** @var array<string, string> */
     protected $formatCodePlantillaCache = [];
 
+    /** @var array<string, array<string, array<int, string>>> */
+    protected $catalogoCuentasPorNombreCache = [];
+
     /** @var array<string, bool> */
     protected $gastoCopiaEmpresas = [];
 
@@ -777,11 +780,12 @@ class CentrosCostosController extends Controller
                 $val = $row->{$col} ?? null;
                 $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
             }
+            $nombre = trim((string) ($row->cuenta_nombre ?? ''));
             $info = [
                 'meses' => $meses,
-                'cuenta_nombre' => trim((string) ($row->cuenta_nombre ?? '')),
+                'cuenta_nombre' => $nombre,
             ];
-            foreach ($this->clavesCuentaCaptura($emp, $centro, $cuenta) as $key) {
+            foreach ($this->clavesCuentaCaptura($emp, $centro, $cuenta, $nombre) as $key) {
                 if (! isset($pptoByKey[$key])) {
                     $pptoByKey[$key] = $info;
                 }
@@ -938,9 +942,11 @@ class CentrosCostosController extends Controller
             }
             $centro = trim((string) $row->centro_codigo);
             $cuenta = trim((string) $row->cuenta_codigo);
+            $cuentaNombre = trim((string) ($row->cuenta_nombre ?? ''));
             if ($emp === '' || $centro === '' || $cuenta === '') {
                 continue;
             }
+            $cuenta = $this->codigoCuentaCatalogo($emp, $cuenta, $cuentaNombre);
             $canon = $this->capturaBudgetKey($emp, $centro, $cuenta);
             if (isset($seen[$canon])) {
                 continue;
@@ -951,7 +957,7 @@ class CentrosCostosController extends Controller
                 'centro' => $centro,
                 'centro_nombre' => trim((string) ($row->centro_nombre ?? '')),
                 'cuenta' => $cuenta,
-                'cuenta_nombre' => trim((string) ($row->cuenta_nombre ?? '')),
+                'cuenta_nombre' => $cuentaNombre !== '' ? $cuentaNombre : trim((string) ($row->cuenta_nombre ?? '')),
             ];
         }
 
@@ -4056,6 +4062,9 @@ class CentrosCostosController extends Controller
         if (Schema::hasTable('tbl_cc_presupuestos')) {
             $hasDone = Schema::hasColumn('tbl_cc_presupuestos', 'completado');
             $cols = ['empresa', 'centro_codigo', 'cuenta_codigo'];
+            if (Schema::hasColumn('tbl_cc_presupuestos', 'cuenta_nombre')) {
+                $cols[] = 'cuenta_nombre';
+            }
             for ($i = 1; $i <= 12; $i++) {
                 $cols[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
             }
@@ -4083,12 +4092,19 @@ class CentrosCostosController extends Controller
                     $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
                 }
                 $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
-                $key = $this->capturaBudgetKey((string) $row->empresa, (string) $row->centro_codigo, (string) $row->cuenta_codigo);
-                    $budgets[$key] = $meses;
+                $empRow = (string) $row->empresa;
+                $centroRow = (string) $row->centro_codigo;
+                $cuentaRow = (string) $row->cuenta_codigo;
+                $nombreRow = trim((string) ($row->cuenta_nombre ?? ''));
+                foreach ($this->clavesCuentaCaptura($empRow, $centroRow, $cuentaRow, $nombreRow) as $key) {
+                    if (! isset($budgets[$key])) {
+                        $budgets[$key] = $meses;
+                    }
                     if ($done) {
                         $completados[$key] = true;
                     }
                 }
+            }
         }
 
         $overlays = [];
@@ -4150,18 +4166,27 @@ class CentrosCostosController extends Controller
         $empresa = strtoupper(trim($data['empresa']));
         $centro = trim($data['centro']);
         $cuenta = trim($data['cuenta']);
+        $cuentaNombre = trim((string) ($data['cuenta_nombre'] ?? ''));
 
         $motivo = $this->motivoBloqueoCaptura($ciclo, $empresa, $centro);
         if ($motivo) {
             return response()->json(['message' => $motivo], 403);
         }
 
-        $row = CcPresupuesto::query()->firstOrNew([
-            'ciclo_codigo' => $ciclo,
-            'empresa' => $empresa,
-            'centro_codigo' => $centro,
-            'cuenta_codigo' => $cuenta,
-        ]);
+        $row = $this->presupuestoPorAlias($ciclo, $empresa, $centro, $cuenta, $cuentaNombre);
+        if (! $row) {
+            $row = new CcPresupuesto([
+                'ciclo_codigo' => $ciclo,
+                'empresa' => $empresa,
+                'centro_codigo' => $centro,
+                'cuenta_codigo' => $this->codigoCuentaCatalogo($empresa, $cuenta, $cuentaNombre) ?: $cuenta,
+            ]);
+        } else {
+            $canon = $this->codigoCuentaCatalogo($empresa, $cuenta, $cuentaNombre);
+            if ($canon !== '' && $canon !== (string) $row->cuenta_codigo) {
+                $row->cuenta_codigo = $canon;
+            }
+        }
         $row->setMeses($data['meses']);
         if (! empty($data['cuenta_nombre'])) {
             $row->cuenta_nombre = $data['cuenta_nombre'];
@@ -6018,6 +6043,140 @@ class CentrosCostosController extends Controller
         return $format !== '' ? $format : $this->codigoCuentaVisible($codigo);
     }
 
+    /**
+     * FormatCode del catálogo local para consecutivos viejos (&lt; 8 dígitos o _SYS).
+     * Si el nombre coincide con varias cuentas, se deja el código original.
+     */
+    protected function codigoCuentaCatalogo(string $empresa, string $codigo, string $nombre): string
+    {
+        $codigo = trim($codigo);
+        if ($codigo === '') {
+            return '';
+        }
+        if (! $this->esCodigoCuentaViejo($codigo)) {
+            return $codigo;
+        }
+        $fmt = $this->formatCodeDesdeCatalogoLocal($empresa, $nombre);
+
+        return $fmt !== '' ? $fmt : $codigo;
+    }
+
+    protected function normalizarNombreCuenta(string $nombre): string
+    {
+        $s = trim($nombre);
+        if ($s === '') {
+            return '';
+        }
+        if (class_exists(\Normalizer::class)) {
+            $n = \Normalizer::normalize($s, \Normalizer::FORM_D);
+            if (is_string($n) && $n !== '') {
+                $s = $n;
+            }
+        }
+        $s = preg_replace('/\p{Mn}+/u', '', $s) ?? $s;
+        $s = mb_strtoupper($s);
+        $s = str_replace('Ñ', 'N', $s);
+        $s = preg_replace('/[^A-Z0-9]+/', ' ', $s) ?? $s;
+
+        return trim(preg_replace('/\s+/', ' ', $s) ?? $s);
+    }
+
+    /**
+     * @return array<string, array<int, string>>
+     */
+    protected function catalogoCuentasPorNombre(string $empresa): array
+    {
+        $empresa = strtoupper(trim($empresa));
+        if ($empresa === '') {
+            return [];
+        }
+        if (isset($this->catalogoCuentasPorNombreCache[$empresa])) {
+            return $this->catalogoCuentasPorNombreCache[$empresa];
+        }
+
+        $map = [];
+        if (Schema::hasTable('tbl_cc_catalogo_cuentas')) {
+            $empresas = [$empresa];
+            if ($empresa === 'AUSTIN') {
+                $empresas[] = 'ABSA';
+            } elseif ($empresa === 'ABSA') {
+                $empresas[] = 'AUSTIN';
+            }
+            $rows = DB::table('tbl_cc_catalogo_cuentas')
+                ->where(function ($q) use ($empresas) {
+                    foreach ($empresas as $e) {
+                        $q->orWhereRaw('UPPER(empresa) = ?', [$e]);
+                    }
+                })
+                ->get(['codigo', 'nombre']);
+            foreach ($rows as $row) {
+                $norm = $this->normalizarNombreCuenta((string) ($row->nombre ?? ''));
+                $codigo = trim((string) ($row->codigo ?? ''));
+                if ($norm === '' || $codigo === '') {
+                    continue;
+                }
+                if (! isset($map[$norm])) {
+                    $map[$norm] = [];
+                }
+                if (! in_array($codigo, $map[$norm], true)) {
+                    $map[$norm][] = $codigo;
+                }
+            }
+        }
+
+        return $this->catalogoCuentasPorNombreCache[$empresa] = $map;
+    }
+
+    protected function formatCodeDesdeCatalogoLocal(string $empresa, string $nombre): string
+    {
+        $norm = $this->normalizarNombreCuenta($nombre);
+        if ($norm === '') {
+            return '';
+        }
+        $hits = $this->catalogoCuentasPorNombre($empresa)[$norm] ?? [];
+
+        return $this->elegirCodigoSapUnico($hits);
+    }
+
+    /**
+     * Una sola coincidencia, o una sola cuenta de gasto (6000…) si el nombre se repite en balance.
+     *
+     * @param  array<int, string>  $hits
+     */
+    protected function elegirCodigoSapUnico(array $hits): string
+    {
+        $hits = array_values(array_unique(array_filter(array_map('trim', $hits))));
+        if (count($hits) === 1) {
+            return $hits[0];
+        }
+        $gastos = array_values(array_filter($hits, function ($codigo) {
+            return strpos($codigo, '6000') === 0;
+        }));
+
+        return count($gastos) === 1 ? $gastos[0] : '';
+    }
+
+    protected function presupuestoPorAlias(string $ciclo, string $empresa, string $centro, string $cuenta, string $nombre = ''): ?CcPresupuesto
+    {
+        $aliases = array_values(array_unique(array_filter([
+            $cuenta,
+            ltrim($cuenta, '0'),
+            $this->codigoCuentaVisible($cuenta),
+            $this->codigoCuentaPlantilla($cuenta),
+            $this->codigoCuentaCatalogo($empresa, $cuenta, $nombre),
+        ])));
+        if ($aliases === []) {
+            return null;
+        }
+
+        return CcPresupuesto::query()
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
+            ->whereRaw('UPPER(empresa) = ?', [strtoupper($empresa)])
+            ->where('centro_codigo', $centro)
+            ->whereIn('cuenta_codigo', $aliases)
+            ->first();
+    }
+
     protected function esCodigoCuentaViejo(string $codigo): bool
     {
         $codigo = trim($codigo);
@@ -6047,16 +6206,19 @@ class CentrosCostosController extends Controller
 
         $format = '';
         if ($empresa !== '' && $nombre !== '') {
-            try {
-                $api = app(AutinApiClient::class);
-                $codes = $this->formatCodesPorNombre($api, $empresa, $nombre);
-                if (count($codes) === 1) {
-                    $format = $codes[0];
-                } elseif (count($codes) > 1) {
-                    $format = $this->emparejarCodigoViejo($api, $empresa, $codigo, $nombre, $codes);
+            $format = $this->formatCodeDesdeCatalogoLocal($empresa, $nombre);
+            if ($format === '') {
+                try {
+                    $api = app(AutinApiClient::class);
+                    $codes = $this->formatCodesPorNombre($api, $empresa, $nombre);
+                    if (count($codes) === 1) {
+                        $format = $codes[0];
+                    } elseif (count($codes) > 1) {
+                        $format = $this->emparejarCodigoViejo($api, $empresa, $codigo, $nombre, $codes);
+                    }
+                } catch (Throwable $e) {
+                    $format = '';
                 }
-            } catch (Throwable $e) {
-                $format = '';
             }
         }
 
@@ -6171,7 +6333,7 @@ class CentrosCostosController extends Controller
     /**
      * @return array<int, string>
      */
-    protected function clavesCuentaCaptura(string $empresa, string $centro, string $cuenta): array
+    protected function clavesCuentaCaptura(string $empresa, string $centro, string $cuenta, string $nombre = ''): array
     {
         $cuenta = trim($cuenta);
         $keys = [
@@ -6181,6 +6343,10 @@ class CentrosCostosController extends Controller
             $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaKey($cuenta)),
             $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaPlantilla($cuenta)),
         ];
+        $canon = $this->codigoCuentaCatalogo($empresa, $cuenta, $nombre);
+        if ($canon !== '' && $canon !== $cuenta) {
+            $keys[] = $this->capturaBudgetKey($empresa, $centro, $canon);
+        }
 
         return array_values(array_unique(array_filter($keys)));
     }
@@ -6938,9 +7104,13 @@ class CentrosCostosController extends Controller
      */
     protected function cuentasDe(CcAsignacion $asig): array
     {
-        return $asig->cuentas()->get()->map(function ($c) {
+        $empresa = strtoupper(trim((string) $asig->empresa));
+
+        return $asig->cuentas()->get()->map(function ($c) use ($empresa) {
+            $orig = trim((string) $c->cuenta_codigo);
+
             return [
-                'codigo' => $c->cuenta_codigo,
+                'codigo' => $this->codigoCuentaCatalogo($empresa, $orig, (string) $c->cuenta_nombre) ?: $orig,
                 'nombre' => $c->cuenta_nombre,
                 'agrupacion' => $c->agrupacion,
             ];
@@ -7023,9 +7193,12 @@ class CentrosCostosController extends Controller
 
         $cuentas = [];
         if (! $resumen && $a->relationLoaded('cuentas')) {
-            $cuentas = $a->cuentas->map(function ($c) {
+            $empresa = strtoupper(trim((string) $a->empresa));
+            $cuentas = $a->cuentas->map(function ($c) use ($empresa) {
+                $orig = trim((string) $c->cuenta_codigo);
+
                 return [
-                    'codigo' => $c->cuenta_codigo,
+                    'codigo' => $this->codigoCuentaCatalogo($empresa, $orig, (string) $c->cuenta_nombre) ?: $orig,
                     'nombre' => $c->cuenta_nombre,
                     'agrupacion' => $c->agrupacion,
                 ];
