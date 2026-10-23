@@ -160,6 +160,94 @@
     </div>
     @endif
 
+    @if (!empty($mostrarRevisionVentas))
+    <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
+        <div class="card-header text-start bg-body border-0">
+            <h5 class="text-secondary mb-1">
+                <i class="fa-solid fa-chart-line me-2"></i>Revisar análisis de proyecciones
+            </h5>
+            <p class="text-muted fs-8 mb-0">
+                Un solo check: este usuario ve en Análisis todos los clientes de cada ciclo de ventas, incluidos los que se creen después. No cambia el perfil.
+            </p>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ url('/Sistemas/UsuarioPermisos/'.$varusuario->id.'/modulos') }}">
+                @csrf
+                <input type="hidden" name="seccion" value="revisar">
+                <div class="acciones-perfiles-vista" style="display:block">
+                    <div class="acciones-perfiles-vista__summary">
+                        <span class="acciones-perfiles-vista__summary-main">
+                            <i class="fa-solid fa-eye"></i>
+                            <span class="acciones-perfiles-vista__name">Proyecciones de Ventas</span>
+                        </span>
+                    </div>
+                    <div class="acciones-perfiles-vista__content">
+                        <div class="acciones-perfiles-vista__list">
+                            <label class="acciones-perfiles-check{{ !empty($revisarTodosCiclos) ? ' is-checked' : '' }}">
+                                <input class="form-check-input acciones-perfiles-check__input" type="checkbox"
+                                    name="pv_revisar_todos" value="1"
+                                    {{ !empty($revisarTodosCiclos) ? 'checked' : '' }}>
+                                <span class="acciones-perfiles-check__content">
+                                    <span class="acciones-perfiles-check__title">Ver todos los ciclos de ventas</span>
+                                    <span class="acciones-perfiles-check__meta">Análisis completo, también en ciclos nuevos</span>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="text-end mt-3">
+                    <button class="btn btn-baseColor fs-6" type="submit">
+                        <i class="fa-solid fa-check"></i> Guardar revisar análisis
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    @endif
+
+    <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
+        <div class="card-header text-start bg-body border-0">
+            <h5 class="text-secondary mb-1">
+                <i class="fa-solid fa-tags me-2"></i>Obtener precio lista
+            </h5>
+            <p class="text-muted fs-8 mb-0">
+                Márcalo para que este usuario vea y use el botón Obtener precio lista en Ventas/Costos. No cambia el perfil. Quien ya puede editar precios del maestro también lo ve.
+            </p>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ url('/Sistemas/UsuarioPermisos/'.$varusuario->id.'/modulos') }}">
+                @csrf
+                <input type="hidden" name="seccion" value="precio_lista">
+                <div class="acciones-perfiles-vista" style="display:block">
+                    <div class="acciones-perfiles-vista__summary">
+                        <span class="acciones-perfiles-vista__summary-main">
+                            <i class="fa-solid fa-tags"></i>
+                            <span class="acciones-perfiles-vista__name">Ventas / Costos</span>
+                        </span>
+                    </div>
+                    <div class="acciones-perfiles-vista__content">
+                        <div class="acciones-perfiles-vista__list">
+                            <label class="acciones-perfiles-check{{ !empty($puedeObtenerPrecioLista) ? ' is-checked' : '' }}">
+                                <input class="form-check-input acciones-perfiles-check__input" type="checkbox"
+                                    name="obtener_precio_lista" value="1"
+                                    {{ !empty($puedeObtenerPrecioLista) ? 'checked' : '' }}>
+                                <span class="acciones-perfiles-check__content">
+                                    <span class="acciones-perfiles-check__title">Obtener precio lista</span>
+                                    <span class="acciones-perfiles-check__meta">Botón del maestro de precios</span>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="text-end mt-3">
+                    <button class="btn btn-baseColor fs-6" type="submit">
+                        <i class="fa-solid fa-check"></i> Guardar precio lista
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
         <div class="card-header text-start bg-body border-0">
             <h5 class="text-secondary mb-1">

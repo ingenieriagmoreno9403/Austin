@@ -117,6 +117,7 @@ class ProyeccionesVentasController extends Controller
             'costosSyncPrecioListaLoteUrl' => route('pv.api.costos.sync_precio_lista_lote'),
             'costosHistorialUrl' => route('pv.api.costos.historial'),
             'puedeEditarCostos' => $this->puedeEditarPreciosVentas(),
+            'puedeObtenerPrecioLista' => $this->puedeObtenerPrecioLista(),
             'puedeFiltrarSoloAsignados' => $this->puedeFiltrarSoloAsignadosCostos(),
         ]);
     }
@@ -908,6 +909,27 @@ class ProyeccionesVentasController extends Controller
     protected function puedeEditarPreciosVentas(): bool
     {
         return $this->forpermisos('editar_ventas_costos') === 'editar_ventas_costos';
+    }
+
+    /**
+     * Botón Obtener precio lista en /Ventas/Costos.
+     * Quien ya edita el maestro también puede usarlo.
+     */
+    protected function puedeObtenerPrecioLista(): bool
+    {
+        return $this->forpermisos('obtener_precio_lista') === 'obtener_precio_lista'
+            || $this->puedeEditarPreciosVentas();
+    }
+
+    protected function denyUnlessPuedeObtenerPrecioLista(): ?JsonResponse
+    {
+        if ($this->puedeObtenerPrecioLista()) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'No tienes permiso para obtener el precio de lista (obtener_precio_lista).',
+        ], 403);
     }
 
     /**
@@ -4445,6 +4467,9 @@ class ProyeccionesVentasController extends Controller
      */
     public function listarCostosSinPrecioLista(Request $request): JsonResponse
     {
+        if ($deny = $this->denyUnlessPuedeObtenerPrecioLista()) {
+            return $deny;
+        }
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
             return response()->json(['message' => 'Falta ejecutar la migración de costos de productos.'], 422);
         }
@@ -4542,7 +4567,7 @@ class ProyeccionesVentasController extends Controller
      */
     public function sincronizarPrecioListaLote(Request $request): JsonResponse
     {
-        if ($deny = $this->denyUnlessPuedeEditarPrecios()) {
+        if ($deny = $this->denyUnlessPuedeObtenerPrecioLista()) {
             return $deny;
         }
         if (! Schema::hasTable('tbl_pv_productos_costo')) {
@@ -6915,7 +6940,7 @@ class ProyeccionesVentasController extends Controller
 
         $mine = PvAsignacion::query()
             ->with(['permisos.tipo'])
-            ->where('ciclo_codigo', $ciclo)
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])
             ->where('user_id', $uid)
             ->get();
 
@@ -6936,6 +6961,19 @@ class ProyeccionesVentasController extends Controller
                 $wide[$emp] = true;
             } elseif ($raw !== '') {
                 $clientes[$emp][$raw] = true;
+            }
+        }
+
+        if ($this->usuarioTienePermisoDeCiclo($ciclo, $uid, 'revisar')) {
+            $empresas = DB::table('tbl_pv_asignaciones')
+                ->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])
+                ->distinct()
+                ->pluck('empresa');
+            foreach ($empresas as $emp) {
+                $e = strtoupper(trim((string) $emp));
+                if ($e !== '') {
+                    $wide[$e] = true;
+                }
             }
         }
 
@@ -12867,6 +12905,33 @@ class ProyeccionesVentasController extends Controller
                 'permiso_id' => $tipo->id,
             ]);
         }
+    }
+
+    protected function usuarioTienePermisoDeCiclo(string $ciclo, int $userId, string $clave): bool
+    {
+        if ($userId <= 0 || $ciclo === '' || $clave === '') {
+            return false;
+        }
+        if (! Schema::hasTable('tbl_pv_usuario_permisos') || ! Schema::hasTable('tbl_pv_tipos_permiso')) {
+            return false;
+        }
+        $tipoId = (int) (DB::table('tbl_pv_tipos_permiso')->where('clave', $clave)->value('id') ?? 0);
+        if ($tipoId <= 0) {
+            return false;
+        }
+
+        if ($clave === 'revisar') {
+            return DB::table('tbl_pv_usuario_permisos')
+                ->where('user_id', $userId)
+                ->where('permiso_id', $tipoId)
+                ->exists();
+        }
+
+        return DB::table('tbl_pv_usuario_permisos')
+            ->where('user_id', $userId)
+            ->where('permiso_id', $tipoId)
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
+            ->exists();
     }
 
     protected function usuarioTienePermiso(string $ciclo, int $userId, string $clave): bool

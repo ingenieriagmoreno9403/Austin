@@ -59,9 +59,11 @@
             <button type="button" class="cc-btn" id="pv-costos-rellenar-ceros" title="Rellena Precio global en $0 desde lista SAP, por empresa">
                 <i class="fa-solid fa-fill-drip"></i> Rellenar $0
             </button>
+            @if (!empty($bootstrap['puedeObtenerPrecioLista']))
             <button type="button" class="cc-btn" id="pv-costos-sync-precio-lista" title="Sincroniza Precio lista desde SAP; opcionalmente alinea Precio global si difiere">
                 <i class="fa-solid fa-tags"></i> Obtener precio lista
             </button>
+            @endif
         </div>
         <div class="cc-table-wrap">
             <table class="cc-table" id="pv-costos-table">

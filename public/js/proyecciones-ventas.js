@@ -10728,6 +10728,7 @@
     function initCostos() {
         var url = CC.state.costosUrl || '/ProyeccionesVentas/api/costos';
         var puedeEditar = !!CC.state.puedeEditarCostos;
+        var puedePrecioLista = !!CC.state.puedeObtenerPrecioLista;
         var puedeSoloAsignados = !!CC.state.puedeFiltrarSoloAsignados;
         var soloAsignados = false;
         var items = [];
@@ -10933,16 +10934,20 @@
                     ' data-card="' + escapeHtml(it.card_code || '') + '"' +
                     ' data-mes="0"' +
                     ' title="Actualizar precio global desde listaPreciosventa">' +
-                    '<i class="fa-solid fa-cloud-arrow-down"></i></button>' +
-                    '<button type="button" class="cc-btn cc-btn-sm" data-sync-precio-lista' +
+                    '<i class="fa-solid fa-cloud-arrow-down"></i></button>')
+                        : '') +
+                    (puedePrecioLista
+                        ? ('<button type="button" class="cc-btn cc-btn-sm" data-sync-precio-lista' +
                     ' data-emp="' + escapeHtml(it.empresa) + '"' +
                     ' data-cod="' + escapeHtml(codigo) + '"' +
                     ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
                     ' data-card="' + escapeHtml(it.card_code || '') + '"' +
                     ' data-mon="' + escapeHtml(mon) + '"' +
                     ' title="Actualizar Precio lista de este producto">' +
-                    '<i class="fa-solid fa-tag"></i></button>' +
-                    '<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
+                    '<i class="fa-solid fa-tag"></i></button>')
+                        : '') +
+                    (puedeEditar
+                        ? ('<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
                     ' title="Editar precios por mes">' +
                     '<i class="fa-solid fa-calendar-days"></i></button>')
                         : '') +
@@ -10976,7 +10981,7 @@
             });
             tbody.querySelectorAll('[data-sync-precio-lista]').forEach(function (btn) {
                 btn.addEventListener('click', function () {
-                    if (!puedeEditar) return;
+                    if (!puedePrecioLista) return;
                     actualizarPrecioListaProducto(btn);
                 });
             });
@@ -13098,6 +13103,9 @@
         CC.state.puedeEditarCostos = boot.hasOwnProperty('puedeEditarCostos')
             ? !!boot.puedeEditarCostos
             : true;
+        CC.state.puedeObtenerPrecioLista = boot.hasOwnProperty('puedeObtenerPrecioLista')
+            ? !!boot.puedeObtenerPrecioLista
+            : false;
         CC.state.puedeFiltrarSoloAsignados = boot.hasOwnProperty('puedeFiltrarSoloAsignados')
             ? !!boot.puedeFiltrarSoloAsignados
             : false;

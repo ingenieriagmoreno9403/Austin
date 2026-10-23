@@ -490,6 +490,9 @@ class SistemasController extends Controller
             $varperfilesUser = $this->obtenerPerfilesUsuario($id);
             $accionesAgrupadas = $this->accionesDisponiblesParaUsuario($id, $varlistuseracc);
             $permisosModulo = $this->permisosModuloParaUsuario($id);
+            $mostrarRevisionVentas = $this->puedeConfigurarRevisionVentas();
+            $revisarTodosCiclos = $mostrarRevisionVentas && $this->usuarioRevisaTodosCiclosVentas($id);
+            $puedeObtenerPrecioLista = $this->usuarioTieneAccionPuntual($id, 'obtener_precio_lista');
 
             return view('sistemas.permisos_user', compact(
                 'varpantallas',
@@ -499,6 +502,9 @@ class SistemasController extends Controller
                 'varacciones',
                 'accionesAgrupadas',
                 'permisosModulo',
+                'mostrarRevisionVentas',
+                'revisarTodosCiclos',
+                'puedeObtenerPrecioLista',
                 'varlistuseracc',
                 'varperfilesUser',
                 'varusuario'
@@ -580,6 +586,22 @@ class SistemasController extends Controller
             return back()->with('warning', 'No puedes editar este usuario.');
         }
 
+        if ($request->input('seccion') === 'revisar') {
+            $this->sincronizarRevisionTodosCiclos($id, $request->boolean('pv_revisar_todos'));
+
+            return back()->with('success_msg_large', 'Se actualizó el permiso de revisar análisis, sin cambiar el perfil.');
+        }
+
+        if ($request->input('seccion') === 'precio_lista') {
+            $this->sincronizarAccionPuntualUsuario(
+                $id,
+                'obtener_precio_lista',
+                $request->boolean('obtener_precio_lista')
+            );
+
+            return back()->with('success_msg_large', 'Se actualizó el permiso de obtener precio lista, sin cambiar el perfil.');
+        }
+
         $modulos = $this->permisosModuloParaUsuario($id);
         if ($modulos->isEmpty()) {
             return back()->with('warning', 'Este usuario no tiene módulos con importe masivo.');
@@ -591,7 +613,7 @@ class SistemasController extends Controller
                 ->filter()
                 ->unique()
                 ->all();
-            $this->sincronizarImportarMasivoUsuario($id, $modulo['clave'], $wanted);
+            $this->sincronizarPermisoCicloUsuario($id, $modulo['clave'], 'importar', $wanted);
         }
 
         return back()->with('success_msg_large', 'Se actualizó el importe masivo de Excel, sin cambiar el perfil.');
@@ -730,6 +752,125 @@ class SistemasController extends Controller
         return $modulos;
     }
 
+    private function usuarioTieneAccionPuntual(int $idUsuario, string $nombreAccion): bool
+    {
+        $accionId = $this->asegurarAccionPuntual($nombreAccion);
+        if ($accionId <= 0 || ! Schema::hasTable('tblusuario_acciones')) {
+            return false;
+        }
+
+        return DB::table('tblusuario_acciones')
+            ->where('idusuario', $idUsuario)
+            ->where('idacciones', $accionId)
+            ->exists();
+    }
+
+    private function sincronizarAccionPuntualUsuario(int $idUsuario, string $nombreAccion, bool $activo): void
+    {
+        $accionId = $this->asegurarAccionPuntual($nombreAccion);
+        if ($accionId <= 0 || ! Schema::hasTable('tblusuario_acciones')) {
+            return;
+        }
+
+        $q = DB::table('tblusuario_acciones')
+            ->where('idusuario', $idUsuario)
+            ->where('idacciones', $accionId);
+
+        if ($activo) {
+            if (! $q->exists()) {
+                $row = new usuario_acciones();
+                $row->idusuario = $idUsuario;
+                $row->idacciones = $accionId;
+                $row->created_by = optional(auth()->user())->name ?: 'sistema';
+                $row->save();
+            }
+
+            return;
+        }
+
+        $q->delete();
+    }
+
+    private function asegurarAccionPuntual(string $nombreAccion): int
+    {
+        if ($nombreAccion !== 'obtener_precio_lista' || ! Schema::hasTable('tblacciones')) {
+            return (int) (DB::table('tblacciones')->where('nombre_accion', $nombreAccion)->value('id') ?? 0);
+        }
+
+        $existente = (int) (DB::table('tblacciones')->where('nombre_accion', $nombreAccion)->value('id') ?? 0);
+        if ($existente > 0) {
+            return $existente;
+        }
+        if (! Schema::hasTable('tblvistas')) {
+            return 0;
+        }
+
+        $vistaId = (int) (DB::table('tblvistas')->where('descripcion', 'Ventas/Costos')->value('id') ?? 0);
+        if ($vistaId <= 0) {
+            return 0;
+        }
+
+        $now = now();
+
+        return (int) DB::table('tblacciones')->insertGetId([
+            'nombre_accion' => 'obtener_precio_lista',
+            'descripcion_accion' => 'Obtener precio lista (Ventas/Costos)',
+            'idvista' => $vistaId,
+            'created_at' => $now,
+            'updated_at' => $now,
+            'created_by' => 'sistema',
+        ]);
+    }
+
+    private function puedeConfigurarRevisionVentas(): bool
+    {
+        return $this->empresaSesionTieneModulo('pv')
+            && Schema::hasTable('tbl_pv_tipos_permiso')
+            && Schema::hasTable('tbl_pv_usuario_permisos');
+    }
+
+    private function usuarioRevisaTodosCiclosVentas(int $idUsuario): bool
+    {
+        $tipoId = (int) (DB::table('tbl_pv_tipos_permiso')->where('clave', 'revisar')->value('id') ?? 0);
+        if ($tipoId <= 0) {
+            return false;
+        }
+
+        return DB::table('tbl_pv_usuario_permisos')
+            ->where('user_id', $idUsuario)
+            ->where('permiso_id', $tipoId)
+            ->exists();
+    }
+
+    private function sincronizarRevisionTodosCiclos(int $idUsuario, bool $activo): void
+    {
+        if (! Schema::hasTable('tbl_pv_tipos_permiso') || ! Schema::hasTable('tbl_pv_usuario_permisos')) {
+            return;
+        }
+
+        $tipoId = (int) (DB::table('tbl_pv_tipos_permiso')->where('clave', 'revisar')->value('id') ?? 0);
+        if ($tipoId <= 0) {
+            return;
+        }
+
+        DB::table('tbl_pv_usuario_permisos')
+            ->where('user_id', $idUsuario)
+            ->where('permiso_id', $tipoId)
+            ->delete();
+
+        if (! $activo) {
+            return;
+        }
+
+        DB::table('tbl_pv_usuario_permisos')->insert([
+            'ciclo_codigo' => '*',
+            'user_id' => $idUsuario,
+            'permiso_id' => $tipoId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
     private function empresaSesionTieneModulo(string $grupo): bool
     {
         $rutas = [
@@ -773,7 +914,7 @@ class SistemasController extends Controller
         return false;
     }
 
-    private function sincronizarImportarMasivoUsuario(int $idUsuario, string $modulo, array $ciclosWanted): void
+    private function sincronizarPermisoCicloUsuario(int $idUsuario, string $modulo, string $clave, array $ciclosWanted): void
     {
         $esCc = $modulo === 'cc';
         $tablaTipos = $esCc ? 'tbl_cc_tipos_permiso' : 'tbl_pv_tipos_permiso';
@@ -783,7 +924,7 @@ class SistemasController extends Controller
             return;
         }
 
-        $tipoId = (int) (DB::table($tablaTipos)->where('clave', 'importar')->value('id') ?? 0);
+        $tipoId = (int) (DB::table($tablaTipos)->where('clave', $clave)->value('id') ?? 0);
         if ($tipoId <= 0) {
             return;
         }

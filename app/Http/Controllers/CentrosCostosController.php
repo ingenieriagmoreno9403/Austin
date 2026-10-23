@@ -1559,7 +1559,7 @@ class CentrosCostosController extends Controller
         $nuevo = ! $asig->exists;
         if ($nuevo) {
             $asig->created_by = auth()->id();
-        }
+            }
         if ($this->asigHasRolColumns() && ($nuevo || $this->clavesSonCaptura($permisos) || $revisionCentro)) {
             $asig->es_principal = true;
             $asig->parent_id = null;
@@ -4028,11 +4028,11 @@ class CentrosCostosController extends Controller
                 }
                 $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
                 $key = $this->capturaBudgetKey((string) $row->empresa, (string) $row->centro_codigo, (string) $row->cuenta_codigo);
-                $budgets[$key] = $meses;
-                if ($done) {
-                    $completados[$key] = true;
+                    $budgets[$key] = $meses;
+                    if ($done) {
+                        $completados[$key] = true;
+                    }
                 }
-            }
         }
 
         $overlays = [];
@@ -4928,7 +4928,7 @@ class CentrosCostosController extends Controller
 
                 return ['mapa' => $mapa, 'completa' => true, 'rows' => $rows, 'ok' => true];
             }
-            if (empty($res['ok'])) {
+                if (empty($res['ok'])) {
                 return $vacio;
             }
             Cache::put($cacheKey, 'wide', 1800);
@@ -5012,8 +5012,8 @@ class CentrosCostosController extends Controller
                 $out[strtoupper($cc)] = $cached;
                 if ($cc !== strtoupper($cc)) {
                     $out[$cc] = $cached;
-                }
-            } else {
+                    }
+                } else {
                 $missing[] = $cc;
             }
         }
@@ -5030,9 +5030,9 @@ class CentrosCostosController extends Controller
             if (isset($failed[$cc])) {
                 continue;
             }
-            $ok = true;
+                    $ok = true;
             foreach ($rows as $row) {
-                if (is_array($row)) {
+                        if (is_array($row)) {
                     $filas[] = $row;
                 }
             }
@@ -5077,7 +5077,7 @@ class CentrosCostosController extends Controller
     {
         $por = [];
         foreach ($rows as $row) {
-            if (is_array($row)) {
+                    if (is_array($row)) {
                 $this->acumularGastoRealFila($por, $row, $empresa, $year, [], $cc);
             }
         }
@@ -5716,9 +5716,9 @@ class CentrosCostosController extends Controller
 
         $fetch = function (string $mask) use ($api, $empresaApi, $todas, &$ok, &$mensaje): array {
             $cuentas = [];
-            $maxPages = $todas ? 40 : 1;
-            $perPage = 200;
-            for ($page = 1; $page <= $maxPages; $page++) {
+        $maxPages = $todas ? 40 : 1;
+        $perPage = 200;
+        for ($page = 1; $page <= $maxPages; $page++) {
                 // Endpoint global: trae FormatCode (número de cuenta). El /{db}/cuentas solo trae CUENTA=_SYS… (consecutivo).
                 $filtros = [
                     'per_page' => $perPage,
@@ -5729,26 +5729,26 @@ class CentrosCostosController extends Controller
                     $filtros['GroupMask'] = $mask;
                 }
                 $res = $api->cuentasGlobal($filtros);
-                if (empty($res['ok'])) {
+            if (empty($res['ok'])) {
                     if ($page === 1 && $mensaje === null) {
-                        $mensaje = $res['message'] ?? 'Sin conexión a catálogo SAP';
-                    }
-                    break;
+                    $mensaje = $res['message'] ?? 'Sin conexión a catálogo SAP';
                 }
-                $ok = true;
-                $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                break;
+            }
+            $ok = true;
+            $body = is_array($res['body'] ?? null) ? $res['body'] : [];
                 $raw = is_array($body['data'] ?? null) ? $body['data'] : [];
                 $batch = $this->normalizarCuentas($raw);
                 if ($batch) {
-                    $cuentas = array_merge($cuentas, $batch);
+            $cuentas = array_merge($cuentas, $batch);
                 }
-                $pag = $this->paginacionDe($body);
-                $lastPage = $pag['last_page'];
-                if ($lastPage > 0 && $page >= $lastPage) {
-                    break;
-                }
+            $pag = $this->paginacionDe($body);
+            $lastPage = $pag['last_page'];
+            if ($lastPage > 0 && $page >= $lastPage) {
+                break;
+            }
                 if ($lastPage < 1 && (count($raw) < $perPage || ! $batch)) {
-                    break;
+                break;
                 }
             }
 
