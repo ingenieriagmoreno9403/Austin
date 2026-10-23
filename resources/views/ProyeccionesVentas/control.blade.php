@@ -209,7 +209,7 @@
                                     <span id="ctl-venta-snap-pill-text">Venta local: —</span>
                                 </span>
                                 <span class="cc-fx-badge" id="ctl-fx-badge">Vista MXN · TC —</span>
-                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección. Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
+                                <small class="cc-matrix-hint" id="ctl-matrix-hint">Arriba de cada mes ves la venta del año de referencia; abajo capturas la proyección en enteros (también negativos). Clic en el indicador TC para ajustar el dólar por mes. Los cambios se guardan al salir de cada celda.</small>
                             </div>
                         </div>
                         <div class="cc-matrix-legend" id="ctl-matrix-legend" aria-label="Indicadores de color">
@@ -226,6 +226,7 @@
                                 </tbody>
                             </table>
                         </div>
+                        <div class="cc-matrix-pager" id="ctl-matrix-pager" hidden></div>
                         <div id="ctl-month-grid" hidden></div>
                     </div>
                     <div class="cc-captura-save">
@@ -240,7 +241,7 @@
             </div>
         </div>
 
-        <div class="cc-panel cc-captura-results">
+        <div class="cc-panel cc-captura-results cc-pv-detalle">
             <div class="cc-panel-head">
                 <h3><i class="fa-solid fa-table"></i> Detalle por producto y mes</h3>
                 <div class="cc-panel-head-tools">
@@ -251,10 +252,10 @@
                     <label class="cc-scope-check" id="ctl-chart-todas-wrap" hidden>
                         <input type="checkbox" id="ctl-chart-todas"> Ver todas
                     </label>
-                    <div class="cc-legend">
-                        <span><i style="background:#fffbeb"></i> Sin capturar</span>
-                        <span><i style="background:#ecfdf5"></i> Capturado</span>
-                        <span><i style="background:#fef2f2"></i> +20% vs {{ $bootstrap['anioGasto'] }}</span>
+                    <div class="cc-legend" aria-label="Significado de colores de las celdas">
+                        <span><i class="cc-swatch is-empty"></i> Sin capturar</span>
+                        <span><i class="cc-swatch is-ok"></i> Mayor o igual a la venta</span>
+                        <span><i class="cc-swatch is-over"></i> Menor a la venta</span>
                     </div>
                 </div>
             </div>
@@ -346,7 +347,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body row g-3">
-                <div class="col-12"><label class="form-label" id="d-monto-label">Monto total</label><input id="d-monto" class="form-control" type="number" min="0" step="0.01" required></div>
+                <div class="col-12"><label class="form-label" id="d-monto-label">Monto total</label><input id="d-monto" class="form-control" type="number" step="1" inputmode="numeric" required></div>
                 <div class="col-6"><label class="form-label">Desde</label>
                     <select id="d-desde" class="form-select">
                         @foreach(['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'] as $i => $m)

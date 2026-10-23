@@ -47,7 +47,11 @@
             <p class="cc-sub" id="an-sub">Analíticas por empresa, centro, cuenta o usuario.</p>
         </div>
         <div class="cc-header-actions">
-            <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
+            <span id="sap-flag" class="cc-sap-flag off" title="Fuente del catálogo de centros/cuentas">Catálogo local</span>
+            <button type="button" class="cc-btn" id="an-sync-catalogo"
+                title="Baja centros/cuentas/nombres desde SAP a la copia local. No modifica lo capturado.">
+                <i class="fa-solid fa-cloud-arrow-down"></i> Actualizar catálogo
+            </button>
             <select id="an-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
             <label class="cc-header-moneda-wrap">
                 <span>Ver en</span>
@@ -56,7 +60,10 @@
                     <option value="USD">USD</option>
                 </select>
             </label>
-            <button type="button" class="cc-btn" id="an-sap"><i class="fa-solid fa-rotate"></i> Actualizar de SAP</button>
+            <button type="button" class="cc-btn" id="an-sap"
+                title="Fuerza bajar el gasto real desde SAP a la copia local. En Buscar ya se usa la BD; solo va a SAP si aún no hay copia.">
+                <i class="fa-solid fa-rotate"></i> Actualizar gasto SAP
+            </button>
         </div>
     </div>
 
@@ -64,7 +71,7 @@
         <div class="cc-filters cc-filters-asig cc-filters-buscar">
             <div class="cc-filter-field">
                 <label for="an-empresa">Empresa</label>
-                <select id="an-empresa" class="cc-select cc-select-search">
+                <select id="an-empresa" class="cc-select cc-select-search" data-hide-search="1" aria-label="Empresa">
                     <option value="">Seleccionar</option>
                     <option value="*">Todas</option>
                 </select>
@@ -117,8 +124,8 @@
     <div class="cc-kpis cc-kpis-equal" id="an-kpis">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Cuentas ya capturadas</div></div>
         <div class="cc-kpi is-warn"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Centros debajo del 40%</div></div>
-        <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Ppto &gt; 110% del gasto real</div></div>
-        <div class="cc-kpi"><div class="label">Variación vs gasto</div><div class="value" id="an-kpi-yoy">—</div><div class="hint" id="an-kpi-yoy-hint">Promedio de aumento</div></div>
+        <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Ppto &gt; gasto real</div></div>
+        <div class="cc-kpi"><div class="label">Variación vs gasto</div><div class="value" id="an-kpi-yoy">—</div><div class="hint" id="an-kpi-yoy-hint">Presupuesto vs gasto</div></div>
     </div>
 
     <div class="cc-split">

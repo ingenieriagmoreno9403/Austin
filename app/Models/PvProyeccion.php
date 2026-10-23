@@ -72,7 +72,7 @@ class PvProyeccion extends Model
     }
 
     /**
-     * @return array<int, float|null>
+     * @return array<int, int|null>
      */
     public function meses(): array
     {
@@ -80,7 +80,7 @@ class PvProyeccion extends Model
         for ($i = 1; $i <= 12; $i++) {
             $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
             $val = $this->{$col};
-            $out[] = ($val === null || $val === '') ? null : round((float) $val, 4);
+            $out[] = ($val === null || $val === '') ? null : (int) round((float) $val);
         }
 
         return $out;
@@ -97,7 +97,7 @@ class PvProyeccion extends Model
             if ($raw === null || $raw === '') {
                 $this->{$col} = null;
             } else {
-                $this->{$col} = round((float) $raw, 4);
+                $this->{$col} = (int) round((float) $raw);
             }
         }
     }

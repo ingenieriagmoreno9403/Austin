@@ -765,6 +765,126 @@ class AutinApiClient
     }
 
     /**
+     * Lista de precios por empresa: /listaPreciosventa/AUSTIN|IMSA|PITIC|SYDNEY
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{ok: bool, status: int, body: array|null, message: string|null}
+     */
+    public function listaPreciosVentaEmpresa(string $empresa, array $filters = []): array
+    {
+        $empresa = strtoupper(trim($empresa));
+        if (! in_array($empresa, ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'], true)) {
+            return [
+                'ok' => false,
+                'status' => 422,
+                'body' => null,
+                'message' => 'Empresa no válida para listaPreciosventa/{empresa}.',
+            ];
+        }
+        unset($filters['Empresa'], $filters['empresa']);
+
+        return $this->request('GET', 'listaPreciosventa/'.$empresa, $filters);
+    }
+
+    /**
+     * Varios artículos vía /listaPreciosventa/{EMPRESA}.
+     *
+     * @param  array<int, string>  $articulos
+     * @return array{ok: bool, message: string|null, por_item: array<string, array<int, array<string, mixed>>>}
+     */
+    public function listaPreciosPorArticulosEmpresa(string $empresa, string $cliente, array $articulos, int $concurrency = 5): array
+    {
+        $empresa = strtoupper(trim($empresa));
+        if (! in_array($empresa, ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'], true)) {
+            return ['ok' => false, 'message' => 'Empresa no válida', 'por_item' => []];
+        }
+        $articulos = array_values(array_unique(array_filter(array_map(static function ($v) {
+            return trim((string) $v);
+        }, $articulos))));
+        if (! $articulos) {
+            return ['ok' => true, 'message' => null, 'por_item' => []];
+        }
+
+        $url = $this->baseUrl.'/listaPreciosventa/'.$empresa;
+        $requests = function () use ($url, $cliente, $articulos) {
+            foreach ($articulos as $i => $item) {
+                $query = array_filter([
+                    'CodigoCliente' => $cliente,
+                    'CodigoArticulo' => $item,
+                    'per_page' => 100,
+                    'page' => 1,
+                ], static function ($value) {
+                    return $value !== null && $value !== '';
+                });
+                yield $i => new Request('GET', $url.'?'.http_build_query($query));
+            }
+        };
+
+        $porItem = [];
+        $retry = [];
+        $anyOk = false;
+        $message = null;
+        $pool = new Pool($this->client, $requests(), [
+            'concurrency' => max(1, min(5, $concurrency)),
+            'fulfilled' => function ($response, $index) use (&$porItem, &$retry, &$anyOk, &$message, $articulos) {
+                $item = $articulos[$index] ?? '';
+                if ((int) $response->getStatusCode() === 429) {
+                    $retry[] = (int) $index;
+                    if ($message === null) {
+                        $message = 'Too Many Attempts.';
+                    }
+
+                    return;
+                }
+                if ((int) $response->getStatusCode() < 200 || (int) $response->getStatusCode() >= 300) {
+                    $retry[] = (int) $index;
+
+                    return;
+                }
+                $json = json_decode((string) $response->getBody(), true);
+                $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+                $anyOk = true;
+                if ($item !== '') {
+                    $porItem[strtoupper($item)] = $data;
+                }
+            },
+            'rejected' => function ($reason, $index) use (&$retry) {
+                $retry[] = (int) $index;
+            },
+        ]);
+        $pool->promise()->wait();
+
+        if ($retry) {
+            usleep(800000);
+            foreach ($retry as $index) {
+                $item = $articulos[$index] ?? '';
+                if ($item === '') {
+                    continue;
+                }
+                $res = $this->listaPreciosVentaEmpresa($empresa, [
+                    'CodigoCliente' => $cliente,
+                    'CodigoArticulo' => $item,
+                    'per_page' => 100,
+                    'page' => 1,
+                ]);
+                if (! empty($res['ok'])) {
+                    $anyOk = true;
+                    $body = is_array($res['body'] ?? null) ? $res['body'] : [];
+                    $porItem[strtoupper($item)] = is_array($body['data'] ?? null) ? $body['data'] : [];
+                } elseif ($message === null) {
+                    $message = $res['message'] ?? null;
+                }
+            }
+        }
+
+        return [
+            'ok' => $anyOk,
+            'message' => $anyOk ? null : $message,
+            'por_item' => $porItem,
+        ];
+    }
+
+    /**
      * Varios artículos de listaPreciosventa en paralelo (tope bajo para no saturar AutinApi).
      *
      * @param  array<int, string>  $articulos

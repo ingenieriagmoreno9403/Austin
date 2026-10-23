@@ -2657,6 +2657,176 @@
             });
         });
 
+        function bindCopiarDesdeBudget() {
+            var btn = document.getElementById('asig-copiar-budget');
+            if (!btn || !cfg.esSiop || !cfg.copiarFuentesUrl || !cfg.copiarDesdeUrl) return;
+
+            function postJSON(url, body) {
+                return fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Accept: 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': csrf
+                    },
+                    body: JSON.stringify(body || {})
+                }).then(function (r) {
+                    return r.json().then(function (json) {
+                        if (!r.ok) throw new Error((json && (json.message || json.mensaje)) || ('HTTP ' + r.status));
+                        return json;
+                    });
+                });
+            }
+
+            function fmtFuenteOption(f) {
+                var st = f.stats || {};
+                var label = (f.codigo || '') + (f.nombre && f.nombre !== f.codigo ? (' — ' + f.nombre) : '');
+                label += ' · ' + (st.asignaciones || 0) + ' asig';
+                label += ' · ' + (st.proyecciones || 0) + ' proy';
+                if (f.mismoAnio) label += ' · mismo año';
+                return label;
+            }
+
+            btn.addEventListener('click', function () {
+                if (btn.disabled) return;
+                btn.disabled = true;
+                var prevHtml = btn.innerHTML;
+                btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cargando…';
+
+                getJSON(cfg.copiarFuentesUrl).then(function (json) {
+                    btn.disabled = false;
+                    btn.innerHTML = prevHtml;
+                    var fuentes = (json && json.fuentes) || [];
+                    if (!fuentes.length) {
+                        if (window.Swal) {
+                            Swal.fire({
+                                icon: 'info',
+                                title: 'Sin Budgets',
+                                text: 'No hay ciclos Budget para copiar a este SIOP.'
+                            });
+                        }
+                        return;
+                    }
+
+                    var optionsHtml = fuentes.map(function (f, i) {
+                        return '<option value="' + escapeHtml(f.codigo) + '"' + (i === 0 ? ' selected' : '') + '>' +
+                            escapeHtml(fmtFuenteOption(f)) + '</option>';
+                    }).join('');
+
+                    var byCode = {};
+                    fuentes.forEach(function (f) { byCode[f.codigo] = f; });
+
+                    function resumenDe(code) {
+                        var f = byCode[code] || {};
+                        var st = f.stats || {};
+                        return '<ul style="text-align:left;margin:.5rem 0 0;padding-left:1.1rem;font-size:.9rem">' +
+                            '<li><b>' + (st.asignaciones || 0) + '</b> asignaciones</li>' +
+                            '<li><b>' + (st.productos || 0) + '</b> productos en asignaciones</li>' +
+                            '<li><b>' + (st.proyecciones || 0) + '</b> proyecciones (cantidades)</li>' +
+                            '<li><b>' + (st.captura_clientes || 0) + '</b> estados de captura</li>' +
+                            '</ul>' +
+                            '<p style="text-align:left;font-size:.82rem;color:#71717a;margin:.75rem 0 0">' +
+                            'Se crea una copia en <b>' + escapeHtml(cfg.ciclo) + '</b>. El Budget origen no se modifica. ' +
+                            'Si ya existe un registro en el SIOP, se omite (salvo que marques reemplazar).</p>';
+                    }
+
+                    if (!window.Swal) {
+                        alert('Se copiará desde ' + fuentes[0].codigo);
+                        return;
+                    }
+
+                    Swal.fire({
+                        title: 'Copiar desde Budget',
+                        html: '<div style="text-align:left">' +
+                            '<label style="font-size:.85rem;font-weight:600">Ciclo origen</label>' +
+                            '<select id="swal-copiar-origen" class="swal2-select" style="width:100%;margin-top:.35rem">' +
+                            optionsHtml +
+                            '</select>' +
+                            '<div id="swal-copiar-resumen" style="margin-top:.75rem">' + resumenDe(fuentes[0].codigo) + '</div>' +
+                            '<label style="display:flex;gap:.5rem;align-items:flex-start;margin-top:1rem;font-size:.85rem;cursor:pointer">' +
+                            '<input type="checkbox" id="swal-copiar-reemplazar" style="margin-top:.2rem">' +
+                            '<span>Reemplazar lo que ya exista en el SIOP (solo destino; el Budget no se toca)</span>' +
+                            '</label></div>',
+                        showCancelButton: true,
+                        confirmButtonText: 'Copiar todo',
+                        cancelButtonText: 'Cancelar',
+                        confirmButtonColor: '#0a0a0a',
+                        didOpen: function () {
+                            var sel = document.getElementById('swal-copiar-origen');
+                            var box = document.getElementById('swal-copiar-resumen');
+                            if (sel && box) {
+                                sel.addEventListener('change', function () {
+                                    box.innerHTML = resumenDe(sel.value);
+                                });
+                            }
+                        },
+                        preConfirm: function () {
+                            var sel = document.getElementById('swal-copiar-origen');
+                            var chk = document.getElementById('swal-copiar-reemplazar');
+                            var code = sel ? sel.value : '';
+                            if (!code) {
+                                Swal.showValidationMessage('Elige un Budget');
+                                return false;
+                            }
+                            return {
+                                ciclo_origen: code,
+                                reemplazar: !!(chk && chk.checked)
+                            };
+                        }
+                    }).then(function (r) {
+                        if (!r.isConfirmed || !r.value) return;
+                        Swal.fire({
+                            title: 'Copiando…',
+                            html: 'Asignaciones y proyecciones en lotes. No cierres esta ventana.',
+                            allowOutsideClick: false,
+                            allowEscapeKey: false,
+                            didOpen: function () { Swal.showLoading(); }
+                        });
+                        postJSON(cfg.copiarDesdeUrl, r.value).then(function (res) {
+                            var st = (res && res.stats) || {};
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Copia lista',
+                                html: '<div style="text-align:left;font-size:.9rem">' +
+                                    '<p style="margin:0 0 .5rem">Desde <b>' + escapeHtml(res.origen || r.value.ciclo_origen) +
+                                    '</b> → <b>' + escapeHtml(cfg.ciclo) + '</b></p>' +
+                                    '<ul style="margin:0;padding-left:1.1rem">' +
+                                    '<li>Asignaciones creadas: <b>' + (st.asignaciones_creadas || 0) + '</b>' +
+                                    (st.asignaciones_omitidas ? (' · omitidas ' + st.asignaciones_omitidas) : '') +
+                                    (st.asignaciones_reemplazadas ? (' · reemplazadas ' + st.asignaciones_reemplazadas) : '') +
+                                    '</li>' +
+                                    '<li>Productos: <b>' + (st.productos_copiados || 0) + '</b></li>' +
+                                    '<li>Proyecciones creadas: <b>' + (st.proyecciones_creadas || 0) + '</b>' +
+                                    (st.proyecciones_omitidas ? (' · omitidas ' + st.proyecciones_omitidas) : '') +
+                                    (st.proyecciones_reemplazadas ? (' · reemplazadas ' + st.proyecciones_reemplazadas) : '') +
+                                    '</li>' +
+                                    '<li>Estados captura: <b>' + (st.captura_creadas || 0) + '</b></li>' +
+                                    '</ul></div>'
+                            });
+                        }).catch(function (err) {
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'No se pudo copiar',
+                                text: (err && err.message) ? err.message : 'Error de red'
+                            });
+                        });
+                    });
+                }).catch(function (err) {
+                    btn.disabled = false;
+                    btn.innerHTML = prevHtml;
+                    if (window.Swal) {
+                        Swal.fire({
+                            icon: 'error',
+                            title: 'No se cargaron Budgets',
+                            text: (err && err.message) ? err.message : 'Error de red'
+                        });
+                    }
+                });
+            });
+        }
+
+        bindCopiarDesdeBudget();
         unlockEmpresas();
         loadEmpresas();
         fillUsers('');

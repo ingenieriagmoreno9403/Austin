@@ -12,7 +12,8 @@
             <h1 class="cc-title">Precios de productos</h1>
             <p class="cc-sub">
                 Maestro local por <strong>año de proyección</strong>, <strong>Empresa</strong>, <strong>CardCode</strong> e <strong>ItemCode</strong>
-                (1 fila). Usa el selector <strong>Proy. AAAA</strong> para ver o editar precios de otro ciclo.
+                (1 fila). Master / Rene / Luis ven <strong>todos los productos</strong>; el resto solo sus asignaciones.
+                El botón <strong>Solo asignados</strong> deja productos asignados con <strong>cantidad capturada &gt; 0</strong>.
                 Los precios mensuales se editan en el modal; en BD siguen guardados por mes y año.
             </p>
         </div>
@@ -25,7 +26,7 @@
             <h3><i class="fa-solid fa-tags"></i> Maestro de precios</h3>
             <span class="text-muted" style="font-size:.8rem" id="pv-costos-hint">Cargando…</span>
         </div>
-        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto auto auto;">
+        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto auto auto auto;">
             <select id="pv-costos-anio" class="cc-select" title="Año de proyección del maestro">
                 <option value="{{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}">Proy. {{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}</option>
             </select>
@@ -42,6 +43,10 @@
             <button type="button" class="cc-btn" id="pv-costos-reload">
                 <i class="fa-solid fa-rotate"></i> Actualizar
             </button>
+            <button type="button" class="cc-btn" id="pv-costos-solo-asignados" hidden
+                title="Solo productos asignados a usuarios y con cantidad registrada (oculta los de 0 en todos los meses)">
+                <i class="fa-solid fa-user-check"></i> Solo asignados
+            </button>
             <button type="button" class="cc-btn" id="pv-costos-excel" title="Descargar o subir plantilla Excel (Formato Precios)">
                 <i class="fa-solid fa-file-excel"></i> Plantilla Excel
             </button>
@@ -54,6 +59,11 @@
             <button type="button" class="cc-btn" id="pv-costos-rellenar-ceros" title="Rellena Precio global en $0 desde lista SAP, por empresa">
                 <i class="fa-solid fa-fill-drip"></i> Rellenar $0
             </button>
+            @if (!empty($bootstrap['puedeObtenerPrecioLista']))
+            <button type="button" class="cc-btn" id="pv-costos-sync-precio-lista" title="Sincroniza Precio lista desde SAP; opcionalmente alinea Precio global si difiere">
+                <i class="fa-solid fa-tags"></i> Obtener precio lista
+            </button>
+            @endif
         </div>
         <div class="cc-table-wrap">
             <table class="cc-table" id="pv-costos-table">
@@ -66,6 +76,7 @@
                         <th>Producto</th>
                         <th>Meses</th>
                         <th class="num">Precio global</th>
+                        <th class="num">Precio lista</th>
                         <th>Moneda</th>
                         <th>Estado</th>
                         <th>Actualizado</th>
@@ -73,7 +84,7 @@
                     </tr>
                 </thead>
                 <tbody id="pv-costos-tbody">
-                    <tr><td colspan="11"><div class="cc-empty">Cargando productos…</div></td></tr>
+                    <tr><td colspan="12"><div class="cc-empty">Cargando productos…</div></td></tr>
                 </tbody>
             </table>
         </div>
@@ -267,23 +278,47 @@
                     Formato: <code>Empresa · CardCode · Cliente · ItemCode · Producto · Moneda · PrecioGlobal · Ene…Dic</code>.
                 </p>
                 <ol class="mb-3" style="font-size:.85rem; padding-left:1.2rem">
-                    <li>Descarga la plantilla con los datos de tu BD.</li>
-                    <li>Edita <b>Ene–Dic</b> para precio por mes (vacío = no se toca). Solo <b>PrecioGlobal</b> aplica a los 12 meses.</li>
+                    <li>Descarga la plantilla con los datos de tu búsqueda actual (empresa, cliente, ItemCode).</li>
+                    <li>Edita <b>Ene–Dic</b> para precio por mes (<b>vacío = no se toca</b>). <b>PrecioGlobal</b> solo actualiza el precio global, no pisa los meses.</li>
                     <li>Sube el archivo para actualizar el maestro local.</li>
                 </ol>
                 <div class="d-grid gap-2 mb-3">
                     <button type="button" class="cc-btn cc-btn-ink" id="pv-precios-descargar">
-                        <i class="fa-solid fa-download"></i> Descargar plantilla con datos
+                        <i class="fa-solid fa-download"></i> Descargar plantilla (filtro actual)
                     </button>
                 </div>
                 <label class="form-label">Subir Excel editado</label>
                 <input type="file" class="form-control" id="pv-precios-archivo" accept=".xlsx,.xls,.csv">
+                <div class="mb-2 mt-3" id="pv-precios-progress-wrap" style="display:none">
+                    <div class="d-flex justify-content-between" style="font-size:.78rem;margin-bottom:.35rem">
+                        <span id="pv-precios-progress-label">—</span>
+                        <span id="pv-precios-progress-pct">0%</span>
+                    </div>
+                    <div style="height:.55rem;background:#e5e7eb;border-radius:999px;overflow:hidden">
+                        <div id="pv-precios-progress-bar" style="height:100%;width:0%;background:#0a0a0a;transition:width .2s ease"></div>
+                    </div>
+                    <div class="text-muted mt-2" style="font-size:.75rem" id="pv-precios-progress-detail"></div>
+                </div>
+                <div class="alert alert-warning py-2 px-3 mb-0 mt-2" id="pv-precios-resume-box" style="display:none;font-size:.82rem">
+                    <div id="pv-precios-resume-msg"></div>
+                    <div class="d-flex flex-wrap gap-2 mt-2">
+                        <button type="button" class="cc-btn cc-btn-sm cc-btn-ink" id="pv-precios-reanudar">
+                            <i class="fa-solid fa-play"></i> Continuar desde aquí
+                        </button>
+                        <button type="button" class="cc-btn cc-btn-sm" id="pv-precios-saltar">
+                            Saltar fila y continuar
+                        </button>
+                    </div>
+                </div>
                 <div class="text-muted mt-2" style="font-size:.78rem" id="pv-precios-excel-hint">
-                    Se actualiza por Empresa + CardCode + ItemCode; meses en columnas Ene–Dic.
+                    Solo se escriben filas con cambios. Por lotes (barra de progreso); si hay timeout o error puedes reanudar.
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="cc-btn" data-bs-dismiss="modal">Cerrar</button>
+                <button type="button" class="cc-btn" data-bs-dismiss="modal" id="pv-precios-cerrar">Cerrar</button>
+                <button type="button" class="cc-btn" id="pv-precios-cancelar" style="display:none">
+                    Pausar
+                </button>
                 <button type="button" class="cc-btn cc-btn-ink" id="pv-precios-subir">
                     <i class="fa-solid fa-upload"></i> Subir y actualizar
                 </button>
@@ -342,6 +377,79 @@
                 <button type="button" class="cc-btn" data-bs-dismiss="modal" id="pv-ceros-cancelar">Cancelar</button>
                 <button type="button" class="cc-btn cc-btn-ink" id="pv-ceros-ejecutar">
                     <i class="fa-solid fa-cloud-arrow-down"></i> Consultar y rellenar
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade cc-modal" id="modalPvSyncPrecioLista" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0">Obtener Precio lista</h5>
+                    <p class="text-muted mb-0 mt-1" style="font-size:.82rem">
+                        Sincroniza <b>Precio lista</b> desde
+                        <code>/listaPreciosventa/{EMPRESA}</code> y, si lo indicas,
+                        alinea <b>Precio global</b> cuando difiera de SAP.
+                    </p>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+            </div>
+            <div class="modal-body">
+                <p style="font-size:.88rem;margin-bottom:.85rem">
+                    Elige la <b>empresa</b>. Se actualiza <b>cliente por cliente</b> (CardCode)
+                    contra <code>listaPreciosventa</code>.
+                </p>
+                <div class="mb-3" style="display:flex;flex-direction:column;gap:.55rem">
+                    <label class="cc-toggle-row" for="pv-plista-sync-global" style="display:flex;align-items:flex-start;gap:.65rem;margin:0;padding:.7rem .85rem;border:1px solid #e4e4e7;border-radius:12px;cursor:pointer;user-select:none;background:#fafafa">
+                        <input type="checkbox" id="pv-plista-sync-global" checked
+                               style="width:1.15rem;height:1.15rem;margin:.15rem 0 0;flex:0 0 auto;accent-color:#0a0a0a;cursor:pointer">
+                        <span style="font-size:.88rem;line-height:1.35">
+                            <strong>Actualizar Precio global</strong> si es distinto al de SAP
+                        </span>
+                    </label>
+                    <label class="cc-toggle-row" for="pv-plista-todos" style="display:flex;align-items:flex-start;gap:.65rem;margin:0;padding:.7rem .85rem;border:1px solid #e4e4e7;border-radius:12px;cursor:pointer;user-select:none;background:#fafafa">
+                        <input type="checkbox" id="pv-plista-todos" checked
+                               style="width:1.15rem;height:1.15rem;margin:.15rem 0 0;flex:0 0 auto;accent-color:#0a0a0a;cursor:pointer">
+                        <span style="font-size:.88rem;line-height:1.35">
+                            <strong>Incluir productos con Precio lista</strong> (corregir diferencias)
+                        </span>
+                    </label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="pv-plista-empresa">Empresa</label>
+                    <select id="pv-plista-empresa" class="form-select">
+                        <option value="">Selecciona…</option>
+                        <option value="AUSTIN">AUSTIN</option>
+                        <option value="IMSA">IMSA</option>
+                        <option value="PITIC">PITIC</option>
+                        <option value="SYDNEY">SYDNEY</option>
+                    </select>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Proyección</label>
+                    <div class="fw-semibold" id="pv-plista-anio-label">—</div>
+                </div>
+                <div class="mb-2" id="pv-plista-progress-wrap" style="display:none">
+                    <div class="d-flex justify-content-between" style="font-size:.78rem;margin-bottom:.35rem">
+                        <span id="pv-plista-progress-label">—</span>
+                        <span id="pv-plista-progress-pct">0%</span>
+                    </div>
+                    <div style="height:.55rem;background:#e5e7eb;border-radius:999px;overflow:hidden">
+                        <div id="pv-plista-progress-bar" style="height:100%;width:0%;background:#0a0a0a;transition:width .2s ease"></div>
+                    </div>
+                    <div class="text-muted mt-2" style="font-size:.75rem" id="pv-plista-progress-detail"></div>
+                </div>
+                <div class="text-muted" style="font-size:.78rem" id="pv-plista-hint">
+                    Endpoint por empresa: /listaPreciosventa/AUSTIN|IMSA|PITIC|SYDNEY
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="cc-btn" data-bs-dismiss="modal" id="pv-plista-cancelar">Cancelar</button>
+                <button type="button" class="cc-btn cc-btn-ink" id="pv-plista-ejecutar">
+                    <i class="fa-solid fa-cloud-arrow-down"></i> Obtener precios
                 </button>
             </div>
         </div>

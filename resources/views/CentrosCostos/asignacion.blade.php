@@ -117,10 +117,13 @@
                 <div class="cc-panel-head">
                     <h3 id="asig-cta-title"><i class="fa-solid fa-list"></i> Cuentas con acceso</h3>
                     <label class="cc-todas-toggle">
-                        <input type="checkbox" id="asig-cta-todas"> Todas
+                        <input type="checkbox" id="asig-cta-todas"> Seleccionar todas
                     </label>
                 </div>
                 <div class="cc-grupos-cta-tools">
+                    <button type="button" class="cc-btn cc-cta-traer" id="asig-cta-traer" title="Carga todas las cuentas del catálogo, sin GroupMask ni grupo">
+                        <i class="fa-solid fa-check"></i> Traer todas
+                    </button>
                     <select id="asig-cta-mask" class="cc-select" aria-label="GroupMask">
                         <option value="">Todos los GroupMask</option>
                     </select>

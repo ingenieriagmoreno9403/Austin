@@ -45,8 +45,12 @@
             </div>
             <span class="cc-badge cc-banner-fx" id="period-fx">—</span>
             <div class="cc-banner-actions">
+                <button type="button" class="cc-btn" id="ciclo-sync-catalogo"
+                    title="Baja centros/cuentas/nombres desde SAP a la copia local. No modifica captura ni gasto.">
+                    <i class="fa-solid fa-cloud-arrow-down"></i> Actualizar catálogo
+                </button>
                 <button type="button" class="cc-btn" id="ciclo-sap">
-                    <i class="fa-solid fa-rotate"></i> Actualizar de SAP
+                    <i class="fa-solid fa-rotate"></i> Actualizar gasto SAP
                 </button>
                 <button type="button" class="cc-btn" onclick="CC.showModal('modalPeriodo')">
                     <i class="fa-solid fa-pen"></i> Editar
@@ -185,7 +189,7 @@
             </div>
             <div class="modal-body">
                 <p class="text-muted mb-3" style="font-size:.85rem">
-                    Elige una empresa. Cada centro se guarda en un archivo y de ahí se inserta. Si la conexión se corta, sigue con lo que ya quedó escrito.
+                    Elige una empresa. Se agrupan las asignaciones por centro y cuenta; cada cuenta se consulta en SAP, se guarda en archivo y luego se inserta. Si se corta la conexión, continúa con lo ya escrito.
                 </p>
                 <label class="cc-filter-field" for="ciclo-sap-empresa">Empresa
                     <select id="ciclo-sap-empresa" class="cc-select" aria-label="Empresa a actualizar">

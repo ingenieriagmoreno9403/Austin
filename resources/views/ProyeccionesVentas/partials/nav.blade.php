@@ -14,4 +14,7 @@
     <a href="{{ route('pv.costos') }}" class="{{ $ccPage === 'costos' ? 'is-active' : '' }}">
         <i class="fa-solid fa-tags me-1"></i> Precios
     </a>
+    <a href="{{ route('pv.exportar') }}" class="{{ $ccPage === 'exportar' ? 'is-active' : '' }}">
+        <i class="fa-solid fa-file-excel me-1"></i> Exportar budget
+    </a>
 </nav> -->

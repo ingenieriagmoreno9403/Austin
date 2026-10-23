@@ -70,8 +70,8 @@
     <div class="cc-kpis cc-kpis-equal">
         <div class="cc-kpi"><div class="label">Avance promedio</div><div class="value" id="an-kpi-avance">—</div><div class="hint">Productos ya capturados</div></div>
         <div class="cc-kpi alert"><div class="label">Poca captura</div><div class="value" id="an-kpi-poco">—</div><div class="hint">Clientes debajo del 40%</div></div>
-        <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Proy. &gt; 110% de la venta real</div></div>
-        <div class="cc-kpi"><div class="label">Variación vs venta</div><div class="value" id="an-kpi-yoy">—</div><div class="hint" id="an-kpi-yoy-hint">Promedio de aumento</div></div>
+        <div class="cc-kpi"><div class="label">Sobre el límite</div><div class="value" id="an-kpi-over">—</div><div class="hint" id="an-kpi-over-hint">Proy. &gt; venta real</div></div>
+        <div class="cc-kpi"><div class="label">Variación vs venta</div><div class="value" id="an-kpi-yoy">—</div><div class="hint" id="an-kpi-yoy-hint">Proyección vs venta</div></div>
     </div>
 
     <div class="cc-split">

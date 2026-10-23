@@ -151,21 +151,44 @@
     }
 
     /**
-     * Cantidades (unidades): el tipo de cambio NO las afecta.
-     * Se muestran y guardan tal cual.
+     * Cantidades (unidades) de la captura mensual: enteros, también negativos.
+     * El tipo de cambio no las afecta.
      */
     function toStoreQty(n) {
         var val = Number(n);
         if (!isFinite(val)) val = 0;
-        return Math.round(val * 100) / 100;
+        return Math.round(val);
+    }
+
+    /** Mientras se escribe: solo signo menos y dígitos. Un decimal pegado se redondea. */
+    function sanitizeQtyTyping(raw) {
+        var s = String(raw == null ? '' : raw).replace(/\s/g, '').replace(/,/g, '.');
+        if (s === '' || s === '-') return s;
+        if (/^-?\d+\.$/.test(s)) return s.slice(0, -1);
+        if (/^-?\d+\.\d+$/.test(s)) return String(Math.round(Number(s)));
+        if (/^-?\d+$/.test(s)) return s;
+        var neg = s.charAt(0) === '-';
+        var body = (neg ? s.slice(1) : s).replace(/-/g, '');
+        if (body.indexOf('.') >= 0) {
+            var n = Number((neg ? '-' : '') + body.replace(/[^\d.]/g, ''));
+            return isFinite(n) ? String(Math.round(n)) : (neg ? '-' : '');
+        }
+        var digits = body.replace(/\D/g, '');
+        if (!digits) return neg ? '-' : '';
+        return (neg ? '-' : '') + digits;
+    }
+
+    function readQtyInput(raw) {
+        var s = sanitizeQtyTyping(raw);
+        if (s === '' || s === '-') return null;
+        return toStoreQty(s);
     }
 
     function formatInputQty(n) {
         if (!mesLleno(n)) return '';
         var v = Number(n);
         if (!isFinite(v)) return '';
-        if (Math.abs(v - Math.round(v)) < 0.00001) return String(Math.round(v));
-        return String(Math.round(v * 100) / 100);
+        return String(Math.round(v));
     }
 
     /** @deprecated Usar formatInputQty para meses (unidades). */
@@ -231,6 +254,13 @@
     function deltaPct(now, prev) {
         if (!prev) return now ? 100 : 0;
         return Math.round(((now - prev) / prev) * 1000) / 10;
+    }
+
+    /** Verde si la variación es positiva, rojo si es negativa. */
+    function deltaToneClass(d) {
+        var n = Number(d);
+        if (!isFinite(n) || n === 0) return 'cc-delta-flat';
+        return n > 0 ? 'cc-delta-up' : 'cc-delta-down';
     }
 
     function loadJSON(key, fallback) {
@@ -430,29 +460,84 @@
         Object.keys(CC.state.budgets || {}).forEach(addKey);
         Object.keys(CC.state.budgetKeysFromServer || {}).forEach(addKey);
         Object.keys(CC.state.completados || {}).forEach(addKey);
-        return out;
+        var aliasDeItem = {};
+        out.forEach(function (cta) {
+            if (!esItemCodeSap(cta.codigo)) return;
+            var alias = aliasDigitosCuenta(cta.codigo);
+            if (alias) aliasDeItem[alias] = true;
+        });
+        return out.filter(function (cta) {
+            if (esItemCodeSap(cta.codigo)) return true;
+            var alias = aliasDigitosCuenta(cta.codigo);
+            return !(alias && aliasDeItem[alias]);
+        });
     }
 
     function mergeCuentasAnalisis(c, base) {
         var seen = {};
-        (base || []).forEach(function (cta) {
-            seen[String(cta.codigo)] = true;
-            seen[codigoCuentaKey(cta.codigo)] = true;
-        });
+        var aliasDeItem = {};
+        function markSeenCuenta(cta) {
+            var code = String(cta.codigo || '');
+            seen[code] = true;
+            seen[codigoCuentaKey(code)] = true;
+            if (!esItemCodeSap(code)) return;
+            var alias = aliasDigitosCuenta(code);
+            if (alias) aliasDeItem[alias] = true;
+        }
+        (base || []).forEach(markSeenCuenta);
         var extra = productosVentaRealDeCentro(c).filter(function (cta) {
             return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
         });
-        extra.forEach(function (cta) {
-            seen[String(cta.codigo)] = true;
-            seen[codigoCuentaKey(cta.codigo)] = true;
-        });
+        extra.forEach(markSeenCuenta);
         var fromBudget = productosDesdeBudgetsDeCentro(c).filter(function (cta) {
-            return !seen[String(cta.codigo)] && !seen[codigoCuentaKey(cta.codigo)];
+            if (seen[String(cta.codigo)] || seen[codigoCuentaKey(cta.codigo)]) return false;
+            if (!esItemCodeSap(cta.codigo) && aliasDeItem[aliasDigitosCuenta(cta.codigo)]) return false;
+            return true;
         });
         return (base || []).concat(extra).concat(fromBudget);
     }
 
+    /**
+     * Detalle: solo productos asignados a algún capturador del cliente
+     * (con venta real / proyección si existen). No lista venta SAP sin asignación.
+     */
+    function cuentasDelClienteDetalle(c) {
+        var seen = {};
+        var assigned = [];
+        listaCapturadores().forEach(function (a) {
+            (a.cuentas || []).forEach(function (x) {
+                var codigo = String((x && x.codigo) || x || '').trim();
+                if (!codigo || seen[codigo] || seen[codigoCuentaKey(codigo)]) return;
+                seen[codigo] = true;
+                seen[codigoCuentaKey(codigo)] = true;
+                assigned.push({
+                    codigo: codigo,
+                    nombre: (x && x.nombre) || codigo,
+                    grupo: (x && (x.agrupacion || x.linea)) || 'Asignadas',
+                    gasto: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    empresa: c.empresa
+                });
+            });
+        });
+        var ventaByCode = {};
+        productosVentaRealDeCentro(c).forEach(function (cta) {
+            ventaByCode[String(cta.codigo)] = cta;
+            ventaByCode[codigoCuentaKey(cta.codigo)] = cta;
+        });
+        return assigned.map(function (cta) {
+            var v = ventaByCode[String(cta.codigo)] || ventaByCode[codigoCuentaKey(cta.codigo)];
+            if (!v) return cta;
+            return Object.assign({}, cta, v, {
+                codigo: cta.codigo,
+                empresa: c.empresa,
+                nombre: v.nombre || cta.nombre,
+                grupo: v.grupo || cta.grupo
+            });
+        });
+    }
+
     function cuentasDeCentro(c) {
+        if (CC.state.page === 'detalle') return cuentasDelClienteDetalle(c);
         var asig = asigDe(c);
         if (asig && asig.cuentas && asig.cuentas.length) {
             var packed = packedLookupDeCentro(c);
@@ -565,9 +650,13 @@
         return vis.replace(/\D+/g, '') || vis;
     }
 
-    /** ItemCode SAP (tiene letras): no usar alias solo-dígitos (REPE-3PE MT → "3"). */
+    /** ItemCode SAP (tiene letras): no usar alias solo-dígitos (REPE-3PE MT → "3", AUS01-001 → "1001"). */
     function esItemCodeSap(codigo) {
         return /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(String(codigo || ''));
+    }
+
+    function aliasDigitosCuenta(codigo) {
+        return String(codigoCuentaKey(codigo) || '').replace(/^0+/, '');
     }
 
     function nombreCuentaKey(nombre) {
@@ -1124,9 +1213,8 @@
             var el = document.getElementById(id);
             if (el) el.className = 'cc-snap-badge is-cache';
         });
-        // Detalle auto (sin force): no bloquear UI; el snapshot llega en segundo plano.
-        // Captura / refresh manual sí muestran overlay.
-        var showedWait = !!(force || !auto);
+        // Solo overlay en refresh manual. Auto/snapshot no bloquean la captura.
+        var showedWait = !auto && force;
         if (showedWait) showApiWait(waitMsg);
         if (CC._capturaReady) {
             try { renderControlTable(); } catch (e1) { /* ignore */ }
@@ -1137,8 +1225,13 @@
             '&ref=' + encodeURIComponent(year) +
             '&force=' + (force ? '1' : '0');
         var reqKey = key;
+        var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var abortTimer = setTimeout(function () {
+            try { if (ctrl) ctrl.abort(); } catch (eAbort) { /* ignore */ }
+        }, force ? 45000 : 20000);
         fetch(CC.state.gastoUrl + qs, {
-            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            signal: ctrl ? ctrl.signal : undefined
         }).then(function (res) { return res.json(); }).then(function (json) {
             if (reqId !== control._gastoReqId) return;
             if (!control.centro || gastoCacheKey(control.centro) !== reqKey) return;
@@ -1161,9 +1254,18 @@
             if (reqId !== control._gastoReqId) return;
             if (!control.centro || gastoCacheKey(control.centro) !== reqKey) return;
             control._gastoLoading = '';
-            applyGastoMap({}, { fuente: 'error', year: year });
-            toast('error', 'No se actualizó', 'No se pudo consultar las unidades de venta en SAP.');
+            // Si ya hay snapshot/caché, no borrar la tabla al fallar SAP.
+            var prev = gastoCacheEntry(reqKey);
+            if (prev && prev.por && Object.keys(prev.por).length) {
+                applyGastoMap(prev.por, prev.meta || { fuente: 'snapshot', year: year });
+            } else {
+                applyGastoMap({}, { fuente: 'error', year: year });
+            }
+            if (!auto) {
+                toast('error', 'No se actualizó', 'No se pudo consultar las unidades de venta en SAP.');
+            }
         }).then(function () {
+            clearTimeout(abortTimer);
             if (reqId === control._gastoReqId && control._gastoLoading === reqKey) {
                 control._gastoLoading = '';
             }
@@ -1242,17 +1344,60 @@
         paintDetalleHeader();
     }
 
+    /** Precio lista desde costosMaster (tbl_pv_productos_costo.precio_lista), no SAP. */
+    function preciosMapDesdeMaestroLocal(c) {
+        var out = {};
+        if (!c) return out;
+        var emp = String(c.empresa || '').toUpperCase();
+        var card = String(c.codigo || '').trim();
+        var map = CC.state.costosMaster || {};
+        var prefix = emp && card ? (emp + '|' + card + '|') : '';
+        Object.keys(map).forEach(function (key) {
+            var entry = map[key];
+            if (!entry || typeof entry !== 'object') return;
+            var cod = '';
+            var entryCard = String(entry.card_code || '').trim();
+            if (prefix && key.indexOf(prefix) === 0) {
+                cod = key.slice(prefix.length);
+            } else if (card && entryCard && entryCard.toUpperCase() === card.toUpperCase()) {
+                var parts = String(key).split('|');
+                cod = parts[parts.length - 1] || '';
+            } else {
+                return;
+            }
+            cod = String(cod || '').trim();
+            if (!cod) return;
+            var pl = Number(entry.precio_lista != null ? entry.precio_lista : entry.precioLista) || 0;
+            if (!(pl > 0)) return;
+            out[cod] = {
+                codigo: cod,
+                precio: pl,
+                moneda: canonMoneda(entry.moneda || 'MXN'),
+                lista: 'Maestro local · Precio lista',
+                fuente: 'maestro_local_precio_lista'
+            };
+        });
+        return out;
+    }
+
     function loadListasPreciosCentro(c) {
-        if (!c || !CC.state.listasPreciosUrl) return;
+        if (!c) return;
+        // Captura / Detalle: Precio lista = maestro local (no SAP).
+        if (CC.state.page === 'control' || CC.state.page === 'detalle') {
+            var localKey = preciosCacheKey(c);
+            control._preciosReq = localKey;
+            control._preciosLoading = '';
+            applyPreciosMap(preciosMapDesdeMaestroLocal(c));
+            return;
+        }
+        if (!CC.state.listasPreciosUrl) return;
         var key = preciosCacheKey(c);
         control._preciosReq = key;
         control._preciosLoading = key;
         // No reutilizar caché de sesión incompleta: siempre pedir los productos del cliente.
         if (CC.state.preciosCache) delete CC.state.preciosCache[key];
-        // Si ya hay maestro local de precios, no bloquear la UI con SAP (fallback en segundo plano).
-        // En Detalle tampoco bloquear: la tabla ya pinta con costosMaster / captura.
         var hasMaster = CC.state.costosMaster && Object.keys(CC.state.costosMaster).length > 0;
-        var showedWait = !hasMaster && CC.state.page !== 'detalle';
+        var showedWait = !hasMaster;
         control._preciosMap = {};
         if (showedWait) {
             showApiWait('Consultando listas de precios…');
@@ -1663,13 +1808,15 @@
         return out;
     }
 
-    function persistBudget(empresa, cc, cuenta, months, opts) {
+    /** Solo memoria (sin PUT). Edición de meses usa esto; Guardar confirma al servidor. */
+    function applyBudgetLocal(empresa, cc, cuenta, months, opts) {
         opts = opts || {};
         months = protectLockedMonths(empresa, cc, cuenta, months, opts);
-        var ciclo = cicloActualCodigo();
-        if (!ciclo) return;
+        months = (months || []).map(function (v) {
+            if (!mesLleno(v)) return null;
+            return toStoreQty(v);
+        });
         var key = budgetKey(empresa, cc, cuenta);
-        var timerKey = String(ciclo).toUpperCase() + '|' + key;
         CC.state.budgets = CC.state.budgets || {};
         CC.state.budgets[key] = months.slice();
         CC.state.completados = CC.state.completados || {};
@@ -1683,7 +1830,21 @@
         }
         if (done) CC.state.completados[key] = true;
         else delete CC.state.completados[key];
+        return { months: months.slice(), done: done, key: key };
+    }
 
+    function persistBudget(empresa, cc, cuenta, months, opts) {
+        opts = opts || {};
+        var applied = applyBudgetLocal(empresa, cc, cuenta, months, opts);
+        months = applied.months;
+        var done = applied.done;
+        var key = applied.key;
+        var ciclo = cicloActualCodigo();
+        if (!ciclo) return;
+        // Edición de celdas / réplica enero: no autosave; Guardar / Completado sí hacen PUT.
+        if (opts.localOnly) return;
+
+        var timerKey = String(ciclo).toUpperCase() + '|' + key;
         var monthsToSave = months.slice();
             var nombre = '';
             var list = (control && control._allCtas) || [];
@@ -1700,25 +1861,29 @@
                 break;
             }
         }
-        var precioMeses = preciosMesesDe(empresa, cc, cuenta);
         var ajuste = Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0;
+        var payload = {
+            ciclo: ciclo,
+            empresa: empresa,
+            centro: cc,
+            cuenta: cuenta,
+            cuenta_nombre: nombre,
+            meses: monthsToSave,
+            completado: done,
+            ajuste_pct: ajuste,
+            costo_unitario: costo
+        };
+        // Solo quien puede editar precios manda precio_meses. Si no, el guardado
+        // de cantidades no debe pedir el permiso editar_precios_captura.
+        if (CC.state.puedeEditarPreciosCaptura) {
+            payload.precio_meses = preciosMesesDe(empresa, cc, cuenta);
+        }
 
         function doSave() {
             return fetch('/ProyeccionesVentas/api/captura/presupuesto', {
                 method: 'PUT',
                 headers: apiJsonHeaders(),
-                body: JSON.stringify({
-                    ciclo: ciclo,
-                    empresa: empresa,
-                    centro: cc,
-                    cuenta: cuenta,
-                    cuenta_nombre: nombre,
-                    meses: monthsToSave,
-                    completado: done,
-                    ajuste_pct: ajuste,
-                    precio_meses: precioMeses,
-                    costo_unitario: costo
-                })
+                body: JSON.stringify(payload)
             }).then(function (res) {
                 return res.json().then(function (json) {
                     if (!res.ok) throw new Error(json.message || 'No se pudo guardar la proyección');
@@ -1731,7 +1896,11 @@
                     return json;
                 });
             }).catch(function (err) {
-                toast('error', 'No se guardó la proyección', err && err.message ? err.message : 'Error de red');
+                // En lote (Completado / flush) el caller muestra un solo mensaje.
+                if (!CC._budgetSaveBatch) {
+                    toast('error', 'No se guardó la proyección', err && err.message ? err.message : 'Error de red');
+                }
+                return Promise.reject(err);
             });
         }
 
@@ -1743,27 +1912,176 @@
             delete CC._budgetSaveTimers[timerKey];
             var fn = CC._budgetSavePending[timerKey];
             delete CC._budgetSavePending[timerKey];
-            if (fn) fn();
+            if (fn) enqueueBudgetSave(fn);
         }, 350);
     }
 
-    /** Antes de cambiar de ciclo: manda a guardar lo pendiente al ciclo correcto. */
+    /**
+     * Cola serial de guardados: evita ráfagas de PUT que saturan MySQL/sesión
+     * (SQLSTATE 2002 Operation not permitted) y dejan toasts de éxito falsos.
+     */
+    function enqueueBudgetSave(fn) {
+        CC._budgetSaveChain = (CC._budgetSaveChain || Promise.resolve()).then(function () {
+            return Promise.resolve(fn()).catch(function () {
+                return null;
+            });
+        });
+        return CC._budgetSaveChain;
+    }
+
+    var CAPTURA_LOTE = 50;
+
+    function filaPresupuestoPayload(empresa, cc, cta, months, opts) {
+        var applied = applyBudgetLocal(empresa, cc, cta.codigo, months, opts || {});
+        var payload = {
+            cuenta: cta.codigo,
+            cuenta_nombre: cta.nombre || '',
+            meses: applied.months,
+            completado: applied.done,
+            ajuste_pct: Number((document.getElementById('ctl-ajuste-pct') || {}).value) || 0,
+            costo_unitario: Number(cta.costo) || 0
+        };
+        if (CC.state.puedeEditarPreciosCaptura) {
+            payload.precio_meses = preciosMesesDe(empresa, cc, cta.codigo);
+        }
+        return payload;
+    }
+
+    function filasCapturaParaGuardar(fillEmpty) {
+        var c = control.centro;
+        if (!c || control.locked) return null;
+        var ctas = control._allCtas || [];
+        var filas = [];
+        var completos = 0;
+        var parciales = 0;
+        ctas.forEach(function (cta) {
+            var months = monthsFromGrid(cta, !!fillEmpty);
+            var faltan = cuentaMesesVacios(months);
+            var tieneAlgo = (months || []).some(mesLleno);
+            if (!fillEmpty && !tieneAlgo) return;
+            var done = fillEmpty ? true : !faltan.length;
+            if (done) completos++;
+            else parciales++;
+            filas.push(filaPresupuestoPayload(c.empresa, c.codigo, cta, months, { completado: done }));
+        });
+        return {
+            filas: filas,
+            guardados: filas.length,
+            completos: completos,
+            parciales: parciales
+        };
+    }
+
+    function setCapturaSaveProgress(texto) {
+        ['ctl-guardar', 'ctl-guardar-seguir', 'ctl-completar'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (texto) {
+                if (!el.getAttribute('data-label')) el.setAttribute('data-label', el.innerHTML);
+                el.disabled = true;
+                el.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ' + escapeHtml(texto);
+                return;
+            }
+            var prev = el.getAttribute('data-label');
+            if (prev) el.innerHTML = prev;
+            el.disabled = false;
+        });
+    }
+
+    function aplicarRespuestaLote(items) {
+        (items || []).forEach(function (item) {
+            if (!item || !item.key) return;
+            CC.state.completados = CC.state.completados || {};
+            if (item.completado) CC.state.completados[item.key] = true;
+            else delete CC.state.completados[item.key];
+            if (!item.precio_meses) return;
+            var parts = String(item.key).split('|');
+            if (parts.length < 3) return;
+            setPrecioMesesLocal(parts[0], parts[1], parts.slice(2).join('|'), item.precio_meses);
+        });
+    }
+
+    /** Lotes de 50. Cada lote es una transacción; si uno falla, los anteriores quedan guardados. */
+    function enviarPresupuestoEnLotes(empresa, centro, filas, onStep) {
+        var total = (filas || []).length;
+        var ciclo = cicloActualCodigo();
+        function sendAt(offset) {
+            if (offset >= total) return Promise.resolve({ guardados: total, total: total });
+            var slice = filas.slice(offset, offset + CAPTURA_LOTE);
+            var hasta = offset + slice.length;
+            if (onStep) onStep(hasta, total);
+            return fetch('/ProyeccionesVentas/api/captura/presupuesto-lote', {
+                method: 'POST',
+                headers: apiJsonHeaders(),
+                body: JSON.stringify({
+                    ciclo: ciclo,
+                    empresa: empresa,
+                    centro: centro,
+                    productos: slice
+                })
+            }).then(function (res) {
+                return res.json().then(function (json) {
+                    if (!res.ok) {
+                        var err = new Error((json && json.message) || 'No se pudo guardar el lote');
+                        err.guardados = offset;
+                        err.total = total;
+                        throw err;
+                    }
+                    aplicarRespuestaLote(json && json.items);
+                    return sendAt(hasta);
+                });
+            }).catch(function (err) {
+                if (err && err.guardados == null) {
+                    err.guardados = offset;
+                    err.total = total;
+                }
+                throw err;
+            });
+        }
+        return sendAt(0);
+    }
+
+    function mensajeLoteFallido(err) {
+        var n = Number(err && err.guardados) || 0;
+        var total = Number(err && err.total) || 0;
+        var detail = (err && err.message) ? err.message : 'Error de red';
+        if (n > 0 && total > n) {
+            return 'Se guardaron ' + n + ' de ' + total + '. ' + detail + ' Vuelve a pulsar Guardar para el resto.';
+        }
+        return detail;
+    }
+
+    /** Antes de cambiar de ciclo: manda a guardar lo pendiente al ciclo correcto (en serie). */
     function flushPendingBudgetSaves() {
         var pending = CC._budgetSavePending || {};
         var timers = CC._budgetSaveTimers || {};
         var keys = Object.keys(pending);
-        var jobs = keys.map(function (k) {
+        var chain = CC._budgetSaveChain || Promise.resolve();
+        var results = [];
+        keys.forEach(function (k) {
             if (timers[k]) clearTimeout(timers[k]);
             delete timers[k];
             var fn = pending[k];
             delete pending[k];
-            try {
-                return fn ? Promise.resolve(fn()) : Promise.resolve();
-            } catch (e) {
-                return Promise.resolve();
-            }
+            if (!fn) return;
+            chain = chain.then(function () {
+                return Promise.resolve(fn()).then(
+                    function (r) {
+                        results.push({ ok: true, key: k, result: r });
+                    },
+                    function (err) {
+                        results.push({
+                            ok: false,
+                            key: k,
+                            error: err,
+                            message: (err && err.message) ? err.message : 'Error de red'
+                        });
+                    }
+                );
+            });
         });
-        return Promise.all(jobs);
+        CC._budgetSaveChain = chain.then(function () { return results; });
+        return CC._budgetSaveChain;
     }
 
     function cancelPendingBudgetSaves() {
@@ -1930,11 +2248,11 @@
         while (months.length < 12) months.push(null);
         months = months.slice(0, 12);
         if (done) {
-            return months.map(function (v) { return mesLleno(v) ? Number(v) : 0; });
+            return months.map(function (v) { return mesLleno(v) ? toStoreQty(v) : 0; });
         }
         return months.map(function (v) {
             if (!mesLleno(v)) return null;
-            return Number(v);
+            return toStoreQty(v);
         });
     }
 
@@ -1957,7 +2275,7 @@
         Object.keys(CC.state.budgets || {}).forEach(function (k) {
             CC.state.budgets[k] = (CC.state.budgets[k] || []).map(function (v) {
                 if (!mesLleno(v)) return v;
-                return Math.round((Number(v) / tc) * 100) / 100;
+                return toStoreQty(Number(v) / tc);
             });
         });
         saveJSON(SK.qtyRaw, true);
@@ -1995,6 +2313,29 @@
                 CC._capturaReady = true;
                 CC._budgetsBaseLoaded = true;
                 return;
+            }
+            if (CC.state.page === 'control') {
+                CC._capturaClienteKey = '';
+                return fetch('/ProyeccionesVentas/api/captura/resumen?ciclo=' + encodeURIComponent(ciclo), {
+                    headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                }).then(function (r) {
+                    if (!r.ok) throw new Error('resumen ' + r.status);
+                    return r.json();
+                }).then(function (json) {
+                    if (gen !== CC._capturaLoadGen) return;
+                    aplicarCapturaResumen(json);
+                    CC._budgetsBaseLoaded = true;
+                    CC._capturaReady = true;
+                    renderNavEmpresas();
+                    renderNavCentros();
+                    paintVisorResumen(resumenTotalesVisibles());
+                    if (val('ctl-empresa') && val('ctl-centro')) loadControlCentro();
+                }).catch(function (err) {
+                    if (gen !== CC._capturaLoadGen) return;
+                    console.warn('[PV] No se pudo cargar el resumen', ciclo, err);
+                    CC._resumenOk = false;
+                    CC._capturaReady = true;
+                });
             }
             return fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(ciclo), {
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -2045,11 +2386,187 @@
         });
     }
 
+    function resumenKey(emp, cc) {
+        return String(emp || '').toUpperCase() + '|' + String(cc || '').trim();
+    }
+
+    function aplicarCapturaResumen(json) {
+        var rows = (json && json.clientes) || [];
+        CC.state.capturaResumenRows = rows;
+        CC.state.capturaResumen = {};
+        rows.forEach(function (r) {
+            CC.state.capturaResumen[resumenKey(r.empresa, r.cliente)] = r;
+        });
+        CC.state.overlays = (json && json.overlays) || {};
+        CC._resumenOk = true;
+    }
+
+    function resumenDeCliente(emp, cc) {
+        return (CC.state.capturaResumen || {})[resumenKey(emp, cc)] || null;
+    }
+
+    function resumenTotalesVisibles() {
+        var rows = CC.state.capturaResumenRows || [];
+        var capturadas = 0;
+        var totalCtas = 0;
+        var listos = 0;
+        rows.forEach(function (r) {
+            capturadas += Number(r.capturados) || 0;
+            totalCtas += Number(r.productos) || 0;
+            if (!(Number(r.pendientes) > 0)) listos++;
+        });
+        var n = rows.length;
+        return {
+            n: n,
+            totG: 0,
+            totP: 0,
+            ventaPend: n,
+            capturadas: capturadas,
+            totalCtas: totalCtas,
+            listos: listos,
+            pendientes: n - listos,
+            avance: pct(capturadas, totalCtas || 1)
+        };
+    }
+
+    function pendientesDesdeResumen(emp, codigo) {
+        if (!CC._capturaReady || !CC._resumenOk) return null;
+        if (control.centro && control._allCtas && control._allCtas.length
+            && String(control.centro.empresa || '').toUpperCase() === String(emp || '').toUpperCase()
+            && String(control.centro.codigo || '').trim() === String(codigo || '').trim()
+            && CC._capturaClienteKey === capturaClienteCacheKey(cicloActualCodigo(), emp, codigo)) {
+            return statsDeCentro(control.centro).pendientes;
+        }
+        var r = resumenDeCliente(emp, codigo);
+        if (!r) return null;
+        return Number(r.pendientes) || 0;
+    }
+
+    function syncResumenClienteAbierto() {
+        var c = control.centro;
+        if (!c || !CC._resumenOk || !control._allCtas) return;
+        var s = statsDeCentro(c);
+        var key = resumenKey(c.empresa, c.codigo);
+        var row = CC.state.capturaResumen[key] || {
+            empresa: String(c.empresa || '').toUpperCase(),
+            cliente: String(c.codigo || '').trim()
+        };
+        row.productos = s.total;
+        row.capturados = s.capturadas;
+        row.pendientes = s.pendientes;
+        row.listo = !s.pendientes;
+        CC.state.capturaResumen[key] = row;
+        var rows = CC.state.capturaResumenRows || [];
+        var found = false;
+        rows.forEach(function (r, i) {
+            if (resumenKey(r.empresa, r.cliente) === key) {
+                rows[i] = row;
+                found = true;
+            }
+        });
+        if (!found) rows.push(row);
+        CC.state.capturaResumenRows = rows;
+    }
+
+    function capturaClienteCacheKey(ciclo, emp, cc) {
+        return String(ciclo || '').toUpperCase() + '|' + resumenKey(emp, cc);
+    }
+
+    function aplicarDetalleCaptura(json, esBase) {
+        if (!json) return;
+        if (!esBase) {
+            CC.state.overlays = Object.assign({}, CC.state.overlays || {}, json.overlays || {});
+            CC.state.completados = CC.state.completados || {};
+            CC.state.ajustes = CC.state.ajustes || {};
+            CC.state.costos = CC.state.costos || {};
+            CC.state.preciosMeses = CC.state.preciosMeses || {};
+            CC.state.costosMaster = Object.assign({}, CC.state.costosMaster || {}, json.costosMaster || {});
+            CC.state.costosMeses = Object.assign({}, CC.state.costosMeses || {}, json.costosMeses || {});
+            var raw = json.budgets || {};
+            Object.keys(raw).forEach(function (k) {
+                var done = !!(json.completados && json.completados[k]);
+                CC.state.budgets[k] = normalizeLoadedMonths(raw[k], done);
+                CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+                CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+                if (done) CC.state.completados[k] = true;
+                else delete CC.state.completados[k];
+                if (json.costos && json.costos[k] != null) CC.state.costos[k] = json.costos[k];
+                if (json.ajustes && json.ajustes[k] != null) CC.state.ajustes[k] = json.ajustes[k];
+                if (json.preciosMeses && json.preciosMeses[k]) CC.state.preciosMeses[k] = json.preciosMeses[k];
+            });
+            Object.keys(json.completados || {}).forEach(function (k) {
+                if (json.completados[k]) {
+                    CC.state.completados[k] = true;
+                    CC.state.budgetKeysFromServer[String(k).toUpperCase()] = true;
+                }
+            });
+            unscaleQtyBudgetsIfNeeded();
+            return;
+        }
+        CC.state.budgetsBase = CC.state.budgetsBase || {};
+        var baseRaw = json.budgets || {};
+        Object.keys(baseRaw).forEach(function (k) {
+            CC.state.budgetsBase[k] = normalizeLoadedMonths(baseRaw[k], false);
+        });
+    }
+
+    function cargarDetalleCliente(c) {
+        var ciclo = cicloActualCodigo();
+        var key = capturaClienteCacheKey(ciclo, c.empresa, c.codigo);
+        control._capturaClienteLoading = key;
+        var tb = document.getElementById('ctl-tbody');
+        if (tb) tb.innerHTML = '<tr><td colspan="30"><div class="cc-empty">Cargando cliente…</div></td></tr>';
+        var qs = '?ciclo=' + encodeURIComponent(ciclo) +
+            '&empresa=' + encodeURIComponent(c.empresa || '') +
+            '&cliente=' + encodeURIComponent(c.codigo || '');
+        var jobs = [fetch('/ProyeccionesVentas/api/captura' + qs, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) {
+            if (!r.ok) throw new Error('captura ' + r.status);
+            return r.json();
+        })];
+        var base = cicloBaseProyeccion();
+        if (base) {
+            jobs.push(fetch('/ProyeccionesVentas/api/captura?ciclo=' + encodeURIComponent(base) +
+                '&empresa=' + encodeURIComponent(c.empresa || '') +
+                '&cliente=' + encodeURIComponent(c.codigo || ''), {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(function (r) {
+                if (!r.ok) throw new Error('base ' + r.status);
+                return r.json();
+            }).catch(function () { return null; }));
+        }
+        return Promise.all(jobs).then(function (pack) {
+            if (control._capturaClienteLoading !== key) return;
+            if (capturaClienteCacheKey(cicloActualCodigo(), val('ctl-empresa'), val('ctl-centro')) !== key) return;
+            aplicarDetalleCaptura(pack[0], false);
+            if (pack[1]) aplicarDetalleCaptura(pack[1], true);
+            CC.state.cicloBaseCodigo = base || '';
+            CC._budgetsBaseLoaded = true;
+            CC._capturaClienteKey = key;
+            control._capturaClienteLoading = '';
+            loadControlCentro();
+        }).catch(function (err) {
+            if (control._capturaClienteLoading !== key) return;
+            control._capturaClienteLoading = '';
+            console.warn('[PV] No se pudo cargar el cliente', err);
+            toast('error', 'No se cargó el cliente', err && err.message ? err.message : 'Error de red');
+        });
+    }
+
     function refreshCapturaAfterBudgetsLoaded() {
         if (!(val('ctl-empresa') && val('ctl-centro'))) return;
         if (!control.centro) return;
         stripSiopSeedLocalOnce(control.centro);
+        // Reaplicar precio lista local cuando ya llegó costosMaster del ciclo.
+        if (CC.state.page === 'control' || CC.state.page === 'detalle') {
+            var pKey = preciosCacheKey(control.centro);
+            control._preciosReq = pKey;
+            control._preciosLoading = '';
+            applyPreciosMap(preciosMapDesdeMaestroLocal(control.centro));
+        }
         control._allCtas = cuentasEnriquecidas(control.centro);
+        syncResumenClienteAbierto();
         seedPresupuestoDesdeVentaReal(control.centro);
         if (esBudgetTipo()) scrubProyeccionOctDicSiCopiaBudgetRef();
         control._allCtas = cuentasEnriquecidas(control.centro);
@@ -2149,6 +2666,13 @@
         if (plain.length) return plain[0].codigo;
         var other = sameYear.filter(function (c) { return !esForecastTipo(c.tipoBudget); });
         return (other[0] && other[0].codigo) || '';
+    }
+
+    /** Unidades vendidas del mes (misma serie que la columna Uds. venta). */
+    function ventaUdsMes(cta, monthIdx) {
+        var g = cta && cta.gasto;
+        var n = Number(g && g[monthIdx]);
+        return isFinite(n) ? n : 0;
     }
 
     /** Cantidad de referencia (fila de arriba). Budget: ene–sep = venta real; oct–dic = ventas-budget. */
@@ -3786,6 +4310,175 @@
         return '<span class="cc-user"><span class="cc-avatar">' + initials(name) + '</span>' + escapeHtml(name) + '</span>';
     }
 
+    function listaUsuarios(names) {
+        var uniq = [];
+        (names || []).forEach(function (n) {
+            n = String(n || '').replace(/\s+/g, ' ').trim();
+            if (n && uniq.indexOf(n) === -1) uniq.push(n);
+        });
+        return uniq;
+    }
+
+    function usersFromAttr(raw) {
+        raw = String(raw || '');
+        if (!raw) return [];
+        if (raw.charAt(0) === '[') {
+            try {
+                var parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) return listaUsuarios(parsed);
+            } catch (e) {}
+        }
+        try { raw = decodeURIComponent(raw); } catch (e2) {}
+        return listaUsuarios(raw.split('\n'));
+    }
+
+    function htmlPilaUsuarios(names, withName) {
+        var uniq = listaUsuarios(names);
+        if (!uniq.length) return '<span class="text-muted">Sin asignar</span>';
+        var extra = uniq.length - 1;
+        var mostrarNombre = !extra && !!withName;
+        var more = extra ? '<span class="cc-avatar cc-avatar-more">+' + extra + '</span>' : '';
+        var nombre = mostrarNombre ? '<span class="cc-user-name">' + escapeHtml(uniq[0]) + '</span>' : '';
+        var tip = extra || !mostrarNombre;
+        var cls = 'cc-user' + (extra ? ' cc-user-stack' : '') + (tip ? ' cc-user-more' : '');
+        var attrs = tip
+            ? ' tabindex="0" data-users="' + encodeURIComponent(uniq.join('\n')) + '" aria-label="' + escapeHtml(uniq.join(', ')) + '"'
+            : '';
+        return '<span class="' + cls + '"' + attrs + '><span class="cc-avatar">' + initials(uniq[0]) + '</span>' + more + nombre + '</span>';
+    }
+
+    function userTipEl() {
+        var tip = document.getElementById('cc-user-tip');
+        if (tip) return tip;
+        tip = document.createElement('div');
+        tip.id = 'cc-user-tip';
+        tip.className = 'cc-user-tip';
+        tip.hidden = true;
+        document.body.appendChild(tip);
+        return tip;
+    }
+
+    function hideUserTip() {
+        var tip = document.getElementById('cc-user-tip');
+        if (tip) tip.hidden = true;
+    }
+
+    function tipUsuariosDe(el) {
+        var nodo = el;
+        while (nodo && nodo !== document) {
+            if (nodo.getAttribute && nodo.getAttribute('data-users')) return nodo;
+            nodo = nodo.parentNode;
+        }
+        return null;
+    }
+
+    function showUserTip(el) {
+        var names = usersFromAttr(el.getAttribute('data-users') || '');
+        if (!names.length) return;
+        var tip = userTipEl();
+        tip.innerHTML = names.map(function (n) { return '<div>' + escapeHtml(n) + '</div>'; }).join('');
+        tip.hidden = false;
+        var r = el.getBoundingClientRect();
+        var left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8));
+        var top = r.bottom + 6;
+        if (top + tip.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - tip.offsetHeight - 6);
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+    }
+
+    function bindUserTip() {
+        if (CC._userTipBound) return;
+        CC._userTipBound = true;
+        document.addEventListener('mouseover', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (!el) return;
+            showUserTip(el);
+        });
+        document.addEventListener('mouseout', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (!el) return;
+            if (e.relatedTarget && el.contains(e.relatedTarget)) return;
+            hideUserTip();
+        });
+        document.addEventListener('focusin', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (el) showUserTip(el);
+        });
+        document.addEventListener('focusout', function (e) {
+            var hit = e.target && e.target.closest ? e.target.closest('.cc-user-more, .cc-avatar-more') : null;
+            var el = hit ? tipUsuariosDe(hit) : null;
+            if (el) hideUserTip();
+        });
+        window.addEventListener('scroll', hideUserTip, true);
+    }
+
+    function listaCapturadores() {
+        return CC._detalleCapturadores || [];
+    }
+
+    function ordenarPrincipal(names, principal) {
+        if (principal && names.indexOf(principal) > 0) {
+            return [principal].concat(names.filter(function (n) { return n !== principal; }));
+        }
+        return names;
+    }
+
+    function productoAsignadoA(codigo, cuentas) {
+        var lista = cuentas || [];
+        if (!lista.length) return true;
+        var needle = String(codigo || '').trim().toUpperCase();
+        if (!needle) return false;
+        return lista.some(function (x) {
+            var code = String((x && x.codigo) || x || '').trim().toUpperCase();
+            return code && code === needle;
+        });
+    }
+
+    /** Usuarios con Capturar o Editar en el cliente (no el de la sesión). */
+    function usuariosCapturaDetalle() {
+        var names = [];
+        var principal = '';
+        listaCapturadores().forEach(function (a) {
+            var nombre = String(a.usuario || '').replace(/\s+/g, ' ').trim();
+            if (!nombre) return;
+            if (names.indexOf(nombre) === -1) names.push(nombre);
+            if (a.es_principal && !principal) principal = nombre;
+        });
+        return ordenarPrincipal(names, principal);
+    }
+
+    function usuariosDeProducto(codigo) {
+        var names = [];
+        var principal = '';
+        listaCapturadores().forEach(function (a) {
+            var nombre = String(a.usuario || '').replace(/\s+/g, ' ').trim();
+            if (!nombre) return;
+            if (!productoAsignadoA(codigo, a.cuentas)) return;
+            if (names.indexOf(nombre) === -1) names.push(nombre);
+            if (a.es_principal && !principal) principal = nombre;
+        });
+        return ordenarPrincipal(names, principal);
+    }
+
+    function nombreDistintoDeCodigo(nombre, codigo) {
+        nombre = String(nombre || '').trim();
+        codigo = String(codigo || '').trim();
+        if (!nombre || (codigo && nombre.toUpperCase() === codigo.toUpperCase())) return '';
+        return nombre;
+    }
+
+    function nombreClienteDetalle(c) {
+        var code = String((c && c.codigo) || '').trim();
+        var desdeBoot = nombreDistintoDeCodigo(CC._detalleClienteNombre, code);
+        if (desdeBoot) return desdeBoot;
+        var propio = nombreDistintoDeCodigo(c && c.nombre, code);
+        if (propio) return propio;
+        return nombreDistintoDeCodigo(nombreCatalogoCliente(c && c.empresa, code), code);
+    }
+
     function bindPeriodoForm() {
         var formPeriod = document.getElementById('form-periodo');
         if (!formPeriod || CC._periodoBound) return;
@@ -4215,14 +4908,20 @@
             var hasMasterRow = !!master;
             var masterPrecio = hasMasterRow ? (Number(master.costo) || 0) : 0;
             var masterMes = (master && Number(master.mes)) || 0;
-            // PRECIO proy. local = solo precio global del maestro (Ventas/Costos). Nunca lista SAP.
-            var precioListaSap = Number(lista.precio) || 0;
+            // PRECIO proy. local = solo precio global del maestro (Ventas/Costos).
+            // PRECIO DE LISTA = columna precio_lista del maestro local (no SAP).
+            var masterPrecioLista = hasMasterRow
+                ? (Number(master.precio_lista != null ? master.precio_lista : master.precioLista) || 0)
+                : 0;
+            if (!(masterPrecioLista > 0) && lista && Number(lista.precio) > 0
+                && String(lista.lista || lista.fuente || '').indexOf('Maestro local') >= 0) {
+                masterPrecioLista = Number(lista.precio) || 0;
+            }
+            var precioListaSap = masterPrecioLista > 0 ? masterPrecioLista : 0;
             var precioLista = hasMasterRow ? masterPrecio : 0;
             var precioMoneda = '';
             if (hasMasterRow && master && master.moneda) {
                 precioMoneda = canonMoneda(master.moneda);
-            } else if (lista.moneda) {
-                precioMoneda = canonMoneda(lista.moneda);
             } else {
                 precioMoneda = 'MXN';
             }
@@ -4239,19 +4938,21 @@
                 costo: Number(cta.costo) || Number((CC.state.costos || {})[budgetKey(c.empresa, c.codigo, cta.codigo)]) || 0,
                 precioLista: precioLista,
                 precioListaSap: precioListaSap,
-                precioListaSapMoneda: lista.moneda ? canonMoneda(lista.moneda) : '',
+                precioListaSapMoneda: precioMoneda || 'MXN',
                 precioMoneda: precioMoneda || 'MXN',
                 precioMeses: preciosMesesDe(c.empresa, c.codigo, cta.codigo),
                 precioMaestroMeses: precioMaestroMeses,
                 precioLocalMes: masterMes > 0 ? masterMes : null,
                 tienePrecioMaestro: hasMasterRow,
-                unidad: String(lista.unidad || cta.unidad || '').trim(),
-                unidadNombre: String(lista.unidad_nombre || cta.unidadNombre || '').trim(),
+                unidad: String((lista && lista.unidad) || cta.unidad || '').trim(),
+                unidadNombre: String((lista && lista.unidad_nombre) || cta.unidadNombre || '').trim(),
                 listaPrecioNombre: hasMasterRow
                     ? 'Maestro local · global'
                     : '',
-                listaPrecioNombreSap: String(lista.lista || '').trim(),
-                listaPrecioNoSap: String(lista.no_lista || '').trim()
+                listaPrecioNombreSap: precioListaSap > 0
+                    ? 'Maestro local · Precio lista'
+                    : String((lista && lista.lista) || '').trim(),
+                listaPrecioNoSap: String((lista && lista.no_lista) || '').trim()
             });
             enriched.unidadesAnio = unidadesAnuales(enriched.ppto);
             if (!enriched.unidadNombre && enriched.unidad) {
@@ -4268,27 +4969,68 @@
         });
     }
 
+    /**
+     * Totales de venta real del cliente (toda la consulta SAP / snapshot),
+     * misma base que el modal Ventas pasadas — no solo productos asignados.
+     */
+    /*Cambiar esto*/
+    function totalesVentaRealCentro(c) {
+        if (!c) return { totMxn: 0, totVista: 0, totQty: 0, productos: 0 };
+        var hit = gastoCacheEntry(gastoCacheKey(c));
+        var por = (hit && hit.por) || {};
+        var rows = rowsFromPorCuenta(por);
+        var totMxn = 0;
+        var totVista = 0;
+        var totQty = 0;
+        rows.forEach(function (r) {
+            totMxn += Number(r.totMxn) || 0;
+            totQty += Number(r.totQty) || 0;
+            totVista += importeVentaVista({
+                codigo: r.codigo,
+                importe: r.importe,
+                importeUsd: r.importe_usd,
+                importe_usd: r.importe_usd,
+                gasto: r.gasto,
+                precioLista: 0,
+                precioMoneda: 'MXN'
+            });
+        });
+        return {
+            totMxn: totMxn,
+            totVista: totVista,
+            totQty: totQty,
+            productos: rows.length
+        };
+    }
+
     function statsDeCentro(c) {
         var ctas = cuentasEnriquecidas(c);
         var pend = ctas.filter(ctaPendiente).length;
+        // SE VENDIÓ / Venta 2026 = toda la venta SAP del cliente (como Ventas pasadas).
+        // Proyección y avance siguen solo sobre productos asignados.
+        var ventaReal = totalesVentaRealCentro(c);
+        var totGAsig = ctas.reduce(function (a, x) { return a + (x.importeVenta || 0); }, 0);
+        var totGVistaAsig = ctas.reduce(function (a, x) {
+            return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
+        }, 0);
+        var totUnitsAsig = ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0);
         return {
             total: ctas.length,
             capturadas: ctas.length - pend,
             pendientes: pend,
-            totG: ctas.reduce(function (a, x) { return a + (x.importeVenta || 0); }, 0),
-            totGVista: ctas.reduce(function (a, x) {
-                return a + (x.importeVentaVista != null ? x.importeVentaVista : importeVentaVista(x));
-            }, 0),
+            totG: ventaReal.productos ? ventaReal.totMxn : totGAsig,
+            totGVista: ventaReal.productos ? ventaReal.totVista : totGVistaAsig,
             totP: ctas.reduce(function (a, x) { return a + (x.importeProy || 0); }, 0),
             totPVista: ctas.reduce(function (a, x) {
                 return a + (x.importeProyVista != null ? x.importeProyVista : importeProyeccionVista(x));
             }, 0),
-            totUnitsG: ctas.reduce(function (a, x) { return a + (x.totG || 0); }, 0),
+            totUnitsG: ventaReal.productos ? ventaReal.totQty : totUnitsAsig,
             totUnitsP: ctas.reduce(function (a, x) { return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto)); }, 0),
-            avance: pct(ctas.length - pend, ctas.length || 1)
+            avance: pct(ctas.length - pend, ctas.length || 1),
+            ventaProductosSap: ventaReal.productos
         };
     }
-
+/*Hatsa aqui s ecambia */
     function currentCta() {
         return (control._allCtas || []).filter(function (x) {
             return String(x.codigo) === String(control.cuenta || '');
@@ -4306,9 +5048,41 @@
     }
 
     function chartScopePref() {
-        if (control.scopeTabla === 'centro' && control.chartVerTodas) return 'centro';
-        if (control.cuenta) return 'cuenta';
+        if (control.scopeTabla === 'cuenta' && control.cuenta) return 'cuenta';
         return 'centro';
+    }
+
+    /** Misma lista que la tabla de detalle / captura (no un producto suelto). */
+    function ctasTablaActual(opts) {
+        opts = opts || {};
+        var c = control.centro;
+        if (!c) return [];
+        var readonly = !!opts.readonly;
+        var q = readonly ? '' : (val('ctl-q') || '').toLowerCase();
+        var ctas = (control._allCtas || cuentasEnriquecidas(c)).filter(function (cta) {
+            var blob = (cta.codigo + ' ' + cta.nombre + ' ' + (cta.grupo || '')).toLowerCase();
+            return !q || blob.indexOf(q) !== -1;
+        });
+        var scope = opts.scope || control.scopeTabla;
+        if (scope === 'cuenta') ctas = scopedCtas('cuenta', ctas);
+        if (!readonly && control.soloPendientes && !(scope === 'cuenta' && control.cuenta)) {
+            ctas = ctas.filter(ctaPendiente);
+        }
+        return ctas;
+    }
+
+    /** Venta y proyección por mes, en la moneda de la vista. Misma suma que la fila Totales. */
+    function seriesMesVista(ctas) {
+        var venta = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        var proy = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        (ctas || []).forEach(function (cta) {
+            for (var i = 0; i < 12; i++) {
+                venta[i] += Number(importeMesVentaVista(cta, i)) || 0;
+                var mp = importeMesProyVista(cta, i);
+                if (mp != null) proy[i] += Number(mp) || 0;
+            }
+        });
+        return { venta: venta, proy: proy };
     }
 
     function paintScopeToggle(id, current) {
@@ -4327,12 +5101,10 @@
                 hint.textContent = 'Solo el producto ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. Cambia a Todo el cliente para ver todos los productos.';
             } else if (control.scopeTabla === 'cuenta' && !control.cuenta) {
                 hint.textContent = 'Elige un producto para filtrar el detalle, o cambia a Todo el cliente para verlos todos.';
-            } else if (control.chartVerTodas) {
-                hint.textContent = 'Todos los productos del cliente. La gráfica muestra el cliente completo.';
-            } else if (cta) {
-                hint.textContent = 'Todos los productos del cliente. La gráfica muestra ' + (cta.nombre || cta.codigo) + '. Marca Ver todas para ver el cliente completo.';
+            } else if (cta && control.scopeTabla === 'cuenta') {
+                hint.textContent = 'Solo el producto ' + labelNombreCodigo(cta.nombre, cta.codigo) + '. La gráfica usa esos mismos meses.';
             } else {
-                hint.textContent = 'Todos los productos del cliente. Elige una fila para verla en la gráfica, o marca Ver todas.';
+                hint.textContent = 'Productos asignados del cliente. La gráfica usa los totales por mes de esta tabla.';
             }
         }
         var wrap = document.getElementById('ctl-chart-todas-wrap');
@@ -4346,7 +5118,7 @@
             if (chartScopePref() === 'cuenta' && cta) {
                 chartHint.textContent = base + ' · ' + (cta.nombre || cta.codigo);
             } else {
-                chartHint.textContent = base + ' · Todo el cliente';
+                chartHint.textContent = base + ' · mismos totales de la tabla';
             }
         });
         paintScopeToggle('ctl-scope-tabla', control.scopeTabla);
@@ -4408,15 +5180,9 @@
         setText(prefix + '-pend', pend);
 
         if (mesesEl) {
-            var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            ctas.forEach(function (cta) {
-                for (var i = 0; i < 12; i++) {
-                    mesG[i] += Number(importeMesVentaVista(cta, i)) || 0;
-                    var mp = importeMesProyVista(cta, i);
-                    if (mp != null) mesP[i] += Number(mp) || 0;
-                }
-            });
+            var seriesSticky = seriesMesVista(ctas);
+            var mesG = seriesSticky.venta;
+            var mesP = seriesSticky.proy;
             var yyG = String(CC.state.anioGasto).slice(2);
             var yyP = String(CC.state.anioPresupuesto).slice(2);
             mesesEl.innerHTML = MONTHS.map(function (m, i) {
@@ -4480,6 +5246,10 @@
         var list = asigsPorEmpresa(val('ctl-ciclo'))[emp] || [];
         return list.reduce(function (n, a) {
             if (isEmpresaCompleta(a.centro_codigo)) return n;
+            if (CC.state.page === 'control' && CC._resumenOk) {
+                var p = pendientesDesdeResumen(emp, a.centro_codigo);
+                return n + (p || 0);
+            }
             return n + statsDeCentro({
                 codigo: a.centro_codigo,
                 nombre: a.centro_nombre || a.centro_codigo,
@@ -4540,6 +5310,11 @@
         }).then(function (r) { return r.json(); }).then(function (json) {
             CC._cliEmp[key] = json.centros || [];
             CC._cliEmpLoad[key] = false;
+            if (CC.state.page === 'detalle' && control.centro) {
+                var nombreCli = nombreClienteDetalle(control.centro);
+                if (nombreCli) control.centro.nombre = nombreCli;
+                paintDetalleHeader();
+            }
             if (String(val('ctl-empresa') || '').toUpperCase() !== String(emp || '').toUpperCase()) return;
             var before = String(val('ctl-centro') || '');
             renderNavCentros();
@@ -4605,11 +5380,15 @@
             var label = labelNombreCodigo(a.centro_nombre, a.centro_codigo);
             var pend = null;
             if (CC._capturaReady) {
-                pend = statsDeCentro({
-                    codigo: a.centro_codigo,
-                    nombre: a.centro_nombre || a.centro_codigo,
-                    empresa: emp
-                }).pendientes;
+                if (CC.state.page === 'control' && CC._resumenOk) {
+                    pend = pendientesDesdeResumen(emp, a.centro_codigo);
+                } else {
+                    pend = statsDeCentro({
+                        codigo: a.centro_codigo,
+                        nombre: a.centro_nombre || a.centro_codigo,
+                        empresa: emp
+                    }).pendientes;
+                }
                 label += '   ·   ' + markPendLabel(pend);
             }
             var optClass = pend === null ? '' : (pend > 0 ? 'is-danger' : 'is-ok');
@@ -4624,11 +5403,17 @@
         } else if (list.length === 1) el.value = String(list[0].centro_codigo || '').trim();
         else el.value = '';
         var chosen = list.filter(function (a) { return String(a.centro_codigo || '').trim() === String(el.value || '').trim(); })[0];
-        paintNavStatus('ctl-cc-status', (CC._capturaReady && chosen) ? statsDeCentro({
-            codigo: chosen.centro_codigo,
-            nombre: chosen.centro_nombre,
-            empresa: emp
-        }).pendientes : null, el);
+        var statusPend = null;
+        if (CC._capturaReady && chosen) {
+            statusPend = (CC.state.page === 'control' && CC._resumenOk)
+                ? pendientesDesdeResumen(emp, chosen.centro_codigo)
+                : statsDeCentro({
+                    codigo: chosen.centro_codigo,
+                    nombre: chosen.centro_nombre,
+                    empresa: emp
+                }).pendientes;
+        }
+        paintNavStatus('ctl-cc-status', statusPend, el);
     }
 
     function renderNavCuentas() {
@@ -4922,6 +5707,11 @@
         bindScopeToggles();
         loadDetalleLocalBootstrap().then(function () {
             loadControlCentro();
+            if (control.centro) {
+                var nombreCli = nombreClienteDetalle(control.centro);
+                if (nombreCli) control.centro.nombre = nombreCli;
+                else ensureClientesEmpresa(control.centro.empresa);
+            }
             paintDetalleHeader();
             renderDetalleTable();
             renderDetalleChart();
@@ -4942,6 +5732,8 @@
         CC._siopSeedStamp = '';
         CC._budgetsBaseLoaded = true;
         CC._capturaReady = false;
+        CC._detalleCapturadores = [];
+        CC._detalleClienteNombre = '';
         CC.state.overlays = {};
         CC.state.budgets = {};
         CC.state.budgetsBase = {};
@@ -4968,6 +5760,8 @@
             return r.json();
         }).then(function (json) {
             if (gen !== CC._capturaLoadGen) return;
+            CC._detalleCapturadores = Array.isArray(json.capturadores) ? json.capturadores : [];
+            CC._detalleClienteNombre = String(json.cliente_nombre || '').trim();
             CC.state.overlays = json.overlays || {};
             CC.state.completados = json.completados || {};
             CC.state.ajustes = json.ajustes || {};
@@ -5027,6 +5821,7 @@
     function bindDetalleCurrency() {
         var mon = document.getElementById('ctl-moneda');
         if (mon) mon.value = CC.state.currency || 'MXN';
+        bindUserTip();
         if (CC._detalleBound) return;
         if (mon) {
             mon.addEventListener('change', function () {
@@ -5091,6 +5886,31 @@
         });
     }
 
+    /** Detalle abre el cliente de la URL aunque el usuario en sesión no lo tenga asignado. */
+    function centroDetalleDesdeUrl(emp, codigo, ciclo) {
+        var e = String(emp || '').toUpperCase().trim();
+        var code = String(codigo || '').trim();
+        if (!e || !code) return null;
+        var merged = mergedCentro({
+            codigo: code,
+            nombre: nombreCatalogoCliente(e, code) || code,
+            empresa: e,
+            usuario: '',
+            estado: 'abierto',
+            modo: 'solo_revision',
+            departamento: '',
+            ciclo: ciclo || CC.state.cicloCodigo || '',
+            capturar: false,
+            editar: false,
+            revisar: true,
+            permisos: ['revisar'],
+            sap: true
+        });
+        var nombreCli = nombreClienteDetalle(merged);
+        if (nombreCli) merged.nombre = nombreCli;
+        return merged;
+    }
+
     function loadControlCentro() {
         var emp = String(val('ctl-empresa') || '').trim();
         var codigo = String(val('ctl-centro') || '').trim();
@@ -5127,6 +5947,9 @@
         }
         CC.state.centros = centrosDesdeAsignaciones(fuenteAsignacionesControl(cicloNow));
         control.centro = centroDesdeAsignacion(emp, codigo, cicloNow);
+        if (!control.centro && CC.state.page === 'detalle') {
+            control.centro = centroDetalleDesdeUrl(emp, codigo, cicloNow);
+        }
         if (!control.centro) {
             var tb = document.getElementById('ctl-tbody');
             if (tb) tb.innerHTML = '<tr><td colspan="28"><div class="cc-empty">No tienes este cliente asignado en el ciclo seleccionado.</div></td></tr>';
@@ -5142,6 +5965,13 @@
             return;
         }
         var c = control.centro;
+        if (CC.state.page === 'control') {
+            var detKey = capturaClienteCacheKey(c.ciclo || cicloNow, c.empresa, c.codigo);
+            if (CC._capturaClienteKey !== detKey) {
+                if (control._capturaClienteLoading !== detKey) cargarDetalleCliente(c);
+                return;
+            }
+        }
         var asig = asigDe(c) || c;
         var cicloCode = c.ciclo || cicloNow;
         var locked = !puedeEscribirAsig(asig, cicloCode);
@@ -5171,10 +6001,11 @@
                 control._preciosMap = CC.state.preciosCache[pKey];
             }
         } else {
-            // Captura: sigue forzando SAP en venta + listas + budget.
-            loadGastoRealCentro(c, { force: true, auto: true });
+            // Captura: venta desde snapshot (SAP solo con «Actualizar venta SAP»).
+            // Precio lista = maestro local (no SAP).
+            loadGastoRealCentro(c, { force: false, auto: true });
             loadVentasBudgetRefCentro(c);
-            loadListasPreciosCentro(c);
+            applyPreciosMap(preciosMapDesdeMaestroLocal(c));
         }
         stripSiopSeedLocalOnce(c);
         control._allCtas = cuentasEnriquecidas(c);
@@ -5290,15 +6121,21 @@
         if (el && String(el.value || '') !== String(control.cuenta || '')) {
             el.value = control.cuenta || '';
         }
-        // Si el producto está en un grupo colapsado de la matriz, abrirlo.
+        // Si el producto está en un grupo colapsado o en otra página, mostrarlo.
         if (codigo) {
             var ctaSel = (control._allCtas || []).filter(function (x) {
                 return String(x.codigo) === String(codigo);
             })[0];
             var gName = ctaSel && (ctaSel.grupo || 'Sin agrupación');
-            if (gName && control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]) {
-                control.grupoCerradoMatrix[gName] = false;
+            var reopen = !!(gName && control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]);
+            if (reopen) control.grupoCerradoMatrix[gName] = false;
+            var pageOf = matrixPageOfCodigo(codigo);
+            var jump = pageOf >= 0 && pageOf !== (Number(control.matrixPage) || 0);
+            if (jump) control.matrixPage = pageOf;
+            if (reopen || jump) {
                 drawMatrixTable();
+                var rowSel = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
+                if (rowSel && rowSel.scrollIntoView) rowSel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }
         }
         renderCtaChips();
@@ -5310,6 +6147,87 @@
         renderDetalleTable();
         renderDetalleChart();
         paintScopeHints();
+    }
+
+    var MATRIX_PAGE_SIZE = 30;
+
+    function matrixPageKey() {
+        var c = control.centro;
+        return [
+            c ? c.empresa : '',
+            c ? c.codigo : '',
+            val('ctl-ciclo') || '',
+            control.soloPendientes ? '1' : '0',
+            normSearch(control.prodQuery || '')
+        ].join('|');
+    }
+
+    function syncMatrixPage(total) {
+        var key = matrixPageKey();
+        if (control._matrixPageKey !== key) {
+            control._matrixPageKey = key;
+            control.matrixPage = 0;
+        }
+        var pages = Math.max(1, Math.ceil((total || 0) / MATRIX_PAGE_SIZE));
+        var page = Number(control.matrixPage) || 0;
+        if (page >= pages) page = pages - 1;
+        if (page < 0) page = 0;
+        control.matrixPage = page;
+        return page;
+    }
+
+    function matrixPageOfCodigo(codigo, ctas) {
+        if (!codigo) return -1;
+        ctas = ctas || matrixCtas();
+        for (var i = 0; i < ctas.length; i++) {
+            if (String(ctas[i].codigo) === String(codigo)) return Math.floor(i / MATRIX_PAGE_SIZE);
+        }
+        return -1;
+    }
+
+    function bindMatrixPager() {
+        var box = document.getElementById('ctl-matrix-pager');
+        if (!box || box._bound) return;
+        box._bound = true;
+        box.addEventListener('click', function (ev) {
+            var btn = ev.target.closest('[data-matrix-page]');
+            if (!btn || btn.disabled) return;
+            var ctas = matrixCtas();
+            var pages = Math.max(1, Math.ceil(ctas.length / MATRIX_PAGE_SIZE));
+            var page = Number(control.matrixPage) || 0;
+            var dir = btn.getAttribute('data-matrix-page');
+            if (dir === 'prev') page = Math.max(0, page - 1);
+            else if (dir === 'next') page = Math.min(pages - 1, page + 1);
+            if (page === (Number(control.matrixPage) || 0)) return;
+            control.matrixPage = page;
+            drawMatrixTable(ctas);
+            var wrap = document.querySelector('.cc-matrix-wrap');
+            if (wrap) wrap.scrollTop = 0;
+        });
+    }
+
+    function paintMatrixPager(total) {
+        var box = document.getElementById('ctl-matrix-pager');
+        if (!box) return;
+        bindMatrixPager();
+        if (total <= MATRIX_PAGE_SIZE) {
+            box.hidden = true;
+            box.innerHTML = '';
+            return;
+        }
+        var page = Number(control.matrixPage) || 0;
+        var pages = Math.ceil(total / MATRIX_PAGE_SIZE);
+        var from = page * MATRIX_PAGE_SIZE + 1;
+        var to = Math.min(total, (page + 1) * MATRIX_PAGE_SIZE);
+        box.hidden = false;
+        box.innerHTML =
+            '<button type="button" class="cc-btn" data-matrix-page="prev"' + (page <= 0 ? ' disabled' : '') + '>Anterior</button>' +
+            '<span class="cc-matrix-pager-label">Productos ' + from + '–' + to + ' de ' + total + '</span>' +
+            '<button type="button" class="cc-btn" data-matrix-page="next"' + (page >= pages - 1 ? ' disabled' : '') + '>Siguiente</button>';
+        var grupo = document.getElementById('ctl-form-grupo');
+        if (grupo && control.centro) {
+            grupo.textContent = 'Productos ' + from + '–' + to + ' de ' + total;
+        }
     }
 
     function matrixCtas() {
@@ -5400,10 +6318,10 @@
         var ok = document.getElementById('ctl-legend-ok');
         var over = document.getElementById('ctl-legend-over');
         if (legend) legend.hidden = false;
+        var anioLeyenda = CC.state.anioGasto || '';
         if (esSiopTipo()) {
-            var src = pastQtyCaption();
-            if (ok) ok.textContent = 'Mayor o igual a ' + src;
-            if (over) over.textContent = 'Menor a ' + src;
+            if (ok) ok.textContent = 'Mayor o igual a venta' + (anioLeyenda ? (' ' + anioLeyenda) : '');
+            if (over) over.textContent = 'Menor a venta' + (anioLeyenda ? (' ' + anioLeyenda) : '');
             return;
         }
         var anio = CC.state.anioGasto || '';
@@ -5416,14 +6334,8 @@
         paintMatrixLegend();
         if (!hint) return;
         var cta = currentCta();
-        var arriba = pastQtyCaption();
-        if (esBudgetTipo()) {
-            hint.textContent = cta
-                ? ('Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
-                    '. Arriba = venta ' + (CC.state.anioGasto || '') + ' (ene–sep) y budget (oct–dic); abajo = proyección editable.')
-                : ('Budget: arriba = venta ' + (CC.state.anioGasto || '') + ' ene–sep + budget oct–dic. Abajo: captura la proyección.');
-            return;
-        }
+        var anioVenta = CC.state.anioGasto || '';
+        var arriba = 'unidades de venta' + (anioVenta ? (' ' + anioVenta) : '') + ' (suman la columna Uds. venta)';
         if (cta) {
             hint.textContent = 'Fila activa: ' + labelNombreCodigo(cta.nombre, cta.codigo) +
                 '. Arriba = ' + arriba + '; abajo = proyección. Copiar / Limpiar / % / Completado aplican a esta fila.';
@@ -5635,42 +6547,20 @@
         return total;
     }
 
-    /** Importe MXN de un mes proyectado: unidades × precio del mes (override o lista) × TC.
-     *  Si no hay precio de lista, usa el precio implícito de la venta real de ese mes. */
+    /**
+     * Importe MXN de un mes proyectado: unidades × precio proy. (columna PRECIO proy.) × TC.
+     * Solo usa precioUnitarioMes (override mes → maestro mes → global). Sin precio → 0.
+     * No deriva precio de la venta real.
+     */
     function importeMesProyMxn(cta, i) {
         if (!cta || !mesLleno(cta.ppto && cta.ppto[i])) return null;
         var uds = Number(cta.ppto[i]) || 0;
         if (!uds) return 0;
         var precio = precioUnitarioMes(cta, i);
-        if (precio > 0) {
-            var mon = canonMoneda(cta.precioMoneda || 'MXN');
-            var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
-            return uds * precioMxn;
-        }
-        var qtyVenta = Number((cta.gasto && cta.gasto[i]) || 0);
-        var impVenta = Number((cta.importe && cta.importe[i]) || 0);
-        if (qtyVenta > 0 && impVenta > 0) {
-            return uds * (impVenta / qtyVenta);
-        }
-        var precioImp = precioImplicitoVenta(cta);
-        if (precioImp > 0) return uds * precioImp;
-        return null;
-    }
-
-    /** Precio MXN/unidad promedio de la venta real (importe ÷ unidades). */
-    function precioImplicitoVenta(cta) {
-        if (!cta) return 0;
-        var qty = 0;
-        var imp = 0;
-        for (var i = 0; i < 12; i++) {
-            var q = Number((cta.gasto && cta.gasto[i]) || 0);
-            var m = Number((cta.importe && cta.importe[i]) || 0);
-            if (q > 0 && m > 0) {
-                qty += q;
-                imp += m;
-            }
-        }
-        return qty > 0 ? (imp / qty) : 0;
+        if (!(precio > 0)) return 0;
+        var mon = canonMoneda(cta.precioMoneda || 'MXN');
+        var precioMxn = mon === 'USD' ? precio * fxRate(i) : precio;
+        return uds * precioMxn;
     }
 
     function moneyLista(precio, monedaNativa, monthIdx, decimals) {
@@ -5685,40 +6575,35 @@
     }
 
     /**
-     * Precio de lista SAP del cliente (OCRD.ListNum → OPLN / ITM1).
-     * No usa maestro local ni promedio de venta.
+     * Precio lista desde maestro local (tbl_pv_productos_costo.precio_lista).
+     * Ya no consulta SAP en Captura.
      */
     function precioListaSapInfo(cta) {
         var unidad = String((cta && cta.unidad) || '').trim();
         var unidadNombre = String((cta && cta.unidadNombre) || '').trim();
         var precio = Number(cta && cta.precioListaSap) || 0;
         var mon = canonMoneda((cta && cta.precioListaSapMoneda) || (cta && cta.precioMoneda) || 'MXN');
-        var listaNom = String((cta && cta.listaPrecioNombreSap) || '').trim();
-        var noLista = String((cta && cta.listaPrecioNoSap) || '').trim();
 
-        // Lookup directo si aún no viene enriquecido.
         if (!(precio > 0) && cta && cta.codigo) {
             var c = control.centro;
-            var lista = (c ? listaPrecioDeCentro(c, cta.codigo) : null) || lookupPrecioLista(cta.codigo) || {};
-            precio = Number(lista.precio) || 0;
-            if (lista.moneda) mon = canonMoneda(lista.moneda);
-            if (lista.lista) listaNom = String(lista.lista).trim();
-            if (lista.no_lista) noLista = String(lista.no_lista).trim();
-            if (!unidad && lista.unidad) unidad = String(lista.unidad).trim();
-            if (!unidadNombre && lista.unidad_nombre) unidadNombre = String(lista.unidad_nombre).trim();
+            if (c) {
+                var master = lookupMaestroLocal(c.empresa, c.codigo, cta.codigo);
+                if (master) {
+                    precio = Number(master.precio_lista != null ? master.precio_lista : master.precioLista) || 0;
+                    if (master.moneda) mon = canonMoneda(master.moneda);
+                }
+            }
         }
 
-        var title = 'Precio de lista SAP (ITM1 · lista del cliente)';
-        if (listaNom || noLista) {
-            title += ' · ' + (noLista ? ('#' + noLista + (listaNom ? ' ' : '')) : '') + listaNom;
-        }
         return {
             precio: precio,
             moneda: mon,
             unidad: unidad,
             unidadNombre: unidadNombre,
             decimals: 2,
-            title: title
+            title: precio > 0
+                ? 'Precio lista · Maestro local (Ventas/Costos)'
+                : 'Sin Precio lista en el maestro local. Usa «Obtener precio lista» en /Ventas/Costos.'
         };
     }
 
@@ -5848,18 +6733,21 @@
         var code = String(codigo || '').trim();
         if (!code) return '';
         var aliases = {
-            RK: 'Bobina',
-            RL: 'Rollo',
-            RO: 'Rollo',
+            XBX: 'CAJA',
+            RK: 'ROLLOS',
+            XSA: 'SACOS',
+            H87: 'PIEZAS',
+            MTS: 'METROS',
+            E48: 'SERVICIOS',
+            KGM: 'KILOS',
+            RL: 'ROLLOS',
+            RO: 'ROLLOS',
             BO: 'Botella',
             PR: 'Par',
             SET: 'Juego',
-            PZA: 'Pieza',
-            PZ: 'Pieza',
-            E48: 'Servicio',
-            ACT: 'Actividad',
-            H87: 'Pieza',
-            XBX: 'Caja'
+            PZA: 'PIEZAS',
+            PZ: 'PIEZAS',
+            ACT: 'Actividad'
         };
         var up = code.toUpperCase();
         if (aliases[up]) return aliases[up];
@@ -5961,7 +6849,7 @@
 
     function matrixProductRowHtml(cta, anioPast) {
         var d = deltaPct(cta.totP, cta.totG);
-        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var dCls = deltaToneClass(d);
         var selected = String(cta.codigo) === String(control.cuenta || '');
         var done = !ctaPendiente(cta);
         var udsVentaAnio = sum((cta.gasto || []).slice(0, 12));
@@ -5972,13 +6860,13 @@
         var cells = '';
         for (var i = 0; i < 12; i++) {
             var shown = formatInputQty(cta.ppto[i]);
-            var pastQty = pastQtyMes(cta, i);
+            var pastQty = ventaUdsMes(cta, i);
             var lockedMes = mesBloqueadoBudget(i);
             var pCls = monthCellClass(cta, i).replace('cc-month-cell', 'cc-matrix-cell') + (lockedMes ? ' is-locked' : '');
             var pMes = precioUnitarioMes(cta, i);
             var pCustom = precioMesEsDistinto(cta, i);
             var mon = canonMoneda(cta.precioMoneda || 'MXN');
-            var pastCap = pastQtyCaption();
+            var pastCap = 'venta ' + (anioPast || '');
             cells += '<td class="' + pCls + '">' +
                 '<div class="cc-matrix-month">' +
                     '<div class="cc-month-past' + (pastQty ? '' : ' is-zero') + '" title="' +
@@ -5986,7 +6874,7 @@
                             (pastQty ? ' · ' + qtyLabel(pastQty) + ' uds' : '')) + '">' +
                         (pastQty ? escapeHtml(qtyLabel(pastQty)) : '—') +
                     '</div>' +
-                    '<input type="number" step="0.01" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
+                    '<input type="number" step="1" inputmode="numeric" data-cta="' + escapeHtml(cta.codigo) + '" data-m="' + i + '" value="' + shown + '" ' +
                     ((control.locked || lockedMes) ? 'disabled' : '') + ' placeholder="0" class="cc-month-input' +
                     ((Number(shown) || 0) < 0 ? ' is-neg' : '') + (lockedMes ? ' is-locked' : '') + '" title="' +
                     escapeHtml(MONTHS[i] + (lockedMes ? ' · bloqueado (budget ' + labelTipoBudget() + ')' : '') +
@@ -6013,8 +6901,8 @@
             '</td>' +
             '<td class="num cc-price-cell" data-precio-venta title="' +
                 escapeHtml(precioLista.precio
-                    ? (precioLista.title || 'Precio de lista SAP del cliente')
-                    : (preciosListaCargando() ? 'Consultando la lista de precios del cliente…' : (precioLista.title || 'Sin precio de lista'))) + '">' +
+                    ? (precioLista.title || 'Precio lista · Maestro local')
+                    : (preciosListaCargando() ? 'Cargando precio lista del maestro…' : (precioLista.title || 'Sin precio de lista'))) + '">' +
                 (precioLista.precio
                     ? precioInfoHtml(precioLista)
                     : (preciosListaCargando()
@@ -6084,13 +6972,15 @@
                 var codigo = inp.getAttribute('data-cta');
                 var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
                 if (!td || !cta) return;
-                var raw = String(inp.value || '').trim().replace(/,/g, '');
+                var shown = sanitizeQtyTyping(inp.value);
+                if (inp.value !== shown) inp.value = shown;
+                var raw = shown;
                 var fake = {
                     gasto: cta.gasto,
                     ppto: (cta.ppto || []).slice(),
                     codigo: cta.codigo
                 };
-                fake.ppto[Number(inp.getAttribute('data-m'))] = raw === '' ? null : toStoreQty(Number(raw) || 0);
+                fake.ppto[Number(inp.getAttribute('data-m'))] = readQtyInput(raw);
                 var lockedMes = mesBloqueadoBudget(Number(inp.getAttribute('data-m')));
                 td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell') +
                     (lockedMes ? ' is-locked' : '');
@@ -6107,6 +6997,10 @@
             });
             inp.addEventListener('change', onMonthChange);
             inp.addEventListener('keydown', function (ev) {
+                if (ev.key === '.' || ev.key === ',' || ev.key === 'e' || ev.key === 'E' || ev.key === '+') {
+                    ev.preventDefault();
+                    return;
+                }
                 if (ev.key === 'Enter') { ev.preventDefault(); inp.blur(); }
             });
         });
@@ -6120,7 +7014,7 @@
         var anioPast = CC.state.anioGasto || '';
         var cur = isUsdView() ? 'USD' : 'MXN';
         var head = '<tr><th class="sticky-col">Producto</th>' +
-            '<th class="num">Precio de lista<span class="cc-th-past">SAP · cliente</span></th>' +
+            '<th class="num">Precio de lista<span class="cc-th-past">Maestro local</span></th>' +
             '<th class="num">Uds. venta<span class="cc-th-past">' + escapeHtml(String(anioPast || '')) + '</span></th>' +
             '<th class="num">Total uds<span class="cc-th-past">proy. 12 meses</span></th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. local</span></th>' +
@@ -6145,12 +7039,24 @@
                     ? 'Sin productos con ese filtro'
                     : 'Usa Agregar producto, a la izquierda, para asignarlo y capturarlo aquí') +
                 '</div></td></tr>';
+            paintMatrixPager(0);
             return;
         }
 
+        syncMatrixPage(ctas.length);
+        var page = Number(control.matrixPage) || 0;
+        var visible = ctas.length > MATRIX_PAGE_SIZE
+            ? ctas.slice(page * MATRIX_PAGE_SIZE, page * MATRIX_PAGE_SIZE + MATRIX_PAGE_SIZE)
+            : ctas;
+        var fullByGroup = {};
+        ctas.forEach(function (cta) {
+            var fg = cta.grupo || 'Sin agrupación';
+            (fullByGroup[fg] = fullByGroup[fg] || []).push(cta);
+        });
+
         var groups = {};
         var groupOrder = [];
-        ctas.forEach(function (cta) {
+        visible.forEach(function (cta) {
             var g = cta.grupo || 'Sin agrupación';
             if (!groups[g]) {
                 groups[g] = [];
@@ -6162,16 +7068,17 @@
         var html = '';
         groupOrder.forEach(function (g) {
             var list = groups[g];
+            var full = fullByGroup[g] || list;
             var closed = !!closedMap[g];
-            var capturados = list.filter(function (x) { return !ctaPendiente(x); }).length;
-            var udsGrupo = list.reduce(function (a, x) {
+            var capturados = full.filter(function (x) { return !ctaPendiente(x); }).length;
+            var udsGrupo = full.reduce(function (a, x) {
                 return a + (x.unidadesAnio != null ? x.unidadesAnio : unidadesAnuales(x.ppto));
             }, 0);
             html += '<tr class="cc-group-row cc-matrix-group-row" data-group="' + escapeHtml(g) + '">' +
                 '<td class="sticky-col" colspan="6">' +
                     '<i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' +
-                    escapeHtml(g) + ' · ' + list.length + (list.length === 1 ? ' producto' : ' productos') +
-                    '<span class="cc-matrix-group-meta">' + capturados + '/' + list.length + ' capturados' +
+                    escapeHtml(g) + ' · ' + full.length + (full.length === 1 ? ' producto' : ' productos') +
+                    '<span class="cc-matrix-group-meta">' + capturados + '/' + full.length + ' capturados' +
                     (udsGrupo ? (' · ' + qtyLabel(udsGrupo) + ' uds proy.') : '') + '</span>' +
                 '</td>' +
                 '<td colspan="12" class="cc-matrix-group-spacer"></td>' +
@@ -6184,6 +7091,7 @@
         });
         tbody.innerHTML = html;
         bindMatrixTableEvents(tbody);
+        paintMatrixPager(ctas.length);
     }
 
     function paintMatrixSelection() {
@@ -6200,18 +7108,21 @@
         var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
         var row = document.querySelector('#ctl-matrix-tbody tr.cc-matrix-row[data-cta="' + cssEscape(codigo) + '"]');
         if (!cta || !row) {
-            // Puede estar en un grupo cerrado: reabrir y redibujar.
             if (cta) {
                 var gName = cta.grupo || 'Sin agrupación';
                 if (control.grupoCerradoMatrix && control.grupoCerradoMatrix[gName]) {
                     control.grupoCerradoMatrix[gName] = false;
+                    drawMatrixTable();
+                    return;
                 }
+                var pageOf = matrixPageOfCodigo(codigo);
+                if (pageOf >= 0 && pageOf !== (Number(control.matrixPage) || 0)) return;
             }
             drawMatrixTable();
             return;
         }
         var d = deltaPct(cta.totP, cta.totG);
-        var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+        var dCls = deltaToneClass(d);
         var done = !ctaPendiente(cta);
         row.classList.toggle('is-done', done);
         row.classList.toggle('is-on', String(control.cuenta || '') === String(codigo));
@@ -6294,7 +7205,7 @@
             return cls;
         }
         var val = Number(raw) || 0;
-        var past = pastQtyMes(cta, i);
+        var past = ventaUdsMes(cta, i);
         // Verde: proyección >= venta / proy. anterior.
         // Rojo: proyección < venta / proy. anterior.
         if (past > 0 && val < past) cls += ' is-over';
@@ -6309,9 +7220,13 @@
         var selector = '#ctl-matrix-tbody input[data-cta="' + cssEscape(cta.codigo) + '"][data-m], #ctl-month-grid input[data-cta="' + cssEscape(cta.codigo) + '"][data-m]';
         document.querySelectorAll(selector).forEach(function (inp) {
             var m = Number(inp.getAttribute('data-m'));
-            var raw = String(inp.value || '').trim().replace(/,/g, '');
-            months[m] = raw === '' ? (fillEmpty ? 0 : null) : toStoreQty(Number(raw) || 0);
+            var qty = readQtyInput(inp.value);
+            months[m] = qty === null ? (fillEmpty ? 0 : null) : qty;
         });
+        // Si no hay inputs en DOM (fila filtrada) o faltan meses, fillEmpty aún rellena.
+        if (fillEmpty) {
+            months = months.map(function (v) { return mesLleno(v) ? v : 0; });
+        }
         return months;
     }
 
@@ -6378,28 +7293,16 @@
 
     function guardarCapturaActual() {
         var c = control.centro;
-        if (!c || control.locked) return true;
-        var ctas = control._allCtas || [];
-        var incompletos = [];
-        ctas.forEach(function (cta) {
-            var months = monthsFromGrid(cta);
-            var faltan = cuentaMesesVacios(months);
-            if (faltan.length) {
-                incompletos.push(labelNombreCodigo(cta.nombre, cta.codigo));
-                return;
-            }
-            persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
-        });
-        if (incompletos.length) {
-            toast('warning', 'Faltan meses', incompletos.length === 1
-                ? ('Completa los 12 meses de ' + incompletos[0] + ' (el 0 sí cuenta) o pulsa Completado.')
-                : ('Hay ' + incompletos.length + ' productos incompletos. Llena los 12 meses o usa Completado.'));
-            drawMatrixTable();
-            return false;
+        if (!c || control.locked) return null;
+        var pack = filasCapturaParaGuardar(false);
+        if (!pack || !pack.guardados) {
+            toast('warning', 'Nada que guardar', 'Captura al menos un mes en algún producto. El resto puede quedar pendiente.');
+            return null;
         }
         persistOverlay(c, { estado: c.estado === 'abierto' ? 'en_proceso' : c.estado });
         renderVisorTable();
-        return true;
+        control._lastSaveInfo = pack;
+        return pack;
     }
 
     function refreshControlAfterEdit(codigo, opts) {
@@ -6407,6 +7310,7 @@
         var c = control.centro;
         if (!c) return;
         control._allCtas = cuentasEnriquecidas(c);
+        syncResumenClienteAbierto();
         updateControlProgress();
         renderControlNav();
         renderCtaChips();
@@ -6435,21 +7339,18 @@
         var thead = document.getElementById(theadId);
         var tbody = document.getElementById(tbodyId);
         if (!thead || !tbody) return;
+        var conUsuarios = tbodyId === 'det-tbody';
+        var colCount = conUsuarios ? 31 : 30;
         if (!c) {
-            tbody.innerHTML = '<tr><td colspan="30"><div class="cc-empty">Elige un cliente para ver el detalle</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">Elige un cliente para ver el detalle</div></td></tr>';
             if (tbodyId === 'ctl-tbody') paintVisibleTableTotals(null, 'ctl');
             if (tbodyId === 'det-tbody') paintVisibleTableTotals(null, 'det');
             return;
         }
-        var q = opts.readonly ? '' : (val('ctl-q') || '').toLowerCase();
-        var ctas = (control._allCtas || cuentasEnriquecidas(c)).filter(function (cta) {
-            var blob = (cta.codigo + ' ' + cta.nombre + ' ' + (cta.grupo || '')).toLowerCase();
-            return !q || blob.indexOf(q) !== -1;
+        var ctas = ctasTablaActual({
+            readonly: !!opts.readonly,
+            scope: opts.scope || control.scopeTabla
         });
-        if (opts.scope) ctas = scopedCtas(opts.scope, ctas);
-        if (!opts.readonly && control.soloPendientes && !(opts.scope === 'cuenta' && control.cuenta)) {
-            ctas = ctas.filter(ctaPendiente);
-        }
         if (!opts.readonly) control._ctas = ctas;
         if (tbodyId === 'ctl-tbody') paintVisibleTableTotals(ctas, 'ctl');
         if (tbodyId === 'det-tbody') paintVisibleTableTotals(ctas, 'det');
@@ -6464,6 +7365,7 @@
         var yyG = String(CC.state.anioGasto).slice(2);
         var yyP = String(CC.state.anioPresupuesto).slice(2);
         var head = '<tr><th class="sticky-col">Producto</th>' +
+            (conUsuarios ? '<th>Usuarios</th>' : '') +
             '<th class="num">Precio<span class="cc-th-past">lista SAP</span></th>' +
             '<th class="num">Venta ' + CC.state.anioGasto + '</th>' +
             '<th class="num">Precio<span class="cc-th-past">proy. ’' + yyP + '</span></th>' +
@@ -6482,7 +7384,7 @@
             var gTotP = groups[g].reduce(function (a, x) { return a + importeProyeccionVista(x); }, 0);
             var closed = !!closedMap[g];
             if (!hideGroups) {
-                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="6"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
+                html += '<tr class="cc-group-row" data-group="' + escapeHtml(g) + '"><td class="sticky-col" colspan="' + (conUsuarios ? 7 : 6) + '"><i class="fa-solid fa-chevron-' + (closed ? 'right' : 'down') + ' me-1"></i>' + escapeHtml(g) + ' · ' + groups[g].length + ' productos</td>';
                 html += '<td class="num cc-group-totals" colspan="2">' +
                     '<span class="cc-group-tot"><em>Venta ' + CC.state.anioGasto + '</em> ' + moneyGasto(gTotG) + '</span>' +
                     '<span class="cc-group-tot-sep">→</span>' +
@@ -6495,14 +7397,15 @@
                     var impP = importeProyeccionVista(cta);
                     // Δ% en la misma moneda que se muestra (evita mezclar LineTotal MXN vs proy×TC).
                     var d = deltaPct(impP, impG);
-                    var dCls = d > 15 ? 'text-danger' : (d < 0 ? 'text-success' : 'text-muted');
+                    var dCls = deltaToneClass(d);
                     var selected = String(cta.codigo) === String(control.cuenta || '');
                     var editing = (!opts.readonly || opts.selectable) && selected;
                     html += '<tr class="cc-result-row' + (editing ? ' is-editing' : '') + (!ctaPendiente(cta) ? ' is-done' : '') + '" data-cta="' + escapeHtml(cta.codigo) + '"><td class="sticky-col">' + htmlNombreCodigo(cta.nombre, cta.codigo) + '</td>';
-                    // Mismo precio que la matriz (Precio de lista SAP · cliente); sin promedio de facturas.
+                    if (conUsuarios) html += '<td class="cc-col-users">' + htmlPilaUsuarios(usuariosDeProducto(cta.codigo), false) + '</td>';
+                    // Mismo precio que la matriz (Precio lista · Maestro local).
                     var pLista = precioListaSapInfo(cta);
                     html += '<td class="num cc-price-cell" title="' +
-                        escapeHtml(pLista.title || ('Precio de lista SAP del cliente (misma fuente que la matriz)')) + '">' +
+                        escapeHtml(pLista.title || ('Precio lista · Maestro local (misma fuente que la matriz)')) + '">' +
                         precioInfoHtml(pLista) + '</td>';
                     html += '<td class="num" title="' + (isUsdView()
                         ? 'Suma de LineTotalUSD (SAP). No se convierte con el tipo de cambio.'
@@ -6539,29 +7442,28 @@
         });
         var emptyMsg = opts.scope === 'cuenta' && control.cuenta
             ? 'No hay filas para este producto con los filtros actuales'
-            : 'Sin productos asignados a este cliente';
+            : (tbodyId === 'det-tbody'
+                ? 'Este cliente no tiene productos asignados'
+                : 'Sin productos asignados a este cliente');
         if (!html) {
-            tbody.innerHTML = '<tr><td colspan="30"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="' + colCount + '"><div class="cc-empty">' + emptyMsg + '</div></td></tr>';
         } else {
             // Fila de totales por mes (todas las cuentas filtradas, aunque el grupo esté cerrado).
             var sumG = 0;
             var sumP = 0;
-            var mesG = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            var mesP = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             ctas.forEach(function (cta) {
                 sumG += importeVentaVista(cta);
                 sumP += importeProyeccionVista(cta);
-                for (var mi = 0; mi < 12; mi++) {
-                    mesG[mi] += Number(importeMesVentaVista(cta, mi)) || 0;
-                    var mp = importeMesProyVista(cta, mi);
-                    if (mp != null) mesP[mi] += Number(mp) || 0;
-                }
             });
+            var seriesTot = seriesMesVista(ctas);
+            var mesG = seriesTot.venta;
+            var mesP = seriesTot.proy;
             var dTot = deltaPct(sumP, sumG);
-            var dTotCls = dTot > 15 ? 'text-danger' : (dTot < 0 ? 'text-success' : 'text-muted');
+            var dTotCls = deltaToneClass(dTot);
             html += '<tr class="cc-month-totals-row">' +
                 '<td class="sticky-col"><strong>Totales</strong>' +
                 '<span class="cc-month-totals-sub">' + ctas.length + (ctas.length === 1 ? ' producto' : ' productos') + '</span></td>' +
+                (conUsuarios ? '<td class="cc-col-users"></td>' : '') +
                 '<td class="num">—</td>' +
                 '<td class="num fw-semibold">' + moneyGasto(sumG) + '</td>' +
                 '<td class="num">—</td>' +
@@ -6574,6 +7476,7 @@
                     (mesP[ti] ? moneyGasto(mesP[ti]) : '—') + '</td>';
             }
             html += '</tr>';
+            if (conUsuarios) hideUserTip();
             tbody.innerHTML = html;
         }
 
@@ -6609,12 +7512,18 @@
             refreshControlAfterEdit(codigo, { skipFormGrid: true });
             return;
         }
-        var raw = String(inp.value || '').trim().replace(/,/g, '');
-        var valN = raw === '' ? null : toStoreQty(Number(raw) || 0);
+        var shown = sanitizeQtyTyping(inp.value);
+        if (inp.value !== shown) inp.value = shown;
         var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
+        if (shown === '-') {
+            inp.value = formatInputQty(months[m]);
+            return;
+        }
+        var valN = readQtyInput(shown);
         var wasEmpty = !mesesTodosLlenos(months) && months.every(function (x) { return !mesLleno(x); });
         months[m] = valN;
-        persistBudget(c.empresa, c.codigo, codigo, months);
+        // Sin autosave al cambiar de mes: solo memoria. Guardar / Guardar y seguir confirman.
+        persistBudget(c.empresa, c.codigo, codigo, months, { localOnly: true });
 
         var cell = inp.closest('.cc-month-cell, .cc-matrix-cell, td');
         if (cell) {
@@ -6627,6 +7536,7 @@
             }
         }
 
+        // Si capturas enero en un producto vacío: pregunta si replicar el mismo monto en feb–dic.
         if (wasEmpty && valN > 0 && m === 0 && !control.locked && !budgetLockCount()) {
             if (window.Swal) {
                 Swal.fire({
@@ -6642,8 +7552,8 @@
                         var filled = months.map(function (v, idx) {
                             return mesBloqueadoBudget(idx) ? v : valN;
                         });
-                        persistBudget(c.empresa, c.codigo, codigo, filled);
-                        toast('success', 'Cantidad fija aplicada', 'Los meses editables quedaron en ' + qtyLabel(valN));
+                        persistBudget(c.empresa, c.codigo, codigo, filled, { localOnly: true });
+                        toast('success', 'Cantidad fija aplicada', 'Los 12 meses quedaron en ' + qtyLabel(valN) + '. Pulsa Guardar para confirmar.');
                     }
                     refreshControlAfterEdit(codigo);
                 });
@@ -6771,16 +7681,63 @@
         var completar = document.getElementById('ctl-completar');
         if (completar) completar.addEventListener('click', function () {
             var c = control.centro;
-            var list = targetCtasForTools();
-            if (!c || !list.length || control.locked) return;
-            list.forEach(function (cta) {
-            var months = monthsFromGrid(cta, true);
-            persistBudget(c.empresa, c.codigo, cta.codigo, months, { completado: true });
-            });
-            refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
-            toast('success', 'Completado', list.length === 1
-                ? 'Los meses vacíos quedaron en 0'
-                : ('Se completaron ' + list.length + ' productos (vacíos en 0)'));
+            if (!c || control.locked || CC._completandoCaptura) return;
+            // Completado: todos los productos del cliente. Lo no capturado → 0 y se guarda.
+            var list = (control._allCtas || cuentasEnriquecidas(c) || []).slice();
+            if (!list.length) {
+                toast('warning', 'Sin productos', 'Este cliente no tiene productos para completar.');
+                return;
+            }
+            var pendientes = list.filter(ctaPendiente);
+            var run = function () {
+                var c = control.centro;
+                if (!c || CC._guardandoCaptura) return;
+                var pack = filasCapturaParaGuardar(true);
+                if (!pack || !pack.filas.length) {
+                    toast('warning', 'Sin productos', 'Este cliente no tiene productos para completar.');
+                    return;
+                }
+                CC._guardandoCaptura = true;
+                CC._completandoCaptura = true;
+                CC._budgetSaveBatch = true;
+                refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                enviarPresupuestoEnLotes(c.empresa, c.codigo, pack.filas, function (hasta, total) {
+                    setCapturaSaveProgress('Guardando ' + hasta + ' de ' + total);
+                }).then(function () {
+                    refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                    toast('success', 'Completado',
+                        pack.filas.length === 1
+                            ? 'Los meses vacíos quedaron en 0 y se guardaron'
+                            : ('Se completaron ' + pack.filas.length + ' productos: lo no capturado quedó en 0 y se guardó'));
+                }).catch(function (err) {
+                    refreshControlAfterEdit((list[0] && list[0].codigo) || control.cuenta);
+                    toast('error', 'No se guardó completo', mensajeLoteFallido(err));
+                }).then(function () {
+                    CC._budgetSaveBatch = false;
+                    CC._completandoCaptura = false;
+                    CC._guardandoCaptura = false;
+                    setCapturaSaveProgress(null);
+                });
+            };
+            if (list.length > 1 && window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: '¿Marcar Completado?',
+                    html: '<div style="text-align:left;font-size:.9rem">' +
+                        '<p style="margin:0 0 .5rem">Se aplicará a <b>' + list.length + '</b> producto(s).</p>' +
+                        '<p style="margin:0">Los meses <b>sin valor</b> quedarán en <b>0</b> y todo se guardará. ' +
+                        (pendientes.length
+                            ? ('Hay <b>' + pendientes.length + '</b> pendiente(s).')
+                            : 'Todos ya estaban capturados; se reconfirma el guardado.') +
+                        '</p></div>',
+                    showCancelButton: true,
+                    confirmButtonText: 'Completar y guardar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) run(); });
+                return;
+            }
+            run();
         });
     }
 
@@ -6837,9 +7794,15 @@
         var stt = statsDeCentro(c);
         var dep = deptoDeCentro(c);
         var barCls = semaforoAvance(stt.avance);
-        setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (c.codigo ? ' · ' + c.codigo : ''));
+        var codigoCli = String(c.codigo || '').trim();
+        var nombreCli = nombreClienteDetalle(c);
+        setText('cc-page-kicker', 'Detalle · ' + (c.empresa || '—') + (dep && dep !== '—' ? ' · ' + dep : '') + (codigoCli ? ' · ' + codigoCli : ''));
         var title = document.getElementById('cc-page-title');
-        if (title) title.innerHTML = '<span class="cc-title-kind">VENTAS</span> · ' + escapeHtml(c.nombre || c.codigo || 'Cliente');
+        if (title) {
+            var pieza = codigoCli;
+            if (nombreCli) pieza = codigoCli ? (codigoCli + ' · ' + nombreCli) : nombreCli;
+            title.innerHTML = '<span class="cc-title-kind">VENTAS</span> · ' + escapeHtml(pieza || 'Cliente');
+        }
         if (sub) sub.hidden = true;
         if (facts) {
             facts.hidden = false;
@@ -6847,7 +7810,7 @@
                 factHtml('Empresa', escapeHtml(c.empresa || '—')) +
                 factHtml('TOTAL VENTA', textoImporteVisor(totalVentaAnioCliente(c))) +
                 factHtml('TOTAL PROYECTADO', textoImporteVisor(totalProyectadoCliente(c))) +
-                factHtml('Usuario', escapeHtml(c.usuario || 'Sin asignar')) +
+                factHtml('Usuario', htmlPilaUsuarios(usuariosCapturaDetalle(), true)) +
                 factHtml('Fecha modif', escapeHtml(c.fecha || '—')) +
                 factHtml('Progreso', '<span class="cc-semaforo-' + barCls + '">' + stt.avance + '%</span>',
                     '<div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span></div>' +
@@ -7116,6 +8079,10 @@
 
     function renderVisorTable() {
         var tb = document.getElementById('visor-tbody');
+        if (CC.state.page === 'control' && control.vista !== 'visor' && CC._resumenOk) {
+            paintVisorResumen(resumenTotalesVisibles());
+            return;
+        }
         if (!tb) return;
         var rows = visorRowsFiltradas();
         var tot = visorTotales(rows);
@@ -7407,14 +8374,19 @@
                 var months = pptoDe(c.empresa, c.codigo, cta, cta.gasto);
                 var n = to - from + 1;
                 if (modo === 'igual') {
-                    var each = Math.round((monto / n) * 100) / 100;
-                    for (var i = from; i <= to; i++) months[i] = each;
+                    var sign = monto < 0 ? -1 : 1;
+                    var abs = Math.abs(monto);
+                    var base = Math.floor(abs / n);
+                    var resto = abs - base * n;
+                    for (var i = from; i <= to; i++) {
+                        months[i] = sign * (base + ((i - from) < resto ? 1 : 0));
+                    }
                 } else if (modo === 'mismo') {
                     for (var k = from; k <= to; k++) months[k] = monto;
                 } else {
                     var weights = cta.gasto.slice(from, to + 1);
                     var tw = sum(weights) || n;
-                    for (var j = from; j <= to; j++) months[j] = Math.round(monto * ((cta.gasto[j] || 0) / tw) * 100) / 100;
+                    for (var j = from; j <= to; j++) months[j] = Math.round(monto * ((cta.gasto[j] || 0) / tw));
                 }
                 persistBudget(c.empresa, c.codigo, codigo, months);
                 hideModal('modalDispersar');
@@ -7428,22 +8400,52 @@
         }
         var save = document.getElementById('ctl-guardar');
         if (save) save.addEventListener('click', function () {
+            var c = control.centro;
             var codigo = control.cuenta;
-            if (!guardarCapturaActual()) return;
-            refreshControlAfterEdit(codigo);
-            if (!(control._allCtas || []).some(ctaPendiente)) {
-                celebrarCentroCompleto();
-                return;
-            }
-            toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
+            if (CC._guardandoCaptura) return;
+            var pack = guardarCapturaActual();
+            if (!pack) return;
+            CC._guardandoCaptura = true;
+            enviarPresupuestoEnLotes(c.empresa, c.codigo, pack.filas, function (hasta, total) {
+                setCapturaSaveProgress('Guardando ' + hasta + ' de ' + total);
+            }).then(function () {
+                refreshControlAfterEdit(codigo);
+                if (!(control._allCtas || []).some(ctaPendiente)) {
+                    celebrarCentroCompleto();
+                    return;
+                }
+                var info = control._lastSaveInfo || {};
+                var msg = (info.completos || 0) + ' capturado(s)';
+                if (info.parciales) msg += ' · ' + info.parciales + ' parcial(es)';
+                msg += '. El resto sigue pendiente.';
+                toast('success', 'Captura guardada', msg);
+            }).catch(function (err) {
+                toast('error', 'No se guardó la captura', mensajeLoteFallido(err));
+            }).then(function () {
+                CC._guardandoCaptura = false;
+                setCapturaSaveProgress(null);
+            });
         });
         var saveNext = document.getElementById('ctl-guardar-seguir');
         if (saveNext) saveNext.addEventListener('click', function () {
+            var c = control.centro;
             var codigo = control.cuenta;
-            if (!guardarCapturaActual()) return;
-            refreshControlAfterEdit(codigo);
-            if (!irSiguientePendiente(codigo)) return;
-            toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
+            if (CC._guardandoCaptura) return;
+            var pack = guardarCapturaActual();
+            if (!pack) return;
+            CC._guardandoCaptura = true;
+            enviarPresupuestoEnLotes(c.empresa, c.codigo, pack.filas, function (hasta, total) {
+                setCapturaSaveProgress('Guardando ' + hasta + ' de ' + total);
+            }).then(function () {
+                refreshControlAfterEdit(codigo);
+                if (!irSiguientePendiente(codigo)) return;
+                toast('success', 'Captura guardada', 'La proyección quedó en el servidor');
+            }).catch(function (err) {
+                toast('error', 'No se guardó la captura', mensajeLoteFallido(err));
+            }).then(function () {
+                CC._guardandoCaptura = false;
+                setCapturaSaveProgress(null);
+            });
         });
     }
 
@@ -7640,32 +8642,27 @@
         renderMonthChart('chart-detalle', 'chart-detalle', chartScopePref());
     }
 
-    function renderMonthChart(canvasId, chartKey, scopePref) {
+    function renderMonthChart(canvasId, chartKey) {
         var canvas = document.getElementById(canvasId);
         if (!canvas || !window.Chart) return;
-        var ctas = scopedCtas(scopePref, control._allCtas || []);
-        // Importes en moneda de vista (igual que totales / sticky), no unidades.
-        var g = MONTHS.map(function (_, i) {
-            return ctas.reduce(function (a, x) {
-                return a + (Number(importeMesVentaVista(x, i)) || 0);
-            }, 0);
+        var ctas = ctasTablaActual({
+            readonly: canvasId === 'chart-detalle',
+            scope: chartScopePref()
         });
-        var p = MONTHS.map(function (_, i) {
-            return ctas.reduce(function (a, x) {
-                var mp = importeMesProyVista(x, i);
-                return a + (mp != null ? (Number(mp) || 0) : 0);
-            }, 0);
-        });
+        var series = seriesMesVista(ctas);
+        var g = series.venta;
+        var p = series.proy;
         var d = g.map(function (gv, i) { return deltaPct(p[i], gv); });
+        var anioVenta = CC.state.anioGasto || '';
+        var anioProy = CC.state.anioPresupuesto || '';
         if (CC.state.charts[chartKey]) CC.state.charts[chartKey].destroy();
         CC.state.charts[chartKey] = new Chart(canvas, {
             type: 'bar',
             data: {
                 labels: MONTHS,
                 datasets: [
-                    { type: 'bar', label: 'Ventas ' + CC.state.anioGasto, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
-                    { type: 'bar', label: 'Ppto ' + CC.state.anioPresupuesto, data: p, backgroundColor: '#a1a1aa', borderRadius: 4, yAxisID: 'y' },
-                    { type: 'line', label: 'Contraste %', data: d, borderColor: '#b45309', backgroundColor: 'transparent', tension: 0.3, yAxisID: 'y1', pointRadius: 3, borderWidth: 2 }
+                    { type: 'bar', label: 'Venta ' + anioVenta, data: g, backgroundColor: '#0a0a0a', borderRadius: 4, yAxisID: 'y' },
+                    { type: 'bar', label: 'Proyección ' + anioProy, data: p, backgroundColor: '#71717a', borderRadius: 4, yAxisID: 'yProy' }
                 ]
             },
             options: {
@@ -7676,9 +8673,13 @@
                     tooltip: {
                         callbacks: {
                             label: function (ctx) {
-                                if (ctx.dataset.yAxisID === 'y1') return ctx.dataset.label + ': ' + ctx.parsed.y + '%';
-                                // Valores ya en moneda de vista: no volver a aplicar TC.
-                                return ctx.dataset.label + ': ' + moneyVista(ctx.parsed.y);
+                                return ctx.dataset.label + ': ' + moneyGasto(ctx.parsed.y);
+                            },
+                            afterBody: function (items) {
+                                var i = items[0] ? items[0].dataIndex : -1;
+                                if (i < 0) return '';
+                                var pct = d[i];
+                                return 'Contraste: ' + (pct > 0 ? '+' : '') + pct + '%';
                             }
                         }
                     }
@@ -7686,14 +8687,19 @@
                 scales: {
                     x: { grid: { display: false } },
                     y: {
-                        ticks: {
-                            callback: function (v) {
-                                return moneyVista(v);
-                            }
-                        },
+                        position: 'left',
+                        beginAtZero: true,
+                        title: { display: true, text: 'Venta ' + anioVenta, color: '#0a0a0a', font: { size: 11, weight: '600' } },
+                        ticks: { callback: function (v) { return moneyVista(v); } },
                         grid: { color: '#f1f1f3' }
                     },
-                    y1: { position: 'right', grid: { display: false }, ticks: { callback: function (v) { return v + '%'; } } }
+                    yProy: {
+                        position: 'right',
+                        beginAtZero: true,
+                        title: { display: true, text: 'Proyección ' + anioProy, color: '#52525b', font: { size: 11, weight: '600' } },
+                        ticks: { callback: function (v) { return moneyVista(v); } },
+                        grid: { display: false }
+                    }
                 }
             }
         });
@@ -7723,8 +8729,8 @@
         var p = CC.state.anioPresupuesto || 2027;
         setText('an-kicker', 'Supervisión · proyección ' + p);
         setText('an-sub', 'Cuánto se lleva capturado por empresa, cliente, producto o usuario, y la diferencia vs la venta real (cantidad × costo).');
-        setText('an-kpi-over-hint', 'Proy. ' + p + ' > 110% de la venta ' + g);
-        setText('an-kpi-yoy-hint', 'Promedio de aumento vs ' + g);
+        setText('an-kpi-over-hint', 'Proy. ' + p + ' > venta ' + g);
+        setText('an-kpi-yoy-hint', 'Proyección vs venta ' + g);
         var title = document.getElementById('an-chart-emp-title');
         if (title) title.innerHTML = '<i class="fa-solid fa-chart-column"></i> Venta ' + g + ' vs proyección ' + p;
         setText('an-th-gasto', 'Venta ' + g);
@@ -7896,6 +8902,10 @@
         CC._anCapturaCiclo = null;
         CC._anAsigLoaded = false;
         CC._anAsigLoading = false;
+        CC._anCatalogo = [];
+        CC._anDetalleKey = '';
+        CC._anDetalleReady = false;
+        CC._capturaReady = false;
         CC._anGastoTried = {};
         CC._anVentasBudget = {};
         CC._anVentasBudgetTried = {};
@@ -7974,27 +8984,12 @@
         var cicloEl = document.getElementById('an-ciclo');
         if (cicloEl && ciclo) cicloEl.value = ciclo;
         CC.state.cicloCodigo = ciclo || CC.state.cicloCodigo || '';
-        var cicloKey = String(CC.state.cicloCodigo || '');
-        if (CC._anCapturaCiclo !== cicloKey) {
-            CC._anCapturaCiclo = cicloKey;
-            paintAnalisisLoading();
-            loadOverlaysForCycle().then(function () {
-                if (CC.state.page !== 'analisis') return;
-                if (String(CC.state.cicloCodigo || '') !== cicloKey) return;
-                if (CC._anHoldBusy && analisisTieneFiltro()) {
-                    maybeQueueAnalisisGastos();
-                    return;
-                }
-                renderAnalisis();
-                maybeQueueAnalisisGastos();
-            });
-        }
-
         paintAnalisisLoading();
         if (!CC._anAsigLoaded) {
             if (CC._anAsigLoading) return;
             if (!ciclo) {
-                CC.state.misAsignaciones = CC.state.misAsignaciones || [];
+                CC._anCatalogo = [];
+                CC.state.misAsignaciones = [];
                 CC.state.centros = [];
                 CC._anAsigLoaded = true;
                 fillAnalisisFilters();
@@ -8004,32 +8999,42 @@
             CC._anAsigGen = (CC._anAsigGen || 0) + 1;
             var asigGen = CC._anAsigGen;
             CC._anAsigLoading = true;
-            fetchAnalisisAsignaciones(ciclo).then(function (list) {
+            fetchAnalisisCatalogo(ciclo).then(function (json) {
                 if (asigGen !== CC._anAsigGen) return;
                 CC._anAsigLoading = false;
                 if (String(val('an-ciclo') || CC.state.cicloCodigo || '').toUpperCase() !== String(ciclo).toUpperCase()) return;
-                CC.state.misAsignaciones = list || [];
-                CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
-                CC._anAsigLoaded = true;
-                fillAnalisisFilters();
-                if (analisisTieneFiltro()) {
-                    maybeQueueAnalisisGastos();
+                aplicarCatalogoAnalisis(json || {});
+                if (analisisTieneDetalle()) {
+                    kickAnalisisVista();
                     return;
                 }
+                hideAnalisisBusy();
                 renderAnalisis();
-                maybeQueueAnalisisGastos();
+            }).catch(function () {
+                if (asigGen !== CC._anAsigGen) return;
+                CC._anAsigLoading = false;
+                aplicarCatalogoAnalisis({ clientes: [], sin_revision: false });
+                hideAnalisisBusy();
+                renderAnalisis();
             });
             return;
         }
 
-        CC.state.centros = centrosAgrupadosDesdeAsignaciones(asignacionesDelCiclo(ciclo));
+        CC.state.centros = centrosDesdeCatalogo(CC._anCatalogo || []);
         fillAnalisisFilters();
-        if (CC._anHoldBusy && analisisTieneFiltro()) {
-            maybeQueueAnalisisGastos();
+        if (analisisTieneDetalle()) {
+            if (CC._anDetalleReady && CC._anDetalleKey === detalleAnalisisKey()) {
+                if (!filtroAnalisisEnCache()) {
+                    maybeQueueAnalisisGastos();
+                    return;
+                }
+                renderAnalisis();
+                return;
+            }
+            kickAnalisisVista();
             return;
         }
         renderAnalisis();
-        maybeQueueAnalisisGastos();
     };
 
     function fetchJsonOk(url) {
@@ -8094,6 +9099,110 @@
         });
     }
 
+    function fetchAnalisisCatalogo(ciclo) {
+        return fetchJsonOk('/ProyeccionesVentas/api/analisis/catalogo?ciclo=' + encodeURIComponent(ciclo || ''));
+    }
+
+    function centrosDesdeCatalogo(list) {
+        var ciclo = val('an-ciclo') || CC.state.cicloCodigo || '';
+        return (list || []).map(function (c) {
+            var users = (c.usuarios || []).filter(Boolean);
+            return {
+                codigo: c.codigo,
+                nombre: c.nombre || c.codigo,
+                empresa: String(c.empresa || '').toUpperCase(),
+                usuario: users[0] || '',
+                usuarios: users,
+                estado: 'abierto',
+                modo: 'solo_revision',
+                departamento: '',
+                ciclo: ciclo,
+                capturar: false,
+                editar: false,
+                revisar: true,
+                permisos: ['revisar'],
+                cuentasN: 0,
+                sap: true
+            };
+        });
+    }
+
+    function aplicarCatalogoAnalisis(json) {
+        CC._anCatalogo = (json && json.clientes) || [];
+        CC._anSinRevision = !!(json && json.sin_revision);
+        CC.state.centros = centrosDesdeCatalogo(CC._anCatalogo);
+        CC.state.misAsignaciones = [];
+        CC._capturaReady = false;
+        CC._anDetalleKey = '';
+        CC._anDetalleReady = false;
+        CC._anAsigLoaded = true;
+        fillAnalisisFilters();
+    }
+
+    function analisisTieneDetalle() {
+        return !!(val('an-cliente') || val('an-user'));
+    }
+
+    function detalleAnalisisKey() {
+        var p = filtroDetalleParams();
+        return [p.ciclo, p.empresa, p.cliente, p.usuario].join('|');
+    }
+
+    function filtroDetalleParams() {
+        var ciclo = val('an-ciclo') || CC.state.cicloCodigo || '';
+        var emp = empresaAnalisisConcreta() || '';
+        var cli = val('an-cliente') || '';
+        var codigo = '';
+        if (cli) {
+            var i = cli.indexOf('|');
+            if (i >= 0) {
+                emp = cli.slice(0, i);
+                codigo = cli.slice(i + 1);
+            } else {
+                codigo = cli;
+            }
+        }
+        return {
+            ciclo: ciclo,
+            empresa: emp,
+            cliente: codigo,
+            usuario: val('an-user') || ''
+        };
+    }
+
+    function aplicarDetalleAnalisis(json) {
+        var cap = (json && json.captura) || {};
+        CC.state.budgets = {};
+        CC.state.budgetKeysFromServer = {};
+        CC.state.completados = {};
+        CC.state.costos = {};
+        CC.state.costosMaster = {};
+        CC.state.costosMeses = {};
+        CC.state.ajustes = {};
+        CC.state.preciosMeses = {};
+        CC.state.overlays = {};
+        aplicarDetalleCaptura(cap, false);
+        CC._capturaReady = true;
+        CC.state.misAsignaciones = (json && json.asignaciones) || [];
+    }
+
+    function cargarAnalisisDetalle(key) {
+        CC._anDetalleGen = (CC._anDetalleGen || 0) + 1;
+        var gen = CC._anDetalleGen;
+        var p = filtroDetalleParams();
+        var url = '/ProyeccionesVentas/api/analisis/detalle?ciclo=' + encodeURIComponent(p.ciclo)
+            + '&empresa=' + encodeURIComponent(p.empresa)
+            + '&cliente=' + encodeURIComponent(p.cliente)
+            + '&usuario=' + encodeURIComponent(p.usuario);
+        return fetchJsonOk(url).then(function (json) {
+            if (gen !== CC._anDetalleGen) return;
+            if (detalleAnalisisKey() !== key) return;
+            aplicarDetalleAnalisis(json || {});
+            CC._anDetalleKey = key;
+            CC._anDetalleReady = true;
+        });
+    }
+
     function analisisPageEl() {
         return document.querySelector('.cc-page');
     }
@@ -8127,7 +9236,7 @@
     function paintAnalisisLoading() {
         var loading = document.getElementById('an-loading');
         if (loading) loading.hidden = true;
-        if (CC._anHoldBusy && analisisTieneFiltro()) showAnalisisBusy();
+        if (CC._anHoldBusy && analisisTieneDetalle()) showAnalisisBusy();
         else hideAnalisisBusy();
     }
 
@@ -8154,23 +9263,34 @@
         if (CC._anFillingFilters) return;
         CC._anKickSeq = (CC._anKickSeq || 0) + 1;
         var seq = CC._anKickSeq;
-        if (!analisisTieneFiltro()) {
+        if (!analisisTieneDetalle()) {
+            CC._anDetalleKey = '';
+            CC._anDetalleReady = false;
+            CC.state.misAsignaciones = [];
+            CC._capturaReady = false;
             hideAnalisisBusy();
             afterAnalisisPaint(function () {
-                if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || analisisTieneFiltro()) return;
+                if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || analisisTieneDetalle()) return;
                 renderAnalisis();
             });
             return;
         }
-        if (filtroAnalisisEnCache()) {
+        showAnalisisBusy();
+        var key = detalleAnalisisKey();
+        var detalleLista = CC._anDetalleReady && CC._anDetalleKey === key;
+        var paso = detalleLista ? Promise.resolve() : cargarAnalisisDetalle(key);
+        paso.then(function () {
+            if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || !analisisTieneDetalle()) return;
+            if (filtroAnalisisEnCache()) {
+                hideAnalisisBusy();
+                renderAnalisis();
+                return;
+            }
+            maybeQueueAnalisisGastos();
+        }).catch(function () {
+            if (seq !== CC._anKickSeq) return;
             hideAnalisisBusy();
             renderAnalisis();
-            return;
-        }
-        showAnalisisBusy();
-        afterAnalisisPaint(function () {
-            if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || !analisisTieneFiltro()) return;
-            maybeQueueAnalisisGastos();
         });
     }
 
@@ -8419,7 +9539,7 @@
             paintAnalisisLoading();
             return;
         }
-        if (!analisisTieneFiltro()) {
+        if (!analisisTieneDetalle()) {
             hideAnalisisBusy();
             return;
         }
@@ -8762,8 +9882,10 @@
     }
 
     function snapshotCentros() {
-        var light = !!CC._anLightPaint || !analisisTieneFiltro();
-        return CC.state.centros.map(mergedCentro).map(function (c) {
+        var light = !!CC._anLightPaint || !analisisTieneDetalle();
+        var fuente = CC.state.centros || [];
+        if (!light && CC.state.page === 'analisis') fuente = centrosObjetivoAnalisis();
+        return fuente.map(mergedCentro).map(function (c) {
             var users = (c.usuarios && c.usuarios.length) ? c.usuarios : (c.usuario ? [c.usuario] : []);
             if (light) {
                 return Object.assign({}, c, {
@@ -8802,7 +9924,7 @@
                 capturadas: filled,
                 avance: pct(filled, ctas.length || 1),
                 yoY: deltaPct(pptoVista, gasto),
-                over: gasto > 0 && pptoVista > gasto * 1.1,
+                over: gasto > 0 && deltaPct(pptoVista, gasto) > 0,
                 ventaLista: ventaCentroLista(c),
                 proyLista: !!CC._capturaReady,
                 departamento: deptoDeCentro(c),
@@ -8907,7 +10029,7 @@
                     monthsVenta: monthsVenta,
                     monthsProy: monthsProy,
                     yoY: deltaPct(ppto, gasto),
-                    over: gasto > 0 && ppto > gasto * 1.1,
+                    over: gasto > 0 && deltaPct(ppto, gasto) > 0,
                     capturadas: capturadas,
                     avance: listo ? 100 : pct(filled, 12),
                     ventaLista: !!c.ventaLista,
@@ -9053,16 +10175,16 @@
         var emptyIcon = document.getElementById('an-empty-icon');
         var work = document.getElementById('an-work');
         var all = CC._anAsigLoaded ? snapshotCentros() : [];
-        var needsFilter = CC._anAsigLoaded && !!all.length && !analisisTieneFiltro();
+        var needsFilter = CC._anAsigLoaded && !!(CC.state.centros && CC.state.centros.length) && !analisisTieneDetalle();
         paintAnalisisLoading();
         if (empty) {
             if (!CC._anAsigLoaded) {
                 empty.hidden = false;
-                if (analisisTieneFiltro()) {
+                if (analisisTieneDetalle()) {
                     if (emptyMsg) emptyMsg.innerHTML = htmlCargando('lg');
                     if (emptyIcon) emptyIcon.hidden = true;
                 } else {
-                    if (emptyMsg) emptyMsg.textContent = 'Selecciona una empresa, o Todas, para ver el análisis.';
+                    if (emptyMsg) emptyMsg.textContent = 'Elige una empresa y después un cliente o un usuario para cargar solo esa información.';
                     if (emptyIcon) {
                         emptyIcon.hidden = false;
                         emptyIcon.className = 'fa-solid fa-filter';
@@ -9082,7 +10204,7 @@
             } else if (needsFilter) {
                 empty.hidden = false;
                 if (emptyMsg) {
-                    emptyMsg.textContent = 'Selecciona una empresa, o Todas, para ver el análisis.';
+                    emptyMsg.textContent = 'Elige una empresa y después un cliente o un usuario para cargar solo esa información.';
                 }
                 if (emptyIcon) {
                     emptyIcon.hidden = false;
@@ -9150,6 +10272,24 @@
             return String(a.nombre || a.codigo || '').localeCompare(String(b.nombre || b.codigo || ''), 'es');
         });
 
+        // Variación KPI y pie Δ año: misma base (tableRows) y misma fórmula.
+        var sumGastoYoy = 0;
+        var sumPptoYoy = 0;
+        var ventaPendYoy = false;
+        var proyPendYoy = false;
+        tableRows.forEach(function (c) {
+            if (c.ventaLista) sumGastoYoy += Number(c.gasto) || 0;
+            else ventaPendYoy = true;
+            if (c.proyLista) sumPptoYoy += Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0;
+            else proyPendYoy = true;
+        });
+        var yoyTotShared = (!ventaPendYoy && !proyPendYoy)
+            ? (sumGastoYoy ? deltaPct(sumPptoYoy, sumGastoYoy) : null)
+            : null;
+        var yoyTxtShared = (ventaPendYoy || proyPendYoy)
+            ? null
+            : (sumGastoYoy ? ((yoyTotShared > 0 ? '+' : '') + yoyTotShared + '%') : '—');
+
         if (!rows.length) {
             setText('an-kpi-avance', '—');
             setText('an-kpi-poco', all.length ? '0' : '—');
@@ -9173,12 +10313,9 @@
                 setLoading('an-kpi-yoy');
             } else {
                 var over = listosVenta.filter(function (c) { return c.over; }).length;
-                var withGasto = listosVenta.filter(function (c) { return c.gasto > 0; });
-                var avgYoy = withGasto.length
-                    ? Math.round(withGasto.reduce(function (a, c) { return a + c.yoY; }, 0) / withGasto.length * 10) / 10
-                    : 0;
                 setText('an-kpi-over', over);
-                setText('an-kpi-yoy', withGasto.length ? ((avgYoy > 0 ? '+' : '') + avgYoy + '%') : '—');
+                if (yoyTxtShared == null) setLoading('an-kpi-yoy');
+                else setText('an-kpi-yoy', yoyTxtShared);
             }
         }
 
@@ -9189,7 +10326,8 @@
             if (c.proyLista) {
                 byEmp[c.empresa].av += c.avance;
                 byEmp[c.empresa].avN += 1;
-                byEmp[c.empresa].ppto += c.ppto;
+                // Misma base que gráfica/tabla: importe ya en moneda de vista (TC por mes).
+                byEmp[c.empresa].ppto += Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0;
             } else {
                 byEmp[c.empresa].proyPend += 1;
             }
@@ -9208,8 +10346,8 @@
                     ? (info.ventaPend === info.n ? htmlCargando('sm') : (moneyVista(info.gasto) + ' · ' + htmlCargando('sm')))
                     : moneyVista(info.gasto);
                 var proyTxt = info.proyPend
-                    ? (info.proyPend === info.n ? htmlCargando('sm') : (money(info.ppto) + ' · ' + htmlCargando('sm')))
-                    : money(info.ppto);
+                    ? (info.proyPend === info.n ? htmlCargando('sm') : (moneyGasto(info.ppto) + ' · ' + htmlCargando('sm')))
+                    : moneyGasto(info.ppto);
                 var bar = av == null
                     ? '<div class="mt-1">' + htmlCargando('sm') + '</div>'
                     : '<div class="cc-progress ' + cls + ' mt-1"><span style="width:' + av + '%"></span></div>';
@@ -9237,11 +10375,14 @@
                 var pptoVal = c.pptoVista != null ? c.pptoVista : c.ppto;
                 var proyCell = c.proyLista ? moneyGasto(pptoVal) : htmlCargando('sm');
                 var yoY = Number(c.yoY) || 0;
+                var showDelta = c.ventaLista && c.proyLista && Number(c.gasto);
+                var overLimite = !!(showDelta && yoY > 0);
                 var deltaCell = (c.ventaLista && c.proyLista)
                     ? (Number(c.gasto) ? ((yoY > 0 ? '+' : '') + yoY + '%') : '—')
                     : htmlCargando('sm');
+                var deltaCls = showDelta ? deltaToneClass(yoY) : '';
                 var limiteCell = (c.ventaLista && c.proyLista)
-                    ? (c.over ? '<span class="cc-badge cc-badge-rechazado">Sobre límite</span>' : '<span class="cc-badge cc-badge-aceptado">Dentro</span>')
+                    ? (overLimite ? '<span class="cc-badge cc-badge-aceptado">Sobre límite</span>' : '<span class="cc-badge cc-badge-rechazado">Dentro</span>')
                     : htmlCargando('sm');
                 return '<tr><td>' + htmlNombreCodigo(c.nombre || c.codigo, c.codigo) +
                     (cliSub ? '<div class="text-muted" style="font-size:.75rem">' + escapeHtml(cliSub) + '</div>' : '') + '</td>' +
@@ -9250,7 +10391,7 @@
                     '<td>' + capCell + '</td>' +
                     '<td class="num">' + ventaCell + '</td>' +
                     '<td class="num">' + proyCell + '</td>' +
-                    '<td class="num ' + (yoY > 10 ? 'text-danger' : '') + '">' + deltaCell + '</td>' +
+                    '<td class="num ' + deltaCls + '">' + deltaCell + '</td>' +
                     '<td>' + limiteCell + '</td>' +
                     '<td><a class="cc-btn" href="' + detalleHref(c) + '">Ver</a></td></tr>';
             }).join('') || '<tr><td colspan="9"><div class="cc-empty">Sin clientes con esos filtros</div></td></tr>';
@@ -9261,26 +10402,20 @@
             if (!tableRows.length) {
                 tf.innerHTML = '';
             } else {
-                var sumGasto = 0;
-                var sumPpto = 0;
-                var ventaPend = false;
-                var proyPend = false;
-                tableRows.forEach(function (c) {
-                    if (c.ventaLista) sumGasto += Number(c.gasto) || 0;
-                    else ventaPend = true;
-                    if (c.proyLista) sumPpto += Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0;
-                    else proyPend = true;
-                });
-                var yoyTot = (!ventaPend && !proyPend) ? deltaPct(sumPpto, sumGasto) : null;
                 var nCli = tableRows.length;
-                var gastoFoot = ventaPend ? (tableRows.some(function (c) { return c.ventaLista; }) ? (moneyDosDecimales(sumGasto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyDosDecimales(sumGasto);
-                var pptoFoot = proyPend ? (tableRows.some(function (c) { return c.proyLista; }) ? (moneyGasto(sumPpto) + ' · ' + htmlCargando('sm')) : htmlCargando('sm')) : moneyGasto(sumPpto);
-                var deltaFoot = yoyTot == null ? htmlCargando('sm') : (sumGasto ? ((yoyTot > 0 ? '+' : '') + yoyTot + '%') : '—');
+                var gastoFoot = ventaPendYoy
+                    ? (tableRows.some(function (c) { return c.ventaLista; }) ? (moneyDosDecimales(sumGastoYoy) + ' · ' + htmlCargando('sm')) : htmlCargando('sm'))
+                    : moneyDosDecimales(sumGastoYoy);
+                var pptoFoot = proyPendYoy
+                    ? (tableRows.some(function (c) { return c.proyLista; }) ? (moneyGasto(sumPptoYoy) + ' · ' + htmlCargando('sm')) : htmlCargando('sm'))
+                    : moneyGasto(sumPptoYoy);
+                var deltaFoot = yoyTxtShared == null ? htmlCargando('sm') : yoyTxtShared;
+                var deltaFootCls = (yoyTotShared != null && sumGastoYoy) ? deltaToneClass(yoyTotShared) : '';
                 tf.innerHTML = '<tr>' +
                     '<td colspan="4">Totales · ' + nCli + (nCli === 1 ? ' cliente' : ' clientes') + '</td>' +
                     '<td class="num">' + gastoFoot + '</td>' +
                     '<td class="num">' + pptoFoot + '</td>' +
-                    '<td class="num' + (yoyTot > 10 ? ' text-danger' : '') + '">' + deltaFoot + '</td>' +
+                    '<td class="num ' + deltaFootCls + '">' + deltaFoot + '</td>' +
                     '<td colspan="2"></td>' +
                     '</tr>';
             }
@@ -9593,6 +10728,9 @@
     function initCostos() {
         var url = CC.state.costosUrl || '/ProyeccionesVentas/api/costos';
         var puedeEditar = !!CC.state.puedeEditarCostos;
+        var puedePrecioLista = !!CC.state.puedeObtenerPrecioLista;
+        var puedeSoloAsignados = !!CC.state.puedeFiltrarSoloAsignados;
+        var soloAsignados = false;
         var items = [];
         var page = 1;
         var lastPage = 1;
@@ -9611,6 +10749,7 @@
         var pageLabel = document.getElementById('pv-costos-page-label');
         var prevBtn = document.getElementById('pv-costos-prev');
         var nextBtn = document.getElementById('pv-costos-next');
+        var soloAsigBtn = document.getElementById('pv-costos-solo-asignados');
         if (!tbody) return;
 
         // Botones que modifican precios: solo con permiso editar_ventas_costos.
@@ -9630,6 +10769,28 @@
                 el.disabled = true;
             }
         });
+
+        function paintSoloAsignadosBtn() {
+            if (!soloAsigBtn) return;
+            if (!puedeSoloAsignados) {
+                soloAsigBtn.hidden = true;
+                return;
+            }
+            soloAsigBtn.hidden = false;
+            soloAsigBtn.classList.toggle('cc-btn-ink', !!soloAsignados);
+            soloAsigBtn.setAttribute('aria-pressed', soloAsignados ? 'true' : 'false');
+            soloAsigBtn.title = soloAsignados
+                ? 'Filtro activo: solo asignados con cantidad capturada (> 0). Clic para ver todos los productos.'
+                : 'Mostrar solo productos asignados a usuarios y con cantidad registrada (oculta meses en 0)';
+        }
+        paintSoloAsignadosBtn();
+        if (soloAsigBtn && puedeSoloAsignados) {
+            soloAsigBtn.addEventListener('click', function () {
+                soloAsignados = !soloAsignados;
+                paintSoloAsignadosBtn();
+                load(1);
+            });
+        }
 
         function costosAnio() {
             var fromSel = anioSel ? Number(anioSel.value) : 0;
@@ -9674,28 +10835,41 @@
             if (!empSel) return;
             var cur = empSel.value || '';
             var set = {};
-            (CC.state.empresasLocales || []).forEach(function (e) {
-                var code = String(e.codigo || e.id || e.nombre || '').toUpperCase();
-                if (code) set[code] = e.nombre || code;
-            });
-            ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'].forEach(function (k) {
-                if (!set[k]) set[k] = k;
-            });
+            var permitidas = CC._costosEmpresasPermitidas;
+            var restringido = !!CC._costosAlcanceRestringido;
+            if (restringido && Array.isArray(permitidas) && permitidas.length) {
+                permitidas.forEach(function (k) {
+                    var code = String(k || '').toUpperCase();
+                    if (code) set[code] = code;
+                });
+            } else if (!restringido) {
+                (CC.state.empresasLocales || []).forEach(function (e) {
+                    var code = String(e.codigo || e.id || e.nombre || '').toUpperCase();
+                    if (code) set[code] = e.nombre || code;
+                });
+                ['AUSTIN', 'IMSA', 'PITIC', 'SYDNEY'].forEach(function (k) {
+                    if (!set[k]) set[k] = k;
+                });
+            }
             items.forEach(function (it) {
-                if (it.empresa) set[String(it.empresa).toUpperCase()] = it.empresa;
+                if (it.empresa) set[String(it.empresa).toUpperCase()] = String(it.empresa).toUpperCase();
             });
-            var opts = '<option value="">Todas las empresas</option>';
+            var opts = '<option value="">' + (restringido ? 'Mis empresas' : 'Todas las empresas') + '</option>';
             Object.keys(set).sort().forEach(function (k) {
                 opts += '<option value="' + escapeHtml(k) + '"' + (k === cur ? ' selected' : '') + '>' +
                     escapeHtml(set[k]) + '</option>';
             });
             empSel.innerHTML = opts;
-            if (cur) empSel.value = cur;
+            if (cur && set[cur]) empSel.value = cur;
+            else if (cur && !set[cur]) empSel.value = '';
         }
 
         function updatePager() {
             if (hint) {
-                hint.textContent = total + (total === 1 ? ' registro' : ' registros');
+                var base = total + (total === 1 ? ' registro' : ' registros');
+                hint.textContent = soloAsignados
+                    ? (base + ' · solo asignados con cantidad > 0')
+                    : base;
             }
             if (pageInfo) {
                 pageInfo.textContent = total
@@ -9711,13 +10885,19 @@
             var MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
             updatePager();
             if (!items.length) {
-                tbody.innerHTML = '<tr><td colspan="11"><div class="cc-empty">Sin productos para mostrar</div></td></tr>';
+                tbody.innerHTML = '<tr><td colspan="12"><div class="cc-empty">Sin productos para mostrar</div></td></tr>';
                 return;
             }
             tbody.innerHTML = items.map(function (it, idx) {
                 var mon = String(it.moneda || 'MXN').toUpperCase();
                 var costoTxt = (mon === 'USD' ? 'US$' : '$') +
                     (Number(it.costo_unitario) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                var listaPrecio = it.precio_lista != null && it.precio_lista !== '' ? Number(it.precio_lista) : null;
+                var listaMon = String(it.moneda_lista || mon || 'MXN').toUpperCase();
+                var listaTxt = (listaPrecio != null && isFinite(listaPrecio) && listaPrecio > 0)
+                    ? ((listaMon === 'USD' ? 'US$' : '$') +
+                        listaPrecio.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+                    : '—';
                 var codigo = String(it.producto_codigo || '').trim();
                 var nombre = String(it.producto_nombre || '').trim();
                 if (nombre && nombre.toUpperCase() === codigo.toUpperCase()) nombre = '';
@@ -9730,6 +10910,7 @@
                     '<td>' + escapeHtml(nombre || '—') + '</td>' +
                     '<td>' + escapeHtml(mesesLabel) + '</td>' +
                     '<td class="num fw-semibold">' + escapeHtml(costoTxt) + '</td>' +
+                    '<td class="num" title="Precio lista SAP">' + escapeHtml(listaTxt) + '</td>' +
                     '<td>' + escapeHtml(mon) + '</td>' +
                     '<td>' + (it.tiene_maestro
                         ? '<span class="cc-badge cc-badge-aceptado">Maestro</span>'
@@ -9753,8 +10934,20 @@
                     ' data-card="' + escapeHtml(it.card_code || '') + '"' +
                     ' data-mes="0"' +
                     ' title="Actualizar precio global desde listaPreciosventa">' +
-                    '<i class="fa-solid fa-cloud-arrow-down"></i></button>' +
-                    '<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
+                    '<i class="fa-solid fa-cloud-arrow-down"></i></button>')
+                        : '') +
+                    (puedePrecioLista
+                        ? ('<button type="button" class="cc-btn cc-btn-sm" data-sync-precio-lista' +
+                    ' data-emp="' + escapeHtml(it.empresa) + '"' +
+                    ' data-cod="' + escapeHtml(codigo) + '"' +
+                    ' data-nom="' + escapeHtml(nombre || codigo) + '"' +
+                    ' data-card="' + escapeHtml(it.card_code || '') + '"' +
+                    ' data-mon="' + escapeHtml(mon) + '"' +
+                    ' title="Actualizar Precio lista de este producto">' +
+                    '<i class="fa-solid fa-tag"></i></button>')
+                        : '') +
+                    (puedeEditar
+                        ? ('<button type="button" class="cc-btn cc-btn-sm" data-edit-meses-costo data-idx="' + idx + '"' +
                     ' title="Editar precios por mes">' +
                     '<i class="fa-solid fa-calendar-days"></i></button>')
                         : '') +
@@ -9784,6 +10977,12 @@
                 btn.addEventListener('click', function () {
                     if (!puedeEditar) return;
                     actualizarPrecioDesdeApi(btn);
+                });
+            });
+            tbody.querySelectorAll('[data-sync-precio-lista]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    if (!puedePrecioLista) return;
+                    actualizarPrecioListaProducto(btn);
                 });
             });
         }
@@ -10032,6 +11231,97 @@
 
         bindCostoMesesUi();
 
+        /** Actualiza solo precio_lista de UN producto vía /listaPreciosventa/{EMPRESA}. */
+        function actualizarPrecioListaProducto(btn) {
+            var emp = String(btn.getAttribute('data-emp') || '').toUpperCase();
+            var cod = String(btn.getAttribute('data-cod') || '').trim();
+            var card = String(btn.getAttribute('data-card') || '').trim();
+            var nom = btn.getAttribute('data-nom') || cod;
+            var mon = String(btn.getAttribute('data-mon') || 'MXN').toUpperCase() || 'MXN';
+            var loteUrl = CC.state.costosSyncPrecioListaLoteUrl || (url + '/sincronizar-precio-lista-lote');
+            if (!emp || !cod) {
+                toast('error', 'Datos incompletos', 'Falta empresa o ItemCode.');
+                return;
+            }
+            if (!card) {
+                toast('error', 'Sin CardCode', 'Se necesita CardCode para consultar listaPreciosventa.');
+                return;
+            }
+            var go = function () {
+                var prevHtml = btn.innerHTML;
+                btn.disabled = true;
+                btn.setAttribute('aria-busy', 'true');
+                btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+                fetch(loteUrl, {
+                    method: 'POST',
+                    headers: apiJsonHeaders(),
+                    body: JSON.stringify({
+                        empresa: emp,
+                        card_code: card,
+                        anio_proyeccion: costosAnio(),
+                        solo_vacios: false,
+                        sync_precio_global: true,
+                        items: [{
+                            item_code: cod,
+                            producto: nom || cod,
+                            moneda: mon
+                        }]
+                    })
+                }).then(function (r) {
+                    return r.text().then(function (txt) {
+                        var json = null;
+                        try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                        if (!r.ok) {
+                            throw new Error((json && json.message) || ('HTTP ' + r.status));
+                        }
+                        return json || {};
+                    });
+                }).then(function (json) {
+                    var n = Number(json.actualizados) || 0;
+                    var nG = Number(json.actualizados_global) || 0;
+                    var omit = Number(json.omitidos_sin_lista) || 0;
+                    if (n > 0) {
+                        toast('success', 'Sincronizado con SAP',
+                            (nom || cod) + ' · ' + card +
+                            (nG ? (' · Precio global: ' + nG) : '') +
+                            (json.message ? (' · ' + json.message) : ''));
+                        load(page);
+                    } else if (omit > 0) {
+                        toast('warning', 'Sin precio en SAP',
+                            'No hay Precio lista en listaPreciosventa para ' + cod + ' / ' + card + '.');
+                    } else {
+                        toast('info', 'Sin cambios', json.message || 'No se actualizó el Precio lista.');
+                    }
+                }).catch(function (err) {
+                    toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+                }).then(function () {
+                    btn.disabled = false;
+                    btn.removeAttribute('aria-busy');
+                    btn.innerHTML = prevHtml || '<i class="fa-solid fa-tag"></i>';
+                });
+            };
+            if (window.Swal) {
+                Swal.fire({
+                    icon: 'question',
+                    title: '¿Actualizar Precio lista?',
+                    html: '<div style="text-align:left;font-size:.9rem">' +
+                        '<div><strong>' + escapeHtml(nom || cod) + '</strong></div>' +
+                        '<div class="text-muted">ItemCode: ' + escapeHtml(cod) +
+                        ' · CardCode: ' + escapeHtml(card) +
+                        ' · ' + escapeHtml(emp) + '</div>' +
+                        '<div class="mt-2">Consulta <code>/listaPreciosventa/' + escapeHtml(emp) +
+                        '</code>, actualiza <strong>Precio lista</strong> y alinea <strong>Precio global</strong> si difiere de SAP.</div>' +
+                        '</div>',
+                    showCancelButton: true,
+                    confirmButtonText: 'Actualizar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#0a0a0a'
+                }).then(function (r) { if (r.isConfirmed) go(); });
+                return;
+            }
+            if (window.confirm('¿Actualizar Precio lista de ' + cod + ' (' + card + ')?')) go();
+        }
+
         function actualizarPrecioDesdeApi(btn) {
             var emp = btn.getAttribute('data-emp') || '';
             var cod = btn.getAttribute('data-cod') || '';
@@ -10132,6 +11422,9 @@
             params.push('page=' + encodeURIComponent(String(goPage || page || 1)));
             params.push('per_page=' + encodeURIComponent(String(perPage)));
             params.push('anio=' + encodeURIComponent(String(costosAnio())));
+            if (soloAsignados && puedeSoloAsignados) {
+                params.push('solo_asignados=1');
+            }
             return params.length ? ('?' + params.join('&')) : '';
         }
 
@@ -10149,9 +11442,14 @@
                     lastPage = Number(json && json.last_page) || 1;
                     from = Number(json && json.from) || 0;
                     to = Number(json && json.to) || 0;
+                    CC._costosAlcanceRestringido = !!(json && json.alcance_restringido);
+                    CC._costosEmpresasPermitidas = (json && json.empresas_permitidas) || [];
                     fillAnios((json && json.anios) || [], (json && json.anio) || costosAnio());
                     fillEmpresas();
                     render();
+                    if (hint && json && json.mensaje && !items.length) {
+                        hint.textContent = String(json.mensaje);
+                    }
                 })
                 .catch(function () {
                     items = [];
@@ -10159,7 +11457,7 @@
                     from = 0;
                     to = 0;
                     lastPage = 1;
-                    tbody.innerHTML = '<tr><td colspan="11"><div class="cc-empty">No se pudieron cargar los precios</div></td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="12"><div class="cc-empty">No se pudieron cargar los precios</div></td></tr>';
                     if (hint) hint.textContent = 'Error al cargar';
                     updatePager();
                 });
@@ -11036,6 +12334,285 @@
             }
         }
 
+        var plistaBtn = document.getElementById('pv-costos-sync-precio-lista');
+        if (plistaBtn) {
+            var plistaListUrl = CC.state.costosSinPrecioListaUrl || (url + '/sin-precio-lista');
+            var plistaLoteUrl = CC.state.costosSyncPrecioListaLoteUrl || (url + '/sincronizar-precio-lista-lote');
+            var plistaEmpEl = document.getElementById('pv-plista-empresa');
+            var plistaAnioLabel = document.getElementById('pv-plista-anio-label');
+            var plistaHint = document.getElementById('pv-plista-hint');
+            var plistaEjecutar = document.getElementById('pv-plista-ejecutar');
+            var plistaCancelar = document.getElementById('pv-plista-cancelar');
+            var plistaProgWrap = document.getElementById('pv-plista-progress-wrap');
+            var plistaProgLabel = document.getElementById('pv-plista-progress-label');
+            var plistaProgPct = document.getElementById('pv-plista-progress-pct');
+            var plistaProgBar = document.getElementById('pv-plista-progress-bar');
+            var plistaProgDetail = document.getElementById('pv-plista-progress-detail');
+            var plistaBusy = false;
+            var plistaAbort = false;
+            var plistaSyncGlobalEl = document.getElementById('pv-plista-sync-global');
+            var plistaTodosEl = document.getElementById('pv-plista-todos');
+
+            function openPlistaModal() {
+                plistaAbort = false;
+                if (plistaAnioLabel) plistaAnioLabel.textContent = 'Proy. ' + costosAnio();
+                if (plistaEmpEl) {
+                    var empFiltro = empSel ? String(empSel.value || '').toUpperCase() : '';
+                    if (empFiltro) plistaEmpEl.value = empFiltro;
+                }
+                if (plistaProgWrap) plistaProgWrap.style.display = 'none';
+                if (plistaProgBar) plistaProgBar.style.width = '0%';
+                if (plistaHint) {
+                    plistaHint.textContent = 'Endpoint: /listaPreciosventa/' + (plistaEmpEl && plistaEmpEl.value ? plistaEmpEl.value : '{EMPRESA}');
+                }
+                showModal('modalPvSyncPrecioLista');
+            }
+
+            function parsePlistaResp(r) {
+                return r.text().then(function (txt) {
+                    var json = null;
+                    try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                    if (!r.ok) {
+                        var msg = (json && json.message) || ('HTTP ' + r.status);
+                        if (r.status === 504 || r.status === 502 || /maximum execution|timeout/i.test(txt || '')) {
+                            msg = 'Timeout en este cliente. Se puede continuar con el siguiente.';
+                        }
+                        throw new Error(msg);
+                    }
+                    return json || {};
+                });
+            }
+
+            function setPlistaProgress(idx, total, card, extra) {
+                var pct = total > 0 ? Math.round((idx / total) * 100) : 0;
+                if (plistaProgWrap) plistaProgWrap.style.display = '';
+                if (plistaProgLabel) {
+                    plistaProgLabel.textContent = card
+                        ? ('Cliente ' + idx + '/' + total + ' · ' + card)
+                        : 'Preparando…';
+                }
+                if (plistaProgPct) plistaProgPct.textContent = pct + '%';
+                if (plistaProgBar) plistaProgBar.style.width = pct + '%';
+                if (plistaProgDetail) plistaProgDetail.textContent = extra || '';
+                if (hint) hint.textContent = extra || ('Obteniendo Precio lista… ' + pct + '%');
+            }
+
+            function procesarPlistaLotes(emp, clientes, opts) {
+                opts = opts || {};
+                var soloVacios = opts.solo_vacios !== false;
+                var syncGlobal = opts.sync_precio_global !== false;
+                var i = 0;
+                var totalCli = clientes.length;
+                var actualizados = 0;
+                var actualizadosGlobal = 0;
+                var omitidos = 0;
+                var errores = [];
+                var okCli = 0;
+
+                function next() {
+                    if (plistaAbort) {
+                        return Promise.resolve({
+                            aborted: true,
+                            actualizados: actualizados,
+                            actualizados_global: actualizadosGlobal,
+                            omitidos_sin_lista: omitidos,
+                            errores: errores,
+                            clientes_ok: okCli,
+                            clientes_total: totalCli
+                        });
+                    }
+                    if (i >= totalCli) {
+                        return Promise.resolve({
+                            aborted: false,
+                            actualizados: actualizados,
+                            actualizados_global: actualizadosGlobal,
+                            omitidos_sin_lista: omitidos,
+                            errores: errores,
+                            clientes_ok: okCli,
+                            clientes_total: totalCli
+                        });
+                    }
+                    var cli = clientes[i++];
+                    var card = String(cli.card_code || '').trim();
+                    var items = Array.isArray(cli.items) ? cli.items : [];
+                    setPlistaProgress(i, totalCli, card,
+                        'Actualizados: ' + actualizados +
+                        (actualizadosGlobal ? (' · global: ' + actualizadosGlobal) : '') +
+                        (omitidos ? (' · sin lista: ' + omitidos) : '') +
+                        (errores.length ? (' · errores: ' + errores.length) : ''));
+                    if (plistaHint) {
+                        plistaHint.textContent = 'Consultando /listaPreciosventa/' + emp + ' · ' + card +
+                            ' (' + items.length + ' ítem(s))…';
+                    }
+
+                    return fetch(plistaLoteUrl, {
+                        method: 'POST',
+                        headers: apiJsonHeaders(),
+                        body: JSON.stringify({
+                            empresa: emp,
+                            card_code: card,
+                            cliente: cli.cliente || '',
+                            anio_proyeccion: costosAnio(),
+                            solo_vacios: soloVacios,
+                            sync_precio_global: syncGlobal,
+                            items: items.map(function (it) {
+                                return {
+                                    item_code: it.item_code || it.codigo || '',
+                                    producto: it.producto || '',
+                                    moneda: it.moneda || 'MXN'
+                                };
+                            })
+                        })
+                    }).then(parsePlistaResp).then(function (json) {
+                        okCli++;
+                        actualizados += Number(json.actualizados) || 0;
+                        actualizadosGlobal += Number(json.actualizados_global) || 0;
+                        omitidos += Number(json.omitidos_sin_lista) || 0;
+                        return next();
+                    }).catch(function (err) {
+                        errores.push(card + ': ' + (err && err.message ? err.message : 'Error'));
+                        return next();
+                    });
+                }
+
+                return next();
+            }
+
+            plistaBtn.addEventListener('click', function () {
+                if (!puedeEditar) {
+                    toast('warning', 'Sin permiso', 'No puedes editar precios del maestro.');
+                    return;
+                }
+                openPlistaModal();
+            });
+
+            if (plistaCancelar) {
+                plistaCancelar.addEventListener('click', function () {
+                    if (plistaBusy) plistaAbort = true;
+                });
+            }
+
+            if (plistaEjecutar) {
+                plistaEjecutar.addEventListener('click', function () {
+                    if (plistaBusy) return;
+                    var emp = plistaEmpEl ? String(plistaEmpEl.value || '').toUpperCase() : '';
+                    if (!emp) {
+                        toast('warning', 'Empresa', 'Selecciona una empresa.');
+                        return;
+                    }
+                    plistaBusy = true;
+                    plistaAbort = false;
+                    plistaEjecutar.disabled = true;
+                    plistaBtn.disabled = true;
+                    if (plistaEmpEl) plistaEmpEl.disabled = true;
+                    var prevHtml = plistaEjecutar.innerHTML;
+                    plistaEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Armando…';
+                    // Si no hay DOM de opciones, asumir ambas activas (caso típico: corregir vs SAP).
+                    var soloVaciosPlista = plistaTodosEl ? !plistaTodosEl.checked : false;
+                    var syncGlobalPlista = plistaSyncGlobalEl ? !!plistaSyncGlobalEl.checked : true;
+                    setPlistaProgress(0, 1, '', soloVaciosPlista
+                        ? 'Leyendo maestro local (sin Precio lista)…'
+                        : 'Leyendo maestro local (todos los productos)…');
+
+                    var qs = '?empresa=' + encodeURIComponent(emp) +
+                        '&anio_proyeccion=' + encodeURIComponent(String(costosAnio())) +
+                        '&solo_vacios=' + (soloVaciosPlista ? '1' : '0');
+
+                    fetch(plistaListUrl + qs, {
+                        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    }).then(parsePlistaResp).then(function (json) {
+                        var clientes = (json && json.clientes) || [];
+                        var total = Number(json.total) || 0;
+                        var sinCard = Number(json.sin_card) || 0;
+                        if (!clientes.length) {
+                            if (window.Swal) {
+                                Swal.fire({
+                                    icon: 'info',
+                                    title: 'Nada que sincronizar',
+                                    text: json.message || ('No hay productos sin Precio lista en ' + emp + '.'),
+                                    confirmButtonColor: '#0a0a0a'
+                                });
+                            } else {
+                                window.alert(json.message || 'Nada que sincronizar.');
+                            }
+                            return null;
+                        }
+                        var askHtml = '<div style="text-align:left;font-size:.9rem">' +
+                            '<p style="margin:0 0 .5rem">Empresa <b>' + escapeHtml(emp) + '</b> · ' +
+                            '<code>/listaPreciosventa/' + escapeHtml(emp) + '</code></p>' +
+                            '<p style="margin:0 0 .5rem"><b>' + total + '</b> producto(s) · <b>' +
+                            clientes.length + '</b> cliente(s).</p>' +
+                            (sinCard ? ('<p style="margin:0;color:#b45309">' + sinCard +
+                                ' sin CardCode se omiten.</p>') : '') +
+                            '<p style="margin:.65rem 0 0;color:#71717a;font-size:.82rem">' +
+                            (syncGlobalPlista
+                                ? 'Se actualiza Precio lista y Precio global si difiere de SAP.'
+                                : 'Solo se actualiza Precio lista (Precio global no cambia).') +
+                            '</p></div>';
+
+                        var ask = window.Swal
+                            ? Swal.fire({
+                                icon: 'question',
+                                title: '¿Sincronizar con SAP?',
+                                html: askHtml,
+                                width: '36rem',
+                                showCancelButton: true,
+                                focusCancel: true,
+                                confirmButtonText: 'Sí, procesar ' + clientes.length + ' cliente(s)',
+                                cancelButtonText: 'Cancelar',
+                                confirmButtonColor: '#0a0a0a',
+                                cancelButtonColor: '#6b7280'
+                            }).then(function (res) { return !!(res && res.isConfirmed); })
+                            : Promise.resolve(window.confirm((json.message || '') + '\n\n¿Continuar?'));
+
+                        return ask.then(function (ok) {
+                            if (!ok) return null;
+                            plistaEjecutar.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Procesando…';
+                            return procesarPlistaLotes(emp, clientes, {
+                                solo_vacios: soloVaciosPlista,
+                                sync_precio_global: syncGlobalPlista
+                            });
+                        });
+                    }).then(function (res) {
+                        if (!res) return;
+                        var n = Number(res.actualizados) || 0;
+                        var nG = Number(res.actualizados_global) || 0;
+                        var msg = (res.aborted ? 'Detenido. ' : '') +
+                            n + ' fila(s) actualizada(s)' +
+                            (nG ? (' · Precio global: ' + nG) : '') +
+                            ' · ' + (res.clientes_ok || 0) + '/' + (res.clientes_total || 0) + ' cliente(s)' +
+                            (res.omitidos_sin_lista ? (' · ' + res.omitidos_sin_lista + ' sin lista SAP') : '') +
+                            ((res.errores && res.errores.length) ? (' · ' + res.errores.length + ' con error') : '');
+                        if (n > 0) {
+                            toast('success', res.aborted ? 'Parcial' : 'Sincronización lista', msg);
+                            if (empSel) empSel.value = emp;
+                            load();
+                        } else if (res.errores && res.errores.length) {
+                            toast('error', 'No se actualizó', res.errores.slice(0, 2).join('; '));
+                        } else {
+                            toast('info', 'Sin cambios', msg || 'Ningún Precio lista se actualizó.');
+                        }
+                        if (!res.aborted && n > 0) {
+                            hideModal('modalPvSyncPrecioLista');
+                        }
+                    }).catch(function (err) {
+                        toast('error', 'No se actualizó', err && err.message ? err.message : 'Error');
+                    }).then(function () {
+                        plistaBusy = false;
+                        plistaAbort = false;
+                        plistaEjecutar.disabled = false;
+                        plistaBtn.disabled = false;
+                        if (plistaEmpEl) plistaEmpEl.disabled = false;
+                        plistaEjecutar.innerHTML = prevHtml || '<i class="fa-solid fa-cloud-arrow-down"></i> Obtener precios';
+                        if (plistaHint) {
+                            plistaHint.textContent = 'Endpoint por empresa: /listaPreciosventa/AUSTIN|IMSA|PITIC|SYDNEY';
+                        }
+                        if (hint) hint.textContent = '';
+                    });
+                });
+            }
+        }
+
         var excelBtn = document.getElementById('pv-costos-excel');
         if (excelBtn) {
             excelBtn.addEventListener('click', function () {
@@ -11047,62 +12624,450 @@
             dlBtn.addEventListener('click', function () {
                 var plantillaUrl = CC.state.costosPlantillaUrl || (url + '/plantilla');
                 var emp = empSel ? String(empSel.value || '') : '';
+                var cliente = clienteEl ? String(clienteEl.value || '').trim() : '';
+                var itemcode = itemEl ? String(itemEl.value || '').trim() : '';
                 var qs = '?anio=' + encodeURIComponent(String(costosAnio()));
                 if (emp) qs += '&empresa=' + encodeURIComponent(emp);
+                if (cliente) qs += '&cliente=' + encodeURIComponent(cliente);
+                if (itemcode) qs += '&itemcode=' + encodeURIComponent(itemcode);
+                if (soloAsignados && puedeSoloAsignados) qs += '&solo_asignados=1';
                 window.location.href = plantillaUrl + qs;
             });
         }
         var upBtn = document.getElementById('pv-precios-subir');
         var fileEl = document.getElementById('pv-precios-archivo');
         var excelHint = document.getElementById('pv-precios-excel-hint');
+        var excelProgWrap = document.getElementById('pv-precios-progress-wrap');
+        var excelProgLabel = document.getElementById('pv-precios-progress-label');
+        var excelProgPct = document.getElementById('pv-precios-progress-pct');
+        var excelProgBar = document.getElementById('pv-precios-progress-bar');
+        var excelProgDetail = document.getElementById('pv-precios-progress-detail');
+        var excelResumeBox = document.getElementById('pv-precios-resume-box');
+        var excelResumeMsg = document.getElementById('pv-precios-resume-msg');
+        var excelReanudarBtn = document.getElementById('pv-precios-reanudar');
+        var excelSaltarBtn = document.getElementById('pv-precios-saltar');
+        var excelCancelarBtn = document.getElementById('pv-precios-cancelar');
+        var excelImportBusy = false;
+        var excelImportAbort = false;
+        var excelImportState = null;
+        var excelBatchLimit = 30;
+
+        function setExcelProgress(done, total, extra) {
+            var pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            if (excelProgWrap) excelProgWrap.style.display = '';
+            if (excelProgLabel) {
+                excelProgLabel.textContent = total > 0
+                    ? ('Producto único ' + done + ' / ' + total)
+                    : 'Preparando…';
+            }
+            if (excelProgPct) excelProgPct.textContent = pct + '%';
+            if (excelProgBar) excelProgBar.style.width = pct + '%';
+            if (excelProgDetail) excelProgDetail.textContent = extra || '';
+        }
+
+        function hideExcelResume() {
+            if (excelResumeBox) excelResumeBox.style.display = 'none';
+            if (excelResumeMsg) excelResumeMsg.textContent = '';
+        }
+
+        function showExcelResume(msg, state) {
+            excelImportState = state;
+            if (excelResumeBox) excelResumeBox.style.display = '';
+            if (excelResumeMsg) excelResumeMsg.textContent = msg || '';
+            if (excelCancelarBtn) excelCancelarBtn.style.display = 'none';
+            if (upBtn) upBtn.disabled = false;
+            if (fileEl) fileEl.disabled = false;
+        }
+
+        function resetExcelImportUi() {
+            excelImportBusy = false;
+            excelImportAbort = false;
+            if (upBtn) {
+                upBtn.disabled = false;
+                upBtn.innerHTML = '<i class="fa-solid fa-upload"></i> Subir y actualizar';
+            }
+            if (fileEl) fileEl.disabled = false;
+            if (excelCancelarBtn) excelCancelarBtn.style.display = 'none';
+            if (excelHint) {
+                excelHint.textContent = 'Solo se escriben filas con cambios. Por lotes (barra de progreso); si hay timeout o error puedes reanudar.';
+            }
+        }
+
+        function parseExcelImportResp(r) {
+            return r.text().then(function (txt) {
+                var json = null;
+                try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+                var timedOut = r.status === 504 || r.status === 502
+                    || /maximum execution|timeout|Gateway/i.test(txt || '');
+                if (!r.ok) {
+                    var err = new Error((json && json.message) || ('HTTP ' + r.status));
+                    err.status = r.status;
+                    err.json = json;
+                    err.timedOut = timedOut;
+                    err.reanudable = !!(json && json.reanudable);
+                    throw err;
+                }
+                return json || {};
+            });
+        }
+
+        function acumularExcelStats(acc, json) {
+            acc.actualizados += Number(json.actualizados) || 0;
+            acc.creados += Number(json.creados) || 0;
+            acc.sin_cambios += Number(json.sin_cambios) || 0;
+            acc.omitidos = Number(json.omitidos) || acc.omitidos;
+            acc.proyecciones += Number(json.proyecciones_actualizadas) || 0;
+            if (json.resumen_parse && typeof json.resumen_parse === 'object') {
+                acc.resumen_parse = json.resumen_parse;
+            }
+            if (json.errores && json.errores.length) {
+                acc.errores = acc.errores.concat(json.errores);
+            }
+            return acc;
+        }
+
+        function textoResumenParse(rp) {
+            if (!rp) return '';
+            var parts = [];
+            if (rp.filas_datos) parts.push(rp.filas_datos + ' filas Excel');
+            if (rp.productos) parts.push(rp.productos + ' únicos');
+            if (rp.meses_columnas) parts.push(rp.meses_columnas + ' cols mes');
+            if (rp.productos_con_meses) parts.push(rp.productos_con_meses + ' con Ene–Dic');
+            if (rp.duplicados) parts.push(rp.duplicados + ' duplicados');
+            if (rp.omitidos_sin_precio) parts.push(rp.omitidos_sin_precio + ' sin precio');
+            if (rp.omitidos_vacias) parts.push(rp.omitidos_vacias + ' vacías');
+            if (rp.errores_parse) parts.push(rp.errores_parse + ' con error');
+            return parts.length ? parts.join(' · ') : '';
+        }
+
+        function resumenExcelStats(acc) {
+            var base = (acc.actualizados + acc.creados) + ' aplicados'
+                + (acc.actualizados ? (' · ' + acc.actualizados + ' act.') : '')
+                + (acc.creados ? (' · ' + acc.creados + ' nuevos') : '')
+                + (acc.sin_cambios ? (' · ' + acc.sin_cambios + ' sin cambios') : '')
+                + (acc.proyecciones ? (' · ' + acc.proyecciones + ' proy.') : '')
+                + (acc.errores.length ? (' · ' + acc.errores.length + ' avisos') : '');
+            var parseTxt = textoResumenParse(acc.resumen_parse);
+            return parseTxt ? (base + ' | ' + parseTxt) : base;
+        }
+
+        function postExcelLote(opts) {
+            var importUrl = CC.state.costosImportExcelUrl || (url + '/importar-excel');
+            var fd = new FormData();
+            fd.append('anio', String(costosAnio()));
+            fd.append('offset', String(opts.offset || 0));
+            fd.append('limit', String(opts.limit || excelBatchLimit));
+            if (opts.token) {
+                fd.append('token', opts.token);
+            } else if (opts.file) {
+                fd.append('archivo', opts.file);
+            }
+            return fetch(importUrl, {
+                method: 'POST',
+                headers: {
+                    Accept: 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrfToken()
+                },
+                body: fd
+            }).then(parseExcelImportResp);
+        }
+
+        function correrImportExcel(startOpts) {
+            var acc = startOpts.acc || {
+                actualizados: 0,
+                creados: 0,
+                sin_cambios: 0,
+                omitidos: 0,
+                proyecciones: 0,
+                errores: []
+            };
+            var token = startOpts.token || null;
+            var offset = Number(startOpts.offset) || 0;
+            var file = startOpts.file || null;
+            var first = !token;
+            var timeoutRetries = 0;
+
+            function next() {
+                if (excelImportAbort) {
+                    return Promise.resolve({
+                        aborted: true,
+                        token: token,
+                        offset: offset,
+                        acc: acc
+                    });
+                }
+                setExcelProgress(offset, startOpts.totalHint || offset || 1,
+                    first ? 'Leyendo Excel y aplicando primer lote…' : resumenExcelStats(acc));
+                if (excelHint) {
+                    excelHint.textContent = first
+                        ? 'Subiendo archivo y parseando…'
+                        : ('Aplicando lote desde ' + offset + '…');
+                }
+
+                return postExcelLote({
+                    file: first ? file : null,
+                    token: token,
+                    offset: offset,
+                    limit: excelBatchLimit
+                }).then(function (json) {
+                    first = false;
+                    timeoutRetries = 0;
+                    token = json.token || token;
+                    acumularExcelStats(acc, json);
+                    var total = Number(json.total) || 0;
+                    var nextOff = Number(json.next_offset);
+                    if (isNaN(nextOff)) nextOff = offset;
+                    offset = nextOff;
+                    startOpts.totalHint = total;
+                    setExcelProgress(offset, total || 1, resumenExcelStats(acc)
+                        + (json.ultima_fila_excel ? (' · última fila Excel: ' + json.ultima_fila_excel) : ''));
+
+                    if (json.done) {
+                        return { aborted: false, done: true, token: token, offset: offset, acc: acc, json: json };
+                    }
+                    return next();
+                }).catch(function (err) {
+                    var json = err && err.json ? err.json : null;
+                    // Timeout o gateway: reintenta el mismo offset (idempotente: sin cambios se omiten).
+                    if (err && err.timedOut && token && timeoutRetries < 3) {
+                        timeoutRetries++;
+                        if (excelHint) {
+                            excelHint.textContent = 'Timeout · reintento ' + timeoutRetries
+                                + '/3 desde producto ' + offset + '…';
+                        }
+                        return new Promise(function (resolve) { setTimeout(resolve, 800); }).then(next);
+                    }
+                    if (json) {
+                        acumularExcelStats(acc, json);
+                        token = json.token || token;
+                        var nextOff = Number(json.next_offset);
+                        if (!isNaN(nextOff)) offset = nextOff;
+                        var total = Number(json.total) || startOpts.totalHint || 0;
+                        setExcelProgress(offset, total || 1, resumenExcelStats(acc));
+                    }
+                    var fila = json && json.ultima_fila_excel
+                        ? json.ultima_fila_excel
+                        : null;
+                    var msg = (err && err.message) || 'Error al importar';
+                    if (fila) {
+                        msg = 'Detenido en fila Excel ' + fila + '. ' + msg;
+                    }
+                    msg += ' · Avance: ' + offset + (startOpts.totalHint ? ('/' + startOpts.totalHint) : '')
+                        + ' · ' + resumenExcelStats(acc);
+
+                    return {
+                        aborted: false,
+                        done: false,
+                        error: true,
+                        reanudable: !!(token && (err.reanudable || (json && json.reanudable) || token)),
+                        token: token,
+                        offset: offset,
+                        fila: fila,
+                        message: msg,
+                        acc: acc,
+                        json: json
+                    };
+                });
+            }
+
+            return next();
+        }
+
+        function htmlResumenImportExcel(acc, mensaje) {
+            var rp = acc.resumen_parse || {};
+            var aplicados = (acc.actualizados || 0) + (acc.creados || 0);
+            var rows = [
+                ['Actualizados', acc.actualizados || 0],
+                ['Nuevos', acc.creados || 0],
+                ['Sin cambios', acc.sin_cambios || 0],
+                ['Proyecciones', acc.proyecciones || 0]
+            ];
+            if (rp.filas_datos) rows.push(['Filas Excel', rp.filas_datos]);
+            if (rp.productos) rows.push(['Productos únicos', rp.productos]);
+            if (rp.duplicados) rows.push(['Duplicados consolidados', rp.duplicados]);
+            if (rp.omitidos_sin_precio) rows.push(['Sin precio', rp.omitidos_sin_precio]);
+            if (rp.omitidos_vacias) rows.push(['Vacías', rp.omitidos_vacias]);
+            if (acc.errores && acc.errores.length) rows.push(['Avisos', acc.errores.length]);
+
+            var table = '<table style="width:100%;border-collapse:collapse;font-size:1rem;margin-top:.75rem">'
+                + rows.map(function (r) {
+                    return '<tr>'
+                        + '<td style="padding:.4rem .2rem;color:#52525b;text-align:left">' + r[0] + '</td>'
+                        + '<td style="padding:.4rem .2rem;font-weight:700;text-align:right;font-size:1.15rem">' + r[1] + '</td>'
+                        + '</tr>';
+                }).join('')
+                + '</table>';
+
+            return '<div style="text-align:left">'
+                + '<p style="margin:0;font-size:1.15rem;line-height:1.45">'
+                + escapeHtml(mensaje || ('Se aplicaron ' + aplicados + ' precio(s).'))
+                + '</p>'
+                + table
+                + '</div>';
+        }
+
+        function mostrarExitoImportExcel(titulo, acc, mensaje) {
+            var html = htmlResumenImportExcel(acc, mensaje);
+            if (window.Swal) {
+                return Swal.fire({
+                    icon: 'success',
+                    title: titulo || 'Excel aplicado',
+                    html: html,
+                    width: '36rem',
+                    confirmButtonText: 'Entendido',
+                    confirmButtonColor: '#0a0a0a'
+                });
+            }
+            window.alert((titulo || 'Excel aplicado') + '\n\n' + (mensaje || resumenExcelStats(acc)));
+            return Promise.resolve();
+        }
+
+        function finalizarImportExcelOk(res) {
+            var acc = res.acc || {};
+            var extra = resumenExcelStats(acc);
+            var msgServer = (res.json && res.json.message) || extra;
+            hideExcelResume();
+            if (!res.aborted) {
+                if (fileEl) fileEl.value = '';
+                excelImportState = null;
+                var modal = document.getElementById('modalPvPreciosExcel');
+                if (modal && window.bootstrap && bootstrap.Modal) {
+                    var inst = bootstrap.Modal.getInstance(modal);
+                    if (inst) inst.hide();
+                }
+                mostrarExitoImportExcel('Importación completada', acc, msgServer);
+            } else if (res.token) {
+                showExcelResume(
+                    'Pausado en producto ' + (res.offset || 0) + '. ' + extra + '. Puedes continuar.',
+                    { token: res.token, offset: res.offset || 0, acc: acc }
+                );
+            }
+            if ((acc.actualizados || 0) + (acc.creados || 0) > 0) {
+                load();
+            }
+        }
+
         if (upBtn && fileEl) {
             upBtn.addEventListener('click', function () {
+                if (excelImportBusy) return;
                 var file = fileEl.files && fileEl.files[0];
                 if (!file) {
                     toast('warning', 'Falta archivo', 'Selecciona el Excel editado.');
                     return;
                 }
-                var importUrl = CC.state.costosImportExcelUrl || (url + '/importar-excel');
-                var fd = new FormData();
-                fd.append('archivo', file);
-                fd.append('anio', String(costosAnio()));
+                excelImportBusy = true;
+                excelImportAbort = false;
+                excelImportState = null;
+                hideExcelResume();
                 upBtn.disabled = true;
-                if (excelHint) excelHint.textContent = 'Subiendo y actualizando…';
-                fetch(importUrl, {
-                    method: 'POST',
-                    headers: {
-                        Accept: 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'X-CSRF-TOKEN': csrfToken()
-                    },
-                    body: fd
-                }).then(function (r) {
-                    return r.json().then(function (json) {
-                        if (!r.ok) throw new Error((json && json.message) || 'No se pudo importar');
-                        return json;
+                fileEl.disabled = true;
+                upBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Importando…';
+                if (excelCancelarBtn) excelCancelarBtn.style.display = '';
+                setExcelProgress(0, 1, 'Subiendo archivo…');
+
+                correrImportExcel({ file: file, offset: 0 })
+                    .then(function (res) {
+                        if (res.error) {
+                            toast('error', 'Importación detenida', res.message || 'Error');
+                            if (res.reanudable && res.token) {
+                                showExcelResume(res.message, {
+                                    token: res.token,
+                                    offset: res.offset || 0,
+                                    acc: res.acc,
+                                    fila: res.fila
+                                });
+                                if ((res.acc.actualizados || 0) + (res.acc.creados || 0) > 0) {
+                                    load();
+                                }
+                            } else if (excelHint) {
+                                excelHint.textContent = res.message || 'Error al importar.';
+                            }
+                            return;
+                        }
+                        finalizarImportExcelOk(res);
+                    })
+                    .catch(function (err) {
+                        toast('error', 'No se importó', err && err.message ? err.message : 'Error');
+                        if (excelHint) {
+                            excelHint.textContent = 'Error al importar. Revisa columnas Empresa, ItemCode y Precio.';
+                        }
+                    })
+                    .then(function () {
+                        resetExcelImportUi();
+                        if (excelImportState && excelResumeBox && excelResumeBox.style.display !== 'none') {
+                            // Deja botones de reanudar activos.
+                            if (excelCancelarBtn) excelCancelarBtn.style.display = 'none';
+                        }
                     });
-                }).then(function (json) {
-                    var extra = '';
-                    if (json.errores && json.errores.length) {
-                        extra = ' · ' + json.errores.length + ' fila(s) con aviso';
+            });
+        }
+
+        if (excelCancelarBtn) {
+            excelCancelarBtn.addEventListener('click', function () {
+                if (excelImportBusy) excelImportAbort = true;
+            });
+        }
+
+        function reanudarExcelDesde(skipOne) {
+            if (excelImportBusy || !excelImportState || !excelImportState.token) {
+                toast('warning', 'Nada que reanudar', 'Sube el archivo de nuevo o inicia una importación.');
+                return;
+            }
+            var st = excelImportState;
+            var off = Number(st.offset) || 0;
+            if (skipOne) off += 1;
+            excelImportBusy = true;
+            excelImportAbort = false;
+            hideExcelResume();
+            if (upBtn) {
+                upBtn.disabled = true;
+                upBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Continuando…';
+            }
+            if (fileEl) fileEl.disabled = true;
+            if (excelCancelarBtn) excelCancelarBtn.style.display = '';
+            setExcelProgress(off, off + 1, 'Reanudando…');
+
+            correrImportExcel({
+                token: st.token,
+                offset: off,
+                acc: st.acc || {
+                    actualizados: 0, creados: 0, sin_cambios: 0,
+                    omitidos: 0, proyecciones: 0, errores: []
+                },
+                totalHint: st.total || off
+            }).then(function (res) {
+                if (res.error) {
+                    toast('error', 'Importación detenida', res.message || 'Error');
+                    if (res.reanudable && res.token) {
+                        showExcelResume(res.message, {
+                            token: res.token,
+                            offset: res.offset || 0,
+                            acc: res.acc,
+                            fila: res.fila
+                        });
+                        if ((res.acc.actualizados || 0) + (res.acc.creados || 0) > 0) {
+                            load();
+                        }
                     }
-                    toast('success', 'Excel aplicado', (json.message || 'Precios actualizados.') + extra);
-                    fileEl.value = '';
-                    if (excelHint) {
-                        excelHint.textContent = 'Se actualiza por Empresa + ItemCode y se propaga a ciclos abiertos.';
-                    }
-                    var modal = document.getElementById('modalPvPreciosExcel');
-                    if (modal && window.bootstrap && bootstrap.Modal) {
-                        var inst = bootstrap.Modal.getInstance(modal);
-                        if (inst) inst.hide();
-                    }
-                    load();
-                }).catch(function (err) {
-                    toast('error', 'No se importó', err && err.message ? err.message : 'Error');
-                    if (excelHint) excelHint.textContent = 'Error al importar. Revisa columnas Empresa, ItemCode y Precio.';
-                }).then(function () {
-                    upBtn.disabled = false;
-                });
+                    return;
+                }
+                finalizarImportExcelOk(res);
+            }).catch(function (err) {
+                toast('error', 'No se pudo continuar', err && err.message ? err.message : 'Error');
+            }).then(function () {
+                resetExcelImportUi();
+            });
+        }
+
+        if (excelReanudarBtn) {
+            excelReanudarBtn.addEventListener('click', function () {
+                reanudarExcelDesde(false);
+            });
+        }
+        if (excelSaltarBtn) {
+            excelSaltarBtn.addEventListener('click', function () {
+                reanudarExcelDesde(true);
             });
         }
 
@@ -11132,10 +13097,18 @@
         CC.state.costosImportListaUrl = boot.costosImportListaUrl || '/ProyeccionesVentas/api/costos/importar-lista-precios';
         CC.state.costosVaciosUrl = boot.costosVaciosUrl || '/ProyeccionesVentas/api/costos/vacios';
         CC.state.costosRellenarVaciosLoteUrl = boot.costosRellenarVaciosLoteUrl || '/ProyeccionesVentas/api/costos/rellenar-vacios-lote';
+        CC.state.costosSinPrecioListaUrl = boot.costosSinPrecioListaUrl || '/ProyeccionesVentas/api/costos/sin-precio-lista';
+        CC.state.costosSyncPrecioListaLoteUrl = boot.costosSyncPrecioListaLoteUrl || '/ProyeccionesVentas/api/costos/sincronizar-precio-lista-lote';
         CC.state.costosHistorialUrl = boot.costosHistorialUrl || '/ProyeccionesVentas/api/costos/historial';
         CC.state.puedeEditarCostos = boot.hasOwnProperty('puedeEditarCostos')
             ? !!boot.puedeEditarCostos
             : true;
+        CC.state.puedeObtenerPrecioLista = boot.hasOwnProperty('puedeObtenerPrecioLista')
+            ? !!boot.puedeObtenerPrecioLista
+            : false;
+        CC.state.puedeFiltrarSoloAsignados = boot.hasOwnProperty('puedeFiltrarSoloAsignados')
+            ? !!boot.puedeFiltrarSoloAsignados
+            : false;
         CC.state.puedeEditarPreciosCaptura = boot.hasOwnProperty('puedeEditarPreciosCaptura')
             ? !!boot.puedeEditarPreciosCaptura
             : false;
@@ -11189,8 +13162,8 @@
         if (CC.state.page === 'detalle') CC.initDetalle();
         if (CC.state.page === 'analisis') CC.initAnalisis();
         if (CC.state.page === 'costos') initCostos();
-        // Detalle: sin catálogo SAP (todo local vía captura/bootstrap).
-        if (CC.state.page === 'control') refreshSap(boot.catalogoUrl);
+        // Captura y Detalle arrancan en local (asignaciones, maestro, snapshot).
+        // El catálogo SAP no se pide al entrar; la venta SAP va en «Actualizar venta SAP».
     };
 
     function refreshSap(url) {

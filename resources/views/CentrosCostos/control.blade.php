@@ -25,7 +25,11 @@
             </button>
         </nav>
         <div class="cc-header-actions">
-            <span id="sap-flag" class="cc-sap-flag off">Catálogo</span>
+            <span id="sap-flag" class="cc-sap-flag off" title="Fuente del catálogo de centros/cuentas">Catálogo local</span>
+            <button type="button" class="cc-btn" id="ctl-sync-catalogo"
+                title="Baja centros/cuentas/nombres desde SAP a la copia local. No modifica lo capturado.">
+                <i class="fa-solid fa-cloud-arrow-down"></i> Actualizar catálogo
+            </button>
             <select id="ctl-ciclo" class="cc-select cc-header-ciclo" aria-label="Presupuesto"></select>
             <select id="ctl-moneda" class="cc-select cc-header-ciclo cc-header-moneda" aria-label="Moneda de cambio">
                 <option value="MXN">MXN</option>
@@ -114,6 +118,12 @@
                         <small>Ppto {{ $bootstrap['anioPresupuesto'] }}</small>
                         <strong id="kpi-ctl-ppto">—</strong>
                     </div>
+                </div>
+                <div class="cc-nav-auto">
+                    <button type="button" class="cc-btn cc-btn-ink" id="ctl-completar-vacias"
+                        title="Pone 0 en todas las cuentas del centro que aún no tienen valor y las guarda">
+                        <i class="fa-solid fa-check-double"></i> Autocompletar vacías
+                    </button>
                 </div>
                 <span id="kpi-ctl-pend" hidden></span>
                 <span id="ctl-perms" hidden></span>

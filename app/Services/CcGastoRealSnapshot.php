@@ -32,6 +32,28 @@ class CcGastoRealSnapshot
             ->exists();
     }
 
+    /** Hay alguna copia local del año (completa o parcial), sin ir a SAP. */
+    public function tieneCopia(string $empresa, int $year): bool
+    {
+        if (! $this->disponible()) {
+            return false;
+        }
+        if ($this->cubreEmpresa($empresa, $year)) {
+            return true;
+        }
+        if (DB::table('tbl_cc_gasto_real_carga')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->exists()) {
+            return true;
+        }
+
+        return DB::table('tbl_cc_gasto_real_cc')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->exists();
+    }
+
     /**
      * @return array<int, string>
      */
@@ -114,6 +136,201 @@ class CcGastoRealSnapshot
     }
 
     /**
+     * Encabezados de gasto por centro (suma ENE–mesMax) sin devolver el mapa de cuentas.
+     * $cuentasPorCentro: centro_pedido => null (todas) | [] (ninguna) | lista de códigos.
+     *
+     * @param  array<int, string>  $centros
+     * @param  array<string, array<int, string>|null>  $cuentasPorCentro
+     * @return array<string, array{tot_gasto: float, tot_gasto_usd: float, depto: string, months: array<int, float>, months_usd: array<int, float>}>
+     */
+    public function totalesVisorPorCentro(string $empresa, int $year, array $centros, array $cuentasPorCentro = [], int $mesMax = 9): array
+    {
+        if (! $this->disponible() || $centros === []) {
+            return [];
+        }
+        $mesMax = max(1, min(12, $mesMax));
+        $codigos = $this->codigosCentroEnCopia($empresa, $year, $centros);
+        if ($codigos === []) {
+            return [];
+        }
+
+        $filtros = [];
+        $hayFiltroCuentas = false;
+        foreach ($cuentasPorCentro as $ccPedido => $cuentas) {
+            $ccKey = strtoupper(trim((string) $ccPedido));
+            if ($cuentas === null) {
+                $filtros[$ccKey] = null;
+
+                continue;
+            }
+            $hayFiltroCuentas = true;
+            $keys = [];
+            if (is_array($cuentas)) {
+                foreach ($cuentas as $cta) {
+                    $ck = trim((string) $cta);
+                    if ($ck === '') {
+                        continue;
+                    }
+                    $keys[$ck] = true;
+                    $dig = preg_replace('/\D+/', '', $ck) ?? '';
+                    $dig = ltrim($dig, '0');
+                    if ($dig !== '') {
+                        $keys[$dig] = true;
+                    }
+                }
+            }
+            $filtros[$ccKey] = $keys;
+        }
+
+        // Sin filtro de cuentas: agregación SQL (rápido, números reales del snap).
+        if (! $hayFiltroCuentas) {
+            $select = ['centro_codigo', DB::raw('MAX(depto) as depto')];
+            for ($i = 1; $i <= $mesMax; $i++) {
+                $suf = str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                $select[] = DB::raw('SUM(COALESCE(mes_'.$suf.',0)) as mes_'.$suf);
+                $select[] = DB::raw('SUM(COALESCE(usd_'.$suf.',0)) as usd_'.$suf);
+            }
+            $rows = DB::table('tbl_cc_gasto_real_snap')
+                ->where('empresa', $empresa)
+                ->where('anio', $year)
+                ->whereIn('centro_codigo', $codigos)
+                ->groupBy('centro_codigo')
+                ->get($select);
+
+            $out = [];
+            foreach ($rows as $row) {
+                $ccGuardado = strtoupper(trim((string) $row->centro_codigo));
+                $ccPedido = $ccGuardado;
+                foreach ($centros as $pedido) {
+                    $pedido = strtoupper(trim((string) $pedido));
+                    if ($this->mismoCentro($ccGuardado, $pedido)) {
+                        $ccPedido = $pedido;
+                        break;
+                    }
+                }
+                if (! isset($out[$ccPedido])) {
+                    $out[$ccPedido] = [
+                        'tot_gasto' => 0.0,
+                        'tot_gasto_usd' => 0.0,
+                        'depto' => '',
+                        'months' => array_fill(0, 12, 0.0),
+                        'months_usd' => array_fill(0, 12, 0.0),
+                    ];
+                }
+                $totMes = 0.0;
+                $totUsd = 0.0;
+                for ($i = 1; $i <= $mesMax; $i++) {
+                    $suf = str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                    $m = round((float) ($row->{'mes_'.$suf} ?? 0), 2);
+                    $u = round((float) ($row->{'usd_'.$suf} ?? 0), 2);
+                    $out[$ccPedido]['months'][$i - 1] += $m;
+                    $out[$ccPedido]['months_usd'][$i - 1] += $u;
+                    $totMes += $m;
+                    $totUsd += $u;
+                }
+                $out[$ccPedido]['tot_gasto'] += $totMes;
+                $out[$ccPedido]['tot_gasto_usd'] += $totUsd;
+                if ($out[$ccPedido]['depto'] === '') {
+                    $d = trim((string) ($row->depto ?? ''));
+                    if ($d !== '' && ! preg_match('/^\d+$/', $d)) {
+                        $out[$ccPedido]['depto'] = $d;
+                    }
+                }
+            }
+
+            foreach ($out as $cc => $vals) {
+                $out[$cc]['tot_gasto'] = round($vals['tot_gasto'], 2);
+                $out[$cc]['tot_gasto_usd'] = round($vals['tot_gasto_usd'], 2);
+                for ($i = 0; $i < 12; $i++) {
+                    $out[$cc]['months'][$i] = round($vals['months'][$i], 2);
+                    $out[$cc]['months_usd'][$i] = round($vals['months_usd'][$i], 2);
+                }
+            }
+
+            return $out;
+        }
+
+        $cols = ['centro_codigo', 'cuenta_codigo', 'depto'];
+        for ($i = 1; $i <= $mesMax; $i++) {
+            $suf = str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            $cols[] = 'mes_'.$suf;
+            $cols[] = 'usd_'.$suf;
+        }
+
+        $rows = DB::table('tbl_cc_gasto_real_snap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->whereIn('centro_codigo', $codigos)
+            ->get($cols);
+
+        $out = [];
+        foreach ($rows as $row) {
+            $ccGuardado = strtoupper(trim((string) $row->centro_codigo));
+            $ccPedido = $ccGuardado;
+            foreach ($centros as $pedido) {
+                $pedido = strtoupper(trim((string) $pedido));
+                if ($this->mismoCentro($ccGuardado, $pedido)) {
+                    $ccPedido = $pedido;
+                    break;
+                }
+            }
+
+            $filtro = array_key_exists($ccPedido, $filtros) ? $filtros[$ccPedido] : null;
+            if (is_array($filtro)) {
+                if ($filtro === []) {
+                    continue;
+                }
+                $ck = trim((string) $row->cuenta_codigo);
+                $dig = preg_replace('/\D+/', '', $ck) ?? '';
+                $dig = ltrim($dig, '0');
+                if ($ck === '' || (! isset($filtro[$ck]) && ($dig === '' || ! isset($filtro[$dig])))) {
+                    continue;
+                }
+            }
+
+            if (! isset($out[$ccPedido])) {
+                $out[$ccPedido] = [
+                    'tot_gasto' => 0.0,
+                    'tot_gasto_usd' => 0.0,
+                    'depto' => '',
+                    'months' => array_fill(0, 12, 0.0),
+                    'months_usd' => array_fill(0, 12, 0.0),
+                ];
+            }
+            $totMes = 0.0;
+            $totUsd = 0.0;
+            for ($i = 1; $i <= $mesMax; $i++) {
+                $suf = str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                $m = round((float) ($row->{'mes_'.$suf} ?? 0), 2);
+                $u = round((float) ($row->{'usd_'.$suf} ?? 0), 2);
+                $out[$ccPedido]['months'][$i - 1] += $m;
+                $out[$ccPedido]['months_usd'][$i - 1] += $u;
+                $totMes += $m;
+                $totUsd += $u;
+            }
+            $out[$ccPedido]['tot_gasto'] += $totMes;
+            $out[$ccPedido]['tot_gasto_usd'] += $totUsd;
+            if ($out[$ccPedido]['depto'] === '') {
+                $d = trim((string) ($row->depto ?? ''));
+                if ($d !== '' && ! preg_match('/^\d+$/', $d)) {
+                    $out[$ccPedido]['depto'] = $d;
+                }
+            }
+        }
+
+        foreach ($out as $cc => $vals) {
+            $out[$cc]['tot_gasto'] = round($vals['tot_gasto'], 2);
+            $out[$cc]['tot_gasto_usd'] = round($vals['tot_gasto_usd'], 2);
+            for ($i = 0; $i < 12; $i++) {
+                $out[$cc]['months'][$i] = round($vals['months'][$i], 2);
+                $out[$cc]['months_usd'][$i] = round($vals['months_usd'][$i], 2);
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * @param  iterable<int, object>  $rows
      * @return array<string, array<string, array<string, mixed>>>
      */
@@ -141,25 +358,9 @@ class CcGastoRealSnapshot
                 'gasto_usd' => $usd,
             ];
             $porCc[$cc][$codigo] = $item;
-            $digits = $this->digitos($codigo);
-            if ($digits !== '' && $digits !== $codigo) {
-                $porCc[$cc][$digits] = $item;
-            }
-            $altCuenta = ltrim($digits !== '' ? $digits : $codigo, '0');
-            if ($altCuenta !== '' && ! isset($porCc[$cc][$altCuenta])) {
-                $porCc[$cc][$altCuenta] = $item;
-            }
         }
 
-        $extra = [];
-        foreach ($porCc as $cc => $por) {
-            $alt = ltrim($cc, '0');
-            if ($alt !== '' && $alt !== $cc && ! isset($porCc[$alt])) {
-                $extra[$alt] = $por;
-            }
-        }
-
-        return $porCc + $extra;
+        return $porCc;
     }
 
     /**
@@ -184,14 +385,8 @@ class CcGastoRealSnapshot
         $out = [];
         foreach ($this->centrosPresentes($empresa, $year) as $guardado) {
             $guardado = strtoupper(trim($guardado));
-            if ($guardado === '') {
-                continue;
-            }
-            foreach ($pedidos as $pedido) {
-                if ($this->mismoCentro($guardado, $pedido)) {
-                    $out[$guardado] = $guardado;
-                    break;
-                }
+            if ($guardado !== '' && isset($pedidos[$guardado])) {
+                $out[$guardado] = $guardado;
             }
         }
 
@@ -202,16 +397,8 @@ class CcGastoRealSnapshot
     {
         $a = strtoupper(trim($a));
         $b = strtoupper(trim($b));
-        if ($a === '' || $b === '') {
-            return false;
-        }
-        if ($a === $b) {
-            return true;
-        }
-        $na = ltrim($a, '0');
-        $nb = ltrim($b, '0');
 
-        return $na !== '' && $na === $nb;
+        return $a !== '' && $a === $b;
     }
 
     /**
@@ -249,7 +436,7 @@ class CcGastoRealSnapshot
             foreach ($cuentas as $codigo => $item) {
                 $visible = trim((string) ($item['codigo'] ?? $codigo));
                 $fila = $this->filaSnap($empresa, $year, $cc, $visible !== '' ? $visible : (string) $codigo, $item, $origen, $userId, $ahora);
-                $clave = $cc.'|'.$this->digitos($visible !== '' ? $visible : (string) $codigo);
+                $clave = $this->claveCentroCuenta($cc, $visible !== '' ? $visible : (string) $codigo);
                 if (isset($previos[$clave])) {
                     foreach (['10', '11', '12'] as $suf) {
                         $fila['mes_'.$suf] = $previos[$clave]['mes_'.$suf];
@@ -333,33 +520,27 @@ class CcGastoRealSnapshot
 
         $empresa = strtoupper(trim($empresa));
         $cc = strtoupper(trim($cc));
-        $digits = $this->digitos($cuenta);
-        $needle = ltrim($digits !== '' ? $digits : trim($cuenta), '0');
-        if ($empresa === '' || $cc === '' || $needle === '') {
+        $cuenta = trim($cuenta);
+        if ($empresa === '' || $cc === '' || $cuenta === '') {
             return;
         }
 
         $ahora = now();
-        $codigos = [trim($cuenta)];
+        $codigos = [$cuenta];
         $borrar = [];
         $existentes = DB::table('tbl_cc_gasto_real_snap')
             ->where('empresa', $empresa)
             ->where('anio', $year)
             ->where('centro_codigo', $cc)
+            ->where('cuenta_codigo', $cuenta)
             ->get();
         $conservar = null;
         foreach ($existentes as $row) {
-            $d = $this->digitos((string) $row->cuenta_codigo);
-            $alt = ltrim($d !== '' ? $d : (string) $row->cuenta_codigo, '0');
-            if ($alt !== '' && $alt === $needle) {
-                $borrar[] = $row->id;
-                $codigos[] = (string) $row->cuenta_codigo;
-                if ($conservar === null) {
-                    $conservar = $row;
-                }
+            $borrar[] = $row->id;
+            if ($conservar === null) {
+                $conservar = $row;
             }
         }
-        $codigos = array_values(array_unique(array_filter($codigos)));
         foreach (['gasto', 'gasto_usd'] as $campo) {
             if (! isset($item[$campo]) || ! is_array($item[$campo])) {
                 continue;
@@ -498,23 +679,18 @@ class CcGastoRealSnapshot
             $cuenta = trim((string) ($paquete['cuenta'] ?? ''));
             $item = is_array($paquete['item'] ?? null) ? $paquete['item'] : [];
             $filas = is_array($paquete['filas'] ?? null) ? $paquete['filas'] : [];
-            $digits = $this->digitos($cuenta);
-            $needle = ltrim($digits !== '' ? $digits : $cuenta, '0');
-            if ($needle === '' || isset($vistos[$needle])) {
+            if ($cuenta === '' || isset($vistos[$cuenta])) {
                 continue;
             }
-            $vistos[$needle] = true;
+            $vistos[$cuenta] = true;
 
             $conservar = null;
-            $codigos = [trim($cuenta)];
+            $codigos = [$cuenta];
             foreach ($existentes as $row) {
-                $d = $this->digitos((string) $row->cuenta_codigo);
-                $alt = ltrim($d !== '' ? $d : (string) $row->cuenta_codigo, '0');
-                if ($alt === '' || $alt !== $needle) {
+                if (trim((string) $row->cuenta_codigo) !== $cuenta) {
                     continue;
                 }
                 $borrar[] = $row->id;
-                $codigos[] = (string) $row->cuenta_codigo;
                 if ($conservar === null) {
                     $conservar = $row;
                 }
@@ -658,12 +834,17 @@ class CcGastoRealSnapshot
 
         $empresa = strtoupper(trim($empresa));
         $mapa = $this->anularMesesPosteriores($mapa);
+        $centrosMapa = array_keys($this->centrosCanonicos($mapa));
+        $filas = $this->filasDeCentros($filas, $centrosMapa);
         if ($mapa !== []) {
             $this->guardarMapa($empresa, $year, $mapa, 'api', $userId, false, true);
         }
         $filas = $this->filasHastaMes($filas, 9);
         if ($filas !== [] && Schema::hasTable('tbl_cc_gasto_real_sap')) {
             $this->reemplazarFilasSap($empresa, $year, $filas, $userId, false, 9);
+        } elseif ($centrosMapa !== [] && Schema::hasTable('tbl_cc_gasto_real_sap')) {
+            // Sin movimientos nuevos: limpiar ene–sep solo de esos códigos exactos de centro.
+            $this->borrarFilasSapCentros($empresa, $year, $centrosMapa, 9);
         }
 
         $filasN = Schema::hasTable('tbl_cc_gasto_real_sap')
@@ -687,12 +868,7 @@ class CcGastoRealSnapshot
     {
         $empresa = strtoupper(trim($empresa));
         $cc = strtoupper(trim($cc));
-        $existe = DB::table('tbl_cc_gasto_real_cc')
-            ->where('empresa', $empresa)
-            ->where('anio', $year)
-            ->where('centro_codigo', $cc)
-            ->exists();
-        if (! $existe) {
+        if (! $this->centroExiste($empresa, $year, $cc)) {
             return false;
         }
 
@@ -700,6 +876,21 @@ class CcGastoRealSnapshot
         $nuevas = $this->firmaSerieCentro($this->cuentasCanonicas($por), 9);
 
         return hash_equals($guardadas, $nuevas);
+    }
+
+    public function centroExiste(string $empresa, int $year, string $cc): bool
+    {
+        $empresa = strtoupper(trim($empresa));
+        $cc = strtoupper(trim($cc));
+        if ($empresa === '' || $cc === '' || ! $this->disponible()) {
+            return false;
+        }
+
+        return DB::table('tbl_cc_gasto_real_cc')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->where('centro_codigo', $cc)
+            ->exists();
     }
 
     public function firmaGuardada(string $empresa, int $year): ?string
@@ -752,6 +943,7 @@ class CcGastoRealSnapshot
     protected function cuentasGuardadas(string $empresa, int $year, string $cc): array
     {
         $por = [];
+        $cc = strtoupper(trim($cc));
         $rows = DB::table('tbl_cc_gasto_real_snap')
             ->where('empresa', $empresa)
             ->where('anio', $year)
@@ -975,13 +1167,11 @@ class CcGastoRealSnapshot
                 continue;
             }
             $codigo = trim((string) ($item['codigo'] ?? $key));
-            $digits = $this->digitos($codigo);
-            $ck = $digits !== '' ? $digits : $codigo;
-            if ($ck === '' || isset($out[$ck])) {
+            if ($codigo === '' || isset($out[$codigo])) {
                 continue;
             }
-            $item['codigo'] = $codigo !== '' ? $codigo : $ck;
-            $out[$ck] = $item;
+            $item['codigo'] = $codigo;
+            $out[$codigo] = $item;
         }
 
         return $out;
@@ -993,26 +1183,16 @@ class CcGastoRealSnapshot
      */
     protected function centrosCanonicos(array $mapa): array
     {
-        $grupos = [];
+        $out = [];
         foreach ($mapa as $cc => $por) {
             if (! is_array($por)) {
                 continue;
             }
             $cc = strtoupper(trim((string) $cc));
-            if ($cc === '') {
+            if ($cc === '' || isset($out[$cc])) {
                 continue;
             }
-            $alt = ltrim($cc, '0');
-            if ($alt === '') {
-                $alt = '0';
-            }
-            if (! isset($grupos[$alt]) || strlen($cc) >= strlen($grupos[$alt]['cc'])) {
-                $grupos[$alt] = ['cc' => $cc, 'por' => $por];
-            }
-        }
-        $out = [];
-        foreach ($grupos as $grupo) {
-            $out[$grupo['cc']] = $grupo['por'];
+            $out[$cc] = $por;
         }
 
         return $out;
@@ -1131,6 +1311,73 @@ class CcGastoRealSnapshot
         });
     }
 
+    /**
+     * @param  array<int, string>  $centros
+     */
+    protected function borrarFilasSapCentros(string $empresa, int $year, array $centros, ?int $mesMax = null): void
+    {
+        if (! Schema::hasTable('tbl_cc_gasto_real_sap') || $centros === []) {
+            return;
+        }
+        $borrar = [];
+        foreach ($centros as $cc) {
+            $cc = strtoupper(trim((string) $cc));
+            if ($cc !== '') {
+                $borrar[$cc] = $cc;
+            }
+        }
+        if ($borrar === []) {
+            return;
+        }
+        $q = DB::table('tbl_cc_gasto_real_sap')
+            ->where('empresa', $empresa)
+            ->where('anio', $year)
+            ->whereIn('centro_codigo', array_values($borrar));
+        if ($mesMax !== null) {
+            $q->where('mes', '<=', $mesMax);
+        }
+        $q->delete();
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $filas
+     * @param  array<int, string>  $centros
+     * @return array<int, array<string, mixed>>
+     */
+    protected function filasDeCentros(array $filas, array $centros): array
+    {
+        if ($centros === []) {
+            return [];
+        }
+        $set = [];
+        foreach ($centros as $cc) {
+            $cc = strtoupper(trim((string) $cc));
+            if ($cc !== '') {
+                $set[$cc] = true;
+            }
+        }
+        if ($set === []) {
+            return [];
+        }
+        $out = [];
+        foreach ($filas as $fila) {
+            if (! is_array($fila)) {
+                continue;
+            }
+            $centro = strtoupper(trim((string) ($fila['centro'] ?? '')));
+            if ($centro !== '' && isset($set[$centro])) {
+                $out[] = $fila;
+            }
+        }
+
+        return $out;
+    }
+
+    protected function claveCentroCuenta(string $cc, string $cuenta): string
+    {
+        return strtoupper(trim($cc)).'|'.trim($cuenta);
+    }
+
     protected function tieneFilasSap(string $empresa, int $year): bool
     {
         if (! Schema::hasTable('tbl_cc_gasto_real_sap')) {
@@ -1203,14 +1450,25 @@ class CcGastoRealSnapshot
             return [];
         }
         $out = [];
+        $codigos = [];
+        foreach ($centros as $cc) {
+            $cc = strtoupper(trim((string) $cc));
+            if ($cc !== '') {
+                $codigos[$cc] = $cc;
+            }
+        }
+        $codigos = array_values($codigos);
+        if ($codigos === []) {
+            return [];
+        }
         $rows = DB::table('tbl_cc_gasto_real_snap')
             ->where('empresa', $empresa)
             ->where('anio', $year)
-            ->whereIn('centro_codigo', $centros)
+            ->whereIn('centro_codigo', $codigos)
             ->get();
         foreach ($rows as $row) {
             $cc = strtoupper(trim((string) $row->centro_codigo));
-            $clave = $cc.'|'.$this->digitos((string) $row->cuenta_codigo);
+            $clave = $this->claveCentroCuenta($cc, (string) $row->cuenta_codigo);
             $guardado = [];
             foreach (['10', '11', '12'] as $suf) {
                 $guardado['mes_'.$suf] = round((float) ($row->{'mes_'.$suf} ?? 0), 2);
