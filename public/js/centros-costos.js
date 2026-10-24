@@ -1422,6 +1422,8 @@
                     if (json.completado) CC.state.completados[key] = true;
                     else delete CC.state.completados[key];
                     patchVisorResumenCentro(empresa, cc);
+                    clearTimeout(CC._avanceTimer);
+                    CC._avanceTimer = setTimeout(function () { cargarAvanceCaptura({ quiet: true }); }, 500);
                 });
             }).catch(function (err) {
                 toast('error', 'No se guardó el presupuesto', err && err.message ? err.message : 'Error de red');
@@ -1538,28 +1540,29 @@
         return SK.budget + ':' + String((CC.state.period && CC.state.period.codigo) || 'default');
     }
 
+    function capturaScopeKey(ciclo, empresa, centro) {
+        return String(ciclo || '') + '|' + String(empresa || '').toUpperCase() + '|' + String(centro || '').trim();
+    }
+
     function loadOverlaysForCycle(opts) {
         opts = opts || {};
-        var ciclo = cicloActualCodigo();
+        var ciclo = opts.ciclo || cicloActualCodigo();
         var empresa = opts.empresa || '';
         var centro = opts.centro || '';
-        if (!empresa && !centro && (CC.state.page === 'control' || CC.state.page === 'detalle')) {
-            empresa = val('ctl-empresa') || '';
-            centro = val('ctl-centro') || '';
-        }
         CC._capturaReady = false;
         CC.state.overlays = {};
         CC.state.budgets = {};
         CC.state.completados = {};
-        if (!ciclo || ((CC.state.page === 'control' || CC.state.page === 'detalle') && !centro)) {
+        CC._capturaCentroKey = '';
+        if (!ciclo) {
             rebuildBudgetIndex();
             CC._capturaReady = true;
             return Promise.resolve();
         }
-        var capturaUrl = '/CentrosCostos/api/captura?ciclo=' + encodeURIComponent(ciclo);
-        if (empresa) capturaUrl += '&empresa=' + encodeURIComponent(empresa);
-        if (centro) capturaUrl += '&centro=' + encodeURIComponent(centro);
-        return fetch(capturaUrl, {
+        var url = '/CentrosCostos/api/captura?ciclo=' + encodeURIComponent(ciclo);
+        if (empresa) url += '&empresa=' + encodeURIComponent(empresa);
+        if (centro) url += '&centro=' + encodeURIComponent(centro);
+        return fetch(url, {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (r) { return r.json(); }).then(function (json) {
             CC.state.overlays = json.overlays || {};
@@ -1570,13 +1573,55 @@
                 CC.state.budgets[k] = normalizeLoadedMonths(rawBudgets[k], !!CC.state.completados[k]);
             });
             rebuildBudgetIndex();
+            CC._capturaCentroKey = (empresa && centro) ? capturaScopeKey(ciclo, empresa, centro) : '';
             CC._capturaReady = true;
         }).catch(function () {
             CC.state.overlays = {};
             CC.state.budgets = {};
             CC.state.completados = {};
             rebuildBudgetIndex();
+            CC._capturaCentroKey = (empresa && centro) ? capturaScopeKey(ciclo, empresa, centro) : '';
             CC._capturaReady = true;
+        });
+    }
+
+    function pintarAvanceCaptura(json) {
+        var centros = Number(json && json.centros) || 0;
+        var listos = Number(json && json.centros_listos) || 0;
+        var cuentas = Number(json && json.cuentas) || 0;
+        var capt = Number(json && json.capturadas) || 0;
+        var avance = pct(capt, cuentas || 1);
+        setText('visor-avance', centros ? (avance + '%') : '—');
+        setText('visor-avance-meta', centros
+            ? (listos + ' de ' + centros + ' centros listos · ' + capt + ' de ' + cuentas + ' cuentas capturadas')
+            : 'No hay centros para sumar');
+        var bar = document.getElementById('visor-avance-bar');
+        var wrap = document.getElementById('visor-avance-wrap');
+        if (bar) bar.style.width = (centros ? Math.min(avance, 100) : 0) + '%';
+        if (wrap) wrap.className = 'cc-progress ' + (centros && listos >= centros ? 'good' : 'warn');
+    }
+
+    function cargarAvanceCaptura(opts) {
+        if (CC.state.page !== 'control') return;
+        opts = opts || {};
+        var ciclo = cicloActualCodigo();
+        if (!opts.quiet) {
+            setText('visor-avance', '…');
+            setText('visor-avance-meta', 'Calculando avance…');
+        }
+        if (!ciclo) {
+            pintarAvanceCaptura(null);
+            return;
+        }
+        var seq = (CC._avanceSeq = (CC._avanceSeq || 0) + 1);
+        fetch('/CentrosCostos/api/captura/avance?ciclo=' + encodeURIComponent(ciclo), {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) { return r.json(); }).then(function (json) {
+            if (seq !== CC._avanceSeq) return;
+            pintarAvanceCaptura(json);
+        }).catch(function () {
+            if (seq !== CC._avanceSeq) return;
+            if (!opts.quiet) setText('visor-avance-meta', 'No se pudo calcular el avance');
         });
     }
 
@@ -3404,6 +3449,10 @@
                 renderNavCentros();
                 syncImportTools();
             }
+            if (cicloChanged) {
+                CC._capturaCentroKey = '';
+                cargarAvanceCaptura();
+            }
             loadControlCentro({
                 rebuildNav: false,
                 paintVisor: mode === 'full' && control.vista === 'visor',
@@ -3533,6 +3582,7 @@
         renderControlNav();
         loadControlCentro();
         fillVisorFilters();
+        cargarAvanceCaptura();
         setVista(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura');
     };
 
@@ -3581,7 +3631,10 @@
         bindScopeToggles();
         CC._detalleLoads = (CC._detalleLoads || 0) + 1;
         var token = CC._detalleLoads;
-        loadOverlaysForCycle().then(function () {
+        loadOverlaysForCycle({
+            empresa: CC.state.empresaInicial || val('ctl-empresa'),
+            centro: CC.state.centroInicial || val('ctl-centro')
+        }).then(function () {
             try {
                 loadControlCentro();
                 paintDetalleHeader();
@@ -3666,64 +3719,18 @@
             if (paintVisor) renderVisorTable();
             return;
         }
-        var seq = (CC._ctlSeq = (CC._ctlSeq || 0) + 1);
-        var tbWait = document.getElementById('ctl-tbody');
-        if (tbWait && !(control._allCtas && control._allCtas.length && control.centro && control.centro.codigo === codigo)) {
-            tbWait.innerHTML = '<tr><td colspan="28"><div class="cc-empty">Cargando cuentas del centro…</div></td></tr>';
-        }
-        ensureCuentasDeCentro(emp, codigo).then(function () {
-            return loadOverlaysForCycle({ empresa: emp, centro: codigo });
-        }).then(function () {
-            if (seq !== CC._ctlSeq) return;
-            if (String(val('ctl-empresa') || '').toUpperCase() !== String(emp || '').toUpperCase()) return;
-            if (String(val('ctl-centro') || '') !== String(codigo || '')) return;
-            pintarControlCentroCargado(opts);
-        }).catch(function () {
-            if (seq !== CC._ctlSeq) return;
-            pintarControlCentroCargado(opts);
-        });
-    }
-
-    function ensureCuentasDeCentro(emp, cc) {
-        var ciclo = val('ctl-ciclo') || CC.state.cicloCodigo || '';
-        var list = (CC.state.misAsignaciones || []).filter(function (a) {
-            return mismoCicloAsig(a, ciclo)
-                && String(a.empresa || '').toUpperCase() === String(emp || '').toUpperCase()
-                && mismoCentroCodigo(a.centro_codigo, cc);
-        });
-        if (list.length && list.every(function (a) { return a._cuentasCargadas; })) {
-            return Promise.resolve();
-        }
-        var url = '/CentrosCostos/api/mis-asignaciones?ciclo=' + encodeURIComponent(ciclo)
-            + '&empresa=' + encodeURIComponent(emp || '')
-            + '&centro=' + encodeURIComponent(cc || '');
-        return fetch(url, {
-            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-        }).then(function (r) { return r.json(); }).then(function (json) {
-            var incoming = (json && json.asignaciones) || [];
-            incoming.forEach(function (row) {
-                row._cuentasCargadas = true;
-                var found = (CC.state.misAsignaciones || []).filter(function (a) {
-                    return String(a.id) === String(row.id);
-                })[0];
-                if (found) {
-                    found.cuentas = row.cuentas || [];
-                    found._cuentasCargadas = true;
-                } else {
-                    CC.state.misAsignaciones = CC.state.misAsignaciones || [];
-                    CC.state.misAsignaciones.push(row);
-                }
+        var scope = capturaScopeKey(cicloActualCodigo(), emp, codigo);
+        if (!opts.presupuestosListos && CC._capturaCentroKey !== scope) {
+            var token = (CC._ctlLoadToken = (CC._ctlLoadToken || 0) + 1);
+            loadOverlaysForCycle({ empresa: emp, centro: codigo }).then(function () {
+                if (token !== CC._ctlLoadToken) return;
+                var next = {};
+                Object.keys(opts).forEach(function (k) { next[k] = opts[k]; });
+                next.presupuestosListos = true;
+                loadControlCentro(next);
             });
-            list.forEach(function (a) { a._cuentasCargadas = true; });
-        });
-    }
-
-    function pintarControlCentroCargado(opts) {
-        opts = opts || {};
-        var rebuildNav = !!opts.rebuildNav;
-        var paintVisor = opts.paintVisor != null ? !!opts.paintVisor : (control.vista === 'visor');
-        var emp = val('ctl-empresa');
-        var codigo = val('ctl-centro');
+            return;
+        }
         control.centro = CC.state.centros.map(mergedCentro).filter(function (c) {
             return c.codigo === codigo && c.empresa === emp;
         })[0] || null;
@@ -4896,6 +4903,7 @@
     }
 
     function renderVisorTable() {
+        if (CC.state.page === 'control' && control.vista !== 'visor') return;
         var tb = document.getElementById('visor-tbody');
         if (!tb) return;
         queueVisorGastos();
@@ -5203,9 +5211,15 @@
                     } else {
                         toast(n ? 'success' : 'error', n ? 'Importación lista' : 'Nada se importó', n + ' cuentas actualizadas');
                     }
-                    loadOverlaysForCycle().then(function () {
-                        loadControlCentro();
-                        renderVisorTable();
+                    var empImp = val('ctl-empresa');
+                    var ccImp = val('ctl-centro');
+                    var pendImp = (empImp && ccImp)
+                        ? loadOverlaysForCycle({ empresa: empImp, centro: ccImp })
+                        : Promise.resolve();
+                    pendImp.then(function () {
+                        cargarAvanceCaptura({ quiet: true });
+                        if (ccImp) loadControlCentro({ presupuestosListos: true });
+                        if (control.vista === 'visor') renderVisorTable();
                     });
                 }).catch(function (err) {
                     btnImportar.disabled = false;
