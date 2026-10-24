@@ -53,6 +53,166 @@ class CcBudgetXlsxStreamer
     }
 
     /**
+     * Abre un Excel por partes (cada petición HTTP escribe un tramo).
+     *
+     * @param  array<int, string>  $headings
+     * @param  array{widths?: array<int, float|int>, text_columns?: array<int, true>}  $options
+     */
+    public function begin(string $workDir, string $sheetTitle, array $headings, array $options = []): void
+    {
+        $xlsx = $this->xlsxDir($workDir);
+        if (! is_dir($xlsx) && ! @mkdir($xlsx, 0755, true) && ! is_dir($xlsx)) {
+            throw new RuntimeException('No se pudo crear el directorio del Excel.');
+        }
+
+        if (isset($options['text_columns']) && is_array($options['text_columns'])) {
+            $this->textColumns = $options['text_columns'];
+        }
+
+        @mkdir($xlsx.DIRECTORY_SEPARATOR.'_rels');
+        @mkdir($xlsx.DIRECTORY_SEPARATOR.'xl');
+        @mkdir($xlsx.DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'_rels');
+        @mkdir($xlsx.DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'worksheets');
+
+        $this->writeFile($xlsx.DIRECTORY_SEPARATOR.'[Content_Types].xml', $this->contentTypesXml());
+        $this->writeFile($xlsx.DIRECTORY_SEPARATOR.'_rels'.DIRECTORY_SEPARATOR.'.rels', $this->rootRelsXml());
+        $this->writeFile($xlsx.DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'workbook.xml', $this->workbookXml($sheetTitle));
+        $this->writeFile($xlsx.DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'_rels'.DIRECTORY_SEPARATOR.'workbook.xml.rels', $this->workbookRelsXml());
+        $this->writeFile($xlsx.DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'styles.xml', $this->stylesXml());
+
+        $sheetPath = $xlsx.DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'worksheets'.DIRECTORY_SEPARATOR.'sheet1.xml';
+        $fh = fopen($sheetPath, 'wb');
+        if ($fh === false) {
+            throw new RuntimeException('No se pudo escribir la hoja del Excel.');
+        }
+        fwrite($fh, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
+        fwrite($fh, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"');
+        fwrite($fh, ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">');
+        fwrite($fh, '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>');
+        fwrite($fh, '<cols>');
+        $widths = $options['widths'] ?? [12, 12, 28, 14, 36, 8, 8, 10, 14, 14, 10];
+        foreach ($widths as $i => $w) {
+            $col = $i + 1;
+            fwrite($fh, '<col min="'.$col.'" max="'.$col.'" width="'.$w.'" customWidth="1"/>');
+        }
+        fwrite($fh, '</cols><sheetData>');
+        $this->writeRowXml($fh, 1, $headings, true);
+        fclose($fh);
+
+        $this->writeState($workDir, [
+            'excel_row' => 2,
+            'data_count' => 0,
+            'closed' => false,
+            'widths' => array_values($widths),
+            'text_columns' => $this->textColumns,
+        ]);
+    }
+
+    /**
+     * @param  iterable<int, array<int, mixed>>  $rows
+     */
+    public function append(string $workDir, iterable $rows): int
+    {
+        $state = $this->readState($workDir);
+        if (! empty($state['closed'])) {
+            throw new RuntimeException('El Excel ya está cerrado.');
+        }
+        $this->textColumns = [];
+        foreach (($state['text_columns'] ?? []) as $col => $on) {
+            if ($on) {
+                $this->textColumns[(int) $col] = true;
+            }
+        }
+
+        $sheetPath = $this->xlsxDir($workDir).DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'worksheets'.DIRECTORY_SEPARATOR.'sheet1.xml';
+        $fh = fopen($sheetPath, 'ab');
+        if ($fh === false) {
+            throw new RuntimeException('No se pudo agregar filas al Excel.');
+        }
+
+        $excelRow = (int) ($state['excel_row'] ?? 2);
+        $added = 0;
+        foreach ($rows as $row) {
+            $this->writeRowXml($fh, $excelRow, $row, false);
+            $excelRow++;
+            $added++;
+        }
+        fflush($fh);
+        fclose($fh);
+
+        $state['excel_row'] = $excelRow;
+        $state['data_count'] = (int) ($state['data_count'] ?? 0) + $added;
+        $this->writeState($workDir, $state);
+
+        return $added;
+    }
+
+    public function finish(string $workDir, string $absolutePath): int
+    {
+        $state = $this->readState($workDir);
+        if (empty($state['closed'])) {
+            $sheetPath = $this->xlsxDir($workDir).DIRECTORY_SEPARATOR.'xl'.DIRECTORY_SEPARATOR.'worksheets'.DIRECTORY_SEPARATOR.'sheet1.xml';
+            $fh = fopen($sheetPath, 'ab');
+            if ($fh === false) {
+                throw new RuntimeException('No se pudo cerrar la hoja del Excel.');
+            }
+            fwrite($fh, '</sheetData></worksheet>');
+            fclose($fh);
+            $state['closed'] = true;
+            $this->writeState($workDir, $state);
+        }
+
+        $dir = dirname($absolutePath);
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            throw new RuntimeException('No se pudo crear la carpeta del archivo Excel.');
+        }
+        $this->zipDirectory($this->xlsxDir($workDir), $absolutePath);
+
+        return (int) ($state['data_count'] ?? 0);
+    }
+
+    public function discard(string $workDir): void
+    {
+        if ($workDir !== '' && is_dir($workDir)) {
+            $this->deleteTree($workDir);
+        }
+    }
+
+    protected function xlsxDir(string $workDir): string
+    {
+        return rtrim($workDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'xlsx';
+    }
+
+    /**
+     * @param  array<string, mixed>  $state
+     */
+    protected function writeState(string $workDir, array $state): void
+    {
+        if (! is_dir($workDir) && ! @mkdir($workDir, 0755, true) && ! is_dir($workDir)) {
+            throw new RuntimeException('No se pudo guardar el avance del Excel.');
+        }
+        $json = json_encode($state);
+        if ($json === false || file_put_contents($workDir.DIRECTORY_SEPARATOR.'state.json', $json) === false) {
+            throw new RuntimeException('No se pudo guardar el avance del Excel.');
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function readState(string $workDir): array
+    {
+        $path = $workDir.DIRECTORY_SEPARATOR.'state.json';
+        $raw = is_file($path) ? file_get_contents($path) : false;
+        $state = is_string($raw) ? json_decode($raw, true) : null;
+        if (! is_array($state)) {
+            throw new RuntimeException('No se encontró el avance del Excel.');
+        }
+
+        return $state;
+    }
+
+    /**
      * @param  array<int, string>  $headings
      * @param  iterable<int, array<int, mixed>>  $rows
      * @param  array{widths?: array<int, float|int>, should_abort?: callable(): bool}  $options

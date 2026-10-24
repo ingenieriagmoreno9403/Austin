@@ -1231,6 +1231,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/ExportarInformacionGastos', [CentrosCostosController::class, 'exportarInformacion'])->name('centros.exportar');
     Route::get('/ExportarInformacionGastos/excel', [CentrosCostosController::class, 'exportarInformacionExcel'])->name('centros.exportar.excel');
     Route::post('/ExportarInformacionGastos/excel/start', [CentrosCostosController::class, 'exportarInformacionExcelStart'])->name('centros.exportar.excel.start');
+    Route::post('/ExportarInformacionGastos/excel/step/{token}', [CentrosCostosController::class, 'exportarInformacionExcelStep'])->name('centros.exportar.excel.step');
     Route::get('/ExportarInformacionGastos/excel/status/{token}', [CentrosCostosController::class, 'exportarInformacionExcelStatus'])->name('centros.exportar.excel.status');
     Route::get('/ExportarInformacionGastos/excel/file/{token}', [CentrosCostosController::class, 'exportarInformacionExcelFile'])->name('centros.exportar.excel.file');
     Route::post('/ExportarInformacionGastos/excel/cancel/{token}', [CentrosCostosController::class, 'exportarInformacionExcelCancel'])->name('centros.exportar.excel.cancel');
