@@ -1246,6 +1246,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::post('/CentrosCostos/api/gasto-real/sincronizar-cuenta', [CentrosCostosController::class, 'sincronizarGastoCuentaArchivo'])->name('centros.api.gasto_real_sincronizar_cuenta');
     Route::get('/CentrosCostos/api/gasto-real/sincronizar-cuenta/estado', [CentrosCostosController::class, 'estadoJsonGastoCuenta'])->name('centros.api.gasto_real_sincronizar_cuenta_estado');
     Route::post('/CentrosCostos/api/gasto-real/cuenta', [CentrosCostosController::class, 'actualizarGastoCuenta'])->name('centros.api.gasto_real_cuenta');
+    Route::get('/CentrosCostos/api/captura/avance', [CentrosCostosController::class, 'avanceCaptura'])->name('centros.api.captura.avance');
     Route::get('/CentrosCostos/api/captura', [CentrosCostosController::class, 'captura'])->name('centros.api.captura');
     Route::put('/CentrosCostos/api/captura/presupuesto', [CentrosCostosController::class, 'guardarPresupuesto'])->name('centros.api.captura.presupuesto');
     Route::put('/CentrosCostos/api/captura/centro', [CentrosCostosController::class, 'guardarCapturaCentro'])->name('centros.api.captura.centro');

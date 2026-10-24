@@ -4001,12 +4001,125 @@ class CentrosCostosController extends Controller
         */
     }
 
+    /**
+     * Conteos de la barra de avance. No trae los 12 meses ni el gasto real.
+     */
+    public function avanceCaptura(Request $request): JsonResponse
+    {
+        $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
+        if ($ciclo === '') {
+            return response()->json(['message' => 'Falta el ciclo.'], 422);
+        }
+
+        $vacio = [
+            'ok' => true,
+            'ciclo' => $ciclo,
+            'centros' => 0,
+            'centros_listos' => 0,
+            'cuentas' => 0,
+            'capturadas' => 0,
+        ];
+        $uid = (int) auth()->id();
+        if ($uid <= 0
+            || ! Schema::hasTable('tbl_cc_asignaciones')
+            || ! Schema::hasTable('tbl_cc_asignacion_cuentas')
+            || ! Schema::hasTable('tbl_cc_asignacion_permisos')
+            || ! Schema::hasTable('tbl_cc_tipos_permiso')) {
+            return response()->json($vacio);
+        }
+
+        $cuentas = DB::table('tbl_cc_asignaciones as a')
+            ->join('tbl_cc_asignacion_permisos as ap', 'ap.asignacion_id', '=', 'a.id')
+            ->join('tbl_cc_tipos_permiso as t', 't.id', '=', 'ap.permiso_id')
+            ->leftJoin('tbl_cc_asignacion_cuentas as c', 'c.asignacion_id', '=', 'a.id')
+            ->where('a.user_id', $uid)
+            ->whereRaw('UPPER(a.ciclo_codigo) = ?', [$ciclo])
+            ->whereIn('t.clave', ['capturar', 'editar'])
+            ->whereRaw("UPPER(REPLACE(TRIM(a.centro_codigo), ' ', '')) <> 'EMPRESA'")
+            ->get(['a.empresa', 'a.centro_codigo', 'c.cuenta_codigo']);
+
+        $porCentro = [];
+        foreach ($cuentas as $row) {
+            $empresa = strtoupper(trim((string) $row->empresa));
+            $centro = trim((string) $row->centro_codigo);
+            if ($empresa === '' || $centro === '') {
+                continue;
+            }
+            $ck = $empresa.'|'.$centro;
+            if (! isset($porCentro[$ck])) {
+                $porCentro[$ck] = ['empresa' => $empresa, 'centro' => $centro, 'cuentas' => []];
+            }
+            $cuenta = trim((string) ($row->cuenta_codigo ?? ''));
+            if ($cuenta !== '') {
+                $porCentro[$ck]['cuentas'][$cuenta] = true;
+            }
+        }
+
+        $listas = [];
+        if ($porCentro !== [] && Schema::hasTable('tbl_cc_presupuestos')) {
+            $hasDone = Schema::hasColumn('tbl_cc_presupuestos', 'completado');
+            $lleno = [];
+            for ($i = 1; $i <= 12; $i++) {
+                $lleno[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT).' IS NOT NULL';
+            }
+            $expr = '('.implode(' AND ', $lleno).')';
+            if ($hasDone) {
+                $expr = '(COALESCE(completado, 0) = 1 OR '.$expr.')';
+            }
+            $empresas = array_values(array_unique(array_column($porCentro, 'empresa')));
+            $centros = array_values(array_unique(array_column($porCentro, 'centro')));
+            $pres = DB::table('tbl_cc_presupuestos')
+                ->where('ciclo_codigo', $ciclo)
+                ->whereIn(DB::raw('UPPER(empresa)'), $empresas)
+                ->whereIn('centro_codigo', $centros)
+                ->selectRaw('empresa, centro_codigo, cuenta_codigo, CASE WHEN '.$expr.' THEN 1 ELSE 0 END as listo')
+                ->get();
+            foreach ($pres as $row) {
+                if ((int) $row->listo !== 1) {
+                    continue;
+                }
+                $key = strtoupper(trim((string) $row->empresa)).'|'.trim((string) $row->centro_codigo).'|'.trim((string) $row->cuenta_codigo);
+                $listas[$key] = true;
+            }
+        }
+
+        $totalCuentas = 0;
+        $capturadas = 0;
+        $centrosListos = 0;
+        foreach ($porCentro as $centro) {
+            $n = count($centro['cuentas']);
+            $ok = 0;
+            foreach (array_keys($centro['cuentas']) as $cuenta) {
+                $key = $centro['empresa'].'|'.$centro['centro'].'|'.$cuenta;
+                if (isset($listas[$key])) {
+                    $ok++;
+                }
+            }
+            $totalCuentas += $n;
+            $capturadas += $ok;
+            if ($n === 0 || $ok === $n) {
+                $centrosListos++;
+            }
+        }
+
+        return response()->json([
+            'ok' => true,
+            'ciclo' => $ciclo,
+            'centros' => count($porCentro),
+            'centros_listos' => $centrosListos,
+            'cuentas' => $totalCuentas,
+            'capturadas' => $capturadas,
+        ]);
+    }
+
     public function captura(Request $request): JsonResponse
     {
         $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
         if ($ciclo === '') {
             return response()->json(['message' => 'Falta el ciclo.'], 422);
         }
+        $empresaFiltro = strtoupper(trim((string) $request->get('empresa', '')));
+        $centroFiltro = trim((string) $request->get('centro', ''));
 
         $budgets = [];
         $completados = [];
@@ -4019,7 +4132,20 @@ class CentrosCostosController extends Controller
             if ($hasDone) {
                 $cols[] = 'completado';
             }
-            foreach (DB::table('tbl_cc_presupuestos')->where('ciclo_codigo', $ciclo)->get($cols) as $row) {
+            $presQ = DB::table('tbl_cc_presupuestos')->where('ciclo_codigo', $ciclo);
+            if ($empresaFiltro !== '') {
+                $presQ->whereRaw('UPPER(empresa) = ?', [$empresaFiltro]);
+            }
+            if ($centroFiltro !== '') {
+                $aliasCentro = ltrim($centroFiltro, '0');
+                $presQ->where(function ($w) use ($centroFiltro, $aliasCentro) {
+                    $w->where('centro_codigo', $centroFiltro);
+                    if ($aliasCentro !== '' && $aliasCentro !== $centroFiltro) {
+                        $w->orWhere('centro_codigo', $aliasCentro);
+                    }
+                });
+            }
+            foreach ($presQ->get($cols) as $row) {
                 $meses = [];
                 for ($i = 1; $i <= 12; $i++) {
                     $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
@@ -4037,7 +4163,20 @@ class CentrosCostosController extends Controller
 
         $overlays = [];
         if (Schema::hasTable('tbl_cc_captura_centros')) {
-            foreach (DB::table('tbl_cc_captura_centros')->where('ciclo_codigo', $ciclo)->get(['empresa', 'centro_codigo', 'estado', 'updated_at']) as $row) {
+            $ovQ = DB::table('tbl_cc_captura_centros')->where('ciclo_codigo', $ciclo);
+            if ($empresaFiltro !== '') {
+                $ovQ->whereRaw('UPPER(empresa) = ?', [$empresaFiltro]);
+            }
+            if ($centroFiltro !== '') {
+                $aliasCentro = ltrim($centroFiltro, '0');
+                $ovQ->where(function ($w) use ($centroFiltro, $aliasCentro) {
+                    $w->where('centro_codigo', $centroFiltro);
+                    if ($aliasCentro !== '' && $aliasCentro !== $centroFiltro) {
+                        $w->orWhere('centro_codigo', $aliasCentro);
+                    }
+                });
+            }
+            foreach ($ovQ->get(['empresa', 'centro_codigo', 'estado', 'updated_at']) as $row) {
                 $key = strtoupper(trim((string) $row->empresa)).'|'.trim((string) $row->centro_codigo);
                 $fecha = null;
                 if (! empty($row->updated_at)) {
