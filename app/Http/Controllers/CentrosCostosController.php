@@ -374,7 +374,8 @@ class CentrosCostosController extends Controller
                     (int) ($meta['anio'] ?? 0),
                     (float) ($meta['tc'] ?? 20),
                     (string) ($meta['formato'] ?? 'normal'),
-                    (string) ($meta['moneda'] ?? 'MXN')
+                    (string) ($meta['moneda'] ?? 'MXN'),
+                    $workDir
                 );
                 $streamer->append($workDir, $filas);
                 $offset += count($slice);
@@ -962,13 +963,81 @@ class CentrosCostosController extends Controller
      * @param  array<int, array{empresa: string, centro: string, centro_nombre: string, cuenta: string, cuenta_nombre: string}>  $slice
      * @return array<int, array<int, mixed>>
      */
+    /**
+     * @return array{usados: array<string, bool>, lineas: array<string, bool>}
+     */
+    protected function estadoImportesExport(?string $workDir): array
+    {
+        $estado = ['usados' => [], 'lineas' => []];
+        if ($workDir === null || $workDir === '') {
+            return $estado;
+        }
+        $path = $workDir.DIRECTORY_SEPARATOR.'importes.json';
+        if (! is_file($path)) {
+            return $estado;
+        }
+        $raw = json_decode((string) file_get_contents($path), true);
+        if (! is_array($raw)) {
+            return $estado;
+        }
+        foreach ((array) ($raw['usados'] ?? []) as $k) {
+            $estado['usados'][(string) $k] = true;
+        }
+        foreach ((array) ($raw['lineas'] ?? []) as $k) {
+            $estado['lineas'][(string) $k] = true;
+        }
+
+        return $estado;
+    }
+
+    /**
+     * @param  array{usados: array<string, bool>, lineas: array<string, bool>}  $estado
+     */
+    protected function guardarEstadoImportesExport(?string $workDir, array $estado): void
+    {
+        if ($workDir === null || $workDir === '' || ! is_dir($workDir)) {
+            return;
+        }
+        file_put_contents(
+            $workDir.DIRECTORY_SEPARATOR.'importes.json',
+            json_encode([
+                'usados' => array_keys($estado['usados']),
+                'lineas' => array_keys($estado['lineas']),
+            ])
+        );
+    }
+
+    /**
+     * El mismo presupuesto (cuenta corta y su código SAP) solo suma una vez.
+     *
+     * @param  array<string, bool>  $usados
+     * @param  array{fila?: string, meses?: array<int, float|null>, cuenta_nombre?: string}|null  $info
+     * @return array{fila?: string, meses?: array<int, float|null>, cuenta_nombre?: string}|null
+     */
+    protected function reclamarPresupuestoExport(array &$usados, ?array $info): ?array
+    {
+        if ($info === null) {
+            return null;
+        }
+        $fila = (string) ($info['fila'] ?? '');
+        if ($fila !== '') {
+            if (isset($usados[$fila])) {
+                return null;
+            }
+            $usados[$fila] = true;
+        }
+
+        return $info;
+    }
+
     protected function filasExportBudgetGastosSlice(
         string $ciclo,
         array $slice,
         int $anioBudget,
         float $tc,
         string $formato,
-        string $moneda
+        string $moneda,
+        ?string $workDir = null
     ): array {
         foreach ($slice as $i => $item) {
             $slice[$i]['cuenta_sap'] = $this->codigoSapParaExport(
@@ -980,6 +1049,7 @@ class CentrosCostosController extends Controller
         $pptoByKey = $this->mapaPresupuestosDeSlice($ciclo, $slice);
         $estructurado = $formato === 'estructurado';
         $enUsd = $estructurado && $moneda === 'USD';
+        $estado = $this->estadoImportesExport($workDir);
         $filas = [];
         foreach ($slice as $item) {
             $origen = (string) ($item['cuenta'] ?? '');
@@ -987,16 +1057,23 @@ class CentrosCostosController extends Controller
             $nombre = (string) ($item['cuenta_nombre'] ?? '');
             $empresa = (string) ($item['empresa'] ?? '');
             $centro = (string) ($item['centro'] ?? '');
+            $linea = strtoupper($empresa).'|'.trim($centro).'|'.$sap;
             $info = $this->presupuestoExportDeCuenta($pptoByKey, $empresa, $centro, $origen, $nombre);
             if ($info === null && $sap !== $origen) {
                 $info = $this->presupuestoExportDeCuenta($pptoByKey, $empresa, $centro, $sap, $nombre);
             }
+            $info = $this->reclamarPresupuestoExport($estado['usados'], $info);
+            if (isset($estado['lineas'][$linea]) && $info === null) {
+                continue;
+            }
+            $estado['lineas'][$linea] = true;
             $this->guardarCodigoSapEnBase($empresa, $origen, $sap);
             $item['cuenta'] = $sap;
             foreach ($this->filasExportCuenta($item, $info, $anioBudget, $tc, $estructurado, $enUsd) as $fila) {
                 $filas[] = $fila;
             }
         }
+        $this->guardarEstadoImportesExport($workDir, $estado);
 
         return $filas;
     }
@@ -1120,6 +1197,7 @@ class CentrosCostosController extends Controller
                 $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
             }
             $info = [
+                'fila' => $emp.'|'.$centro.'|'.$cuenta,
                 'meses' => $meses,
                 'cuenta_nombre' => trim((string) ($row->cuenta_nombre ?? '')),
             ];
@@ -1363,6 +1441,8 @@ class CentrosCostosController extends Controller
         }
 
         $rowGenerator = function () use ($asignados, $pptoByKey, $anioBudget, $tc, $estructurado, $enUsd) {
+            $usados = [];
+            $lineas = [];
             foreach ($asignados as $item) {
                 $emp = $item['empresa'];
                 $centro = $item['centro'];
@@ -1375,6 +1455,12 @@ class CentrosCostosController extends Controller
                 if ($info === null && $cuenta !== $origen) {
                     $info = $this->presupuestoExportDeCuenta($pptoByKey, $emp, $centro, $cuenta, $cuentaNombre);
                 }
+                $info = $this->reclamarPresupuestoExport($usados, $info);
+                $linea = strtoupper($emp).'|'.trim($centro).'|'.$cuenta;
+                if (isset($lineas[$linea]) && $info === null) {
+                    continue;
+                }
+                $lineas[$linea] = true;
                 $this->guardarCodigoSapEnBase($emp, $origen, $cuenta);
 
                 $meses = $info['meses'] ?? array_fill(0, 12, null);
@@ -1501,6 +1587,7 @@ class CentrosCostosController extends Controller
             }
             $nombre = trim((string) ($row->cuenta_nombre ?? ''));
             $info = [
+                'fila' => $emp.'|'.$centro.'|'.$cuenta,
                 'meses' => $meses,
                 'cuenta_nombre' => $nombre,
             ];
