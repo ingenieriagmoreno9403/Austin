@@ -26,9 +26,9 @@
             <h3><i class="fa-solid fa-tags"></i> Maestro de precios</h3>
             <span class="text-muted" style="font-size:.8rem" id="pv-costos-hint">Cargando…</span>
         </div>
-        <div class="cc-filters" style="grid-template-columns: 130px 140px 1fr 1fr 90px auto auto auto auto auto auto;">
-            <select id="pv-costos-anio" class="cc-select" title="Año de proyección del maestro">
-                <option value="{{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}">Proy. {{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}</option>
+        <div class="cc-filters" style="grid-template-columns: minmax(180px, 280px) 140px 1fr 1fr 90px auto auto auto auto auto auto;">
+            <select id="pv-costos-anio" class="cc-select" title="Proyección del maestro de precios">
+                <option value="" data-anio="{{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}">Proy. {{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }} · ciclo actual</option>
             </select>
             <select id="pv-costos-empresa" class="cc-select" title="Filtrar por empresa">
                 <option value="">Todas las empresas</option>

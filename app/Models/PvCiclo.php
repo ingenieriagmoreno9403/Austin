@@ -21,6 +21,8 @@ class PvCiclo extends Model
         'tipo_cambio',
         'tipo_cambio_meses',
         'tipo_budget',
+        'ciclo_base',
+        'venta_real_sap',
         'observaciones',
         'created_by',
         'updated_by',

@@ -55,6 +55,15 @@
                             <strong>Budget:</strong> los 12 meses quedan en blanco y editables para capturar la proyección.
                         </div>
                     </div>
+                    <div class="col-12" id="p-forecast-origen" hidden>
+                        <div class="cc-form-kicker">Origen del Forecast</div>
+                        <label class="form-label" for="p-ciclo-base">Budget del que se copia</label>
+                        <select id="p-ciclo-base" class="form-select">
+                            <option value="">Selecciona un Budget…</option>
+                        </select>
+                        <small class="text-muted d-block mt-1" id="p-ciclo-base-hint">Se copian las empresas, los clientes y los usuarios asignados de ese Budget. Los meses que se pueden editar salen de sus proyecciones locales.</small>
+                        <div class="alert alert-warning border mt-2 mb-0 py-2 px-3" id="p-venta-aviso" hidden style="font-size:.82rem;line-height:1.35"></div>
+                    </div>
 
                     <div class="col-12"><div class="cc-form-kicker">Ventana de captura</div></div>
                     <div class="col-md-4">

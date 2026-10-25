@@ -251,6 +251,49 @@
     <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
         <div class="card-header text-start bg-body border-0">
             <h5 class="text-secondary mb-1">
+                <i class="fa-solid fa-layer-group me-2"></i>Ver todas las proyecciones
+            </h5>
+            <p class="text-muted fs-8 mb-0">
+                Márcalo para que en Ventas/Costos el selector deje ver el resto de ciclos, no solo la proyección del ciclo actual. No cambia el perfil.
+            </p>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ url('/Sistemas/UsuarioPermisos/'.$varusuario->id.'/modulos') }}">
+                @csrf
+                <input type="hidden" name="seccion" value="proyecciones_costos">
+                <div class="acciones-perfiles-vista" style="display:block">
+                    <div class="acciones-perfiles-vista__summary">
+                        <span class="acciones-perfiles-vista__summary-main">
+                            <i class="fa-solid fa-layer-group"></i>
+                            <span class="acciones-perfiles-vista__name">Ventas / Costos</span>
+                        </span>
+                    </div>
+                    <div class="acciones-perfiles-vista__content">
+                        <div class="acciones-perfiles-vista__list">
+                            <label class="acciones-perfiles-check{{ !empty($puedeVerTodasProyeccionesCostos) ? ' is-checked' : '' }}">
+                                <input class="form-check-input acciones-perfiles-check__input" type="checkbox"
+                                    name="ver_todas_proyecciones_costos" value="1"
+                                    {{ !empty($puedeVerTodasProyeccionesCostos) ? 'checked' : '' }}>
+                                <span class="acciones-perfiles-check__content">
+                                    <span class="acciones-perfiles-check__title">Ver todas las proyecciones</span>
+                                    <span class="acciones-perfiles-check__meta">Selector de ciclos en el maestro de precios</span>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="text-end mt-3">
+                    <button class="btn btn-baseColor fs-6" type="submit">
+                        <i class="fa-solid fa-check"></i> Guardar proyecciones
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="card border-0 shadow p-3 mt-2 mb-4 bg-body rounded-5">
+        <div class="card-header text-start bg-body border-0">
+            <h5 class="text-secondary mb-1">
                 <i class="fa-solid fa-plus me-2"></i>Agregar acción puntual
             </h5>
             <p class="text-muted fs-8 mb-0">

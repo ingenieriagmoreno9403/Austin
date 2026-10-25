@@ -23,6 +23,7 @@ use App\Models\User;
 use App\Services\AutinApiClient;
 use App\Traits\MenuTrait;
 use App\Traits\SistemasTraits;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -119,6 +120,7 @@ class ProyeccionesVentasController extends Controller
             'puedeEditarCostos' => $this->puedeEditarPreciosVentas(),
             'puedeObtenerPrecioLista' => $this->puedeObtenerPrecioLista(),
             'puedeFiltrarSoloAsignados' => $this->puedeFiltrarSoloAsignadosCostos(),
+            'puedeVerTodasProyeccionesCostos' => $this->puedeVerTodasProyeccionesCostos(),
         ]);
     }
 
@@ -921,6 +923,15 @@ class ProyeccionesVentasController extends Controller
             || $this->puedeEditarPreciosVentas();
     }
 
+    /**
+     * En /Ventas/Costos el selector muestra solo la proyección del ciclo actual,
+     * salvo este permiso, que lista el resto de ciclos.
+     */
+    protected function puedeVerTodasProyeccionesCostos(): bool
+    {
+        return $this->forpermisos('ver_todas_proyecciones_costos') === 'ver_todas_proyecciones_costos';
+    }
+
     protected function denyUnlessPuedeObtenerPrecioLista(): ?JsonResponse
     {
         if ($this->puedeObtenerPrecioLista()) {
@@ -984,7 +995,19 @@ class ProyeccionesVentasController extends Controller
         $cliente = trim((string) $request->get('cliente', ''));
         $itemcode = trim((string) $request->get('itemcode', $request->get('item_code', '')));
         $q = trim((string) $request->get('q', ''));
-        $anio = $this->anioProyeccionCostos((int) $request->get('anio', 0));
+        $anioPedido = (int) $request->get('anio', 0);
+        $cicloPedido = strtoupper(trim((string) $request->get('ciclo', '')));
+        $ciclo = '';
+        if ($this->puedeVerTodasProyeccionesCostos() && $cicloPedido !== '' && Schema::hasTable('tbl_pv_ciclos')) {
+            $cicloRow = PvCiclo::query()->whereRaw('UPPER(codigo) = ?', [$cicloPedido])->first();
+            if ($cicloRow) {
+                $ciclo = strtoupper((string) $cicloRow->codigo);
+                $anioPedido = (int) $cicloRow->anio_presupuesto;
+            }
+        }
+        $anio = $this->puedeVerTodasProyeccionesCostos()
+            ? $this->anioProyeccionCostos($anioPedido)
+            : $this->anioProyeccionCostos();
         $page = max(1, (int) $request->get('page', 1));
         $sinPaginar = in_array(strtolower((string) $request->get('sin_paginar', '')), ['1', 'true', 'yes'], true);
         $perPage = (int) $request->get('per_page', 25);
@@ -1009,11 +1032,26 @@ class ProyeccionesVentasController extends Controller
         // con asignación de cualquier usuario en el año.
         $soloAsignados = in_array(strtolower((string) $request->get('solo_asignados', '')), ['1', 'true', 'yes'], true)
             && $this->puedeFiltrarSoloAsignadosCostos();
+        if ($ciclo !== '') {
+            return $this->responderCostosDeCiclo(
+                $ciclo,
+                $anio,
+                $empresa,
+                $cliente,
+                $itemcode,
+                $q,
+                $page,
+                $perPage,
+                $sinPaginar,
+                $soloAsignados,
+                ! $soloAsignados && ! $this->puedeVerMaestroCostosCompleto()
+            );
+        }
         if ($soloAsignados) {
-            $alcance = $this->alcanceCostosAsignadosTodosUsuarios($anio);
+            $alcance = $this->alcanceCostosAsignadosTodosUsuarios($anio, $ciclo);
             $restringido = true;
         } else {
-            $alcance = $this->alcanceCostosAsignadosUsuario($anio);
+            $alcance = $this->alcanceCostosAsignadosUsuario($anio, $ciclo);
             $restringido = $alcance !== null;
         }
         if ($restringido && $alcance['empresas'] === []) {
@@ -1021,6 +1059,8 @@ class ProyeccionesVentasController extends Controller
                 'ok' => true,
                 'anio' => $anio,
                 'anios' => $this->aniosDisponiblesCostos($anio),
+                'ciclo' => $ciclo,
+                'ciclos' => $this->ciclosVisiblesCostos(),
                 'grouped' => true,
                 'items' => [],
                 'total' => 0,
@@ -1340,6 +1380,8 @@ class ProyeccionesVentasController extends Controller
             'ok' => true,
             'anio' => $anio,
             'anios' => $this->aniosDisponiblesCostos($anio),
+            'ciclo' => $ciclo,
+            'ciclos' => $this->ciclosVisiblesCostos(),
             'grouped' => $doGroup,
             'items' => array_values($pageItems),
             'total' => $total,
@@ -1353,6 +1395,273 @@ class ProyeccionesVentasController extends Controller
             'empresas_permitidas' => $restringido
                 ? array_values(array_keys($alcance['empresas']))
                 : [],
+        ]);
+    }
+
+    /**
+     * Un ciclo: pagina los productos asignados y solo lee los precios de esa página.
+     */
+    protected function responderCostosDeCiclo(
+        string $ciclo,
+        int $anio,
+        string $empresa,
+        string $cliente,
+        string $itemcode,
+        string $q,
+        int $page,
+        int $perPage,
+        bool $sinPaginar,
+        bool $soloAsignados,
+        bool $soloPropios
+    ): JsonResponse {
+        $vacio = [
+            'ok' => true,
+            'anio' => $anio,
+            'anios' => $this->aniosDisponiblesCostos($anio),
+            'ciclo' => $ciclo,
+            'ciclos' => $this->ciclosVisiblesCostos(),
+            'grouped' => true,
+            'items' => [],
+            'total' => 0,
+            'page' => 1,
+            'per_page' => $perPage,
+            'last_page' => 1,
+            'from' => 0,
+            'to' => 0,
+            'alcance_restringido' => true,
+            'solo_asignados' => $soloAsignados,
+            'empresas_permitidas' => [],
+            'mensaje' => $soloAsignados
+                ? 'No hay productos asignados con cantidad registrada en este ciclo.'
+                : 'Este ciclo no tiene productos asignados.',
+        ];
+        if (! Schema::hasTable('tbl_pv_asignaciones') || ! Schema::hasTable('tbl_pv_asignacion_productos')) {
+            return response()->json($vacio);
+        }
+
+        $headers = DB::table('tbl_pv_asignacion_productos as ap')
+            ->join('tbl_pv_asignaciones as a', 'a.id', '=', 'ap.asignacion_id')
+            ->whereRaw('UPPER(a.ciclo_codigo) = ?', [$ciclo])
+            ->whereRaw("TRIM(a.cliente_codigo) <> ''")
+            ->whereRaw("TRIM(ap.producto_codigo) <> ''");
+        if ($soloPropios) {
+            $headers->where('a.user_id', (int) auth()->id());
+        }
+        if ($empresa !== '') {
+            $headers->whereRaw('UPPER(TRIM(a.empresa)) = ?', [$empresa]);
+        }
+        if ($cliente !== '') {
+            $like = '%'.$cliente.'%';
+            $headers->where(function ($w) use ($like) {
+                $w->where('a.cliente_codigo', 'like', $like)
+                    ->orWhere('a.cliente_nombre', 'like', $like);
+            });
+        }
+        if ($itemcode !== '') {
+            $like = '%'.$itemcode.'%';
+            $headers->where(function ($w) use ($like) {
+                $w->where('ap.producto_codigo', 'like', $like)
+                    ->orWhere('ap.producto_nombre', 'like', $like);
+            });
+        }
+        if ($q !== '') {
+            $like = '%'.$q.'%';
+            $headers->where(function ($w) use ($like) {
+                $w->where('a.empresa', 'like', $like)
+                    ->orWhere('a.cliente_codigo', 'like', $like)
+                    ->orWhere('a.cliente_nombre', 'like', $like)
+                    ->orWhere('ap.producto_codigo', 'like', $like)
+                    ->orWhere('ap.producto_nombre', 'like', $like);
+            });
+        }
+        if ($soloAsignados) {
+            $sum = [];
+            for ($i = 1; $i <= 12; $i++) {
+                $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                if (Schema::hasColumn('tbl_pv_proyecciones', $col)) {
+                    $sum[] = 'COALESCE(p.'.$col.',0)';
+                }
+            }
+            if ($sum === [] || ! Schema::hasTable('tbl_pv_proyecciones')) {
+                return response()->json($vacio);
+            }
+            $expr = implode('+', $sum);
+            $headers->whereExists(function ($w) use ($ciclo, $expr) {
+                $w->selectRaw('1')
+                    ->from('tbl_pv_proyecciones as p')
+                    ->whereRaw('UPPER(p.ciclo_codigo) = ?', [$ciclo])
+                    ->whereRaw('UPPER(TRIM(p.empresa)) = UPPER(TRIM(a.empresa))')
+                    ->whereRaw('TRIM(p.cliente_codigo) = TRIM(a.cliente_codigo)')
+                    ->whereRaw('TRIM(p.producto_codigo) = TRIM(ap.producto_codigo)')
+                    ->whereRaw('('.$expr.') > 0');
+            });
+        }
+
+        $headers->selectRaw('UPPER(TRIM(a.empresa)) as empresa')
+            ->selectRaw('TRIM(a.cliente_codigo) as cliente_codigo')
+            ->selectRaw('TRIM(ap.producto_codigo) as producto_codigo')
+            ->selectRaw('MAX(a.cliente_nombre) as cliente_nombre')
+            ->selectRaw('MAX(ap.producto_nombre) as producto_nombre')
+            ->groupByRaw('UPPER(TRIM(a.empresa)), TRIM(a.cliente_codigo), TRIM(ap.producto_codigo)');
+
+        $total = (int) DB::query()->fromSub(clone $headers, 'h')->count();
+        $lastPage = max(1, (int) ceil($total / max(1, $perPage)));
+        if ($page > $lastPage) {
+            $page = $lastPage;
+        }
+        $offset = ($page - 1) * $perPage;
+        $pageQ = (clone $headers)
+            ->orderByRaw('UPPER(TRIM(a.empresa))')
+            ->orderByRaw('TRIM(a.cliente_codigo)')
+            ->orderByRaw('TRIM(ap.producto_codigo)');
+        if (! $sinPaginar) {
+            $pageQ->offset($offset)->limit($perPage);
+        }
+        $filas = $pageQ->get();
+
+        $empresas = DB::table('tbl_pv_asignaciones')
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [$ciclo])
+            ->when($soloPropios, function ($w) {
+                $w->where('user_id', (int) auth()->id());
+            })
+            ->selectRaw('UPPER(TRIM(empresa)) as empresa')
+            ->distinct()
+            ->orderBy('empresa')
+            ->pluck('empresa')
+            ->filter()
+            ->values()
+            ->all();
+
+        if ($filas->isEmpty()) {
+            $vacio['total'] = $total;
+            $vacio['page'] = $page;
+            $vacio['last_page'] = $lastPage;
+            $vacio['empresas_permitidas'] = $empresas;
+            if ($total > 0) {
+                $vacio['mensaje'] = null;
+            }
+
+            return response()->json($vacio);
+        }
+
+        $triples = [];
+        foreach ($filas as $fila) {
+            $triples[] = [
+                'empresa' => strtoupper(trim((string) $fila->empresa)),
+                'card' => trim((string) $fila->cliente_codigo),
+                'codigo' => trim((string) $fila->producto_codigo),
+                'card_name' => trim((string) ($fila->cliente_nombre ?? '')),
+                'producto_nombre' => trim((string) ($fila->producto_nombre ?? '')),
+            ];
+        }
+
+        $porClave = [];
+        foreach ($triples as $t) {
+            $porClave[$t['empresa'].'|'.$t['card'].'|'.$t['codigo']] = [
+                'empresa' => $t['empresa'],
+                'card_code' => $t['card'],
+                'card_name' => $t['card_name'],
+                'producto_codigo' => $t['codigo'],
+                'producto_nombre' => $t['producto_nombre'],
+                'mes' => null,
+                'anio' => $anio,
+                'costo_unitario' => 0.0,
+                'precio_lista' => null,
+                'moneda_lista' => null,
+                'moneda' => 'MXN',
+                'tiene_maestro' => false,
+                'updated_at' => null,
+            ];
+        }
+
+        $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasAnio = $this->hasAnioCostos();
+        $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
+        $hasPrecioLista = Schema::hasColumn('tbl_pv_productos_costo', 'precio_lista');
+        $precioFilas = [];
+        if (Schema::hasTable('tbl_pv_productos_costo')) {
+            foreach (array_chunk($triples, 80) as $chunk) {
+                $precioQ = PvProductoCosto::query();
+                if ($hasAnio) {
+                    $precioQ->where('anio', $anio);
+                }
+                $precioQ->where(function ($w) use ($chunk) {
+                    foreach ($chunk as $t) {
+                        $w->orWhere(function ($x) use ($t) {
+                            $x->whereRaw('UPPER(TRIM(empresa)) = ?', [$t['empresa']])
+                                ->where('card_code', $t['card'])
+                                ->where('producto_codigo', $t['codigo']);
+                        });
+                    }
+                });
+                foreach ($precioQ->get() as $row) {
+                    $precioFilas[] = $row;
+                }
+            }
+        }
+
+        $sueltos = array_values($porClave);
+        foreach ($precioFilas as $row) {
+            $emp = strtoupper(trim((string) $row->empresa));
+            $card = $hasCard ? trim((string) ($row->card_code ?? '')) : '';
+            $cod = trim((string) $row->producto_codigo);
+            $clave = $emp.'|'.$card.'|'.$cod;
+            if (! isset($porClave[$clave])) {
+                continue;
+            }
+            $mes = $hasMes ? (int) ($row->mes ?? 0) : 0;
+            $precioLista = null;
+            if ($hasPrecioLista && $row->precio_lista !== null && (float) $row->precio_lista > 0) {
+                $precioLista = round((float) $row->precio_lista, 4);
+            }
+            $sueltos[] = [
+                'empresa' => $emp,
+                'card_code' => $card,
+                'card_name' => $porClave[$clave]['card_name'] ?: ($hasCard ? trim((string) ($row->card_name ?? '')) : ''),
+                'producto_codigo' => $cod,
+                'producto_nombre' => $porClave[$clave]['producto_nombre'] ?: $row->producto_nombre,
+                'mes' => $mes > 0 ? $mes : null,
+                'anio' => $hasAnio ? (int) ($row->anio ?? $anio) : $anio,
+                'costo_unitario' => (float) $row->costo_unitario,
+                'precio_lista' => $precioLista,
+                'moneda_lista' => $precioLista !== null ? strtoupper((string) ($row->moneda ?: 'MXN')) : null,
+                'moneda' => strtoupper((string) ($row->moneda ?: 'MXN')),
+                'tiene_maestro' => true,
+                'updated_at' => $row->updated_at ? $row->updated_at->format('Y-m-d H:i') : null,
+            ];
+        }
+
+        $agrupados = $this->agruparCostosPorProductoCliente($sueltos);
+        $porGrupo = [];
+        foreach ($agrupados as $g) {
+            $k = strtoupper(trim((string) ($g['empresa'] ?? ''))).'|'.trim((string) ($g['card_code'] ?? '')).'|'.trim((string) ($g['producto_codigo'] ?? ''));
+            $porGrupo[$k] = $g;
+        }
+        $items = [];
+        foreach ($triples as $t) {
+            $k = $t['empresa'].'|'.$t['card'].'|'.$t['codigo'];
+            if (isset($porGrupo[$k])) {
+                $items[] = $porGrupo[$k];
+            }
+        }
+
+        return response()->json([
+            'ok' => true,
+            'anio' => $anio,
+            'anios' => $this->aniosDisponiblesCostos($anio),
+            'ciclo' => $ciclo,
+            'ciclos' => $this->ciclosVisiblesCostos(),
+            'grouped' => true,
+            'items' => $items,
+            'total' => $total,
+            'page' => $sinPaginar ? 1 : $page,
+            'per_page' => $sinPaginar ? max($total, 1) : $perPage,
+            'last_page' => $sinPaginar ? 1 : $lastPage,
+            'from' => $total === 0 ? 0 : ($sinPaginar ? 1 : $offset + 1),
+            'to' => $total === 0 ? 0 : ($sinPaginar ? $total : min($offset + count($items), $total)),
+            'alcance_restringido' => true,
+            'solo_asignados' => $soloAsignados,
+            'empresas_permitidas' => $empresas,
         ]);
     }
 
@@ -1454,8 +1763,25 @@ class ProyeccionesVentasController extends Controller
      *
      * @return array{empresas: array<string, true>, clientes: array<string, true>, triples: array<string, true>, productos_emp: array<string, true>}|null
      */
-    protected function alcanceCostosAsignadosUsuario(int $anio): ?array
+    protected function alcanceCostosAsignadosUsuario(int $anio, string $ciclo = ''): ?array
     {
+        $ciclo = strtoupper(trim($ciclo));
+        if ($ciclo !== '') {
+            if ($this->puedeVerMaestroCostosCompleto()) {
+                return $this->construirAlcanceCostosAsignaciones($anio, null, $ciclo);
+            }
+            $uid = (int) auth()->id();
+            if ($uid <= 0 || ! Schema::hasTable('tbl_pv_asignaciones')) {
+                return [
+                    'empresas' => [],
+                    'clientes' => [],
+                    'triples' => [],
+                    'productos_emp' => [],
+                ];
+            }
+
+            return $this->construirAlcanceCostosAsignaciones($anio, $uid, $ciclo);
+        }
         if ($this->puedeVerMaestroCostosCompleto()) {
             return null;
         }
@@ -1477,7 +1803,7 @@ class ProyeccionesVentasController extends Controller
      *
      * @return array{empresas: array<string, true>, clientes: array<string, true>, triples: array<string, true>, productos_emp: array<string, true>}
      */
-    protected function alcanceCostosAsignadosTodosUsuarios(int $anio): array
+    protected function alcanceCostosAsignadosTodosUsuarios(int $anio, string $ciclo = ''): array
     {
         if (! Schema::hasTable('tbl_pv_asignaciones')) {
             return [
@@ -1488,13 +1814,13 @@ class ProyeccionesVentasController extends Controller
             ];
         }
 
-        return $this->construirAlcanceCostosAsignaciones($anio, null);
+        return $this->construirAlcanceCostosAsignaciones($anio, null, $ciclo);
     }
 
     /**
      * @return array{empresas: array<string, true>, clientes: array<string, true>, triples: array<string, true>, productos_emp: array<string, true>}
      */
-    protected function construirAlcanceCostosAsignaciones(int $anio, ?int $userId): array
+    protected function construirAlcanceCostosAsignaciones(int $anio, ?int $userId, string $ciclo = ''): array
     {
         $q = DB::table('tbl_pv_asignaciones as a')
             ->leftJoin('tbl_pv_asignacion_productos as ap', 'ap.asignacion_id', '=', 'a.id')
@@ -1502,7 +1828,10 @@ class ProyeccionesVentasController extends Controller
         if ($userId !== null && $userId > 0) {
             $q->where('a.user_id', $userId);
         }
-        if (Schema::hasTable('tbl_pv_ciclos')) {
+        $ciclo = strtoupper(trim($ciclo));
+        if ($ciclo !== '') {
+            $q->whereRaw('UPPER(a.ciclo_codigo) = ?', [$ciclo]);
+        } elseif (Schema::hasTable('tbl_pv_ciclos')) {
             $q->join('tbl_pv_ciclos as c', DB::raw('UPPER(c.codigo)'), '=', DB::raw('UPPER(a.ciclo_codigo)'))
                 ->where('c.anio_presupuesto', $anio);
         }
@@ -1618,6 +1947,36 @@ class ProyeccionesVentasController extends Controller
         rsort($out);
 
         return array_values($out);
+    }
+
+    /**
+     * Ciclos que el selector de Costos puede mostrar.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function ciclosVisiblesCostos(): array
+    {
+        if (! $this->puedeVerTodasProyeccionesCostos() || ! Schema::hasTable('tbl_pv_ciclos')) {
+            return [];
+        }
+
+        return PvCiclo::query()
+            ->orderByDesc('anio_presupuesto')
+            ->orderByDesc('id')
+            ->get()
+            ->map(function (PvCiclo $c) {
+                return [
+                    'codigo' => (string) $c->codigo,
+                    'nombre' => (string) ($c->nombre ?? $c->codigo),
+                    'anio' => (int) $c->anio_presupuesto,
+                    'estado' => (string) ($c->estado ?? ''),
+                    'tipoBudget' => $this->normalizeTipoBudget(
+                        Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $c->tipo_budget : null
+                    ),
+                ];
+            })
+            ->values()
+            ->all();
     }
 
     /**
@@ -2568,6 +2927,7 @@ class ProyeccionesVentasController extends Controller
             'itemcode' => $itemcode,
             'q' => $q,
             'anio' => $anio,
+            'ciclo' => strtoupper(trim((string) $request->get('ciclo', ''))),
             'grouped' => 1,
             'sin_paginar' => 1,
             'per_page' => 50000,
@@ -5816,6 +6176,8 @@ class ProyeccionesVentasController extends Controller
             'tipoCambioMeses' => 'nullable|array|size:12',
             'tipoCambioMeses.*' => 'nullable|numeric|min:0',
             'tipoBudget' => 'nullable|in:BUDGET,3+9,6+6,9+3,SIOP',
+            'cicloBase' => 'nullable|string|max:40',
+            'ventaRealSap' => 'nullable|boolean',
             'observaciones' => 'nullable|string',
         ]);
 
@@ -5856,10 +6218,69 @@ class ProyeccionesVentasController extends Controller
         }
         $ciclo->save();
 
+        $copiaStats = null;
+        $tipoCreado = $this->normalizeTipoBudget($ciclo->tipo_budget ?? null);
+        $esForecast = in_array($tipoCreado, ['3+9', '6+6', '9+3'], true);
+        if ($nuevo && $esForecast) {
+            $cicloBase = strtoupper(trim((string) ($data['cicloBase'] ?? '')));
+            if ($cicloBase === '' || $cicloBase === $codigo) {
+                $ciclo->delete();
+
+                return response()->json([
+                    'message' => 'Elige el Budget del que se copia la información del Forecast.',
+                ], 422);
+            }
+            $origRow = PvCiclo::query()->where('codigo', $cicloBase)->first();
+            if (! $origRow) {
+                $ciclo->delete();
+
+                return response()->json(['message' => 'El Budget de origen no existe.'], 422);
+            }
+            $tipoOrig = $this->normalizeTipoBudget(
+                Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $origRow->tipo_budget : null
+            );
+            if ($tipoOrig && $tipoOrig !== 'BUDGET') {
+                $ciclo->delete();
+
+                return response()->json(['message' => 'El origen tiene que ser un ciclo Budget.'], 422);
+            }
+            try {
+                $this->asegurarColumnasCicloForecast();
+                if (Schema::hasColumn('tbl_pv_ciclos', 'ciclo_base')) {
+                    $ciclo->ciclo_base = $cicloBase;
+                }
+                if (Schema::hasColumn('tbl_pv_ciclos', 'venta_real_sap')) {
+                    // Si no hay snapshot local, la captura consulta SAP.
+                    $ciclo->venta_real_sap = true;
+                }
+                $ciclo->save();
+                if (function_exists('set_time_limit')) {
+                    @set_time_limit(300);
+                }
+                $copiaStats = $this->ejecutarCopiaBudgetHaciaSiop($cicloBase, $codigo, false, false);
+            } catch (Throwable $e) {
+                Log::error('PV copiar Budget→Forecast: '.$e->getMessage(), [
+                    'origen' => $cicloBase,
+                    'destino' => $codigo,
+                ]);
+                $this->limpiarCicloRecienCreado($ciclo);
+
+                return response()->json([
+                    'message' => 'No se pudieron copiar las asignaciones: '.$e->getMessage(),
+                ], 500);
+            }
+        }
+
+        $out = $this->cicloPayload($ciclo->fresh() ?: $ciclo);
+        if (is_array($copiaStats)) {
+            $out['copiaAsignaciones'] = (int) ($copiaStats['asignaciones_creadas'] ?? 0);
+            $out['copiaProductos'] = (int) ($copiaStats['productos_copiados'] ?? 0);
+        }
+
         return response()->json([
             'ok' => true,
             'nuevo' => $nuevo,
-            'ciclo' => $this->cicloPayload($ciclo),
+            'ciclo' => $out,
         ]);
     }
 
@@ -6139,7 +6560,7 @@ class ProyeccionesVentasController extends Controller
     /**
      * @return array<string, int>
      */
-    protected function ejecutarCopiaBudgetHaciaSiop(string $origen, string $destino, bool $reemplazar): array
+    protected function ejecutarCopiaBudgetHaciaSiop(string $origen, string $destino, bool $reemplazar, bool $copiarProyecciones = true): array
     {
         $stats = [
             'asignaciones_creadas' => 0,
@@ -6291,8 +6712,9 @@ class ProyeccionesVentasController extends Controller
             }
         }
 
-        // 2) Proyecciones (cantidades) por lotes.
-        if (Schema::hasTable('tbl_pv_proyecciones')) {
+        // 2) Proyecciones (cantidades) por lotes. El Forecast no las copia:
+        // los meses editables se leen del Budget al capturar y los fijos salen de la venta real.
+        if ($copiarProyecciones && Schema::hasTable('tbl_pv_proyecciones')) {
             $cols = [
                 'empresa', 'cliente_codigo', 'producto_codigo', 'producto_nombre',
                 'mes_01', 'mes_02', 'mes_03', 'mes_04', 'mes_05', 'mes_06',
@@ -6351,7 +6773,7 @@ class ProyeccionesVentasController extends Controller
         }
 
         // 3) Estado de captura por cliente.
-        if (Schema::hasTable('tbl_pv_captura_clientes')) {
+        if ($copiarProyecciones && Schema::hasTable('tbl_pv_captura_clientes')) {
             $capCols = ['empresa', 'cliente_codigo', 'estado'];
             foreach (['cliente_nombre', 'centro_nombre', 'updated_by'] as $opt) {
                 if (Schema::hasColumn('tbl_pv_captura_clientes', $opt)) {
@@ -6428,6 +6850,44 @@ class ProyeccionesVentasController extends Controller
         }
 
         return $stats;
+    }
+
+    protected function limpiarCicloRecienCreado(PvCiclo $row): void
+    {
+        $codigo = (string) $row->codigo;
+        if (Schema::hasTable('tbl_pv_asignaciones')) {
+            $ids = PvAsignacion::query()->where('ciclo_codigo', $codigo)->pluck('id');
+            if ($ids->isNotEmpty()) {
+                if (Schema::hasTable('tbl_pv_asignacion_productos')) {
+                    PvAsignacionProducto::query()->whereIn('asignacion_id', $ids)->delete();
+                }
+                if (Schema::hasTable('tbl_pv_asignacion_permisos')) {
+                    PvAsignacionPermiso::query()->whereIn('asignacion_id', $ids)->delete();
+                }
+                PvAsignacion::query()->whereIn('id', $ids)->delete();
+            }
+        }
+        if (Schema::hasTable('tbl_pv_usuario_permisos')) {
+            DB::table('tbl_pv_usuario_permisos')->where('ciclo_codigo', $codigo)->delete();
+        }
+        $row->delete();
+    }
+
+    protected function asegurarColumnasCicloForecast(): void
+    {
+        if (! Schema::hasTable('tbl_pv_ciclos')) {
+            return;
+        }
+        if (! Schema::hasColumn('tbl_pv_ciclos', 'ciclo_base')) {
+            Schema::table('tbl_pv_ciclos', function (Blueprint $table) {
+                $table->string('ciclo_base', 40)->nullable();
+            });
+        }
+        if (! Schema::hasColumn('tbl_pv_ciclos', 'venta_real_sap')) {
+            Schema::table('tbl_pv_ciclos', function (Blueprint $table) {
+                $table->boolean('venta_real_sap')->default(false);
+            });
+        }
     }
 
     public function empresasSap(Request $request): JsonResponse
@@ -7390,6 +7850,77 @@ class ProyeccionesVentasController extends Controller
         return response()->json($this->cargarCatalogo($api, $perPage, $empresa));
     }
 
+    /**
+     * Cuántos clientes del Budget ya tienen venta real local de ese año.
+     * Los que no, se traen de SAP al abrir la captura.
+     */
+    public function coberturaVentaReal(Request $request): JsonResponse
+    {
+        $ciclo = strtoupper(trim((string) $request->get('ciclo', '')));
+        $anio = (int) $request->get('anio', 0);
+        if ($ciclo === '' || $anio < 2000 || $anio > 2100) {
+            return response()->json(['message' => 'Falta el Budget o el año de venta real.'], 422);
+        }
+        if (! Schema::hasTable('tbl_pv_asignaciones')) {
+            return response()->json([
+                'ok' => true,
+                'ciclo' => $ciclo,
+                'anio' => $anio,
+                'total' => 0,
+                'conLocal' => 0,
+                'sinLocal' => 0,
+            ]);
+        }
+
+        $clientes = DB::table('tbl_pv_asignaciones')
+            ->where('ciclo_codigo', $ciclo)
+            ->select('empresa', 'cliente_codigo')
+            ->distinct()
+            ->get();
+
+        $total = $clientes->count();
+        $conLocal = 0;
+        if ($total > 0 && Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+            $empresas = $clientes->pluck('empresa')
+                ->map(function ($e) {
+                    return strtoupper(trim((string) $e));
+                })
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+            $map = [];
+            PvVentaRealSnapshot::query()
+                ->where('anio', $anio)
+                ->whereIn('empresa', $empresas)
+                ->orderBy('id')
+                ->select(['id', 'empresa', 'cliente_codigo', 'por_cuenta'])
+                ->chunkById(200, function ($rows) use (&$map) {
+                    foreach ($rows as $snap) {
+                        if (! $this->ventaRealSnapshotSirve($snap->por_cuenta)) {
+                            continue;
+                        }
+                        $map[strtoupper((string) $snap->empresa).'|'.trim((string) $snap->cliente_codigo)] = true;
+                    }
+                });
+            foreach ($clientes as $c) {
+                $key = strtoupper(trim((string) $c->empresa)).'|'.trim((string) $c->cliente_codigo);
+                if (! empty($map[$key])) {
+                    $conLocal++;
+                }
+            }
+        }
+
+        return response()->json([
+            'ok' => true,
+            'ciclo' => $ciclo,
+            'anio' => $anio,
+            'total' => $total,
+            'conLocal' => $conLocal,
+            'sinLocal' => max(0, $total - $conLocal),
+        ]);
+    }
+
     public function gastoReal(Request $request): JsonResponse
     {
         $empresa = strtoupper(trim((string) $request->get('empresa', '')));
@@ -7461,7 +7992,7 @@ class ProyeccionesVentasController extends Controller
             Cache::forget($cacheKey);
         }
 
-        // 3) API SAP → guardar snapshot. Un corte no se manda al navegador:
+        // 3) Sin snapshot local se consulta SAP y se guarda para la siguiente apertura.
         // la API entrega de la fecha más nueva a la más vieja y esos meses se pintarían como el año.
         @set_time_limit(300);
         try {
@@ -13145,6 +13676,12 @@ class ProyeccionesVentasController extends Controller
             'tipoBudget' => $this->normalizeTipoBudget(
                 Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget') ? $c->tipo_budget : null
             ),
+            'cicloBase' => Schema::hasColumn('tbl_pv_ciclos', 'ciclo_base')
+                ? strtoupper(trim((string) ($c->ciclo_base ?? '')))
+                : '',
+            'ventaRealSap' => Schema::hasColumn('tbl_pv_ciclos', 'venta_real_sap')
+                ? (bool) $c->venta_real_sap
+                : false,
             'observaciones' => $c->observaciones,
             'asignaciones' => (int) ($stats['asignaciones'] ?? 0),
             'cuentas' => (int) ($stats['cuentas'] ?? 0),

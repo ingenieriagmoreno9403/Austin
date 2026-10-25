@@ -493,6 +493,7 @@ class SistemasController extends Controller
             $mostrarRevisionVentas = $this->puedeConfigurarRevisionVentas();
             $revisarTodosCiclos = $mostrarRevisionVentas && $this->usuarioRevisaTodosCiclosVentas($id);
             $puedeObtenerPrecioLista = $this->usuarioTieneAccionPuntual($id, 'obtener_precio_lista');
+            $puedeVerTodasProyeccionesCostos = $this->usuarioTieneAccionPuntual($id, 'ver_todas_proyecciones_costos');
 
             return view('sistemas.permisos_user', compact(
                 'varpantallas',
@@ -505,6 +506,7 @@ class SistemasController extends Controller
                 'mostrarRevisionVentas',
                 'revisarTodosCiclos',
                 'puedeObtenerPrecioLista',
+                'puedeVerTodasProyeccionesCostos',
                 'varlistuseracc',
                 'varperfilesUser',
                 'varusuario'
@@ -600,6 +602,16 @@ class SistemasController extends Controller
             );
 
             return back()->with('success_msg_large', 'Se actualizó el permiso de obtener precio lista, sin cambiar el perfil.');
+        }
+
+        if ($request->input('seccion') === 'proyecciones_costos') {
+            $this->sincronizarAccionPuntualUsuario(
+                $id,
+                'ver_todas_proyecciones_costos',
+                $request->boolean('ver_todas_proyecciones_costos')
+            );
+
+            return back()->with('success_msg_large', 'Se actualizó el permiso para ver todas las proyecciones de Costos, sin cambiar el perfil.');
         }
 
         $modulos = $this->permisosModuloParaUsuario($id);
@@ -793,7 +805,11 @@ class SistemasController extends Controller
 
     private function asegurarAccionPuntual(string $nombreAccion): int
     {
-        if ($nombreAccion !== 'obtener_precio_lista' || ! Schema::hasTable('tblacciones')) {
+        $catalogo = [
+            'obtener_precio_lista' => 'Obtener precio lista (Ventas/Costos)',
+            'ver_todas_proyecciones_costos' => 'Ver todas las proyecciones (Ventas/Costos)',
+        ];
+        if (! isset($catalogo[$nombreAccion]) || ! Schema::hasTable('tblacciones')) {
             return (int) (DB::table('tblacciones')->where('nombre_accion', $nombreAccion)->value('id') ?? 0);
         }
 
@@ -813,8 +829,8 @@ class SistemasController extends Controller
         $now = now();
 
         return (int) DB::table('tblacciones')->insertGetId([
-            'nombre_accion' => 'obtener_precio_lista',
-            'descripcion_accion' => 'Obtener precio lista (Ventas/Costos)',
+            'nombre_accion' => $nombreAccion,
+            'descripcion_accion' => $catalogo[$nombreAccion],
             'idvista' => $vistaId,
             'created_at' => $now,
             'updated_at' => $now,

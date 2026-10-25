@@ -1266,6 +1266,7 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::get('/Ventas/Asignaciones/{ciclo}/importar-usuarios', [ProyeccionesVentasController::class, 'listImportarUsuarios'])->name('pv.importar.usuarios');
     Route::put('/Ventas/Asignaciones/{ciclo}/importar-usuarios', [ProyeccionesVentasController::class, 'syncImportarUsuarios'])->name('pv.importar.usuarios.sync');
     Route::get('/Ventas/Asignaciones/{ciclo}', [ProyeccionesVentasController::class, 'ciclo'])->name('pv.ciclo');
+    Route::get('/ProyeccionesVentas/api/venta-real-cobertura', [ProyeccionesVentasController::class, 'coberturaVentaReal'])->name('pv.api.venta_real_cobertura');
     Route::get('/ProyeccionesVentas/api/ciclos', [ProyeccionesVentasController::class, 'listCiclos'])->name('pv.api.ciclos');
     Route::post('/ProyeccionesVentas/api/ciclos', [ProyeccionesVentasController::class, 'storeCiclo'])->name('pv.api.ciclos.store');
     Route::post('/ProyeccionesVentas/api/ciclos/{ciclo}/estado', [ProyeccionesVentasController::class, 'updateCicloEstado'])->name('pv.api.ciclos.estado');
