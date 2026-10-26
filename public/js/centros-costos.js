@@ -1222,6 +1222,8 @@
         CC._visorResumenFirma = '';
         CC.state.visorResumen = {};
         CC.state.visorResumenReady = false;
+        CC._visorPptoOn = false;
+        CC._visorPptoMap = null;
     }
 
     /** Visor: solo encabezados (totales por centro), sin mapa de cuentas. */
@@ -1242,6 +1244,7 @@
             body: JSON.stringify({
                 year: year,
                 ciclo: ciclo,
+                con_ppto: false,
                 centros: centros.map(function (c) {
                     return {
                         empresa: c.empresa || '',
@@ -1266,6 +1269,12 @@
                     capturadas: 0,
                     depto: ''
                 };
+                if (CC._visorPptoOn && CC._visorPptoMap && CC._visorPptoMap[clave]) {
+                    row.tot_ppto = Number(CC._visorPptoMap[clave].tot_ppto) || 0;
+                    if (CC._visorPptoMap[clave].capturadas != null) {
+                        row.capturadas = Number(CC._visorPptoMap[clave].capturadas) || 0;
+                    }
+                }
                 CC.state.visorResumen[clave] = row;
                 if (row.depto) c.departamento = row.depto;
                 if (row.estado) {
@@ -1311,6 +1320,99 @@
 
     function presupuestoListo() {
         return !!CC._capturaReady;
+    }
+
+    function firmaVisorPpto() {
+        return firmaCentrosLocales(CC.state.centros || []) + '|' + cicloActualCodigo();
+    }
+
+    function aplicarMapaPpto(por) {
+        CC.state.visorResumen = CC.state.visorResumen || {};
+        CC._visorPptoMap = por || {};
+        Object.keys(CC._visorPptoMap).forEach(function (clave) {
+            var prev = CC.state.visorResumen[clave] || {
+                tot_gasto: 0,
+                tot_gasto_usd: 0,
+                tot_ppto: 0,
+                total: 0,
+                capturadas: 0
+            };
+            var row = CC._visorPptoMap[clave] || {};
+            prev.tot_ppto = Number(row.tot_ppto) || 0;
+            if (row.capturadas != null) prev.capturadas = Number(row.capturadas) || 0;
+            CC.state.visorResumen[clave] = prev;
+        });
+    }
+
+    function guardarPptoSesion() {
+        try {
+            sessionStorage.setItem('cc_visor_ppto_v1', JSON.stringify({
+                firma: firmaVisorPpto(),
+                por: CC._visorPptoMap || {}
+            }));
+        } catch (e) { /* cuota llena o modo privado */ }
+    }
+
+    function restaurarPptoSesion() {
+        if (CC._visorPptoOn || CC._visorPptoCargando) return;
+        try {
+            var raw = sessionStorage.getItem('cc_visor_ppto_v1');
+            if (!raw) return;
+            var data = JSON.parse(raw);
+            if (!data || data.firma !== firmaVisorPpto() || !data.por) return;
+            aplicarMapaPpto(data.por);
+            CC._visorPptoOn = true;
+        } catch (e) { /* sesión inválida */ }
+    }
+
+    function payloadVisorCentros() {
+        return (CC.state.centros || []).map(function (c) {
+            return {
+                empresa: c.empresa || '',
+                cc: c.codigo || '',
+                cuentas: cuentasAsignadasCentro(c).map(function (cta) { return cta && cta.codigo; }).filter(Boolean)
+            };
+        });
+    }
+
+    function verPresupuestadosVisor() {
+        if (CC.state.page !== 'control' || CC._visorPptoCargando) return;
+        var btn = document.getElementById('visor-ver-ppto');
+        CC._visorPptoCargando = true;
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Cargando…';
+        }
+        renderVisorTable();
+        var url = CC.state.visorResumenUrl || '/CentrosCostos/api/visor-resumen';
+        var year = CC.state.anioGasto || (CC.state.period && CC.state.period.anioReferencia) || 2026;
+        fetch(url, {
+            method: 'POST',
+            headers: apiJsonHeaders(),
+            body: JSON.stringify({
+                year: year,
+                ciclo: cicloActualCodigo(),
+                con_ppto: true,
+                sin_gasto: true,
+                centros: payloadVisorCentros()
+            })
+        }).then(function (res) {
+            if (!res.ok) throw new Error('presupuesto');
+            return res.json();
+        }).then(function (json) {
+            aplicarMapaPpto((json && json.por_centro) || {});
+            CC._visorPptoOn = true;
+            guardarPptoSesion();
+        }).catch(function () {
+            toast('error', 'Presupuesto', 'No se pudieron cargar los presupuestados.');
+        }).then(function () {
+            CC._visorPptoCargando = false;
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Ver presupuestados';
+            }
+            renderVisorTable();
+        });
     }
 
     function queueVisorGastos() {
@@ -4805,6 +4907,8 @@
             if (!el) return;
             el.addEventListener(id === 'visor-q' ? 'input' : 'change', renderVisorTable);
         });
+        var verPpto = document.getElementById('visor-ver-ppto');
+        if (verPpto) verPpto.addEventListener('click', verPresupuestadosVisor);
     }
 
     function fillVisorFilters() {
@@ -4882,8 +4986,16 @@
             kpiGasto.classList.toggle('is-loading', !gastoListo);
         }
         if (kpiPpto) {
-            kpiPpto.textContent = pptoListo ? money(tot.totP) : 'Cargando…';
-            kpiPpto.classList.toggle('is-loading', !pptoListo);
+            if (CC._visorPptoCargando && !CC._visorPptoOn) {
+                kpiPpto.textContent = 'Cargando…';
+                kpiPpto.classList.add('is-loading');
+            } else if (pptoListo) {
+                kpiPpto.textContent = money(tot.totP);
+                kpiPpto.classList.remove('is-loading');
+            } else {
+                kpiPpto.textContent = '—';
+                kpiPpto.classList.remove('is-loading');
+            }
         }
         setText('visor-kpi-pend', tot.pendientes);
         var tf = document.getElementById('visor-tfoot');
@@ -4895,22 +5007,29 @@
         tf.innerHTML = '<tr>' +
             '<td colspan="4">Totales · ' + tot.n + (tot.n === 1 ? ' centro' : ' centros') + '</td>' +
             visorMontoHtml(tot.totG, gastoListo) +
-            visorMontoHtml(tot.totP, pptoListo) +
+            visorPptoCelda(tot.totP) +
             '<td colspan="2"></td>' +
             '<td>' + tot.capturadas + '/' + tot.totalCtas + ' · ' + tot.avance + '%</td>' +
             '<td>' + tot.listos + ' listos</td>' +
             '</tr>';
     }
 
+    function visorPptoCelda(n) {
+        if (CC._visorPptoOn) return visorMontoHtml(n, true);
+        if (CC._visorPptoCargando) return visorMontoHtml(0, false);
+        return '<td class="num">—</td>';
+    }
+
     function renderVisorTable() {
         if (CC.state.page === 'control' && control.vista !== 'visor') return;
         var tb = document.getElementById('visor-tbody');
         if (!tb) return;
+        restaurarPptoSesion();
         queueVisorGastos();
         var rows = visorRowsFiltradas();
         var tot = visorTotales(rows);
         tot.gastoListo = !rows.length || rows.every(gastoCentroReady);
-        tot.pptoListo = !rows.length || presupuestoListo();
+        tot.pptoListo = !rows.length || !!CC._visorPptoOn;
         paintVisorResumen(tot);
         if (!rows.length) {
             tb.innerHTML = '<tr><td colspan="10"><div class="cc-empty"><i class="fa-solid fa-inbox"></i>No hay centros con esos filtros</div></td></tr>';
@@ -4922,14 +5041,13 @@
             var barCls = stt.pendientes ? 'warn' : 'good';
             var fecha = c.fecha || '—';
             var gastoListo = gastoCentroReady(c);
-            var pptoListo = presupuestoListo();
             return '<tr data-key="' + escapeHtml(centroKey(c)) + '">' +
                 '<td><a class="cc-btn cc-btn-detalle" href="' + detalleHref(c) + '"><i class="fa-solid fa-eye"></i> Detalle</a></td>' +
                 '<td>' + escapeHtml(c.empresa || '—') + '</td>' +
                 '<td>' + htmlNombreCodigo(c.nombre, c.codigo) + '</td>' +
                 '<td>' + escapeHtml(dep) + '</td>' +
                 visorMontoHtml(stt.totG, gastoListo) +
-                visorMontoHtml(stt.totP, pptoListo) +
+                visorPptoCelda(stt.totP) +
                 '<td>' + userCell(c.usuario) + '</td>' +
                 '<td>' + escapeHtml(fecha) + '</td>' +
                 '<td><div class="cc-visor-avance"><div class="meta"><span>' + stt.capturadas + '/' + stt.total + '</span><strong>' + stt.avance + '%</strong></div>' +

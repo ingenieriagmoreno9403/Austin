@@ -3386,6 +3386,8 @@ class CentrosCostosController extends Controller
             $year = (int) date('Y');
         }
         $ciclo = strtoupper(trim((string) $request->input('ciclo', '')));
+        $conPpto = filter_var($request->input('con_ppto', '1'), FILTER_VALIDATE_BOOLEAN);
+        $sinGasto = filter_var($request->input('sin_gasto', '0'), FILTER_VALIDATE_BOOLEAN);
         $centros = $request->input('centros', []);
         if (! is_array($centros)) {
             $centros = [];
@@ -3452,12 +3454,14 @@ class CentrosCostosController extends Controller
                 $cuentasPorCc[$item['cc']] = $item['cuentas'] === [] ? null : $item['cuentas'];
             }
             $totales = [];
-            try {
-                if ($snap->disponible()) {
-                    $totales = $snap->totalesVisorPorCentro($empresa, $year, $ccs, $cuentasPorCc, 9);
+            if (! $sinGasto) {
+                try {
+                    if ($snap->disponible()) {
+                        $totales = $snap->totalesVisorPorCentro($empresa, $year, $ccs, $cuentasPorCc, 9);
+                    }
+                } catch (Throwable $e) {
+                    $totales = [];
                 }
-            } catch (Throwable $e) {
-                $totales = [];
             }
             foreach ($lista as $item) {
                 $hit = $totales[$item['cc']] ?? null;
@@ -3480,7 +3484,7 @@ class CentrosCostosController extends Controller
             }
         }
 
-        if ($ciclo !== '' && Schema::hasTable('tbl_cc_presupuestos') && $clavesOrden) {
+        if ($conPpto && $ciclo !== '' && Schema::hasTable('tbl_cc_presupuestos') && $clavesOrden) {
             $hasDone = Schema::hasColumn('tbl_cc_presupuestos', 'completado');
             $cols = ['empresa', 'centro_codigo', 'cuenta_codigo'];
             for ($i = 1; $i <= 12; $i++) {
