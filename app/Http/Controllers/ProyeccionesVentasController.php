@@ -7317,8 +7317,12 @@ class ProyeccionesVentasController extends Controller
             'asignaciones' => [],
             'captura' => $this->capturaParaClientes($ciclo, [], []),
         ];
-        if ($ciclo === '' || ($cliente === '' && $usuario === '')) {
+        $todas = in_array((string) $request->get('todas', ''), ['1', 'true', '*'], true);
+        if ($ciclo === '' || ($cliente === '' && $usuario === '' && ! $todas)) {
             return response()->json($vacio);
+        }
+        if ($todas) {
+            @set_time_limit(180);
         }
 
         $alcance = $this->alcanceRevisionAnalisis($ciclo, (int) auth()->id());
@@ -7354,17 +7358,9 @@ class ProyeccionesVentasController extends Controller
 
         $asigs = PvAsignacion::query()
             ->with(['usuario', 'cuentas', 'permisos.tipo'])
-            ->where('ciclo_codigo', $ciclo)
-            ->where(function ($w) use ($pares) {
-                foreach ($pares as $p) {
-                    $w->orWhere(function ($x) use ($p) {
-                        $x->whereRaw('UPPER(empresa) = ?', [$p['empresa']])
-                            ->where('cliente_codigo', $p['cliente']);
-                    });
-                }
-            })
-            ->orderBy('id')
-            ->get();
+            ->where('ciclo_codigo', $ciclo);
+        $this->aplicarParesEmpresaCliente($asigs, $pares, 'empresa', 'cliente_codigo');
+        $asigs = $asigs->orderBy('id')->get();
 
         $codigosPorEmpresa = [];
         $out = [];
@@ -7497,6 +7493,39 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
+     * @param  \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder  $q
+     * @param  array<int, array{empresa: string, cliente: string}>  $pares
+     */
+    protected function aplicarParesEmpresaCliente($q, array $pares, string $colEmpresa, string $colCliente): void
+    {
+        $porEmp = [];
+        foreach ($pares as $p) {
+            $emp = strtoupper(trim((string) ($p['empresa'] ?? '')));
+            $cli = trim((string) ($p['cliente'] ?? ''));
+            if ($emp === '' || $cli === '') {
+                continue;
+            }
+            $porEmp[$emp][$cli] = true;
+        }
+        if (! $porEmp) {
+            $q->whereRaw('1 = 0');
+
+            return;
+        }
+
+        $q->where(function ($w) use ($porEmp, $colEmpresa, $colCliente) {
+            foreach ($porEmp as $emp => $codes) {
+                foreach (array_chunk(array_keys($codes), 400) as $chunk) {
+                    $w->orWhere(function ($x) use ($emp, $chunk, $colEmpresa, $colCliente) {
+                        $x->whereRaw('UPPER('.$colEmpresa.') = ?', [$emp])
+                            ->whereIn($colCliente, $chunk);
+                    });
+                }
+            }
+        });
+    }
+
+    /**
      * @param  array<int, array{empresa: string, cliente: string}>  $pares
      * @param  array<string, array<int, string>>  $codigosPorEmpresa
      * @return array<string, mixed>
@@ -7517,14 +7546,7 @@ class ProyeccionesVentasController extends Controller
             $hasDone = Schema::hasColumn('tbl_pv_proyecciones', 'completado');
             $hasPrecioMeses = Schema::hasColumn('tbl_pv_proyecciones', 'precio_meses');
             $proyQ = PvPresupuesto::query()->where('ciclo_codigo', $ciclo);
-            $proyQ->where(function ($w) use ($pares) {
-                foreach ($pares as $p) {
-                    $w->orWhere(function ($x) use ($p) {
-                        $x->whereRaw('UPPER(empresa) = ?', [$p['empresa']])
-                            ->where('cliente_codigo', $p['cliente']);
-                    });
-                }
-            });
+            $this->aplicarParesEmpresaCliente($proyQ, $pares, 'empresa', 'cliente_codigo');
             $proyQ->get()->each(function (PvPresupuesto $row) use (&$budgets, &$completados, &$costos, &$ajustes, &$preciosMeses, &$codigosPorEmpresa, $hasDone, $hasPrecioMeses) {
                 $meses = $row->meses();
                 $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
@@ -7549,14 +7571,7 @@ class ProyeccionesVentasController extends Controller
 
         if ($pares && Schema::hasTable('tbl_pv_captura_clientes')) {
             $ovQ = PvCapturaCentro::query()->where('ciclo_codigo', $ciclo);
-            $ovQ->where(function ($w) use ($pares) {
-                foreach ($pares as $p) {
-                    $w->orWhere(function ($x) use ($p) {
-                        $x->whereRaw('UPPER(empresa) = ?', [$p['empresa']])
-                            ->where('cliente_codigo', $p['cliente']);
-                    });
-                }
-            });
+            $this->aplicarParesEmpresaCliente($ovQ, $pares, 'empresa', 'cliente_codigo');
             $ovQ->get()->each(function (PvCapturaCentro $row) use (&$overlays) {
                 $key = strtoupper(trim((string) $row->empresa)).'|'.trim((string) $row->centro_codigo);
                 $overlays[$key] = [

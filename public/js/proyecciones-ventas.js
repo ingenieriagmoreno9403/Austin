@@ -9179,7 +9179,7 @@
                 CC._anAsigLoading = false;
                 if (String(val('an-ciclo') || CC.state.cicloCodigo || '').toUpperCase() !== String(ciclo).toUpperCase()) return;
                 aplicarCatalogoAnalisis(json || {});
-                if (analisisTieneDetalle()) {
+                if (analisisPideDatos()) {
                     kickAnalisisVista();
                     return;
                 }
@@ -9197,7 +9197,7 @@
 
         CC.state.centros = centrosDesdeCatalogo(CC._anCatalogo || []);
         fillAnalisisFilters();
-        if (analisisTieneDetalle()) {
+        if (analisisPideDatos()) {
             if (CC._anDetalleReady && CC._anDetalleKey === detalleAnalisisKey()) {
                 if (!filtroAnalisisEnCache()) {
                     maybeQueueAnalisisGastos();
@@ -9318,6 +9318,11 @@
         return !!(val('an-cliente') || val('an-user'));
     }
 
+    /** Todas muestra el resumen de empresas. Un cliente o usuario carga solo ese detalle. */
+    function analisisPideDatos() {
+        return analisisTieneDetalle() || val('an-empresa') === AN_EMP_TODAS;
+    }
+
     function detalleAnalisisKey() {
         var p = filtroDetalleParams();
         return [p.ciclo, p.empresa, p.cliente, p.usuario].join('|');
@@ -9365,10 +9370,12 @@
         CC._anDetalleGen = (CC._anDetalleGen || 0) + 1;
         var gen = CC._anDetalleGen;
         var p = filtroDetalleParams();
+        var todas = !p.cliente && !p.usuario && val('an-empresa') === AN_EMP_TODAS;
         var url = '/ProyeccionesVentas/api/analisis/detalle?ciclo=' + encodeURIComponent(p.ciclo)
             + '&empresa=' + encodeURIComponent(p.empresa)
             + '&cliente=' + encodeURIComponent(p.cliente)
-            + '&usuario=' + encodeURIComponent(p.usuario);
+            + '&usuario=' + encodeURIComponent(p.usuario)
+            + (todas ? '&todas=1' : '');
         return fetchJsonOk(url).then(function (json) {
             if (gen !== CC._anDetalleGen) return;
             if (detalleAnalisisKey() !== key) return;
@@ -9411,7 +9418,7 @@
     function paintAnalisisLoading() {
         var loading = document.getElementById('an-loading');
         if (loading) loading.hidden = true;
-        if (CC._anHoldBusy && analisisTieneDetalle()) showAnalisisBusy();
+        if (CC._anHoldBusy && analisisPideDatos()) showAnalisisBusy();
         else hideAnalisisBusy();
     }
 
@@ -9438,14 +9445,14 @@
         if (CC._anFillingFilters) return;
         CC._anKickSeq = (CC._anKickSeq || 0) + 1;
         var seq = CC._anKickSeq;
-        if (!analisisTieneDetalle()) {
+        if (!analisisPideDatos()) {
             CC._anDetalleKey = '';
             CC._anDetalleReady = false;
             CC.state.misAsignaciones = [];
             CC._capturaReady = false;
             hideAnalisisBusy();
             afterAnalisisPaint(function () {
-                if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || analisisTieneDetalle()) return;
+                if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || analisisPideDatos()) return;
                 renderAnalisis();
             });
             return;
@@ -9455,11 +9462,15 @@
         var detalleLista = CC._anDetalleReady && CC._anDetalleKey === key;
         var paso = detalleLista ? Promise.resolve() : cargarAnalisisDetalle(key);
         paso.then(function () {
-            if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || !analisisTieneDetalle()) return;
+            if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || !analisisPideDatos()) return;
             if (filtroAnalisisEnCache()) {
                 hideAnalisisBusy();
                 renderAnalisis();
                 return;
+            }
+            if (val('an-empresa') === AN_EMP_TODAS && !analisisTieneDetalle()) {
+                hideAnalisisBusy();
+                renderAnalisis();
             }
             maybeQueueAnalisisGastos();
         }).catch(function () {
@@ -9714,7 +9725,7 @@
             paintAnalisisLoading();
             return;
         }
-        if (!analisisTieneDetalle()) {
+        if (!analisisPideDatos()) {
             hideAnalisisBusy();
             return;
         }
@@ -9727,7 +9738,8 @@
             renderAnalisis();
             return;
         }
-        showAnalisisBusy();
+        var resumenYaVisible = val('an-empresa') === AN_EMP_TODAS && !analisisTieneDetalle() && !!CC._capturaReady;
+        if (!resumenYaVisible) showAnalisisBusy();
         var needGasto = centros.filter(function (c) {
             var gKey = gastoCacheKey(c);
             if (gastoCacheEntry(gKey)) return false;
@@ -10057,7 +10069,8 @@
     }
 
     function snapshotCentros() {
-        var light = !!CC._anLightPaint || !analisisTieneDetalle();
+        var resumenListo = analisisTieneDetalle() || (val('an-empresa') === AN_EMP_TODAS && !!CC._capturaReady);
+        var light = !!CC._anLightPaint || !resumenListo;
         var fuente = CC.state.centros || [];
         if (!light && CC.state.page === 'analisis') fuente = centrosObjetivoAnalisis();
         return fuente.map(mergedCentro).map(function (c) {
@@ -10350,16 +10363,16 @@
         var emptyIcon = document.getElementById('an-empty-icon');
         var work = document.getElementById('an-work');
         var all = CC._anAsigLoaded ? snapshotCentros() : [];
-        var needsFilter = CC._anAsigLoaded && !!(CC.state.centros && CC.state.centros.length) && !analisisTieneDetalle();
+        var needsFilter = CC._anAsigLoaded && !!(CC.state.centros && CC.state.centros.length) && !analisisPideDatos();
         paintAnalisisLoading();
         if (empty) {
             if (!CC._anAsigLoaded) {
                 empty.hidden = false;
-                if (analisisTieneDetalle()) {
+                if (analisisPideDatos()) {
                     if (emptyMsg) emptyMsg.innerHTML = htmlCargando('lg');
                     if (emptyIcon) emptyIcon.hidden = true;
                 } else {
-                    if (emptyMsg) emptyMsg.textContent = 'Elige una empresa y después un cliente o un usuario para cargar solo esa información.';
+                    if (emptyMsg) emptyMsg.textContent = 'Elige Todas para ver el resumen de empresas, o una empresa y después un cliente o un usuario.';
                     if (emptyIcon) {
                         emptyIcon.hidden = false;
                         emptyIcon.className = 'fa-solid fa-filter';
@@ -10379,7 +10392,7 @@
             } else if (needsFilter) {
                 empty.hidden = false;
                 if (emptyMsg) {
-                    emptyMsg.textContent = 'Elige una empresa y después un cliente o un usuario para cargar solo esa información.';
+                    emptyMsg.textContent = 'Elige Todas para ver el resumen de empresas, o una empresa y después un cliente o un usuario.';
                 }
                 if (emptyIcon) {
                     emptyIcon.hidden = false;
