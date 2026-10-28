@@ -4703,7 +4703,12 @@
             }
             var guardar = function () {
                 var btn = document.getElementById('btn-guardar-ciclo');
-                if (btn) btn.disabled = true;
+                var etiqueta = btn ? btn.textContent : '';
+                var redirigir = false;
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Cargando…';
+                }
                 saveCicloApi(data).then(function (ciclo) {
                     applyPeriodFromCiclo(Object.assign({}, data, ciclo || {}), data.codigo);
                     hideModal('modalPeriodo');
@@ -4711,6 +4716,7 @@
                         ? (' · ' + ciclo.copiaAsignaciones + ' asignaciones copiadas')
                         : '';
                     if (CC.state.page === 'admin') {
+                        redirigir = true;
                         toast('success', 'Ciclo abierto', data.codigo + ' · ' + labelTipoBudget(data.tipoBudget) + ' · ' + data.nombre + copiadas);
                         window.location = cicloUrl(data.codigo);
                         return;
@@ -4721,7 +4727,9 @@
                 }).catch(function (err) {
                     toast('error', 'No se guardó el ciclo', err && err.message ? err.message : 'Error de red');
                 }).then(function () {
-                    if (btn) btn.disabled = false;
+                    if (redirigir || !btn) return;
+                    btn.disabled = false;
+                    btn.textContent = etiqueta || 'Abrir ciclo';
                 });
             };
             if (!(creando && esForecastTipo(data.tipoBudget))) {
@@ -10938,7 +10946,10 @@
             var btn = document.getElementById('btn-guardar-ciclo');
             var code = document.getElementById('p-codigo');
             if (title) title.textContent = editing ? 'Editar ciclo' : 'Abrir nuevo ciclo';
-            if (btn) btn.textContent = editing ? 'Guardar ciclo' : 'Abrir ciclo';
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = editing ? 'Guardar ciclo' : 'Abrir ciclo';
+            }
             if (code) code.readOnly = editing;
             var p = editing
                 ? (CC.state.period || {})
