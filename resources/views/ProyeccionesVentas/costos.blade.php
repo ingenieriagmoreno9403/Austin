@@ -26,7 +26,8 @@
             <h3><i class="fa-solid fa-tags"></i> Maestro de precios</h3>
             <span class="text-muted" style="font-size:.8rem" id="pv-costos-hint">Cargando…</span>
         </div>
-        <div class="cc-filters" style="grid-template-columns: minmax(180px, 280px) 140px 1fr 1fr 90px auto auto auto auto auto auto;">
+        <div class="cc-costos-bar">
+            <div class="cc-costos-filters">
             <select id="pv-costos-anio" class="cc-select" title="Proyección del maestro de precios">
                 <option value="" data-anio="{{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }}">Proy. {{ (int) ($bootstrap['anioPresupuesto'] ?? 2027) }} · ciclo actual</option>
             </select>
@@ -40,6 +41,8 @@
                 <option value="50">50</option>
                 <option value="100">100</option>
             </select>
+            </div>
+            <div class="cc-costos-actions">
             <button type="button" class="cc-btn" id="pv-costos-reload">
                 <i class="fa-solid fa-rotate"></i> Actualizar
             </button>
@@ -64,6 +67,7 @@
                 <i class="fa-solid fa-tags"></i> Obtener precio lista
             </button>
             @endif
+            </div>
         </div>
         <div class="cc-table-wrap">
             <table class="cc-table" id="pv-costos-table">

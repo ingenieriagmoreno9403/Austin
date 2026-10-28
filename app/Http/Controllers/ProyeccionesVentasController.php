@@ -7967,6 +7967,17 @@ class ProyeccionesVentasController extends Controller
             $year = $refYear - 3;
         }
 
+        $mesesParciales = $this->mesesPedidoVentaReal($request);
+        if ($mesesParciales !== []) {
+            return $this->responderVentaRealMesesSap(
+                $empresa,
+                $cc,
+                $year,
+                $mesesParciales,
+                optional($request->user())->id
+            );
+        }
+
         // 1) Snapshot local (evita ir a SAP en cada apertura de Captura).
         if (! $force && Schema::hasTable('tbl_pv_venta_real_snapshot')) {
             $snap = PvVentaRealSnapshot::query()
@@ -8192,6 +8203,166 @@ class ProyeccionesVentasController extends Controller
             'faltantes' => $faltantes,
             'mensaje' => null,
         ]);
+    }
+
+    /**
+     * Meses 1–12 pedidos en ?meses=1,2,3. Vacío = bajada del año completo.
+     *
+     * @return array<int, int>
+     */
+    protected function mesesPedidoVentaReal(Request $request): array
+    {
+        $raw = trim((string) $request->get('meses', ''));
+        if ($raw === '') {
+            return [];
+        }
+        $out = [];
+        foreach (preg_split('/[,\s]+/', $raw) ?: [] as $p) {
+            $m = (int) $p;
+            if ($m >= 1 && $m <= 12) {
+                $out[$m] = $m;
+            }
+        }
+        $out = array_values($out);
+        sort($out);
+
+        return $out;
+    }
+
+    /**
+     * Forecast 3+9: baja solo los meses pedidos a SAP y los fusiona en el snapshot
+     * sin borrar el resto del año ya guardado.
+     *
+     * @param  array<int, int>  $meses
+     */
+    protected function responderVentaRealMesesSap(string $empresa, string $cc, int $year, array $meses, $userId = null): JsonResponse
+    {
+        @set_time_limit(180);
+        $desde = $meses[0];
+        $hasta = $meses[count($meses) - 1];
+        $fin = (int) date('t', strtotime(sprintf('%04d-%02d-01', $year, $hasta)));
+        $pack = $this->filasVentasEmpresa(strtolower($empresa), $year, [
+            'CardCode' => $cc,
+            'fecha_desde' => sprintf('%04d/%02d/01', $year, $desde),
+            'fecha_hasta' => sprintf('%04d/%02d/%02d', $year, $hasta, $fin),
+        ], 120);
+
+        $rows = is_array($pack['rows'] ?? null) ? $pack['rows'] : [];
+        $traido = $rows === []
+            ? []
+            : $this->cerrarPorCuentaVentas($this->agregarPorCuentaVentas($rows, $year, $cc));
+        $sapOk = ! empty($pack['ok']);
+        $guardado = $this->fusionarMesesSapEnSnapshot($empresa, $cc, $year, $traido, $meses, $userId, $sapOk);
+        $sirve = $this->ventaRealSnapshotSirve($guardado);
+
+        return response()->json([
+            'ok' => $sapOk || $sirve,
+            'year' => $year,
+            'por_cuenta' => $this->porCuentaSinMeta(is_array($guardado) ? $guardado : []),
+            'mensaje' => $sapOk ? null : ($pack['mensaje'] ?? 'Sin conexión a ventas SAP'),
+            'fuente' => $sapOk ? 'api' : ($sirve ? 'snapshot_fallback' : 'error'),
+            'meses' => array_values($meses),
+            'synced_at' => now()->format('Y-m-d H:i'),
+        ]);
+    }
+
+    /**
+     * Escribe en el snapshot solo los meses indicados. El resto del año se conserva.
+     *
+     * @param  array<string, mixed>  $traido
+     * @param  array<int, int>  $meses
+     * @return array<string, mixed>
+     */
+    protected function fusionarMesesSapEnSnapshot(string $empresa, string $cc, int $year, array $traido, array $meses, $userId, bool $sapOk): array
+    {
+        $empresa = strtoupper(trim($empresa));
+        $cc = trim($cc);
+        $previo = [];
+        $row = null;
+        if (Schema::hasTable('tbl_pv_venta_real_snapshot')) {
+            $row = PvVentaRealSnapshot::query()->firstOrNew([
+                'empresa' => $empresa,
+                'cliente_codigo' => $cc,
+                'anio' => $year,
+            ]);
+            $previo = $this->colapsarPorCuentaProductos(is_array($row->por_cuenta) ? $row->por_cuenta : []);
+        }
+        if (! $sapOk) {
+            return $previo;
+        }
+
+        $por = $previo;
+        $idxs = [];
+        foreach ($meses as $mes) {
+            $i = (int) $mes - 1;
+            if ($i >= 0 && $i <= 11) {
+                $idxs[$i] = $i;
+            }
+        }
+        foreach ($traido as $cod => $hit) {
+            if ($cod === '_meta' || ! is_array($hit)) {
+                continue;
+            }
+            $clave = $this->claveProductoVenta(trim((string) ($hit['codigo'] ?? $cod)));
+            if ($clave === '') {
+                continue;
+            }
+            if (! isset($por[$clave]) || ! is_array($por[$clave])) {
+                $nuevo = $hit;
+                $nuevo['codigo'] = trim((string) ($hit['codigo'] ?? $cod));
+                foreach (['gasto', 'importe', 'importe_usd'] as $field) {
+                    $serie = array_fill(0, 12, 0.0);
+                    $src = is_array($hit[$field] ?? null) ? $hit[$field] : [];
+                    foreach ($idxs as $idx) {
+                        $dec = $field === 'gasto' ? 4 : 2;
+                        $serie[$idx] = round((float) ($src[$idx] ?? 0), $dec);
+                    }
+                    $nuevo[$field] = $serie;
+                }
+                $por[$clave] = $nuevo;
+
+                continue;
+            }
+            foreach (['gasto', 'importe', 'importe_usd'] as $field) {
+                $serie = $por[$clave][$field] ?? [];
+                if (! is_array($serie)) {
+                    $serie = [];
+                }
+                $serie = array_pad(array_slice(array_values($serie), 0, 12), 12, 0.0);
+                $src = is_array($hit[$field] ?? null) ? $hit[$field] : [];
+                $dec = $field === 'gasto' ? 4 : 2;
+                foreach ($idxs as $idx) {
+                    $serie[$idx] = round((float) ($src[$idx] ?? 0), $dec);
+                }
+                $por[$clave][$field] = $serie;
+            }
+            if (($por[$clave]['nombre'] ?? '') === '' && ! empty($hit['nombre'])) {
+                $por[$clave]['nombre'] = (string) $hit['nombre'];
+            }
+        }
+
+        $meta = is_array($por['_meta'] ?? null) ? $por['_meta'] : [];
+        $ok = array_map('intval', (array) ($meta['meses_ok'] ?? []));
+        foreach ($meses as $mes) {
+            $ok[] = (int) $mes;
+        }
+        $meta['meses_ok'] = array_values(array_unique($ok));
+        $meta['meses_sap'] = array_values($meses);
+        $meta['meses_sap_at'] = now()->format('Y-m-d H:i');
+        $por['_meta'] = $meta;
+
+        if ($row) {
+            $row->por_cuenta = $por;
+            $row->origen = 'api';
+            $row->synced_at = now();
+            if ($userId) {
+                $row->synced_by = $userId;
+            }
+            $row->save();
+            Cache::forget('pv.venta-real.v6.'.$empresa.'.'.$cc.'.'.$year);
+        }
+
+        return $por;
     }
 
     /**

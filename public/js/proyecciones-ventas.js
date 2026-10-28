@@ -1223,7 +1223,8 @@
             '&cc=' + encodeURIComponent(String(c.codigo || '').trim()) +
             '&year=' + encodeURIComponent(year) +
             '&ref=' + encodeURIComponent(year) +
-            '&force=' + (force ? '1' : '0');
+            '&force=' + (force ? '1' : '0') +
+            (opts.meses ? ('&meses=' + encodeURIComponent(opts.meses)) : '');
         var reqKey = key;
         var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         var abortTimer = setTimeout(function () {
@@ -1241,7 +1242,8 @@
                 fuente: (json && json.fuente) || 'api',
                 synced_at: (json && json.synced_at) || null,
                 year: (json && json.year) || year,
-                mensaje: (json && json.mensaje) || null
+                mensaje: (json && json.mensaje) || null,
+                meses: (json && json.meses) || (opts.meses ? String(opts.meses).split(',') : [])
             };
             rememberGastoCache(reqKey, por, meta);
             applyGastoMap(por, meta);
@@ -1249,7 +1251,7 @@
                 toast('success', 'Venta actualizada',
                     'SAP ' + year + (meta.synced_at ? (' · ' + meta.synced_at) : '') +
                     (meta.fuente ? (' · ' + meta.fuente) : ''));
-            } else if (meta.fuente === 'api' && esForecastTipo()) {
+            } else if (meta.fuente === 'api' && esForecastTipo() && !opts.meses) {
                 toast('warning', 'Venta real desde SAP',
                     'Este cliente no tenía venta ' + year + ' guardada. Se trajo desde SAP.');
             }
@@ -3030,13 +3032,13 @@
                 + 'Arriba de cada mes se muestra la venta real (ene–sep) y ventas-budget (oct–dic) solo como referencia.';
         }
         if (t === '3+9') {
-            return '<strong>Forecast 3+9:</strong> ene–mar quedan fijos con la venta real. Los otros 9 meses salen del Budget que elijas y se pueden modificar.';
+            return '<strong>Forecast 3+9:</strong> ene–mar se traen de la venta real SAP del artículo y se guardan en el snapshot. Los otros 9 meses salen del Budget y se pueden modificar.';
         }
         if (t === '6+6') {
-            return '<strong>Forecast 6+6:</strong> ene–jun quedan fijos con la venta real. Los otros 6 meses salen del Budget que elijas y se pueden modificar.';
+            return '<strong>Forecast 6+6:</strong> ene–jun se traen de la venta real SAP del artículo y se guardan en el snapshot. Los otros 6 meses salen del Budget y se pueden modificar.';
         }
         if (t === '9+3') {
-            return '<strong>Forecast 9+3:</strong> ene–sep quedan fijos con la venta real. Los otros 3 meses salen del Budget que elijas y se pueden modificar.';
+            return '<strong>Forecast 9+3:</strong> ene–sep se traen de la venta real SAP del artículo y se guardan en el snapshot. Los otros 3 meses salen del Budget y se pueden modificar.';
         }
         if (t === 'SIOP') {
             return '<strong>SIOP:</strong> se precarga el Budget del mismo año (proyección ' + (CC.state.anioPresupuesto || '') + '). '
@@ -3342,6 +3344,85 @@
         }
     }
 
+    /** Rango corto de meses: ene–mar, ene–jun, jul–dic. */
+    function rangoMesesForecast(desdeIdx, hastaIdx) {
+        var a = MONTHS[desdeIdx] || '';
+        var b = MONTHS[hastaIdx] || '';
+        if (!a) return '';
+        return a === b ? a.toLowerCase() : (a.toLowerCase() + '–' + b.toLowerCase());
+    }
+
+    /**
+     * Forecast: los primeros N meses = venta real SAP del artículo (3, 6 o 9).
+     * El resto = cantidades del Budget, sin pisar lo ya capturado.
+     * Esos N meses se guardan en el snapshot.
+     */
+    function aplicarMesesForecastSap(c) {
+        if (!c || control.locked || !CC._capturaReady || !CC._budgetsBaseLoaded) return;
+        if (CC.state.page !== 'control' || !esForecastTipo()) return;
+        var n = budgetLockCount();
+        if (!n) return;
+        var meta = control._gastoMeta || {};
+        var desdeSap = String(meta.fuente || '') === 'api'
+            && control._gastoLoadedFor
+            && control._gastoLoadedFor === gastoCacheKey(c);
+        var ctas = control._allCtas || [];
+        if (!ctas.length) return;
+        var wroteVenta = 0;
+        var wroteBudget = 0;
+        ctas.forEach(function (cta) {
+            var gasto = cta.gasto || [];
+            var existing = budgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var baseRow = baseBudgetMonthsOf(c.empresa, c.codigo, cta.codigo);
+            var months = existing ? existing.slice() : mesesVacios12();
+            while (months.length < 12) months.push(null);
+            months = months.slice(0, 12);
+            var dirtyVenta = false;
+            var dirtyBudget = false;
+            if (desdeSap) {
+                for (var i = 0; i < n; i++) {
+                    var q = toStoreQty(Number(gasto[i]) || 0);
+                    if (!mesLleno(months[i]) || !qtyMesIgual(months[i], q)) {
+                        months[i] = q;
+                        dirtyVenta = true;
+                    }
+                }
+            }
+            for (var j = n; j < 12; j++) {
+                if (mesLleno(months[j])) continue;
+                if (baseRow && mesLleno(baseRow[j])) {
+                    months[j] = toStoreQty(Number(baseRow[j]) || 0);
+                    dirtyBudget = true;
+                }
+            }
+            if (!dirtyVenta && !dirtyBudget) return;
+            if (!months.some(mesLleno)) return;
+            var key = budgetKey(c.empresa, c.codigo, cta.codigo);
+            CC.state.budgets = CC.state.budgets || {};
+            CC.state.budgets[key] = months.slice();
+            CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+            CC.state.budgetKeysFromServer[key.toUpperCase()] = true;
+            persistBudget(c.empresa, c.codigo, cta.codigo, months, { allowLocked: true });
+            if (dirtyVenta) wroteVenta += 1;
+            if (dirtyBudget) wroteBudget += 1;
+        });
+        if (!wroteVenta && !wroteBudget) return;
+        control._allCtas = cuentasEnriquecidas(c);
+        var ventaRango = rangoMesesForecast(0, n - 1);
+        var budgetRango = rangoMesesForecast(n, 11);
+        var parts = [];
+        if (wroteVenta) parts.push(ventaRango + ' desde SAP');
+        if (wroteBudget) parts.push(budgetRango + ' desde Budget' + (CC.state.cicloBaseCodigo ? (' · ' + CC.state.cicloBaseCodigo) : ''));
+        var toastKey = String(c.empresa || '') + '|' + String(c.codigo || '') + '|' + n + '|' + (desdeSap ? 'sap' : 'base');
+        CC._f39Toast = CC._f39Toast || '';
+        if (CC._f39Toast !== toastKey) {
+            CC._f39Toast = toastKey;
+            toast('success', labelTipoBudget(), 'Se actualizaron los artículos · ' + parts.join(' · ') + '. ' + ventaRango + ' quedan fijos.');
+        }
+        renderCapturaForm();
+        updateControlProgress();
+    }
+
     function seedPresupuestoDesdeVentaReal(c) {
         if (!c || control.locked) return;
         if (!CC._capturaReady) return;
@@ -3374,6 +3455,11 @@
             seedSiopDesdeProyeccionBase(c, cicloSeed, loadGen);
             CC._seedDoneFor[seedKey] = true;
             CC._siopSeedStamp = siopStamp;
+            return;
+        }
+
+        if (esForecastTipo(tipo)) {
+            aplicarMesesForecastSap(c);
             return;
         }
 
@@ -6176,9 +6262,12 @@
                 control._preciosMap = CC.state.preciosCache[pKey];
             }
         } else {
-            // Captura: venta desde snapshot (SAP solo con «Actualizar venta SAP»).
+            // Captura: snapshot local. Forecast pide a SAP los meses fijos (3, 6 o 9) y los guarda en el snapshot.
             // Precio lista = maestro local (no SAP).
-            loadGastoRealCentro(c, { force: false, auto: true });
+            var nSap = esForecastTipo() ? budgetLockCount() : 0;
+            var mesesSap = [];
+            for (var mSap = 1; mSap <= nSap; mSap++) mesesSap.push(String(mSap));
+            loadGastoRealCentro(c, { force: nSap > 0, auto: true, meses: mesesSap.join(',') });
             loadVentasBudgetRefCentro(c);
             applyPreciosMap(preciosMapDesdeMaestroLocal(c));
         }

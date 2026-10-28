@@ -463,6 +463,45 @@
     gap: 0.55rem;
     margin-bottom: 0.85rem;
 }
+.cc-costos-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-bottom: 0.85rem;
+}
+.cc-costos-filters {
+    display: grid;
+    grid-template-columns: minmax(190px, 280px) minmax(150px, 190px) minmax(220px, 1fr) minmax(220px, 1fr) 88px;
+    gap: 0.55rem;
+    align-items: center;
+}
+.cc-costos-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: center;
+}
+.cc-costos-filters .cc-input {
+    min-width: 220px;
+    width: 100%;
+    color: #111827;
+    background: #fff;
+    caret-color: #111827;
+}
+.cc-costos-filters .cc-input::placeholder {
+    color: #71717a;
+    opacity: 1;
+    font-weight: 500;
+}
+@media (max-width: 1100px) {
+    .cc-costos-filters {
+        grid-template-columns: 1fr 1fr;
+    }
+    .cc-costos-filters #pv-costos-anio,
+    .cc-costos-filters #pv-costos-per-page {
+        grid-column: 1 / -1;
+    }
+}
 .cc-filters-asig {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     position: relative;
