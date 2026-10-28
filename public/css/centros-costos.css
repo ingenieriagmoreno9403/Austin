@@ -3413,6 +3413,17 @@ body > .select2-container--open:has(.cc-select-search-drop) {
     margin-top: 0.15rem;
     line-height: 1.15;
 }
+.cc-visor-ppto-btn {
+    margin-top: 0.55rem;
+    width: 100%;
+    justify-content: center;
+    font-size: 0.72rem;
+    padding: 0.35rem 0.55rem;
+}
+.cc-visor-ppto-btn:disabled {
+    opacity: 0.7;
+    cursor: wait;
+}
 .cc-visor-filtro.is-on,
 #visor-filtro-btn.is-on {
     background: var(--cc-ink);

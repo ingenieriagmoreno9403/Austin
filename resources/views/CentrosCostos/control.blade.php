@@ -270,6 +270,7 @@
                 <div class="cc-visor-kpi">
                     <small>Presupuestado</small>
                     <strong id="visor-kpi-ppto">—</strong>
+                    <button type="button" class="cc-btn cc-visor-ppto-btn" id="visor-ver-ppto">Ver presupuestados</button>
                 </div>
                 <div class="cc-visor-kpi">
                     <small>Pendientes</small>

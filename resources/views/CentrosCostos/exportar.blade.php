@@ -170,7 +170,7 @@
     <div class="cc-panel">
         <div class="cc-panel-head">
             <h3><i class="fa-solid fa-file-excel"></i> Descargar budget de gastos</h3>
-            <span class="text-muted" style="font-size:.8rem" id="exp-hint">Selecciona un ciclo para exportar. Si tarda o falla, filtra por empresa.</span>
+            <span class="text-muted" style="font-size:.8rem" id="exp-hint">Selecciona un ciclo para exportar. El archivo se arma en esta página, por partes.</span>
         </div>
 
         <div class="cc-filters" style="grid-template-columns: 220px 200px auto; align-items: end;">
@@ -281,7 +281,7 @@
     var ciclosUrl = @json(route('centros.api.ciclos'));
     var empresasUrl = @json(route('centros.api.empresas'));
     var startUrl = @json(route('centros.exportar.excel.start'));
-    var statusUrlBase = @json(url('/ExportarInformacionGastos/excel/status'));
+    var stepUrlBase = @json(url('/ExportarInformacionGastos/excel/step'));
     var fileUrlBase = @json(url('/ExportarInformacionGastos/excel/file'));
     var cancelUrlBase = @json(url('/ExportarInformacionGastos/excel/cancel'));
     var cicloSel = document.getElementById('exp-ciclo');
@@ -306,8 +306,10 @@
     var activeAbort = null;
     var tickTimer = null;
     var pollTimer = null;
-    /** Tiempo máximo esperando el archivo en segundo plano. */
-    var CLIENT_TIMEOUT_MS = 12 * 60 * 1000;
+    var lastOffset = -1;
+    var lastMoveAt = 0;
+    /** Si un tramo no avanza en este tiempo, se detiene. Cada transacción confirmada reinicia la espera. */
+    var STALL_MS = 8 * 60 * 1000;
 
     function selectedFormato() {
         var el = document.querySelector('input[name="exp-formato"]:checked');
@@ -456,7 +458,7 @@
         }
 
         if (status === 408 || status === 504 || status === 524) {
-            return 'El proxy cortó la espera (HTTP ' + status + ' Gateway Timeout). Vuelve a intentar: ahora el Excel se genera en segundo plano. Si persiste, exporta por empresa.';
+            return 'El servidor cortó la espera (HTTP ' + status + '). Vuelve a intentar. Si persiste, exporta por empresa.';
         }
         if (status === 502 || status === 503) {
             return 'El servidor no pudo completar la descarga (HTTP ' + status + '). Vuelve a intentar; si tarda mucho, exporta por empresa.';
@@ -655,17 +657,17 @@
         });
     }
 
-    function pollExportStatus(token, startedAt, fallbackName) {
+    function stepExport(token, fallbackName) {
         clearPoll();
         if (userCancelled) return;
-        if (Date.now() - startedAt > CLIENT_TIMEOUT_MS) {
-            showError('Se agotó el tiempo de espera generando el Excel. Vuelve a intentar o exporta por empresa.');
+        if (lastMoveAt && Date.now() - lastMoveAt > STALL_MS) {
+            showError('Un tramo tardó demasiado. Los códigos ya guardados en la base se conservan. Vuelve a exportar; continúa desde lo confirmado.');
             resetExportUi();
             return;
         }
 
-        fetch(statusUrlBase + '/' + encodeURIComponent(token), {
-            method: 'GET',
+        fetch(stepUrlBase + '/' + encodeURIComponent(token), {
+            method: 'POST',
             credentials: 'same-origin',
             signal: activeAbort ? activeAbort.signal : undefined,
             headers: {
@@ -683,7 +685,7 @@
             }
             var status = String(json.status || '');
             var pct = Number(json.pct);
-            if (!isFinite(pct)) pct = status === 'ready' ? 100 : 20;
+            if (!isFinite(pct)) pct = status === 'ready' ? 100 : 8;
             if (status === 'cancelled') {
                 showProgress(false);
                 resetExportUi();
@@ -700,12 +702,25 @@
             if (status === 'error') {
                 throw new Error(json.motivo || 'Error al generar el Excel.');
             }
-            setProgress(Math.max(8, Math.min(90, pct)), status === 'running'
-                ? 'Generando Excel en segundo plano…'
-                : 'En cola…');
+            if (tickTimer) {
+                clearInterval(tickTimer);
+                tickTimer = null;
+            }
+            var offset = Number(json.offset);
+            if (!isFinite(offset)) offset = lastOffset;
+            if (offset !== lastOffset || status === 'ready') {
+                lastOffset = offset;
+                lastMoveAt = Date.now();
+            }
+            var label = 'Generando Excel…';
+            if (json.total) {
+                label = 'Generando Excel… ' + (json.offset || 0) + ' de ' + json.total + ' cuentas';
+            }
+            setProgress(Math.max(4, Math.min(96, pct)), label);
+            if (hint) hint.textContent = label;
             pollTimer = setTimeout(function () {
-                pollExportStatus(token, startedAt, fallbackName);
-            }, 1500);
+                stepExport(token, fallbackName);
+            }, 150);
         }).catch(function (err) {
             if (userCancelled || (err && err.name === 'AbortError')) return;
             showError(motivoDesdeCatch(err));
@@ -726,6 +741,8 @@
 
         hideError();
         userCancelled = false;
+        lastOffset = -1;
+        lastMoveAt = Date.now();
         exporting = true;
         abortSignal();
         syncBtn();
@@ -734,7 +751,7 @@
         }
         showProgress(true);
         startFakeProgress();
-        if (hint) hint.textContent = 'Generando archivo del ciclo ' + ciclo + ' en segundo plano…';
+        if (hint) hint.textContent = 'Generando archivo del ciclo ' + ciclo + '…';
 
         var body = new FormData();
         body.append('ciclo', ciclo);
@@ -765,9 +782,9 @@
                 throw new Error(motivo);
             }
             activeToken = pack.json.token;
-            setProgress(12, 'Generando Excel en segundo plano…');
-            if (hint) hint.textContent = 'El archivo se está armando; no cierres esta pestaña…';
-            pollExportStatus(pack.json.token, Date.now(), fallbackName);
+            setProgress(4, 'Generando Excel…');
+            if (hint) hint.textContent = 'El archivo se está armando en esta página; no cierres la pestaña…';
+            stepExport(pack.json.token, fallbackName);
         }).catch(function (err) {
             if (userCancelled || (err && err.name === 'AbortError')) return;
             setProgress(0, 'Error al descargar');

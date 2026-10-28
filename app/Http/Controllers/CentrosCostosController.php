@@ -49,6 +49,12 @@ class CentrosCostosController extends Controller
     protected $formatCodePlantillaCache = [];
 
     /** @var array<string, bool> */
+    protected $codigosSapGuardados = [];
+
+    /** @var array<string, array<string, array<int, string>>> */
+    protected $catalogoCuentasPorNombreCache = [];
+
+    /** @var array<string, bool> */
     protected $gastoCopiaEmpresas = [];
 
     /** @var array<int, array<string, mixed>> */
@@ -157,7 +163,8 @@ class CentrosCostosController extends Controller
     }
 
     /**
-     * Inicia la generación en segundo plano (evita 504 del proxy).
+     * Deja listo el token. El Excel lo arma el navegador pidiendo tramos cortos
+     * (en hosting no corre un proceso en segundo plano ni artisan).
      */
     public function exportarInformacionExcelStart(Request $request): JsonResponse
     {
@@ -175,12 +182,28 @@ class CentrosCostosController extends Controller
 
         $token = (string) Str::uuid();
         $userId = (int) (auth()->id() ?? 0);
+        $suffix = $prepared['empresa'] !== '' ? '_'.$prepared['empresa'] : '';
+        if ($prepared['formato'] === 'estructurado') {
+            $suffix .= '_estructurado_'.$prepared['moneda'];
+        }
+        $workDir = storage_path('app'.DIRECTORY_SEPARATOR.'cc_exports'.DIRECTORY_SEPARATOR.$token);
+        if (! is_dir($workDir) && ! @mkdir($workDir, 0755, true) && ! is_dir($workDir)) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Error al descargar',
+                'motivo' => 'No se pudo crear la carpeta temporal del Excel.',
+            ], 500);
+        }
+
         $meta = [
             'status' => 'pending',
-            'pct' => 5,
+            'pct' => 2,
             'motivo' => null,
-            'filename' => null,
-            'path' => null,
+            'filename' => 'budget_gastos_'.$prepared['ciclo'].$suffix.'_'.now()->format('Ymd_His').'.xlsx',
+            'path' => 'cc_exports/'.$token.'.xlsx',
+            'work_dir' => $workDir,
+            'offset' => 0,
+            'total' => null,
             'user_id' => $userId,
             'ciclo' => $prepared['ciclo'],
             'empresa' => $prepared['empresa'],
@@ -190,99 +213,235 @@ class CentrosCostosController extends Controller
         ];
         Cache::put($this->exportBudgetGastosCacheKey($token), $meta, now()->addHours(2));
 
-        $ciclo = $prepared['ciclo'];
-        $empresa = $prepared['empresa'];
-        $formato = $prepared['formato'];
-        $moneda = $prepared['moneda'];
+        return response()->json([
+            'ok' => true,
+            'token' => $token,
+            'status' => 'pending',
+            'pct' => 2,
+            'message' => 'Listo para generar el Excel por partes.',
+        ]);
+    }
 
-        dispatch(function () use ($token, $ciclo, $empresa, $userId, $formato, $moneda) {
-            $this->boostExportBudgetGastosLimits();
-            $key = $this->exportBudgetGastosCacheKey($token);
+    /**
+     * Un tramo del Excel. El navegador lo llama hasta que status = ready.
+     */
+    public function exportarInformacionExcelStep(string $token): JsonResponse
+    {
+        $meta = $this->metaExportBudgetGastos($token);
+        if ($meta instanceof JsonResponse) {
+            return $meta;
+        }
 
-            register_shutdown_function(function () use ($key) {
-                $err = error_get_last();
-                if (! is_array($err)) {
-                    return;
-                }
-                $msg = strtolower((string) ($err['message'] ?? ''));
-                $fatal = in_array((int) ($err['type'] ?? 0), [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)
-                    || str_contains($msg, 'allowed memory size')
-                    || str_contains($msg, 'maximum execution time');
-                if (! $fatal) {
-                    return;
-                }
-                $meta = Cache::get($key);
-                if (! is_array($meta) || in_array(($meta['status'] ?? ''), ['ready', 'error', 'cancelled'], true)) {
-                    return;
-                }
-                $meta['status'] = 'error';
-                $meta['pct'] = 0;
-                $meta['motivo'] = str_contains($msg, 'memory')
-                    ? 'Se agotó la memoria del servidor al generar el archivo. Exporta filtrando por una empresa.'
-                    : 'Se agotó el tiempo de ejecución al generar el archivo. Exporta filtrando por una empresa.';
-                Cache::put($key, $meta, now()->addHours(2));
-            });
+        $key = $this->exportBudgetGastosCacheKey($token);
+        if (in_array(($meta['status'] ?? ''), ['ready', 'error', 'cancelled'], true)) {
+            return response()->json([
+                'ok' => ($meta['status'] ?? '') !== 'error',
+                'status' => (string) ($meta['status'] ?? 'error'),
+                'pct' => (int) ($meta['pct'] ?? 0),
+                'offset' => (int) ($meta['offset'] ?? 0),
+                'total' => $meta['total'],
+                'filename' => $meta['filename'] ?? null,
+                'motivo' => $meta['motivo'] ?? null,
+            ], ($meta['status'] ?? '') === 'error' ? 500 : 200);
+        }
 
+        $workDir = (string) ($meta['work_dir'] ?? '');
+        if ($workDir === '' || ! is_dir($workDir)) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'No se encontró la carpeta temporal del Excel. Vuelve a intentarlo.',
+            ], 404);
+        }
+
+        $lockPath = $workDir.DIRECTORY_SEPARATOR.'lock';
+        $lock = fopen($lockPath, 'c');
+        if ($lock === false || ! flock($lock, LOCK_EX | LOCK_NB)) {
+            if (is_resource($lock)) {
+                fclose($lock);
+            }
+
+            return response()->json([
+                'ok' => true,
+                'status' => 'running',
+                'pct' => (int) ($meta['pct'] ?? 5),
+                'offset' => (int) ($meta['offset'] ?? 0),
+                'total' => $meta['total'],
+                'motivo' => null,
+            ]);
+        }
+
+        try {
+            @set_time_limit(90);
             $meta = Cache::get($key);
             if (! is_array($meta) || ($meta['status'] ?? '') === 'cancelled') {
-                return;
+                return response()->json([
+                    'ok' => true,
+                    'status' => 'cancelled',
+                    'pct' => 0,
+                    'motivo' => 'Descarga cancelada.',
+                ]);
             }
-            try {
+
+            $streamer = new \App\Exports\CcBudgetXlsxStreamer();
+            $cuentasPath = $workDir.DIRECTORY_SEPARATOR.'cuentas.json';
+            if (! is_file($cuentasPath)) {
+                $asignados = $this->listaCuentasAsignadasExportGastos(
+                    (string) $meta['ciclo'],
+                    ($meta['empresa'] ?? '') !== '' ? (string) $meta['empresa'] : null
+                );
+                if ($asignados === []) {
+                    $meta['status'] = 'error';
+                    $meta['pct'] = 0;
+                    $meta['motivo'] = 'No hay cuentas asignadas para exportar en este ciclo'
+                        .(($meta['empresa'] ?? '') !== '' ? ' / empresa '.$meta['empresa'] : '')
+                        .'. Revisa asignaciones o el filtro de empresa.';
+                    Cache::put($key, $meta, now()->addHours(2));
+
+                    return response()->json([
+                        'ok' => false,
+                        'status' => 'error',
+                        'pct' => 0,
+                        'motivo' => $meta['motivo'],
+                    ], 422);
+                }
+
+                $json = json_encode($asignados, JSON_UNESCAPED_UNICODE);
+                if ($json === false || file_put_contents($cuentasPath, $json) === false) {
+                    throw new \RuntimeException('No se pudo guardar la lista de cuentas a exportar.');
+                }
+
+                $contexto = $this->contextoExportBudgetGastos((string) $meta['ciclo']);
+                $formato = (string) ($meta['formato'] ?? 'normal');
+                $estructurado = $formato === 'estructurado';
+                if ($estructurado) {
+                    $headings = [
+                        'COMPANY', 'CC', 'NAME CC', 'CUENTA', 'NAME CUENTA',
+                        'ORIGIN', 'TC', 'YEAR',
+                        'ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN',
+                        'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC',
+                        'IMPORTE TOTAL',
+                    ];
+                    $widths = [12, 12, 28, 14, 36, 10, 10, 8, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 16];
+                    $textColumns = [1 => true, 2 => true, 3 => true, 4 => true, 5 => true, 6 => true];
+                } else {
+                    $headings = [
+                        'COMPANY', 'CC', 'NAME CC', 'CUENTA', 'NAME CUENTA',
+                        'YEAR', 'MONTH', 'ORIGIN', 'IMPORTEUSD', 'IMPORTEMXN', 'TC',
+                    ];
+                    $widths = [12, 12, 28, 14, 36, 8, 8, 10, 14, 14, 10];
+                    $textColumns = [1 => true, 2 => true, 3 => true, 4 => true, 5 => true, 8 => true];
+                }
+                $streamer->begin($workDir, 'Budget '.$meta['ciclo'], $headings, [
+                    'widths' => $widths,
+                    'text_columns' => $textColumns,
+                ]);
+                $meta['anio'] = $contexto['anio'];
+                $meta['tc'] = $contexto['tc'];
+                $meta['total'] = count($asignados);
+                $meta['offset'] = 0;
                 $meta['status'] = 'running';
-                $meta['pct'] = 15;
+                $meta['pct'] = 8;
                 Cache::put($key, $meta, now()->addHours(2));
+                $asignados = null;
+            }
 
-                $pack = $this->generarArchivoExportBudgetGastos($ciclo, $empresa, $token, $userId, $formato, $moneda);
+            $raw = file_get_contents($cuentasPath);
+            $asignados = is_string($raw) ? json_decode($raw, true) : null;
+            if (! is_array($asignados)) {
+                throw new \RuntimeException('No se pudo leer la lista de cuentas a exportar.');
+            }
 
+            $total = count($asignados);
+            $offset = (int) ($meta['offset'] ?? 0);
+            $slice = $this->sliceCuentasExport($asignados, $offset);
+            $asignados = null;
+
+            if ($slice !== []) {
                 if ($this->exportBudgetGastosFueCancelado($token)) {
-                    $this->borrarArchivoExportBudgetGastos($pack['relative'] ?? null, $pack['absolute'] ?? null);
+                    $streamer->discard($workDir);
 
-                    return;
+                    return response()->json([
+                        'ok' => true,
+                        'status' => 'cancelled',
+                        'pct' => 0,
+                        'motivo' => 'Descarga cancelada.',
+                    ]);
                 }
+                $filas = $this->filasExportBudgetGastosSlice(
+                    (string) $meta['ciclo'],
+                    $slice,
+                    (int) ($meta['anio'] ?? 0),
+                    (float) ($meta['tc'] ?? 20),
+                    (string) ($meta['formato'] ?? 'normal'),
+                    (string) ($meta['moneda'] ?? 'MXN'),
+                    $workDir
+                );
+                $streamer->append($workDir, $filas);
+                $offset += count($slice);
+                $meta['offset'] = $offset;
+                $meta['total'] = $total;
+                $meta['status'] = 'running';
+                $meta['pct'] = $total > 0 ? min(96, 8 + (int) floor(($offset / $total) * 88)) : 96;
+                Cache::put($key, $meta, now()->addHours(2));
+            }
 
-                $meta = Cache::get($key);
-                if (! is_array($meta) || ($meta['status'] ?? '') === 'cancelled') {
-                    $this->borrarArchivoExportBudgetGastos($pack['relative'] ?? null, $pack['absolute'] ?? null);
-
-                    return;
+            if ($offset >= $total) {
+                $relative = (string) ($meta['path'] ?? '');
+                $absolute = Storage::disk('local')->path($relative);
+                $rows = $streamer->finish($workDir, $absolute);
+                $streamer->discard($workDir);
+                if ($rows <= 0 || ! is_file($absolute)) {
+                    throw new \RuntimeException('No se pudo guardar el archivo Excel en disco.');
                 }
-
                 $meta['status'] = 'ready';
                 $meta['pct'] = 100;
-                $meta['filename'] = $pack['filename'];
-                $meta['path'] = $pack['relative'];
+                $meta['rows'] = $rows;
                 $meta['motivo'] = null;
-                $meta['rows'] = $pack['rows'] ?? null;
+                $meta['offset'] = $total;
                 Cache::put($key, $meta, now()->addHours(2));
-            } catch (Throwable $e) {
-                if ($this->esCancelacionExportBudgetGastos($e) || $this->exportBudgetGastosFueCancelado($token)) {
-                    return;
-                }
-                Log::error('Export budget gastos Excel (async) falló', [
-                    'token' => $token,
-                    'ciclo' => $ciclo,
-                    'empresa' => $empresa,
-                    'formato' => $formato,
-                    'moneda' => $moneda,
-                    'user_id' => $userId,
-                    'message' => $e->getMessage(),
+            }
+
+            return response()->json([
+                'ok' => true,
+                'status' => (string) $meta['status'],
+                'pct' => (int) $meta['pct'],
+                'offset' => (int) ($meta['offset'] ?? 0),
+                'total' => (int) ($meta['total'] ?? 0),
+                'filename' => $meta['filename'] ?? null,
+                'motivo' => null,
+            ]);
+        } catch (Throwable $e) {
+            if ($this->esCancelacionExportBudgetGastos($e) || $this->exportBudgetGastosFueCancelado($token)) {
+                return response()->json([
+                    'ok' => true,
+                    'status' => 'cancelled',
+                    'pct' => 0,
+                    'motivo' => 'Descarga cancelada.',
                 ]);
-                $meta = Cache::get($key);
-                if (! is_array($meta) || ($meta['status'] ?? '') === 'cancelled') {
-                    return;
-                }
+            }
+            Log::error('Export budget gastos Excel (tramo) falló', [
+                'token' => $token,
+                'message' => $e->getMessage(),
+            ]);
+            $meta = Cache::get($key);
+            if (is_array($meta) && ($meta['status'] ?? '') !== 'cancelled') {
                 $meta['status'] = 'error';
                 $meta['pct'] = 0;
                 $meta['motivo'] = $this->motivoErrorExportBudgetGastos($e);
                 Cache::put($key, $meta, now()->addHours(2));
             }
-        })->afterResponse();
 
-        return response()->json([
-            'ok' => true,
-            'token' => $token,
-            'message' => 'Generando Excel en segundo plano…',
-        ]);
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'pct' => 0,
+                'motivo' => $this->motivoErrorExportBudgetGastos($e),
+            ], 500);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     public function exportarInformacionExcelStatus(string $token): JsonResponse
@@ -392,6 +551,9 @@ class CentrosCostosController extends Controller
         }
 
         $this->borrarArchivoExportBudgetGastos($meta['path'] ?? null);
+        if (! empty($meta['work_dir'])) {
+            (new \App\Exports\CcBudgetXlsxStreamer())->discard((string) $meta['work_dir']);
+        }
         $meta['status'] = 'cancelled';
         $meta['pct'] = 0;
         $meta['motivo'] = 'Descarga cancelada.';
@@ -404,6 +566,649 @@ class CentrosCostosController extends Controller
             'status' => 'cancelled',
             'message' => 'Descarga cancelada.',
         ]);
+    }
+
+    /**
+     * @return array<string, mixed>|JsonResponse
+     */
+    protected function metaExportBudgetGastos(string $token)
+    {
+        $token = trim($token);
+        if ($token === '' || ! preg_match('/^[a-f0-9\-]{36}$/i', $token)) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'Token de exportación inválido.',
+            ], 422);
+        }
+
+        $meta = Cache::get($this->exportBudgetGastosCacheKey($token));
+        if (! is_array($meta)) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'La exportación expiró o no existe. Vuelve a intentarlo.',
+            ], 404);
+        }
+
+        $userId = (int) (auth()->id() ?? 0);
+        if (! empty($meta['user_id']) && (int) $meta['user_id'] !== $userId) {
+            return response()->json([
+                'ok' => false,
+                'status' => 'error',
+                'motivo' => 'No tienes acceso a esta exportación.',
+            ], 403);
+        }
+
+        return $meta;
+    }
+
+    /**
+     * @return array{anio: int, tc: float}
+     */
+    protected function contextoExportBudgetGastos(string $ciclo): array
+    {
+        $cicloCodigo = strtoupper(trim($ciclo));
+        $cicloRow = Schema::hasTable('tbl_cc_ciclos')
+            ? CcCiclo::query()->whereRaw('UPPER(codigo) = ?', [$cicloCodigo])->first()
+            : null;
+
+        $anioBudget = (int) ($cicloRow->anio_presupuesto ?? 0);
+        if ($anioBudget < 2000 || $anioBudget > 2100) {
+            if (preg_match('/(20\d{2}|19\d{2})/', $cicloCodigo, $m)) {
+                $anioBudget = (int) $m[1];
+            } else {
+                $anioBudget = (int) date('Y');
+            }
+        }
+
+        $tc = (float) ($cicloRow->tipo_cambio ?? 0);
+        if ($tc <= 0) {
+            $tc = 20.0;
+        }
+
+        return [
+            'anio' => $anioBudget,
+            'tc' => round($tc, 4),
+        ];
+    }
+
+    /**
+     * Consecutivo viejo (4 dígitos) → FormatCode SAP de 12.
+     */
+    protected function codigoSapParaExport(string $empresa, string $codigo, string $nombre): string
+    {
+        $codigo = trim($codigo);
+        if ($codigo === '' || ! $this->esCodigoCuentaViejo($codigo)) {
+            return $codigo;
+        }
+        $fmt = $this->formatCodeDeCuentaVieja($empresa, $codigo, $nombre);
+
+        return $fmt !== '' ? $fmt : $codigo;
+    }
+
+    /**
+     * Deja el FormatCode en asignaciones, presupuestos y grupos. Si el código SAP ya existe, fusiona y quita el consecutivo.
+     */
+    protected function guardarCodigoSapEnBase(string $empresa, string $viejo, string $sap): void
+    {
+        $viejo = trim($viejo);
+        $sap = trim($sap);
+        $empresa = strtoupper(trim($empresa));
+        if ($viejo === '' || $empresa === '') {
+            return;
+        }
+
+        if (in_array($viejo, ['879', '945'], true)) {
+            if (isset($this->codigosSapGuardados['INDEMNIZACIONES']) || Cache::get('cc_sap_guardado_INDEMNIZACIONES')) {
+                $this->codigosSapGuardados['INDEMNIZACIONES'] = true;
+
+                return;
+            }
+            $this->codigosSapGuardados['INDEMNIZACIONES'] = true;
+            try {
+                DB::transaction(function () {
+                    $this->guardarParIndemnizacionesSap();
+                });
+                Cache::put('cc_sap_guardado_INDEMNIZACIONES', 1, now()->addHours(6));
+            } catch (Throwable $e) {
+                unset($this->codigosSapGuardados['INDEMNIZACIONES']);
+                Log::warning('No se pudo guardar el par SAP de indemnizaciones: '.$e->getMessage());
+            }
+
+            return;
+        }
+
+        if ($sap === '' || $sap === $viejo || $this->esCodigoCuentaViejo($sap)) {
+            return;
+        }
+        $marca = $empresa.'|'.$viejo;
+        if (isset($this->codigosSapGuardados[$marca]) || Cache::get('cc_sap_guardado_'.$marca) === $sap) {
+            $this->codigosSapGuardados[$marca] = true;
+
+            return;
+        }
+        $this->codigosSapGuardados[$marca] = true;
+
+        $empresas = ($empresa === 'AUSTIN' || $empresa === 'ABSA') ? ['AUSTIN', 'ABSA'] : [$empresa];
+
+        try {
+            DB::transaction(function () use ($empresas, $viejo, $sap) {
+                $this->reescribirAsignacionesCodigoSap($empresas, $viejo, $sap);
+                $this->reescribirPresupuestosCodigoSap($empresas, $viejo, $sap);
+                $this->reescribirGruposCodigoSap($empresas, $viejo, $sap);
+            });
+            Cache::put('cc_sap_guardado_'.$marca, $sap, now()->addHours(6));
+        } catch (Throwable $e) {
+            unset($this->codigosSapGuardados[$marca]);
+            Log::warning('No se pudo guardar el código SAP '.$sap.' (antes '.$viejo.'): '.$e->getMessage());
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $empresas
+     */
+    protected function reescribirAsignacionesCodigoSap(array $empresas, string $viejo, string $sap): void
+    {
+        if (! Schema::hasTable('tbl_cc_asignacion_cuentas') || ! Schema::hasTable('tbl_cc_asignaciones')) {
+            return;
+        }
+        $rows = DB::table('tbl_cc_asignacion_cuentas as c')
+            ->join('tbl_cc_asignaciones as a', 'a.id', '=', 'c.asignacion_id')
+            ->where('c.cuenta_codigo', $viejo)
+            ->where(function ($w) use ($empresas) {
+                foreach ($empresas as $e) {
+                    $w->orWhereRaw('UPPER(a.empresa) = ?', [$e]);
+                }
+            })
+            ->get(['c.id', 'c.asignacion_id']);
+
+        foreach ($rows as $row) {
+            $existe = DB::table('tbl_cc_asignacion_cuentas')
+                ->where('asignacion_id', $row->asignacion_id)
+                ->where('cuenta_codigo', $sap)
+                ->where('id', '!=', $row->id)
+                ->exists();
+            if ($existe) {
+                DB::table('tbl_cc_asignacion_cuentas')->where('id', $row->id)->delete();
+            } else {
+                DB::table('tbl_cc_asignacion_cuentas')->where('id', $row->id)->update([
+                    'cuenta_codigo' => $sap,
+                    'updated_at' => now(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $empresas
+     */
+    protected function reescribirPresupuestosCodigoSap(array $empresas, string $viejo, string $sap): void
+    {
+        if (! Schema::hasTable('tbl_cc_presupuestos')) {
+            return;
+        }
+        $meses = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $meses[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+        }
+        $rows = DB::table('tbl_cc_presupuestos')
+            ->where('cuenta_codigo', $viejo)
+            ->where(function ($w) use ($empresas) {
+                foreach ($empresas as $e) {
+                    $w->orWhereRaw('UPPER(empresa) = ?', [$e]);
+                }
+            })
+            ->get(array_merge(['id', 'ciclo_codigo', 'empresa', 'centro_codigo'], $meses));
+
+        foreach ($rows as $row) {
+            $otro = DB::table('tbl_cc_presupuestos')
+                ->where('ciclo_codigo', $row->ciclo_codigo)
+                ->where('empresa', $row->empresa)
+                ->where('centro_codigo', $row->centro_codigo)
+                ->where('cuenta_codigo', $sap)
+                ->where('id', '!=', $row->id)
+                ->first(array_merge(['id'], $meses));
+            if ($otro) {
+                $patch = [];
+                foreach ($meses as $col) {
+                    $dest = $otro->{$col} ?? null;
+                    $src = $row->{$col} ?? null;
+                    $destVacio = $dest === null || $dest === '' || (float) $dest == 0.0;
+                    $srcTiene = $src !== null && $src !== '' && (float) $src != 0.0;
+                    if ($destVacio && $srcTiene) {
+                        $patch[$col] = $src;
+                    }
+                }
+                if ($patch !== []) {
+                    $patch['updated_at'] = now();
+                    DB::table('tbl_cc_presupuestos')->where('id', $otro->id)->update($patch);
+                }
+                DB::table('tbl_cc_presupuestos')->where('id', $row->id)->delete();
+            } else {
+                DB::table('tbl_cc_presupuestos')->where('id', $row->id)->update([
+                    'cuenta_codigo' => $sap,
+                    'updated_at' => now(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $empresas
+     */
+    protected function reescribirGruposCodigoSap(array $empresas, string $viejo, string $sap): void
+    {
+        if (! Schema::hasTable('tbl_cc_grupo_cuentas') || ! Schema::hasTable('tbl_cc_grupos_cuenta')) {
+            return;
+        }
+        $rows = DB::table('tbl_cc_grupo_cuentas as i')
+            ->join('tbl_cc_grupos_cuenta as g', 'g.id', '=', 'i.grupo_id')
+            ->where('i.cuenta_codigo', $viejo)
+            ->where(function ($w) use ($empresas) {
+                foreach ($empresas as $e) {
+                    $w->orWhereRaw('UPPER(g.empresa) = ?', [$e]);
+                }
+            })
+            ->get(['i.id', 'i.grupo_id']);
+
+        foreach ($rows as $row) {
+            $existe = DB::table('tbl_cc_grupo_cuentas')
+                ->where('grupo_id', $row->grupo_id)
+                ->where('cuenta_codigo', $sap)
+                ->where('id', '!=', $row->id)
+                ->exists();
+            if ($existe) {
+                DB::table('tbl_cc_grupo_cuentas')->where('id', $row->id)->delete();
+            } else {
+                DB::table('tbl_cc_grupo_cuentas')->where('id', $row->id)->update([
+                    'cuenta_codigo' => $sap,
+                    'updated_at' => now(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * 879 y 945 son el mismo par. Se guardan las dos cuentas SAP y se quitan los consecutivos.
+     */
+    protected function guardarParIndemnizacionesSap(): void
+    {
+        $viejos = ['879', '945'];
+        $sap = ['600060001013', '600060001024'];
+        $now = now();
+
+        $escribir = function () use ($viejos, $sap, $now) {
+            if (Schema::hasTable('tbl_cc_asignacion_cuentas')) {
+                $asigIds = DB::table('tbl_cc_asignacion_cuentas')
+                    ->whereIn('cuenta_codigo', $viejos)
+                    ->distinct()
+                    ->pluck('asignacion_id');
+                foreach ($asigIds as $asigId) {
+                    foreach ($sap as $codigo) {
+                        $existe = DB::table('tbl_cc_asignacion_cuentas')
+                            ->where('asignacion_id', $asigId)
+                            ->where('cuenta_codigo', $codigo)
+                            ->exists();
+                        if ($existe) {
+                            continue;
+                        }
+                        DB::table('tbl_cc_asignacion_cuentas')->insert([
+                            'asignacion_id' => $asigId,
+                            'cuenta_codigo' => $codigo,
+                            'cuenta_nombre' => 'INDEMNIZACIONES',
+                            'agrupacion' => 'Gastos',
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ]);
+                    }
+                }
+                DB::table('tbl_cc_asignacion_cuentas')->whereIn('cuenta_codigo', $viejos)->delete();
+            }
+
+            if (Schema::hasTable('tbl_cc_grupo_cuentas')) {
+                $grupoIds = DB::table('tbl_cc_grupo_cuentas')
+                    ->whereIn('cuenta_codigo', $viejos)
+                    ->distinct()
+                    ->pluck('grupo_id');
+                foreach ($grupoIds as $grupoId) {
+                    foreach ($sap as $codigo) {
+                        $existe = DB::table('tbl_cc_grupo_cuentas')
+                            ->where('grupo_id', $grupoId)
+                            ->where('cuenta_codigo', $codigo)
+                            ->exists();
+                        if ($existe) {
+                            continue;
+                        }
+                        DB::table('tbl_cc_grupo_cuentas')->insert([
+                            'grupo_id' => $grupoId,
+                            'cuenta_codigo' => $codigo,
+                            'cuenta_nombre' => 'INDEMNIZACIONES',
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ]);
+                    }
+                }
+                DB::table('tbl_cc_grupo_cuentas')->whereIn('cuenta_codigo', $viejos)->delete();
+            }
+        };
+        $escribir();
+    }
+
+    /**
+     * @param  array{empresa?: string, cuenta?: string, cuenta_nombre?: string}  $item
+     */
+    protected function exportCuentaNecesitaSap(array $item): bool
+    {
+        $codigo = trim((string) ($item['cuenta'] ?? ''));
+        $nombre = trim((string) ($item['cuenta_nombre'] ?? ''));
+        $empresa = strtoupper(trim((string) ($item['empresa'] ?? '')));
+        if ($empresa === '' || $nombre === '' || ! $this->esCodigoCuentaViejo($codigo)) {
+            return false;
+        }
+        if ($this->formatCodeDesdeCatalogoLocal($empresa, $nombre) !== '') {
+            return false;
+        }
+        $cacheKey = $empresa.'|'.$codigo.'|'.mb_strtoupper($nombre);
+        if (array_key_exists($cacheKey, $this->formatCodePlantillaCache)) {
+            return false;
+        }
+        $guardado = Cache::get('cc_fmt_v1_'.$cacheKey);
+
+        return ! (is_string($guardado) && $guardado !== '');
+    }
+
+    /**
+     * @param  array<int, array{empresa?: string, cuenta?: string, cuenta_nombre?: string}>  $asignados
+     * @return array<int, array<string, mixed>>
+     */
+    protected function sliceCuentasExport(array $asignados, int $offset): array
+    {
+        $total = count($asignados);
+        $max = 80;
+        $apiTope = 1;
+        $api = 0;
+        $slice = [];
+        for ($i = $offset; $i < $total && count($slice) < $max; $i++) {
+            $item = $asignados[$i];
+            $necesita = $this->exportCuentaNecesitaSap($item);
+            if ($necesita && $api >= $apiTope && $slice !== []) {
+                break;
+            }
+            if ($necesita) {
+                $api++;
+            }
+            $slice[] = $item;
+        }
+
+        return $slice;
+    }
+
+    /**
+     * @param  array<string, array{meses: array<int, float|null>, cuenta_nombre: string}>  $pptoByKey
+     * @return array{meses: array<int, float|null>, cuenta_nombre: string}|null
+     */
+    protected function presupuestoExportDeCuenta(array $pptoByKey, string $empresa, string $centro, string $cuenta, string $nombre): ?array
+    {
+        foreach ($this->clavesCuentaCaptura($empresa, $centro, $cuenta, $nombre) as $key) {
+            if (isset($pptoByKey[$key])) {
+                return $pptoByKey[$key];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<int, array{empresa: string, centro: string, centro_nombre: string, cuenta: string, cuenta_nombre: string}>  $slice
+     * @return array<int, array<int, mixed>>
+     */
+    /**
+     * @return array{usados: array<string, bool>, lineas: array<string, bool>}
+     */
+    protected function estadoImportesExport(?string $workDir): array
+    {
+        $estado = ['usados' => [], 'lineas' => []];
+        if ($workDir === null || $workDir === '') {
+            return $estado;
+        }
+        $path = $workDir.DIRECTORY_SEPARATOR.'importes.json';
+        if (! is_file($path)) {
+            return $estado;
+        }
+        $raw = json_decode((string) file_get_contents($path), true);
+        if (! is_array($raw)) {
+            return $estado;
+        }
+        foreach ((array) ($raw['usados'] ?? []) as $k) {
+            $estado['usados'][(string) $k] = true;
+        }
+        foreach ((array) ($raw['lineas'] ?? []) as $k) {
+            $estado['lineas'][(string) $k] = true;
+        }
+
+        return $estado;
+    }
+
+    /**
+     * @param  array{usados: array<string, bool>, lineas: array<string, bool>}  $estado
+     */
+    protected function guardarEstadoImportesExport(?string $workDir, array $estado): void
+    {
+        if ($workDir === null || $workDir === '' || ! is_dir($workDir)) {
+            return;
+        }
+        file_put_contents(
+            $workDir.DIRECTORY_SEPARATOR.'importes.json',
+            json_encode([
+                'usados' => array_keys($estado['usados']),
+                'lineas' => array_keys($estado['lineas']),
+            ])
+        );
+    }
+
+    /**
+     * El mismo presupuesto (cuenta corta y su código SAP) solo suma una vez.
+     *
+     * @param  array<string, bool>  $usados
+     * @param  array{fila?: string, meses?: array<int, float|null>, cuenta_nombre?: string}|null  $info
+     * @return array{fila?: string, meses?: array<int, float|null>, cuenta_nombre?: string}|null
+     */
+    protected function reclamarPresupuestoExport(array &$usados, ?array $info): ?array
+    {
+        if ($info === null) {
+            return null;
+        }
+        $fila = (string) ($info['fila'] ?? '');
+        if ($fila !== '') {
+            if (isset($usados[$fila])) {
+                return null;
+            }
+            $usados[$fila] = true;
+        }
+
+        return $info;
+    }
+
+    protected function filasExportBudgetGastosSlice(
+        string $ciclo,
+        array $slice,
+        int $anioBudget,
+        float $tc,
+        string $formato,
+        string $moneda,
+        ?string $workDir = null
+    ): array {
+        foreach ($slice as $i => $item) {
+            $slice[$i]['cuenta_sap'] = $this->codigoSapParaExport(
+                (string) ($item['empresa'] ?? ''),
+                (string) ($item['cuenta'] ?? ''),
+                (string) ($item['cuenta_nombre'] ?? '')
+            );
+        }
+        $pptoByKey = $this->mapaPresupuestosDeSlice($ciclo, $slice);
+        $estructurado = $formato === 'estructurado';
+        $enUsd = $estructurado && $moneda === 'USD';
+        $estado = $this->estadoImportesExport($workDir);
+        $filas = [];
+        foreach ($slice as $item) {
+            $origen = (string) ($item['cuenta'] ?? '');
+            $sap = (string) ($item['cuenta_sap'] ?? $origen);
+            $nombre = (string) ($item['cuenta_nombre'] ?? '');
+            $empresa = (string) ($item['empresa'] ?? '');
+            $centro = (string) ($item['centro'] ?? '');
+            $linea = strtoupper($empresa).'|'.trim($centro).'|'.$sap;
+            $info = $this->presupuestoExportDeCuenta($pptoByKey, $empresa, $centro, $origen, $nombre);
+            if ($info === null && $sap !== $origen) {
+                $info = $this->presupuestoExportDeCuenta($pptoByKey, $empresa, $centro, $sap, $nombre);
+            }
+            $info = $this->reclamarPresupuestoExport($estado['usados'], $info);
+            if (isset($estado['lineas'][$linea]) && $info === null) {
+                continue;
+            }
+            $estado['lineas'][$linea] = true;
+            $this->guardarCodigoSapEnBase($empresa, $origen, $sap);
+            $item['cuenta'] = $sap;
+            foreach ($this->filasExportCuenta($item, $info, $anioBudget, $tc, $estructurado, $enUsd) as $fila) {
+                $filas[] = $fila;
+            }
+        }
+        $this->guardarEstadoImportesExport($workDir, $estado);
+
+        return $filas;
+    }
+
+    /**
+     * @param  array{empresa: string, centro: string, centro_nombre?: string, cuenta: string, cuenta_nombre?: string}  $item
+     * @param  array{meses: array<int, float|null>, cuenta_nombre: string}|null  $info
+     * @return array<int, array<int, mixed>>
+     */
+    protected function filasExportCuenta(array $item, ?array $info, int $anioBudget, float $tc, bool $estructurado, bool $enUsd): array
+    {
+        $emp = $item['empresa'];
+        $centro = $item['centro'];
+        $centroNombre = $item['centro_nombre'] ?? '';
+        $cuenta = $item['cuenta'];
+        $cuentaNombre = $item['cuenta_nombre'] ?? '';
+        $meses = $info['meses'] ?? array_fill(0, 12, null);
+        if ($cuentaNombre === '' && ! empty($info['cuenta_nombre'])) {
+            $cuentaNombre = $info['cuenta_nombre'];
+        }
+
+        if ($estructurado) {
+            $row = [$emp, $centro, $centroNombre, $cuenta, $cuentaNombre, 'BUDGET', $tc, $anioBudget];
+            $totalMxn = 0.0;
+            for ($i = 0; $i < 12; $i++) {
+                $raw = $meses[$i] ?? null;
+                $importeMxn = ($raw === null || $raw === '') ? 0.0 : $this->ccRound2Money((float) $raw);
+                $totalMxn += $importeMxn;
+                $row[] = $enUsd ? ($tc > 0 ? ($importeMxn / $tc) : 0.0) : $importeMxn;
+            }
+            $row[] = $enUsd ? ($tc > 0 ? ($totalMxn / $tc) : 0.0) : $this->ccRound2Money($totalMxn);
+
+            return [$row];
+        }
+
+        $rows = [];
+        for ($i = 0; $i < 12; $i++) {
+            $raw = $meses[$i] ?? null;
+            $importeMxn = ($raw === null || $raw === '') ? 0.0 : $this->ccRound2Money((float) $raw);
+            $importeUsd = $tc > 0 ? ($importeMxn / $tc) : 0.0;
+            $rows[] = [
+                $emp,
+                $centro,
+                $centroNombre,
+                $cuenta,
+                $cuentaNombre,
+                $anioBudget,
+                $i + 1,
+                'BUDGET',
+                $importeUsd,
+                $importeMxn,
+                $tc,
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param  array<int, array{empresa: string, centro: string, cuenta: string, cuenta_nombre?: string}>  $slice
+     * @return array<string, array{meses: array<int, float|null>, cuenta_nombre: string}>
+     */
+    protected function mapaPresupuestosDeSlice(string $cicloCodigo, array $slice): array
+    {
+        $pptoByKey = [];
+        if ($slice === [] || ! Schema::hasTable('tbl_cc_presupuestos')) {
+            return $pptoByKey;
+        }
+
+        $centros = [];
+        $cuentas = [];
+        foreach ($slice as $item) {
+            $centro = trim((string) ($item['centro'] ?? ''));
+            if ($centro !== '') {
+                $centros[$centro] = true;
+                $alias = ltrim($centro, '0');
+                if ($alias !== '' && $alias !== $centro) {
+                    $centros[$alias] = true;
+                }
+            }
+            foreach (['cuenta', 'cuenta_sap'] as $campo) {
+                $cuenta = trim((string) ($item[$campo] ?? ''));
+                if ($cuenta === '') {
+                    continue;
+                }
+                $cuentas[$cuenta] = true;
+                $sinCeros = ltrim($cuenta, '0');
+                if ($sinCeros !== '' && $sinCeros !== $cuenta) {
+                    $cuentas[$sinCeros] = true;
+                }
+            }
+        }
+        if ($centros === [] || $cuentas === []) {
+            return $pptoByKey;
+        }
+
+        $cols = ['empresa', 'centro_codigo', 'cuenta_codigo', 'cuenta_nombre'];
+        for ($i = 1; $i <= 12; $i++) {
+            $cols[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+        }
+
+        $q = DB::table('tbl_cc_presupuestos')
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper(trim($cicloCodigo))])
+            ->whereIn('centro_codigo', array_keys($centros))
+            ->whereIn('cuenta_codigo', array_keys($cuentas));
+
+        foreach ($q->select($cols)->cursor() as $row) {
+            $emp = strtoupper(trim((string) $row->empresa));
+            if ($emp === 'ABSA') {
+                $emp = 'AUSTIN';
+            }
+            $centro = trim((string) $row->centro_codigo);
+            $cuenta = trim((string) $row->cuenta_codigo);
+            if ($emp === '' || $centro === '' || $cuenta === '') {
+                continue;
+            }
+            $meses = [];
+            for ($i = 1; $i <= 12; $i++) {
+                $col = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+                $val = $row->{$col} ?? null;
+                $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
+            }
+            $info = [
+                'fila' => $emp.'|'.$centro.'|'.$cuenta,
+                'meses' => $meses,
+                'cuenta_nombre' => trim((string) ($row->cuenta_nombre ?? '')),
+            ];
+            foreach ($this->clavesCuentaCaptura($emp, $centro, $cuenta, $info['cuenta_nombre']) as $key) {
+                if (! isset($pptoByKey[$key])) {
+                    $pptoByKey[$key] = $info;
+                }
+            }
+        }
+
+        return $pptoByKey;
     }
 
     protected function exportBudgetGastosCacheKey(string $token): string
@@ -636,20 +1441,27 @@ class CentrosCostosController extends Controller
         }
 
         $rowGenerator = function () use ($asignados, $pptoByKey, $anioBudget, $tc, $estructurado, $enUsd) {
+            $usados = [];
+            $lineas = [];
             foreach ($asignados as $item) {
                 $emp = $item['empresa'];
                 $centro = $item['centro'];
                 $centroNombre = $item['centro_nombre'];
-                $cuenta = $item['cuenta'];
+                $origen = $item['cuenta'];
                 $cuentaNombre = $item['cuenta_nombre'];
 
-                $info = null;
-                foreach ($this->clavesCuentaCaptura($emp, $centro, $cuenta) as $key) {
-                    if (isset($pptoByKey[$key])) {
-                        $info = $pptoByKey[$key];
-                        break;
-                    }
+                $info = $this->presupuestoExportDeCuenta($pptoByKey, $emp, $centro, $origen, $cuentaNombre);
+                $cuenta = $this->codigoSapParaExport($emp, $origen, $cuentaNombre);
+                if ($info === null && $cuenta !== $origen) {
+                    $info = $this->presupuestoExportDeCuenta($pptoByKey, $emp, $centro, $cuenta, $cuentaNombre);
                 }
+                $info = $this->reclamarPresupuestoExport($usados, $info);
+                $linea = strtoupper($emp).'|'.trim($centro).'|'.$cuenta;
+                if (isset($lineas[$linea]) && $info === null) {
+                    continue;
+                }
+                $lineas[$linea] = true;
+                $this->guardarCodigoSapEnBase($emp, $origen, $cuenta);
 
                 $meses = $info['meses'] ?? array_fill(0, 12, null);
                 if ($cuentaNombre === '' && ! empty($info['cuenta_nombre'])) {
@@ -773,11 +1585,13 @@ class CentrosCostosController extends Controller
                 $val = $row->{$col} ?? null;
                 $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
             }
+            $nombre = trim((string) ($row->cuenta_nombre ?? ''));
             $info = [
+                'fila' => $emp.'|'.$centro.'|'.$cuenta,
                 'meses' => $meses,
-                'cuenta_nombre' => trim((string) ($row->cuenta_nombre ?? '')),
+                'cuenta_nombre' => $nombre,
             ];
-            foreach ($this->clavesCuentaCaptura($emp, $centro, $cuenta) as $key) {
+            foreach ($this->clavesCuentaCaptura($emp, $centro, $cuenta, $nombre) as $key) {
                 if (! isset($pptoByKey[$key])) {
                     $pptoByKey[$key] = $info;
                 }
@@ -934,9 +1748,11 @@ class CentrosCostosController extends Controller
             }
             $centro = trim((string) $row->centro_codigo);
             $cuenta = trim((string) $row->cuenta_codigo);
+            $cuentaNombre = trim((string) ($row->cuenta_nombre ?? ''));
             if ($emp === '' || $centro === '' || $cuenta === '') {
                 continue;
             }
+            $cuenta = $this->codigoCuentaCatalogo($emp, $cuenta, $cuentaNombre);
             $canon = $this->capturaBudgetKey($emp, $centro, $cuenta);
             if (isset($seen[$canon])) {
                 continue;
@@ -947,7 +1763,7 @@ class CentrosCostosController extends Controller
                 'centro' => $centro,
                 'centro_nombre' => trim((string) ($row->centro_nombre ?? '')),
                 'cuenta' => $cuenta,
-                'cuenta_nombre' => trim((string) ($row->cuenta_nombre ?? '')),
+                'cuenta_nombre' => $cuentaNombre !== '' ? $cuentaNombre : trim((string) ($row->cuenta_nombre ?? '')),
             ];
         }
 
@@ -2570,6 +3386,8 @@ class CentrosCostosController extends Controller
             $year = (int) date('Y');
         }
         $ciclo = strtoupper(trim((string) $request->input('ciclo', '')));
+        $conPpto = filter_var($request->input('con_ppto', '1'), FILTER_VALIDATE_BOOLEAN);
+        $sinGasto = filter_var($request->input('sin_gasto', '0'), FILTER_VALIDATE_BOOLEAN);
         $centros = $request->input('centros', []);
         if (! is_array($centros)) {
             $centros = [];
@@ -2636,12 +3454,14 @@ class CentrosCostosController extends Controller
                 $cuentasPorCc[$item['cc']] = $item['cuentas'] === [] ? null : $item['cuentas'];
             }
             $totales = [];
-            try {
-                if ($snap->disponible()) {
-                    $totales = $snap->totalesVisorPorCentro($empresa, $year, $ccs, $cuentasPorCc, 9);
+            if (! $sinGasto) {
+                try {
+                    if ($snap->disponible()) {
+                        $totales = $snap->totalesVisorPorCentro($empresa, $year, $ccs, $cuentasPorCc, 9);
+                    }
+                } catch (Throwable $e) {
+                    $totales = [];
                 }
-            } catch (Throwable $e) {
-                $totales = [];
             }
             foreach ($lista as $item) {
                 $hit = $totales[$item['cc']] ?? null;
@@ -2664,7 +3484,7 @@ class CentrosCostosController extends Controller
             }
         }
 
-        if ($ciclo !== '' && Schema::hasTable('tbl_cc_presupuestos') && $clavesOrden) {
+        if ($conPpto && $ciclo !== '' && Schema::hasTable('tbl_cc_presupuestos') && $clavesOrden) {
             $hasDone = Schema::hasColumn('tbl_cc_presupuestos', 'completado');
             $cols = ['empresa', 'centro_codigo', 'cuenta_codigo'];
             for ($i = 1; $i <= 12; $i++) {
@@ -4126,6 +4946,9 @@ class CentrosCostosController extends Controller
         if (Schema::hasTable('tbl_cc_presupuestos')) {
             $hasDone = Schema::hasColumn('tbl_cc_presupuestos', 'completado');
             $cols = ['empresa', 'centro_codigo', 'cuenta_codigo'];
+            if (Schema::hasColumn('tbl_cc_presupuestos', 'cuenta_nombre')) {
+                $cols[] = 'cuenta_nombre';
+            }
             for ($i = 1; $i <= 12; $i++) {
                 $cols[] = 'mes_'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
             }
@@ -4153,12 +4976,19 @@ class CentrosCostosController extends Controller
                     $meses[] = ($val === null || $val === '') ? null : round((float) $val, 2);
                 }
                 $done = ($hasDone && ! empty($row->completado)) || $this->mesesTodosLlenos($meses);
-                $key = $this->capturaBudgetKey((string) $row->empresa, (string) $row->centro_codigo, (string) $row->cuenta_codigo);
-                    $budgets[$key] = $meses;
+                $empRow = (string) $row->empresa;
+                $centroRow = (string) $row->centro_codigo;
+                $cuentaRow = (string) $row->cuenta_codigo;
+                $nombreRow = trim((string) ($row->cuenta_nombre ?? ''));
+                foreach ($this->clavesCuentaCaptura($empRow, $centroRow, $cuentaRow, $nombreRow) as $key) {
+                    if (! isset($budgets[$key])) {
+                        $budgets[$key] = $meses;
+                    }
                     if ($done) {
                         $completados[$key] = true;
                     }
                 }
+            }
         }
 
         $overlays = [];
@@ -4220,18 +5050,27 @@ class CentrosCostosController extends Controller
         $empresa = strtoupper(trim($data['empresa']));
         $centro = trim($data['centro']);
         $cuenta = trim($data['cuenta']);
+        $cuentaNombre = trim((string) ($data['cuenta_nombre'] ?? ''));
 
         $motivo = $this->motivoBloqueoCaptura($ciclo, $empresa, $centro);
         if ($motivo) {
             return response()->json(['message' => $motivo], 403);
         }
 
-        $row = CcPresupuesto::query()->firstOrNew([
-            'ciclo_codigo' => $ciclo,
-            'empresa' => $empresa,
-            'centro_codigo' => $centro,
-            'cuenta_codigo' => $cuenta,
-        ]);
+        $row = $this->presupuestoPorAlias($ciclo, $empresa, $centro, $cuenta, $cuentaNombre);
+        if (! $row) {
+            $row = new CcPresupuesto([
+                'ciclo_codigo' => $ciclo,
+                'empresa' => $empresa,
+                'centro_codigo' => $centro,
+                'cuenta_codigo' => $this->codigoCuentaCatalogo($empresa, $cuenta, $cuentaNombre) ?: $cuenta,
+            ]);
+        } else {
+            $canon = $this->codigoCuentaCatalogo($empresa, $cuenta, $cuentaNombre);
+            if ($canon !== '' && $canon !== (string) $row->cuenta_codigo) {
+                $row->cuenta_codigo = $canon;
+            }
+        }
         $row->setMeses($data['meses']);
         if (! empty($data['cuenta_nombre'])) {
             $row->cuenta_nombre = $data['cuenta_nombre'];
@@ -6088,6 +6927,140 @@ class CentrosCostosController extends Controller
         return $format !== '' ? $format : $this->codigoCuentaVisible($codigo);
     }
 
+    /**
+     * FormatCode del catálogo local para consecutivos viejos (&lt; 8 dígitos o _SYS).
+     * Si el nombre coincide con varias cuentas, se deja el código original.
+     */
+    protected function codigoCuentaCatalogo(string $empresa, string $codigo, string $nombre): string
+    {
+        $codigo = trim($codigo);
+        if ($codigo === '') {
+            return '';
+        }
+        if (! $this->esCodigoCuentaViejo($codigo)) {
+            return $codigo;
+        }
+        $fmt = $this->formatCodeDesdeCatalogoLocal($empresa, $nombre);
+
+        return $fmt !== '' ? $fmt : $codigo;
+    }
+
+    protected function normalizarNombreCuenta(string $nombre): string
+    {
+        $s = trim($nombre);
+        if ($s === '') {
+            return '';
+        }
+        if (class_exists(\Normalizer::class)) {
+            $n = \Normalizer::normalize($s, \Normalizer::FORM_D);
+            if (is_string($n) && $n !== '') {
+                $s = $n;
+            }
+        }
+        $s = preg_replace('/\p{Mn}+/u', '', $s) ?? $s;
+        $s = mb_strtoupper($s);
+        $s = str_replace('Ñ', 'N', $s);
+        $s = preg_replace('/[^A-Z0-9]+/', ' ', $s) ?? $s;
+
+        return trim(preg_replace('/\s+/', ' ', $s) ?? $s);
+    }
+
+    /**
+     * @return array<string, array<int, string>>
+     */
+    protected function catalogoCuentasPorNombre(string $empresa): array
+    {
+        $empresa = strtoupper(trim($empresa));
+        if ($empresa === '') {
+            return [];
+        }
+        if (isset($this->catalogoCuentasPorNombreCache[$empresa])) {
+            return $this->catalogoCuentasPorNombreCache[$empresa];
+        }
+
+        $map = [];
+        if (Schema::hasTable('tbl_cc_catalogo_cuentas')) {
+            $empresas = [$empresa];
+            if ($empresa === 'AUSTIN') {
+                $empresas[] = 'ABSA';
+            } elseif ($empresa === 'ABSA') {
+                $empresas[] = 'AUSTIN';
+            }
+            $rows = DB::table('tbl_cc_catalogo_cuentas')
+                ->where(function ($q) use ($empresas) {
+                    foreach ($empresas as $e) {
+                        $q->orWhereRaw('UPPER(empresa) = ?', [$e]);
+                    }
+                })
+                ->get(['codigo', 'nombre']);
+            foreach ($rows as $row) {
+                $norm = $this->normalizarNombreCuenta((string) ($row->nombre ?? ''));
+                $codigo = trim((string) ($row->codigo ?? ''));
+                if ($norm === '' || $codigo === '') {
+                    continue;
+                }
+                if (! isset($map[$norm])) {
+                    $map[$norm] = [];
+                }
+                if (! in_array($codigo, $map[$norm], true)) {
+                    $map[$norm][] = $codigo;
+                }
+            }
+        }
+
+        return $this->catalogoCuentasPorNombreCache[$empresa] = $map;
+    }
+
+    protected function formatCodeDesdeCatalogoLocal(string $empresa, string $nombre): string
+    {
+        $norm = $this->normalizarNombreCuenta($nombre);
+        if ($norm === '') {
+            return '';
+        }
+        $hits = $this->catalogoCuentasPorNombre($empresa)[$norm] ?? [];
+
+        return $this->elegirCodigoSapUnico($hits);
+    }
+
+    /**
+     * Una sola coincidencia, o una sola cuenta de gasto (6000…) si el nombre se repite en balance.
+     *
+     * @param  array<int, string>  $hits
+     */
+    protected function elegirCodigoSapUnico(array $hits): string
+    {
+        $hits = array_values(array_unique(array_filter(array_map('trim', $hits))));
+        if (count($hits) === 1) {
+            return $hits[0];
+        }
+        $gastos = array_values(array_filter($hits, function ($codigo) {
+            return strpos($codigo, '6000') === 0;
+        }));
+
+        return count($gastos) === 1 ? $gastos[0] : '';
+    }
+
+    protected function presupuestoPorAlias(string $ciclo, string $empresa, string $centro, string $cuenta, string $nombre = ''): ?CcPresupuesto
+    {
+        $aliases = array_values(array_unique(array_filter([
+            $cuenta,
+            ltrim($cuenta, '0'),
+            $this->codigoCuentaVisible($cuenta),
+            $this->codigoCuentaPlantilla($cuenta),
+            $this->codigoCuentaCatalogo($empresa, $cuenta, $nombre),
+        ])));
+        if ($aliases === []) {
+            return null;
+        }
+
+        return CcPresupuesto::query()
+            ->whereRaw('UPPER(ciclo_codigo) = ?', [strtoupper($ciclo)])
+            ->whereRaw('UPPER(empresa) = ?', [strtoupper($empresa)])
+            ->where('centro_codigo', $centro)
+            ->whereIn('cuenta_codigo', $aliases)
+            ->first();
+    }
+
     protected function esCodigoCuentaViejo(string $codigo): bool
     {
         $codigo = trim($codigo);
@@ -6117,16 +7090,19 @@ class CentrosCostosController extends Controller
 
         $format = '';
         if ($empresa !== '' && $nombre !== '') {
-            try {
-                $api = app(AutinApiClient::class);
-                $codes = $this->formatCodesPorNombre($api, $empresa, $nombre);
-                if (count($codes) === 1) {
-                    $format = $codes[0];
-                } elseif (count($codes) > 1) {
-                    $format = $this->emparejarCodigoViejo($api, $empresa, $codigo, $nombre, $codes);
+            $format = $this->formatCodeDesdeCatalogoLocal($empresa, $nombre);
+            if ($format === '') {
+                try {
+                    $api = app(AutinApiClient::class);
+                    $codes = $this->formatCodesPorNombre($api, $empresa, $nombre);
+                    if (count($codes) === 1) {
+                        $format = $codes[0];
+                    } elseif (count($codes) > 1) {
+                        $format = $this->emparejarCodigoViejo($api, $empresa, $codigo, $nombre, $codes);
+                    }
+                } catch (Throwable $e) {
+                    $format = '';
                 }
-            } catch (Throwable $e) {
-                $format = '';
             }
         }
 
@@ -6241,7 +7217,7 @@ class CentrosCostosController extends Controller
     /**
      * @return array<int, string>
      */
-    protected function clavesCuentaCaptura(string $empresa, string $centro, string $cuenta): array
+    protected function clavesCuentaCaptura(string $empresa, string $centro, string $cuenta, string $nombre = ''): array
     {
         $cuenta = trim($cuenta);
         $keys = [
@@ -6251,6 +7227,10 @@ class CentrosCostosController extends Controller
             $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaKey($cuenta)),
             $this->capturaBudgetKey($empresa, $centro, $this->codigoCuentaPlantilla($cuenta)),
         ];
+        $canon = $this->codigoCuentaCatalogo($empresa, $cuenta, $nombre);
+        if ($canon !== '' && $canon !== $cuenta) {
+            $keys[] = $this->capturaBudgetKey($empresa, $centro, $canon);
+        }
 
         return array_values(array_unique(array_filter($keys)));
     }
@@ -7008,9 +7988,13 @@ class CentrosCostosController extends Controller
      */
     protected function cuentasDe(CcAsignacion $asig): array
     {
-        return $asig->cuentas()->get()->map(function ($c) {
+        $empresa = strtoupper(trim((string) $asig->empresa));
+
+        return $asig->cuentas()->get()->map(function ($c) use ($empresa) {
+            $orig = trim((string) $c->cuenta_codigo);
+
             return [
-                'codigo' => $c->cuenta_codigo,
+                'codigo' => $this->codigoCuentaCatalogo($empresa, $orig, (string) $c->cuenta_nombre) ?: $orig,
                 'nombre' => $c->cuenta_nombre,
                 'agrupacion' => $c->agrupacion,
             ];
@@ -7093,9 +8077,12 @@ class CentrosCostosController extends Controller
 
         $cuentas = [];
         if (! $resumen && $a->relationLoaded('cuentas')) {
-            $cuentas = $a->cuentas->map(function ($c) {
+            $empresa = strtoupper(trim((string) $a->empresa));
+            $cuentas = $a->cuentas->map(function ($c) use ($empresa) {
+                $orig = trim((string) $c->cuenta_codigo);
+
                 return [
-                    'codigo' => $c->cuenta_codigo,
+                    'codigo' => $this->codigoCuentaCatalogo($empresa, $orig, (string) $c->cuenta_nombre) ?: $orig,
                     'nombre' => $c->cuenta_nombre,
                     'agrupacion' => $c->agrupacion,
                 ];
