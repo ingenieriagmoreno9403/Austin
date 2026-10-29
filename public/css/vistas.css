@@ -4807,6 +4807,36 @@ table.table thead th,
     margin-bottom: 0;
 }
 
+.prov-selector__item-body {
+    min-width: 0;
+    flex: 1;
+}
+
+.prov-selector__item--con-precios {
+    border-color: #86efac;
+    background: #f0fdf4;
+}
+
+.prov-selector__precios {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.55rem;
+    margin-top: 0.4rem;
+    padding: 0.35rem 0.6rem;
+    border-radius: 8px;
+    background: #ecfdf5;
+    border: 1px solid #86efac;
+    color: #047857;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+.prov-selector__precios-meta {
+    font-weight: 600;
+    color: #065f46;
+}
+
 .prov-selector__item-name {
     margin: 0;
     font-size: 0.88rem;

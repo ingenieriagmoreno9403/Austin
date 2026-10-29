@@ -165,7 +165,7 @@ class HistorialComprasProveedorController extends Controller
     }
 
     /**
-     * @return list<array{proveedor: string, importe: float}>
+     * @return list<array{proveedor: string, importe: float, porcentaje: float, contrato_valor: ?float, concentrado: bool, excede_tope: bool}>
      */
     private function topProveedores($query): array
     {
@@ -173,16 +173,29 @@ class HistorialComprasProveedorController extends Controller
             ->selectRaw('e.proveedor_id')
             ->selectRaw("COALESCE(NULLIF(TRIM(MAX(p.nombre)), ''), 'Sin proveedor') as proveedor")
             ->selectRaw('COALESCE(SUM(IFNULL(d.cantidad, 0) * IFNULL(d.costo, 0)), 0) as importe')
+            ->selectRaw('MAX(p.contrato_valor) as contrato_valor')
             ->groupBy('e.proveedor_id')
             ->orderByDesc('importe')
-            ->limit(10)
             ->get();
 
-        return $filas->map(function ($fila) {
+        $total = (float) $filas->sum('importe');
+        $hayVarios = $filas->count() >= 2;
+
+        return $filas->take(10)->map(function ($fila) use ($total, $hayVarios) {
+            $importe = round((float) $fila->importe, 2);
+            $tope = $fila->contrato_valor !== null && $fila->contrato_valor !== ''
+                ? round((float) $fila->contrato_valor, 2)
+                : null;
+            $porcentaje = $total > 0 ? round(($importe / $total) * 100, 1) : 0;
+
             return [
                 'proveedor' => (string) $fila->proveedor,
-                'importe' => round((float) $fila->importe, 2),
+                'importe' => $importe,
+                'porcentaje' => $porcentaje,
+                'contrato_valor' => $tope,
+                'concentrado' => $hayVarios && $porcentaje >= 40,
+                'excede_tope' => $tope !== null && $tope > 0 && $importe > $tope,
             ];
-        })->all();
+        })->values()->all();
     }
 }

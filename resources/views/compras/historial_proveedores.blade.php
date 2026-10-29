@@ -234,8 +234,44 @@
 
     <div class="hp-chart-box">
         <h3 class="h6 mb-1">Proveedores a los que más se compra</h3>
-        <p class="text-muted small mb-3">Top 10 por importe, con los filtros de arriba.</p>
+        <p class="text-muted small mb-3">Top 10 por importe. En rojo si concentra 40% o más, o si ya rebasó el valor de su contrato.</p>
         <canvas id="hp-chart-top"></canvas>
+        <div class="table-responsive mt-3">
+            <table class="table table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th>Proveedor</th>
+                        <th class="text-end">Importe</th>
+                        <th class="text-end">% del total</th>
+                        <th class="text-end">Tope del contrato</th>
+                        <th>Consumo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @forelse ($topProveedores as $fila)
+                        <tr>
+                            <td>{{ $fila['proveedor'] }}</td>
+                            <td class="text-end">{{ number_format($fila['importe'], 2) }}</td>
+                            <td class="text-end {{ $fila['concentrado'] ? 'text-danger fw-bold' : '' }}">{{ number_format($fila['porcentaje'], 1) }}%</td>
+                            <td class="text-end">{{ $fila['contrato_valor'] !== null ? number_format($fila['contrato_valor'], 2) : 'Sin tope' }}</td>
+                            <td class="{{ $fila['excede_tope'] ? 'text-danger fw-bold' : '' }}">
+                                @if ($fila['excede_tope'])
+                                    Rebasa el tope
+                                @elseif ($fila['contrato_valor'] !== null)
+                                    Dentro del tope
+                                @else
+                                    —
+                                @endif
+                            </td>
+                        </tr>
+                    @empty
+                        <tr>
+                            <td colspan="5" class="text-muted">No hay compras con esos filtros.</td>
+                        </tr>
+                    @endforelse
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
@@ -284,7 +320,9 @@
             datasets: [{
                 label: 'Importe',
                 data: topProveedores.map(function (fila) { return Number(fila.importe || 0); }),
-                backgroundColor: '#2563eb',
+                backgroundColor: topProveedores.map(function (fila) {
+                    return (fila.concentrado || fila.excede_tope) ? '#dc2626' : '#2563eb';
+                }),
                 borderRadius: 6
             }]
         },
@@ -296,7 +334,12 @@
                 tooltip: {
                     callbacks: {
                         label: function (ctx) {
-                            return 'Importe: ' + Number(ctx.parsed.x || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                            var fila = topProveedores[ctx.dataIndex] || {};
+                            var texto = 'Importe: ' + Number(ctx.parsed.x || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                            texto += ' (' + Number(fila.porcentaje || 0).toLocaleString('es-MX') + '%)';
+                            if (fila.excede_tope) texto += ' · rebasa el tope';
+                            else if (fila.concentrado) texto += ' · alta concentración';
+                            return texto;
                         }
                     }
                 }

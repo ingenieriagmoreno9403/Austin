@@ -218,8 +218,8 @@
                             <i class="fas fa-scale-balanced"></i>
                         </div>
                         <div>
-                            <h2 class="mb-0 text-marino fw-bold">Comparativa de Precios</h2>
-                            <p class="text-muted mb-0">Administración de comparativa de la empresa</p>
+                            <h2 class="mb-0 text-marino fw-bold">Licitaciones</h2>
+                            <p class="text-muted mb-0">Administración de licitaciones de la empresa</p>
                         </div>
                     </div>
                     <div class="header-actions d-flex flex-wrap align-items-center gap-2">
@@ -254,10 +254,7 @@
                 $estadoItem = isset($item->estado) ? trim(strtolower($item->estado)) : '';
                 $estaAdjudicadaItem = in_array($estadoItem, ['adjudicada', 'cerrada'], true);
 
-                $tieneOC = DB::table('tblordencompra_enc')
-                    ->where('referencia_licitacion_id', $item->id)
-                    ->whereIn('estado', ['enviada', 'confirmada', 'en_proceso', 'completada', 'cerrada'])
-                    ->exists();
+                $tieneOC = isset($conOrden[$item->id]);
 
                 if ($tieneOC) {
                     $conOC++;
@@ -399,10 +396,7 @@
                                 }
                                 
                                 // Verificar si tiene orden de compra asociada en estado "enviada" o posterior
-                                $tieneOrdenCompra = DB::table('tblordencompra_enc')
-                                    ->where('referencia_licitacion_id', $vis->id)
-                                    ->whereIn('estado', ['enviada', 'confirmada', 'en_proceso', 'completada', 'cerrada'])
-                                    ->exists();
+                                $tieneOrdenCompra = isset($conOrden[$vis->id]);
                                 
                                 // Lógica de estados - Con prioridad para adjudicada o cerrada
                                 if ($estaAdjudicada) {
@@ -434,9 +428,7 @@
                                 }
                                 
                                 // Contar proveedores participantes
-                                $proveedores = DB::table('tbllicitacion_proveedor')
-                                    ->where('licitacion_id', $vis->id)
-                                    ->count();
+                                $proveedores = (int) ($conteoProveedores[$vis->id] ?? 0);
                             @endphp
                             
                             <tr class="filter-row {{ $filterClass }}">
@@ -453,8 +445,10 @@
                                             href="{{ route('licitaciones.comparar', $vis->id) }}">
                                             <i class="fa-solid fa-scale-balanced"></i>
                                         </a>
-                                        <button type="button" class="btn btn-success btn-sm" data-bs-toggle="modal"
-                                            data-bs-target="#modalCostos{{ $vis->id }}" title="Ver Costos por Proveedor">
+                                        <button type="button" class="btn btn-success btn-sm js-ver-costos"
+                                            data-id="{{ $vis->id }}"
+                                            data-url="{{ route('licitaciones.costos', $vis->id) }}"
+                                            title="Ver Costos por Proveedor">
                                             <i class="fa-solid fa-money-bill-wave"></i>
                                         </button>
                                         <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal"
@@ -500,101 +494,17 @@
         </div>
     </div>
 
-    <!-- Modal Ver Costos de esta Comparativa -->
-    @foreach ($varlista as $vis)
-        <div class="modal fade" id="modalCostos{{ $vis->id }}" tabindex="-1"
-            aria-labelledby="modalCostosLabel{{ $vis->id }}" aria-hidden="true">
-            <div class="modal-dialog modal-lg">
-                <div class="modal-content">
-                    <div class="modal-header border-0">
-                        <h6 class="modal-title" id="modalCostosLabel{{ $vis->id }}">
-                            Costos Capturados - Comparativa #{{ $vis->id }}
-                        </h6>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
-                    </div>
-                    <div class="modal-body" style="margin-top: -20px">
-                        @php
-                            $costos = DB::table('tbllicitacionproducto_proveedor as lpp')
-                                ->join('tblprovedores as p', 'p.id', '=', 'lpp.proveedor_id')
-                                ->join('tblproductos as pr', 'pr.id', '=', 'lpp.producto_id')
-                                ->select('p.nombre as proveedor', 'pr.nombre as producto', 'lpp.costo', 'lpp.marca')
-                                ->where('lpp.licitacion_id', $vis->id)
-                                ->orderBy('proveedor')
-                                ->orderBy('producto')
-                                ->get();
-                                
-                            // Agrupar por proveedor
-                            $costosPorProveedor = $costos->groupBy('proveedor');
-                            
-                            // Calcular total por proveedor
-                            $totalesPorProveedor = [];
-                            foreach ($costosPorProveedor as $proveedor => $items) {
-                                $totalesPorProveedor[$proveedor] = $items->sum('costo');
-                            }
-                        @endphp
-
-                        @if ($costos->isEmpty())
-                            <div class="alert alert-warning">
-                                <i class="fa-solid fa-triangle-exclamation me-2"></i>
-                                No hay costos registrados para esta Comparativa.
-                            </div>
-                        @else
-                            <!-- Resumen de proveedores -->
-                            <div class="mb-4">
-                                <h6 class="mb-4"><i class="text-orange fa-solid fa-chart-pie me-2"></i>Resumen por Proveedor</h6>
-                                <div class="row">
-                                    @foreach ($costosPorProveedor as $proveedor => $items)
-                                    <div class="col-md-4 mb-2">
-                                        <div class="card">
-                                            <div class="card-body py-2">
-                                                <h6 class="card-title mb-0">{{ $proveedor }}</h6>
-                                                <p class="mb-0 text-muted">{{ $items->count() }} productos</p>
-                                                <h5 class="text-primary">${{ number_format($totalesPorProveedor[$proveedor], 2) }}</h5>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    @endforeach
-                                </div>
-                            </div>
-                            
-                            <!-- Tabla detallada -->
-                            <h6><i class="fa-solid fa-list me-2 text-orange"></i>Detalle de Productos</h6>
-                            <div class="table-responsive">
-                                <table class="table table-sm table-striped table-hover">
-                                    <thead>
-                                        <tr>
-                                            <th>Proveedor</th>
-                                            <th>Producto</th>
-                                            <th class="text-end">Costo</th>
-                                            <th>Marca</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        @foreach ($costos as $costo)
-                                            <tr>
-                                                <td>{{ $costo->proveedor }}</td>
-                                                <td>{{ $costo->producto }}</td>
-                                                <td class="text-end">${{ number_format($costo->costo, 2) }}</td>
-                                                <td>{{ $costo->marca }}</td>
-                                            </tr>
-                                        @endforeach
-                                    </tbody>
-                                </table>
-                            </div>
-                        @endif
-                    </div>
-                    <div class="modal-footer border-0">
-                        <button type="button" class="btn btn-baseColor-light" data-bs-dismiss="modal"><i class="fa-solid fa-xmark"></i> Cerrar</button>
-                        @if (!$costos->isEmpty())
-                        <a href="{{ route('licitaciones.exportarCostos', $vis->id) }}" class="btn btn-baseColor">
-                            <i class="fa-solid fa-file-excel me-1"></i> Exportar a Excel
-                        </a>
-                        @endif
-                    </div>
+    <div class="modal fade" id="modalCostos" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header border-0">
+                    <h6 class="modal-title" id="modalCostosTitulo">Costos capturados</h6>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
                 </div>
+                <div class="modal-body" id="modalCostosCuerpo">Cargando...</div>
             </div>
         </div>
-    @endforeach
+    </div>
 
 
     <!-- Modal preguntar eliminado-->
@@ -857,6 +767,26 @@
             }
 
             document.getElementById('btnAplicarFiltros')?.addEventListener('click', aplicarFiltroLicitaciones);
+
+            document.querySelectorAll('.js-ver-costos').forEach(function (boton) {
+                boton.addEventListener('click', function () {
+                    var cuerpo = document.getElementById('modalCostosCuerpo');
+                    var titulo = document.getElementById('modalCostosTitulo');
+                    titulo.textContent = 'Costos capturados - Licitación #' + boton.getAttribute('data-id');
+                    cuerpo.textContent = 'Cargando...';
+                    bootstrap.Modal.getOrCreateInstance(document.getElementById('modalCostos')).show();
+                    fetch(boton.getAttribute('data-url'), {
+                        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'text/html' }
+                    }).then(function (respuesta) {
+                        if (!respuesta.ok) throw new Error('costos');
+                        return respuesta.text();
+                    }).then(function (html) {
+                        cuerpo.innerHTML = html;
+                    }).catch(function () {
+                        cuerpo.textContent = 'No se pudieron cargar los costos.';
+                    });
+                });
+            });
 
             document.getElementById('btnLimpiarFiltros')?.addEventListener('click', function() {
                 if (filtroEstado) {

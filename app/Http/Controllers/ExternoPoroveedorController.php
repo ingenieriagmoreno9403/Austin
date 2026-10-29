@@ -20,6 +20,7 @@ use App\Traits\SistemasTraits;
 use App\Models\perfil_acciones;
 use App\Models\perfiles;
 use App\Models\Proveedores;
+use App\Support\HomologacionProveedor;
 use App\Models\UserSucursal;
 use Illuminate\Support\Arr;
 use SimpleXMLElement;
@@ -47,12 +48,13 @@ class ExternoPoroveedorController extends Controller
         $varsubmenus = $this->Traermenudet();
         $varlistausers = $this->obtenerusuarios();
         //hay que ver la fora de guardar y concatenar el usuario id con el id proveedor
-        $idusuarioid = auth()->user()->id;
-        $idusuario = auth()->user()->name;
-        $idproveedor = DB::select("select id from tblprovedores where id_usuario = ?",[$idusuarioid]);
-        $licitaciones_prov = DB::select("select * from tbllicitacion_proveedor lp
+        $idproveedor = DB::table('tblprovedores')->where('id_usuario', auth()->id())->value('id');
+        $licitaciones_prov = [];
+        if ($idproveedor) {
+            $licitaciones_prov = DB::select("select * from tbllicitacion_proveedor lp
             join tbllicitacion_enc li on lp.licitacion_id = li.id
-            where lp.proveedor_id = ? ",[$idproveedor[0]->id]);
+            where lp.proveedor_id = ? ", [$idproveedor]);
+        }
 
 
         return view('proveedorext/extlicitaciones', compact('varpantallas', 'varsubmenus', 'varlistausers', 'licitaciones_prov'));
@@ -204,6 +206,10 @@ class ExternoPoroveedorController extends Controller
                 return back()->with("warning", "Proveedor no encontrado para este usuario.");
             }
 
+            if (! HomologacionProveedor::puedeCotizar($proveedor->homologacion ?? null)) {
+                return back()->with("warning", "Este proveedor está suspendido o bloqueado y no puede enviar la comparativa.");
+            }
+
             DB::table('tbllicitacion_proveedor')
                 ->where('licitacion_id', $id)
                 ->where('proveedor_id', $proveedor->id)
@@ -258,16 +264,10 @@ class ExternoPoroveedorController extends Controller
             $varsubmenus = $this->Traermenudet();
 
             $licitacion = Licitacion::find($id);
-
-            // Obtener proveedor_id según el usuario autenticado
-            // $idusuarioid = auth()->user()->id;
-            // $proveedor = DB::table('tblprovedores')->where('id_usuario', $idusuarioid)->first();
-
-            // if (!$proveedor) {
-            //     return back()->with("warningBD", "No se encontró el proveedor asociado al usuario.");
-            // }
-
-            // $proveedor_id = $proveedor->id;
+            $proveedor_id = $this->proveedorParaPrecios($proveedor_id, $id);
+            if ($proveedor_id instanceof \Illuminate\Http\RedirectResponse) {
+                return $proveedor_id;
+            }
             $licitacion_id = $licitacion->id;
 
             // Obtener comentarios del proveedor para esta licitación
@@ -415,14 +415,21 @@ class ExternoPoroveedorController extends Controller
     {
         try {
         
-            // Obtener el proveedor asociado al usuario actual
-            $idusuarioid = auth()->user()->id;
+            $proveedor_id = $this->proveedorParaPrecios($proveedor_id, $id);
+            if ($proveedor_id instanceof \Illuminate\Http\RedirectResponse) {
+                return $proveedor_id;
+            }
+
             $proveedor = DB::table('tblprovedores')
                 ->where('id', $proveedor_id)
                 ->first();
 
             if (!$proveedor) {
                 return back()->with("warningBD", "No se encontró el proveedor asociado al usuario.");
+            }
+
+            if (! HomologacionProveedor::puedeCotizar($proveedor->homologacion ?? null)) {
+                return back()->with("warningBD", "Este proveedor está suspendido o bloqueado y no puede cotizar.");
             }
 
             $licitacion = Licitacion::find($id);
@@ -617,7 +624,6 @@ class ExternoPoroveedorController extends Controller
 
             // Actualizar estado en la relación licitacion_proveedor
             if ($isDraft == 1) {
-                // Si se termino cerrar
                 DB::table('tbllicitacion_proveedor')
                     ->where('licitacion_id', $id)
                     ->where('proveedor_id', $proveedor->id)
@@ -625,25 +631,52 @@ class ExternoPoroveedorController extends Controller
                         'estado_provext' => 'Enviada',
                         'updated_at' => now()
                     ]);
-                    
-                return redirect()->route('licitaciones.editar',[$id])->with("success", "Borrador guardado correctamente.");
             } else {
-                // marcar como En Progreso
                 DB::table('tbllicitacion_proveedor')
                     ->where('licitacion_id', $id)
                     ->where('proveedor_id', $proveedor->id)
                     ->update([
-                        'estado_provext' => 'Enviada', //En Progreso
+                        'estado_provext' => 'Enviada',
                         'updated_at' => now()
                     ]);
-                
-                // return back()->with("success", "Licitación actualizada correctamente.");
-                return redirect()->route('licitaciones.editar',[$id])->with("success", "Borrador guardado correctamente.");
             }
+
+            if (strtolower((string) auth()->user()->tipo) === 'ext') {
+                return redirect()->route('ext_licitaciones')->with('success', 'Precios guardados correctamente.');
+            }
+
+            return redirect()->route('licitaciones.editar', [$id])->with('success', 'Borrador guardado correctamente.');
         } catch (\Exception $e) {
             Log::error('Error en actualización de licitación: ' . $e->getMessage());
             return back()->with("warningBD", "Error al actualizar la licitación: " . $e->getMessage());
         }
+    }
+
+    /**
+     * El usuario del portal solo captura los precios de su proveedor.
+     * Compras sigue entrando con el proveedor que eligió en la licitación.
+     */
+    private function proveedorParaPrecios($proveedorId, $licitacionId)
+    {
+        $usuario = auth()->user();
+        if (!$usuario || strtolower((string) $usuario->tipo) !== 'ext') {
+            return (int) $proveedorId;
+        }
+
+        $propio = DB::table('tblprovedores')->where('id_usuario', $usuario->id)->value('id');
+        if (!$propio) {
+            return redirect()->route('ext_licitaciones')->with('warningBD', 'Este usuario no está ligado a un proveedor.');
+        }
+
+        $asignada = DB::table('tbllicitacion_proveedor')
+            ->where('licitacion_id', $licitacionId)
+            ->where('proveedor_id', $propio)
+            ->exists();
+        if (!$asignada) {
+            return redirect()->route('ext_licitaciones')->with('warningBD', 'Esta licitación no está asignada a tu usuario.');
+        }
+
+        return (int) $propio;
     }
 
 

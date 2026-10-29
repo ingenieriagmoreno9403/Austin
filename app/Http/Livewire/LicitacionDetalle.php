@@ -65,12 +65,34 @@ class LicitacionDetalle extends Component
             // Mostrar spinner
             $this->buscando[$filaIndex] = true;
     
-            if (strlen($nombre) >= 1) {
-                $this->resultados[$filaIndex] = Producto::where('nombre', 'like', '%' . $nombre . '%')
-                    ->limit(10)
-                    ->get();
-            } else {
+            $termino = trim((string) $nombre);
+            $palabras = preg_split('/\s+/u', $termino, -1, PREG_SPLIT_NO_EMPTY);
+            $palabra = $palabras[0] ?? '';
+            if (mb_strlen($palabra) < 2) {
                 $this->resultados[$filaIndex] = [];
+            } else {
+                $lista = collect();
+                if (count($palabras) === 1) {
+                    $lista = Producto::with('unidad')
+                        ->where('sku', 'like', $palabra.'%')
+                        ->orderBy('sku')
+                        ->limit(15)
+                        ->get();
+                }
+                if ($lista->isEmpty()) {
+                    $lista = Producto::with('unidad')
+                        ->where('nombre', 'like', '%'.$palabra.'%')
+                        ->limit(15)
+                        ->get();
+                }
+                $this->resultados[$filaIndex] = $lista->map(function ($producto) {
+                    return [
+                        'id' => $producto->id,
+                        'nombre' => $producto->nombre,
+                        'sku' => $producto->sku,
+                        'unidad' => $producto->unidad->nombre ?? 'Sin unidad',
+                    ];
+                })->values()->all();
             }
     
             // Ocultar spinner

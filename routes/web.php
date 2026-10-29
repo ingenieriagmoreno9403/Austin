@@ -517,6 +517,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
 
     Route::prefix('/licitaciones')->group(function () {
         Route::get('/', [LicitacionController::class,'index'])->name('licitaciones.index');
+        Route::get('/costos/{id}', [LicitacionController::class,'costos'])->name('licitaciones.costos');
         Route::get('/enviarcorreo/{id}', [LicitacionController::class, 'enviarCorreos'])->name('licitaciones.enviarcorreo');
         Route::get('/show/{id}',[LicitacionController::class,'show'])->name('licitaciones.show');
         Route::get('/create',[LicitacionController::class,'create'])->name('licitaciones.create');
@@ -547,6 +548,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
     Route::get('/historial_proveedores', 'App\Http\Controllers\ProveedorController@historialproveedores')->name('historial_proveedores');
     Route::get('/licitacion_proveedores', 'App\Http\Controllers\ProveedorController@licitacionesproveedores')->name('licitacion_proveedores');
     Route::post('/insertarproveedor', 'App\Http\Controllers\ProveedorController@insertarproveedor')->name('insertarproveedor');
+    Route::post('/proveedores/categorias', 'App\Http\Controllers\ProveedorController@agregarCategoria')->name('proveedores.categoria');
     Route::get('/editar_proveedor/{id}', 'App\Http\Controllers\ProveedorController@editarproveedores')->name('editar_proveedor');
     Route::post('/updateproveedor/{id}', 'App\Http\Controllers\ProveedorController@updateproveedor')->name('updateproveedor');
     Route::get('/EliminarProveedor/{id}', 'App\Http\Controllers\ProveedorController@EliminarProveedor')->name('EliminarProveedor');

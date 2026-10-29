@@ -13,6 +13,7 @@ use App\Traits\DatosimpleTraits;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Support\HomologacionProveedor;
 use Barryvdh\DomPDF\Facade\Pdf;
 
 
@@ -466,6 +467,10 @@ class  OrdCompraController extends Controller
                         if (isset($proveedor->estado) && $proveedor->estado == 'inactivo') {
                             throw new \Exception("El proveedor {$proveedor->nombre} está inactivo");
                         }
+
+                        if (! HomologacionProveedor::puedeCotizar($proveedor->homologacion ?? null)) {
+                            throw new \Exception("El proveedor {$proveedor->nombre} está suspendido o bloqueado y no se puede generar la orden.");
+                        }
                         
                         // Crear orden de compra para este proveedor
                         $nuevaOrden = OrdenCompra::create([
@@ -510,6 +515,10 @@ class  OrdCompraController extends Controller
                     
                     if (isset($proveedor->estado) && $proveedor->estado == 'inactivo') {
                         return redirect()->route('ordcompras.index')->with('errorgenordencompra', 'El proveedor adjudicado está inactivo');
+                    }
+
+                    if (! HomologacionProveedor::puedeCotizar($proveedor->homologacion ?? null)) {
+                        throw new \Exception('El proveedor adjudicado está suspendido o bloqueado y no se puede generar la orden.');
                     }
                     
                     // Verificar que los productos tengan precios asignados por el proveedor adjudicado

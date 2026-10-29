@@ -134,7 +134,7 @@
                 <i class="fa-solid fa-check me-1"></i> Guardar cambios
             </button>
 
-            <button type="button" id="btn-guardando" class="btn btn-baseColor" style="display: none;" disabled>
+            <button type="button" id="btn-guardando" class="btn btn-baseColor d-none" disabled>
                 <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                 Guardando...
             </button>
@@ -149,13 +149,8 @@
         const btnGuardar = document.getElementById('btn-guardar');
         const btnGuardando = document.getElementById('btn-guardando');
 
-        if (mostrarSpinner) {
-            btnGuardar.style.display = 'none';
-            btnGuardando.style.display = 'inline-block';
-        } else {
-            btnGuardar.style.display = 'inline-block';
-            btnGuardando.style.display = 'none';
-        }
+        btnGuardar.classList.toggle('d-none', mostrarSpinner);
+        btnGuardando.classList.toggle('d-none', !mostrarSpinner);
     }
 
     function guardarLicitacion() {

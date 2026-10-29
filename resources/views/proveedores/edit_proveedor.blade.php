@@ -129,11 +129,9 @@
 
                             <div class="col-md-6 col-6 mt-2">
                                 <div class="form-outline">
-                                    <label class="form-label" for="form8Example4">Giro</label>
+                                    <label class="form-label" for="giro">Giro</label>
                                     <input type="text" name="giro" id="giro" class="form-control text"
-                                        value="{{$ltsproveedores->giro }}" minlength="3" maxlength="60" required />
-                                    <div class="valid-feedback">¡Se ve bien!</div>
-                                    <div class="invalid-feedback">Por favor, completa la información requerida.</div>
+                                        value="{{ $ltsproveedores->giro }}" minlength="3" maxlength="60" required />
                                 </div>
                             </div>
                         </div>
@@ -186,6 +184,137 @@
                                     <div class="valid-feedback">¡Se ve bien!</div>
                                     <div class="invalid-feedback">Por favor, ingrese los días de crédito.</div>
                                 </div>
+                            </div>
+                        </div>
+
+                        <div class="row mt-3">
+                            <div class="col-12 mt-2">
+                                @include('proveedores.partials.categorias', ['categorias' => $categorias ?? [], 'seleccionado' => $ltsproveedores->categoria_id ?? 0])
+                            </div>
+                            <div class="col-md-4 col-12 mt-2">
+                                <label class="form-label">Homologación</label>
+                                <select class="form-select" name="homologacion" id="homologacion">
+                                    @foreach (\App\Support\HomologacionProveedor::ESTADOS as $claveHom => $nombreHom)
+                                        <option value="{{ $claveHom }}" {{ \App\Support\HomologacionProveedor::normalizar($ltsproveedores->homologacion ?? '') === $claveHom ? 'selected' : '' }}>{{ $nombreHom }}</option>
+                                    @endforeach
+                                </select>
+                                <div class="form-text">Prospecto y en revisión no se invitan. Suspendido y bloqueado no cotizan ni generan orden.</div>
+                            </div>
+                            <div class="col-md-4 col-12 mt-2 d-flex align-items-end">
+                                <div class="form-check mb-2">
+                                    <input class="form-check-input" type="checkbox" name="preferido" id="preferido" value="1" {{ !empty($ltsproveedores->preferido) ? 'checked' : '' }}>
+                                    <label class="form-check-label" for="preferido">Proveedor preferido</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <h6 class="mt-4 mb-1">Contrato</h6>
+                        <p class="text-muted small">Opcional. Si lo dejas vacío, las compras siguen igual.</p>
+                        <div class="row">
+                            <div class="col-md-3 col-12 mt-2">
+                                <label class="form-label">Valor tope</label>
+                                <input type="number" step="0.01" min="0" name="contrato_valor" class="form-control" value="{{ $ltsproveedores->contrato_valor }}">
+                            </div>
+                            <div class="col-md-3 col-12 mt-2">
+                                <label class="form-label">Inicio</label>
+                                <input type="date" name="contrato_inicio" class="form-control" value="{{ $ltsproveedores->contrato_inicio }}">
+                            </div>
+                            <div class="col-md-3 col-12 mt-2">
+                                <label class="form-label">Vencimiento</label>
+                                <input type="date" name="contrato_fin" class="form-control" value="{{ $ltsproveedores->contrato_fin }}">
+                            </div>
+                            <div class="col-md-3 col-12 mt-2">
+                                <label class="form-label">Archivo (PDF o imagen)</label>
+                                <input type="file" name="contrato_archivo" class="form-control" accept=".pdf,.jpg,.jpeg,.png">
+                                @if (!empty($ltsproveedores->contrato_archivo))
+                                    <a class="small" href="{{ asset($ltsproveedores->contrato_archivo) }}" target="_blank">Ver archivo actual</a>
+                                @endif
+                            </div>
+                        </div>
+
+                        <h6 class="mt-4 mb-2">Documentos con vigencia</h6>
+                        @if (isset($documentos) && $documentos->isNotEmpty())
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Documento</th>
+                                            <th>Vigencia</th>
+                                            <th>Archivo</th>
+                                            <th>Quitar</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach ($documentos as $doc)
+                                            <tr>
+                                                <td>{{ $doc->nombre }}</td>
+                                                <td>{{ $doc->vigencia ? \Carbon\Carbon::parse($doc->vigencia)->format('d/m/Y') : '—' }}</td>
+                                                <td>
+                                                    @if ($doc->archivo)
+                                                        <a href="{{ asset($doc->archivo) }}" target="_blank">Ver</a>
+                                                    @else
+                                                        —
+                                                    @endif
+                                                </td>
+                                                <td><input type="checkbox" name="documentos_eliminar[]" value="{{ $doc->id }}"></td>
+                                            </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                        @endif
+                        <div class="row">
+                            <div class="col-md-4 col-12 mt-2">
+                                <label class="form-label">Nuevo documento</label>
+                                <input type="text" name="documento_nombre" class="form-control" maxlength="150" placeholder="Ej. Opinión de cumplimiento">
+                            </div>
+                            <div class="col-md-3 col-12 mt-2">
+                                <label class="form-label">Vigencia</label>
+                                <input type="date" name="documento_vigencia" class="form-control">
+                            </div>
+                            <div class="col-md-5 col-12 mt-2">
+                                <label class="form-label">Archivo</label>
+                                <input type="file" name="documento_archivo" class="form-control" accept=".pdf,.jpg,.jpeg,.png">
+                            </div>
+                        </div>
+
+                        <h6 class="mt-4 mb-2">Acciones correctivas</h6>
+                        @if (isset($acciones) && $acciones->isNotEmpty())
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Acción</th>
+                                            <th>Fecha</th>
+                                            <th>Cerrar</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach ($acciones as $accion)
+                                            <tr>
+                                                <td>{{ $accion->descripcion }}</td>
+                                                <td>{{ $accion->fecha ? \Carbon\Carbon::parse($accion->fecha)->format('d/m/Y') : '—' }}</td>
+                                                <td>
+                                                    @if ($accion->cerrada)
+                                                        <span class="badge bg-success">Cerrada</span>
+                                                    @else
+                                                        <input type="checkbox" name="acciones_cerrar[]" value="{{ $accion->id }}">
+                                                    @endif
+                                                </td>
+                                            </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                        @endif
+                        <div class="row">
+                            <div class="col-md-8 col-12 mt-2">
+                                <label class="form-label">Nueva acción</label>
+                                <input type="text" name="accion_descripcion" class="form-control" maxlength="500">
+                            </div>
+                            <div class="col-md-4 col-12 mt-2">
+                                <label class="form-label">Fecha</label>
+                                <input type="date" name="accion_fecha" class="form-control">
                             </div>
                         </div>
 

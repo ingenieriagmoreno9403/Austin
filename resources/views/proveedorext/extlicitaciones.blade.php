@@ -177,7 +177,7 @@
                                 <h2 class="mb-0 mt-2">
                                     @php
                                         $adjudicadas = collect($licitaciones_prov)
-                                            ->where('proveedor_adjudicado_id', '=', $licitaciones_prov[0]->proveedor_id ?? 0)
+                                            ->where('proveedor_adjudicado_id', '=', optional(collect($licitaciones_prov)->first())->proveedor_id ?? 0)
                                             ->count();
                                         echo $adjudicadas;
                                     @endphp
@@ -202,7 +202,7 @@
                                 <h2 class="mb-0 mt-2">
                                     @php
                                         $conOC = 0;
-                                        $proveedorId = $licitaciones_prov[0]->proveedor_id ?? 0;
+                                        $proveedorId = optional(collect($licitaciones_prov)->first())->proveedor_id ?? 0;
                                         
                                         foreach($licitaciones_prov as $item) {
                                             // Solo contar las adjudicadas a este proveedor
@@ -384,7 +384,7 @@
                                 </td>
                                 <td class="text-center text-truncate">
                                     <div class="btn-group">
-                                        <a href="/showlicitacion/{{$licitacion->licitacion_id}}"
+                                        <a href="/showlicitacion/{{ $licitacion->licitacion_id }}/{{ $licitacion->proveedor_id }}"
                                             class="btn btn-primary btn-sm {{ $licitacion->estado_provext == 'Enviada' ? 'disabled' : '' }}"
                                             title="{{ $licitacion->estado_provext == 'Enviada' ? 'Licitación ya enviada' : 'Editar precios' }}">
                                             <i class="fa-solid fa-pencil"></i> Editar precios

@@ -44,7 +44,7 @@
                                     </span>
                                     <input type="text"
                                            class="form-control oc-producto-search__input {{ in_array($i, $filasInvalidas) ? 'border-danger is-invalid' : (empty($fila['producto_id']) && !$sololectura ? 'border-warning' : '') }}"
-                                           placeholder="Escribe para buscar producto..."
+                                           placeholder="Busca en el catálogo por nombre o código..."
                                            wire:model.debounce.300ms="filas.{{ $i }}.nombre"
                                            autocomplete="off" required
                                            @if(!empty($fila['producto_id'])) readonly @endif />
@@ -67,14 +67,17 @@
                                 @if(!$sololectura)
                                     @if (!empty($fila['nombre']) && isset($resultados[$i]) && empty($fila['producto_id']))
                                         @if (count($resultados[$i]) > 0)
-                                            <ul class="oc-producto-dropdown list-unstyled mb-0">
+                                            <ul class="oc-producto-dropdown list-unstyled mb-0" wire:key="resultados-{{ $i }}">
                                                 @foreach ($resultados[$i] as $producto)
                                                     <li class="oc-producto-dropdown__item"
-                                                        wire:click="seleccionarProducto({{ $i }}, {{ $producto->id }})">
-                                                        <div class="oc-producto-dropdown__name">{{ $producto->nombre }}</div>
+                                                        wire:click="seleccionarProducto({{ $i }}, {{ $producto['id'] }})">
+                                                        <div class="oc-producto-dropdown__name">{{ $producto['nombre'] }}</div>
                                                         <span class="oc-producto-dropdown__meta">
+                                                            @if (!empty($producto['sku']))
+                                                                <span class="me-2">{{ $producto['sku'] }}</span>
+                                                            @endif
                                                             <i class="fa-solid fa-ruler-horizontal me-1"></i>
-                                                            {{ $producto->unidad->nombre ?? 'Sin unidad' }}
+                                                            {{ $producto['unidad'] ?? 'Sin unidad' }}
                                                         </span>
                                                     </li>
                                                 @endforeach
@@ -192,8 +195,7 @@
     .oc-productos-table-wrap {
         border: 1px solid var(--oc-border);
         border-radius: var(--oc-radius);
-        overflow-x: auto;
-        overflow-y: visible;
+        overflow: visible;
         background: #fff;
     }
 
@@ -233,7 +235,7 @@
     .oc-productos-table tbody td {
         padding: 0.9rem 1rem;
         border-bottom: 1px solid rgba(17, 24, 39, 0.06);
-        vertical-align: middle;
+        vertical-align: top;
         background: #fff;
     }
 
@@ -372,11 +374,10 @@
     }
 
     .oc-producto-dropdown {
-        position: absolute;
-        top: calc(100% + 6px);
-        left: 0;
-        right: 0;
-        z-index: 30;
+        position: relative;
+        z-index: 5;
+        width: 100%;
+        margin-top: 0.45rem;
         max-height: 280px;
         overflow-y: auto;
         background: #fff;

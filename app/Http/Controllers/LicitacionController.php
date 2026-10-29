@@ -39,19 +39,50 @@ class LicitacionController extends Controller
             $varpantallas =  $this->Traermenuenc();
             $varsubmenus =   $this->Traermenudet();
 
-            $varlista = Licitacion::all();
-            $detalle = Licitacion::with('detalles')->get();
+            $varlista = Licitacion::orderByDesc('id')->get();
+            $ids = $varlista->pluck('id');
+            $conOrden = collect();
+            $conteoProveedores = collect();
+            if ($ids->isNotEmpty()) {
+                $conOrden = DB::table('tblordencompra_enc')
+                    ->whereIn('referencia_licitacion_id', $ids)
+                    ->whereIn('estado', ['enviada', 'confirmada', 'en_proceso', 'completada', 'cerrada'])
+                    ->pluck('referencia_licitacion_id')
+                    ->flip();
+                $conteoProveedores = DB::table('tbllicitacion_proveedor')
+                    ->select('licitacion_id', DB::raw('COUNT(*) as total'))
+                    ->whereIn('licitacion_id', $ids)
+                    ->groupBy('licitacion_id')
+                    ->pluck('total', 'licitacion_id');
+            }
             $solicitudes_pendientes =   $this->solicitudes_pendientes_licitaciones();
 
             $date = Carbon::now();
             $date = $date->format('Y-m-d');
             $idusuario=auth()->user()->id;
 
-            return view('Licitacion.index',compact('varpantallas','varsubmenus','varlista','detalle','solicitudes_pendientes'));
+            return view('Licitacion.index',compact('varpantallas','varsubmenus','varlista','solicitudes_pendientes','conOrden','conteoProveedores'));
         } catch(\Illuminate\Database\QueryException $ex)
         {
           return back()->with("warningBD","no guardado correctamente");
         }
+    }
+
+    public function costos($id)
+    {
+        $costos = DB::table('tbllicitacionproducto_proveedor as lpp')
+            ->join('tblprovedores as p', 'p.id', '=', 'lpp.proveedor_id')
+            ->join('tblproductos as pr', 'pr.id', '=', 'lpp.producto_id')
+            ->select('p.nombre as proveedor', 'pr.nombre as producto', 'lpp.costo', 'lpp.marca')
+            ->where('lpp.licitacion_id', $id)
+            ->orderBy('proveedor')
+            ->orderBy('producto')
+            ->get();
+
+        return view('Licitacion.partials.costos', [
+            'costos' => $costos,
+            'id' => $id,
+        ]);
     }
 
     public function create()
