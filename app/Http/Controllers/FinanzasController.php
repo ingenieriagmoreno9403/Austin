@@ -35,6 +35,7 @@ use App\Models\Ingreso;
 use App\Models\Egreso;
 use App\Models\DeudaCobrar;
 use App\Models\DeudaPagar;
+use App\Models\VentaCotizacion;
 use App\Models\NotaCredito;
 use App\Models\PagoDeudaPagar;
 use App\Services\OrdenCompraFinanzasService;
@@ -99,7 +100,74 @@ class FinanzasController extends Controller
         $totalfacturas = DB::table('tblfacturacionproductos')
         ->whereNotIn('cancelada', ['C', 'c'])
         ->sum('total') ?? 0;
-        return view('Finanzas.cuentas', compact('varpantallas', 'varsubmenus', 'saldoActual', 'servicios', 'totalEgresos', 'totalDeudasPagar', 'totalDeudasCobrar', 'cuentas', 'serviciosenc', 'totalfacturas'));
+
+        $pagosPorVencer = $this->pagosPorVencer();
+
+        return view('Finanzas.cuentas', compact('varpantallas', 'varsubmenus', 'saldoActual', 'servicios', 'totalEgresos', 'totalDeudasPagar', 'totalDeudasCobrar', 'cuentas', 'serviciosenc', 'totalfacturas', 'pagosPorVencer'));
+    }
+
+    /**
+     * Pagos sin liquidar que vencen en los próximos 15 días, o que ya vencieron.
+     */
+    private function pagosPorVencer()
+    {
+        $limite = now()->addDays(15)->toDateString();
+
+        $deudas = DeudaPagar::with('ordenCompra')
+            ->whereNotIn('estado', ['pagada', 'anulada'])
+            ->whereDate('fecha_vencimiento', '<=', $limite)
+            ->orderBy('fecha_vencimiento')
+            ->get();
+
+        $folios = $deudas->map(function ($deuda) {
+            return $this->folioCotizacionDeuda($deuda);
+        })->filter()->unique()->values();
+
+        $cotizaciones = $folios->isEmpty()
+            ? collect()
+            : VentaCotizacion::with('cliente')->whereIn('folio', $folios)->get()->keyBy('folio');
+
+        return $deudas->map(function ($deuda) use ($cotizaciones) {
+            $folio = $this->folioCotizacionDeuda($deuda);
+            $cotizacion = $folio ? $cotizaciones->get($folio) : null;
+            $empresa = optional(optional($cotizacion)->cliente)->nombre;
+            if (!$empresa) {
+                $empresa = $this->empresaDesdeNombreOc(optional($deuda->ordenCompra)->nombre);
+            }
+
+            return (object) [
+                'empresa' => $empresa ?: 'Sin empresa',
+                'cotizacion' => $folio ?: 'Sin cotización',
+                'fecha' => optional($deuda->fecha_vencimiento)->format('d/m/Y'),
+                'vencida' => $deuda->fecha_vencimiento && $deuda->fecha_vencimiento->lt(now()->startOfDay()),
+            ];
+        });
+    }
+
+    private function folioCotizacionDeuda(DeudaPagar $deuda): ?string
+    {
+        $folioOc = optional($deuda->ordenCompra)->folio;
+        if ($folioOc && preg_match('/^OC\d+-(.+)$/', $folioOc, $coincide)) {
+            return $coincide[1];
+        }
+
+        $nombre = optional($deuda->ordenCompra)->nombre;
+        if ($nombre && preg_match('/^(COT-\S+)/', $nombre, $coincide)) {
+            return $coincide[1];
+        }
+
+        return null;
+    }
+
+    private function empresaDesdeNombreOc(?string $nombre): ?string
+    {
+        if (!$nombre || !str_contains($nombre, ' - ')) {
+            return null;
+        }
+
+        $empresa = trim(substr($nombre, strpos($nombre, ' - ') + 3));
+
+        return $empresa !== '' ? $empresa : null;
     }
 
     /**

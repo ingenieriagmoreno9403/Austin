@@ -74,6 +74,33 @@
         box-shadow: 0 2px 12px rgba(17, 24, 39, 0.06);
         padding: 1.25rem;
     }
+    .cuentas-por-vencer {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+        padding: 0.55rem 0.75rem 0.55rem 0.9rem;
+        border: 1px solid #fcd34d;
+        border-radius: 14px;
+        background: #fffbeb;
+        min-width: 240px;
+    }
+    .cuentas-por-vencer__label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: #92400e;
+    }
+    .cuentas-por-vencer__valor {
+        font-size: 1.35rem;
+        line-height: 1.1;
+        font-weight: 800;
+        color: #111827;
+    }
+    .cuentas-por-vencer__hint {
+        font-size: 0.72rem;
+        color: #b45309;
+    }
     .cuentas-tabs {
         border-bottom: 1px solid #e5e7eb;
         gap: 0.25rem;
@@ -296,6 +323,58 @@
             <div>
                 <h5 class="mb-0 fw-bold text-marino">Registros financieros</h5>
                 <p class="text-muted small mb-0">Consulta y filtra movimientos por tipo</p>
+            </div>
+            <div class="cuentas-por-vencer">
+                <div>
+                    <div class="cuentas-por-vencer__label">Pagos por vencer</div>
+                    <div class="cuentas-por-vencer__valor">{{ $pagosPorVencer->count() }}</div>
+                    <div class="cuentas-por-vencer__hint">Próximos 15 días y vencidos</div>
+                </div>
+                <button type="button" class="btn btn-sm btn-baseColor" data-bs-toggle="modal" data-bs-target="#modalPagosPorVencer">
+                    <i class="fa-solid fa-list me-1"></i> Ver listado
+                </button>
+            </div>
+        </div>
+
+        <div class="modal fade" id="modalPagosPorVencer" tabindex="-1" aria-labelledby="modalPagosPorVencerLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="modalPagosPorVencerLabel">Pagos por vencer</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                    </div>
+                    <div class="modal-body">
+                        @if($pagosPorVencer->isEmpty())
+                            <p class="text-muted mb-0">No hay pagos por vencer en los próximos 15 días.</p>
+                        @else
+                            <div class="table-responsive">
+                                <table class="table table-hover align-middle mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>Empresa</th>
+                                            <th>Cotización</th>
+                                            <th>Fecha de vencimiento</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach($pagosPorVencer as $pago)
+                                            <tr>
+                                                <td>{{ $pago->empresa }}</td>
+                                                <td>{{ $pago->cotizacion }}</td>
+                                                <td>
+                                                    {{ $pago->fecha }}
+                                                    @if($pago->vencida)
+                                                        <span class="badge bg-danger ms-1">Vencida</span>
+                                                    @endif
+                                                </td>
+                                            </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                        @endif
+                    </div>
+                </div>
             </div>
         </div>
 
