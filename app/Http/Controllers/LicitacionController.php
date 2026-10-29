@@ -46,7 +46,6 @@ class LicitacionController extends Controller
             if ($ids->isNotEmpty()) {
                 $conOrden = DB::table('tblordencompra_enc')
                     ->whereIn('referencia_licitacion_id', $ids)
-                    ->whereIn('estado', ['enviada', 'confirmada', 'en_proceso', 'completada', 'cerrada'])
                     ->pluck('referencia_licitacion_id')
                     ->flip();
                 $conteoProveedores = DB::table('tbllicitacion_proveedor')

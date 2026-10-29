@@ -102,8 +102,122 @@ class FinanzasController extends Controller
         ->sum('total') ?? 0;
 
         $pagosPorVencer = $this->pagosPorVencer();
+        $soloPorPagar = $this->usuarioSoloPorPagar();
+        $graficasPorPagar = $soloPorPagar ? $this->graficasPorPagar() : null;
 
-        return view('Finanzas.cuentas', compact('varpantallas', 'varsubmenus', 'saldoActual', 'servicios', 'totalEgresos', 'totalDeudasPagar', 'totalDeudasCobrar', 'cuentas', 'serviciosenc', 'totalfacturas', 'pagosPorVencer'));
+        return view('Finanzas.cuentas', compact('varpantallas', 'varsubmenus', 'saldoActual', 'servicios', 'totalEgresos', 'totalDeudasPagar', 'totalDeudasCobrar', 'cuentas', 'serviciosenc', 'totalfacturas', 'pagosPorVencer', 'soloPorPagar', 'graficasPorPagar'));
+    }
+
+    /**
+     * Estado del pago y concentración por proveedor, los dos indicadores
+     * que compras consulta en cuentas por pagar.
+     */
+    private function graficasPorPagar(): array
+    {
+        $hoy = now()->startOfDay();
+        $limite = now()->addDays(15)->endOfDay();
+        $deudas = DeudaPagar::query()->get(['acreedor', 'monto', 'monto_pagado', 'estado', 'fecha_vencimiento']);
+
+        $cubetas = [
+            'Pagado' => 0.0,
+            'Vencido' => 0.0,
+            'Por vencer' => 0.0,
+            'Al corriente' => 0.0,
+        ];
+        $colores = [
+            'Pagado' => '#16a34a',
+            'Vencido' => '#dc2626',
+            'Por vencer' => '#d97706',
+            'Al corriente' => '#2563eb',
+        ];
+        $porProveedor = [];
+        $haySaldo = false;
+
+        foreach ($deudas as $deuda) {
+            $monto = (float) $deuda->monto;
+            $saldo = max(0, round($monto - (float) ($deuda->monto_pagado ?? 0), 2));
+            $vence = $deuda->fecha_vencimiento;
+            $nombre = trim((string) $deuda->acreedor) ?: 'Sin proveedor';
+
+            if ($deuda->estado === 'pagada' || $deuda->estado === 'anulada' || $saldo <= 0) {
+                if ($deuda->estado !== 'anulada') {
+                    $cubetas['Pagado'] += $monto;
+                }
+            } elseif ($vence && $vence->lt($hoy)) {
+                $cubetas['Vencido'] += $saldo;
+                $haySaldo = true;
+            } elseif ($vence && $vence->lte($limite)) {
+                $cubetas['Por vencer'] += $saldo;
+                $haySaldo = true;
+            } else {
+                $cubetas['Al corriente'] += $saldo;
+                $haySaldo = true;
+            }
+
+            if (!isset($porProveedor[$nombre])) {
+                $porProveedor[$nombre] = ['saldo' => 0.0, 'monto' => 0.0];
+            }
+            $porProveedor[$nombre]['saldo'] += $saldo;
+            $porProveedor[$nombre]['monto'] += $monto;
+        }
+
+        $labelsEstado = [];
+        $valoresEstado = [];
+        $coloresEstado = [];
+        foreach ($cubetas as $nombre => $valor) {
+            if ($valor <= 0) {
+                continue;
+            }
+            $labelsEstado[] = $nombre;
+            $valoresEstado[] = round($valor, 2);
+            $coloresEstado[] = $colores[$nombre];
+        }
+
+        uasort($porProveedor, function ($a, $b) use ($haySaldo) {
+            return ($haySaldo ? $b['saldo'] : $b['monto']) <=> ($haySaldo ? $a['saldo'] : $a['monto']);
+        });
+
+        $labelsProv = [];
+        $valoresProv = [];
+        foreach (array_slice($porProveedor, 0, 8, true) as $nombre => $totales) {
+            $valor = $haySaldo ? $totales['saldo'] : $totales['monto'];
+            if ($valor <= 0) {
+                continue;
+            }
+            $labelsProv[] = $nombre;
+            $valoresProv[] = round($valor, 2);
+        }
+
+        return [
+            'estados' => [
+                'labels' => $labelsEstado,
+                'valores' => $valoresEstado,
+                'colores' => $coloresEstado,
+            ],
+            'proveedores' => [
+                'labels' => $labelsProv,
+                'valores' => $valoresProv,
+                'titulo' => $haySaldo ? 'Saldo por proveedor' : 'Monto por proveedor',
+                'texto' => $haySaldo ? 'Lo que todavía falta por pagar' : 'Comprometido en cuentas por pagar',
+            ],
+        ];
+    }
+
+    /**
+     * El perfil de compras entra a finanzas solo para pagar proveedores.
+     */
+    private function usuarioSoloPorPagar(): bool
+    {
+        $nombres = DB::table('tblusuario_perfiles as up')
+            ->join('tblperfiles as p', 'p.id', '=', 'up.id_perfil')
+            ->where('up.id_usuario', auth()->id())
+            ->pluck('p.nombre');
+
+        if (!$nombres->contains('Compras y Finanzas')) {
+            return false;
+        }
+
+        return $nombres->intersect(['Master', 'Administrador', 'Tesorería', 'Master - Austin'])->isEmpty();
     }
 
     /**

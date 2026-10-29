@@ -213,13 +213,15 @@
                     </div>
                     <div>
                         <h2 class="mb-0 text-marino fw-bold">Control de Cuentas</h2>
-                        <p class="text-muted mb-0">Resumen de ingresos, egresos, deudas y facturación</p>
+                        <p class="text-muted mb-0">{{ !empty($soloPorPagar) ? 'Pagos pendientes a proveedores' : 'Resumen de ingresos, egresos, deudas y facturación' }}</p>
                     </div>
                 </div>
                 <div class="header-actions">
+                    @if(empty($soloPorPagar))
                     <a href="{{ route('finanzas.facturas') }}" class="btn btn-baseColor fs-7 mb-2">
                         <i class="fa-solid fa-file-invoice-dollar"></i> Facturación
                     </a>
+                    @endif
                     <a href="/Panel" class="btn btn-baseColor-light fs-7 mb-2">
                         <i class="fa-solid fa-arrow-left"></i> Volver
                     </a>
@@ -256,6 +258,7 @@
     @endif
 
     <div class="row g-3 mb-4">
+        @if(empty($soloPorPagar))
         <div class="col-xl col-md-6">
             <div class="cuentas-kpi is-ingresos" data-bs-toggle="modal" data-bs-target="#modalIngreso" title="Registrar ingreso">
                 <div class="d-flex justify-content-between align-items-start">
@@ -292,6 +295,7 @@
                 </div>
             </div>
         </div>
+        @endif
         <div class="col-xl col-md-6">
             <div class="cuentas-kpi is-pagar" data-bs-toggle="modal" data-bs-target="#modalDeudaPagar" title="Registrar deuda por pagar">
                 <div class="d-flex justify-content-between align-items-start">
@@ -304,6 +308,7 @@
                 </div>
             </div>
         </div>
+        @if(empty($soloPorPagar))
         <div class="col-xl col-md-6">
             <div class="cuentas-kpi is-facturas" onclick="window.location.href='{{ route('finanzas.facturas') }}'" title="Ir a facturación">
                 <div class="d-flex justify-content-between align-items-start">
@@ -316,6 +321,7 @@
                 </div>
             </div>
         </div>
+        @endif
     </div>
 
     <div class="cuentas-panel">
@@ -379,6 +385,7 @@
         </div>
 
         <ul class="nav nav-tabs cuentas-tabs" id="finanzasTabs" role="tablist">
+            @if(empty($soloPorPagar))
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="ingresos-tab" data-bs-toggle="tab" data-bs-target="#ingresos" type="button" role="tab" aria-controls="ingresos" aria-selected="true">
                     <i class="fa-solid fa-arrow-up me-1"></i> Ingresos
@@ -394,14 +401,16 @@
                     <i class="fa-solid fa-hand-holding-dollar me-1"></i> Por cobrar
                 </button>
             </li>
+            @endif
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="deudas-pagar-tab" data-bs-toggle="tab" data-bs-target="#deudas-pagar" type="button" role="tab" aria-controls="deudas-pagar" aria-selected="false">
+                <button class="nav-link {{ !empty($soloPorPagar) ? 'active' : '' }}" id="deudas-pagar-tab" data-bs-toggle="tab" data-bs-target="#deudas-pagar" type="button" role="tab" aria-controls="deudas-pagar" aria-selected="{{ !empty($soloPorPagar) ? 'true' : 'false' }}">
                     <i class="fa-solid fa-credit-card me-1"></i> Por pagar
                 </button>
             </li>
         </ul>
 
         <div class="tab-content" id="finanzasTabsContent">
+            @if(empty($soloPorPagar))
             <div class="tab-pane fade show active" id="ingresos" role="tabpanel" aria-labelledby="ingresos-tab">
                 <div class="cuentas-filters">
                     <div class="filters-row">
@@ -560,7 +569,8 @@
                 </div>
             </div>
 
-            <div class="tab-pane fade" id="deudas-pagar" role="tabpanel" aria-labelledby="deudas-pagar-tab">
+            @endif
+            <div class="tab-pane fade {{ !empty($soloPorPagar) ? 'show active' : '' }}" id="deudas-pagar" role="tabpanel" aria-labelledby="deudas-pagar-tab">
                 <div class="cuentas-filters">
                     <div class="filters-row">
                         <div class="filter-field">
@@ -610,6 +620,105 @@
                         <tbody></tbody>
                     </table>
                 </div>
+                @if(!empty($soloPorPagar) && !empty($graficasPorPagar))
+                <div class="row g-3 mt-3">
+                    <div class="col-lg-5">
+                        <div class="cuentas-kpi" style="cursor: default;">
+                            <div class="cuentas-kpi-label">Estado de los pagos</div>
+                            <p class="cuentas-kpi-hint mb-2">Pagado, por vencer, vencido y al corriente</p>
+                            @if(empty($graficasPorPagar['estados']['valores']))
+                                <p class="text-muted small mb-0">Todavía no hay pagos para graficar.</p>
+                            @else
+                                <div style="height: 220px;">
+                                    <canvas id="graficaEstadoPagos"></canvas>
+                                </div>
+                            @endif
+                        </div>
+                    </div>
+                    <div class="col-lg-7">
+                        <div class="cuentas-kpi" style="cursor: default;">
+                            <div class="cuentas-kpi-label">{{ $graficasPorPagar['proveedores']['titulo'] }}</div>
+                            <p class="cuentas-kpi-hint mb-2">{{ $graficasPorPagar['proveedores']['texto'] }}</p>
+                            @if(empty($graficasPorPagar['proveedores']['valores']))
+                                <p class="text-muted small mb-0">Todavía no hay proveedores para graficar.</p>
+                            @else
+                                <div style="height: 220px;">
+                                    <canvas id="graficaProveedoresPago"></canvas>
+                                </div>
+                            @endif
+                        </div>
+                    </div>
+                </div>
+                <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+                <script>
+                    document.addEventListener('DOMContentLoaded', function () {
+                        var datos = @json($graficasPorPagar);
+                        var dinero = function (valor) {
+                            return '$' + Number(valor).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        };
+                        if (datos.estados.valores.length && document.getElementById('graficaEstadoPagos')) {
+                            new Chart(document.getElementById('graficaEstadoPagos'), {
+                                type: 'doughnut',
+                                data: {
+                                    labels: datos.estados.labels,
+                                    datasets: [{
+                                        data: datos.estados.valores,
+                                        backgroundColor: datos.estados.colores,
+                                        borderWidth: 0
+                                    }]
+                                },
+                                options: {
+                                    maintainAspectRatio: false,
+                                    plugins: {
+                                        legend: { position: 'bottom' },
+                                        tooltip: {
+                                            callbacks: {
+                                                label: function (item) { return ' ' + item.label + ': ' + dinero(item.raw); }
+                                            }
+                                        }
+                                    },
+                                    cutout: '62%'
+                                }
+                            });
+                        }
+                        if (datos.proveedores.valores.length && document.getElementById('graficaProveedoresPago')) {
+                            new Chart(document.getElementById('graficaProveedoresPago'), {
+                                type: 'bar',
+                                data: {
+                                    labels: datos.proveedores.labels,
+                                    datasets: [{
+                                        data: datos.proveedores.valores,
+                                        backgroundColor: '#111827',
+                                        borderRadius: 6,
+                                        maxBarThickness: 28
+                                    }]
+                                },
+                                options: {
+                                    maintainAspectRatio: false,
+                                    indexAxis: 'y',
+                                    plugins: {
+                                        legend: { display: false },
+                                        tooltip: {
+                                            callbacks: {
+                                                label: function (item) { return ' ' + dinero(item.raw); }
+                                            }
+                                        }
+                                    },
+                                    scales: {
+                                        x: {
+                                            ticks: {
+                                                callback: function (valor) { return dinero(valor); }
+                                            },
+                                            grid: { color: 'rgba(17, 24, 39, 0.06)' }
+                                        },
+                                        y: { grid: { display: false } }
+                                    }
+                                }
+                            });
+                        }
+                    });
+                </script>
+                @endif
             </div>
         </div>
     </div>
@@ -2088,10 +2197,14 @@ $(document).ready(function() {
         });
     }
 
+    var soloPorPagar = @json(!empty($soloPorPagar));
+
     function cargarTodasLasTablas() {
-        cargarTablaIngresos();
-        cargarTablaEgresos();
-        cargarTablaDeudasCobrar();
+        if (!soloPorPagar) {
+            cargarTablaIngresos();
+            cargarTablaEgresos();
+            cargarTablaDeudasCobrar();
+        }
         cargarTablaDeudasPagar();
     }
     
@@ -2129,9 +2242,10 @@ $(document).ready(function() {
         });
     }
 
-    // Carga inicial: DataTables en Ingresos al instante, luego datos y KPIs
-    $('#tablaIngresos').data('dt-empty', 'Cargando ingresos...');
-    initCuentasDataTable('#tablaIngresos');
+    if (!soloPorPagar) {
+        $('#tablaIngresos').data('dt-empty', 'Cargando ingresos...');
+        initCuentasDataTable('#tablaIngresos');
+    }
     cargarTodasLasTablas();
     actualizarTotales(false);
     
