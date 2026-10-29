@@ -852,6 +852,8 @@ Route::get('/proyectos/facturacion/{idProyecto}/{idPartida}', [AdminProyectoCont
     Route::post('/pedidos/{id}/enviar-produccion', [VentasController::class, 'enviarPedidoAProduccion'])->name('ventas.pedido.enviar_produccion');
     Route::post('/pedidos/{id}/enviar-compras', [VentasController::class, 'enviarFaltantesACompras'])->name('ventas.pedido.enviar_compras');
 
+    Route::get('/compras/historial-proveedores', [\App\Http\Controllers\HistorialComprasProveedorController::class, 'index'])->name('compras.historial_proveedores');
+    Route::post('/compras/historial-proveedores/calidad', [\App\Http\Controllers\HistorialComprasProveedorController::class, 'actualizarCalidad'])->name('compras.historial_proveedores.calidad');
     Route::get('/compras/reporte-no-existencias', [ReporteNoExistenciasController::class, 'index'])->name('compras.reporte_no_existencias.index');
     Route::post('/compras/reporte-no-existencias/{id}/estatus', [ReporteNoExistenciasController::class, 'cambiarEstatus'])->name('compras.reporte_no_existencias.estatus');
     Route::post('/compras/reporte-no-existencias/generar-oc', [ReporteNoExistenciasController::class, 'generarOrdenCompra'])->name('compras.reporte_no_existencias.generar_oc');
