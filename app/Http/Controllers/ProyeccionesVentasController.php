@@ -6344,6 +6344,268 @@ class ProyeccionesVentasController extends Controller
         ]);
     }
 
+    /**
+     * Duplica un presupuesto completo (cabecera + asignaciones + proyecciones + captura + permisos)
+     * en un ciclo nuevo. El primero queda como 1 y la copia como 2, 3, …
+     * Solo Master.
+     */
+    public function copiarPresupuesto(string $ciclo): JsonResponse
+    {
+        if (! $this->usuarioEsMaster()) {
+            return response()->json(['message' => 'Solo el perfil Master puede generar una copia del presupuesto.'], 403);
+        }
+        if (! Schema::hasTable('tbl_pv_ciclos')) {
+            return response()->json(['message' => 'Falta ejecutar la migración de ciclos.'], 422);
+        }
+
+        $origenAnterior = strtoupper(trim($ciclo));
+        $origen = PvCiclo::query()->where('codigo', $origenAnterior)->first();
+        if (! $origen) {
+            return response()->json(['message' => 'Presupuesto de origen no encontrado.'], 404);
+        }
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(300);
+        }
+
+        $base = $this->baseCodigoPresupuesto($origenAnterior);
+        $origenCodigo = $origenAnterior;
+        $origenActualizado = null;
+
+        try {
+            // El que ya existía sin número pasa a ser la versión 1.
+            if ($origenAnterior === $base) {
+                $codigoV1 = $this->codigoConVersion($base, 1);
+                if (PvCiclo::query()->where('codigo', $codigoV1)->exists()) {
+                    return response()->json([
+                        'message' => 'Ya existe '.$codigoV1.'. No se pudo marcar el presupuesto original como 1.',
+                    ], 422);
+                }
+                $this->renombrarCodigoCiclo($origenAnterior, $codigoV1);
+                $origen = PvCiclo::query()->where('codigo', $codigoV1)->firstOrFail();
+                $origen->nombre = $this->nombreConVersion((string) $origen->nombre, 1);
+                $origen->updated_by = auth()->id();
+                $origen->save();
+                $origenCodigo = $codigoV1;
+                $origenActualizado = $this->cicloPayload($origen);
+            } else {
+                // Si ya tiene número pero el nombre no lo muestra, lo deja claro.
+                $verOrigen = $this->versionDeCodigo($origenCodigo, $base);
+                if ($verOrigen) {
+                    $nombreVersionado = $this->nombreConVersion((string) $origen->nombre, $verOrigen);
+                    if ($nombreVersionado !== (string) $origen->nombre) {
+                        $origen->nombre = $nombreVersionado;
+                        $origen->updated_by = auth()->id();
+                        $origen->save();
+                        $origenActualizado = $this->cicloPayload($origen);
+                    }
+                }
+            }
+
+            $siguiente = $this->maxVersionFamilia($base) + 1;
+            if ($siguiente < 2) {
+                $siguiente = 2;
+            }
+            $nuevoCodigo = $this->codigoConVersion($base, $siguiente);
+            if (PvCiclo::query()->where('codigo', $nuevoCodigo)->exists()) {
+                return response()->json([
+                    'message' => 'Ya existe el código '.$nuevoCodigo.'. Intenta de nuevo.',
+                ], 422);
+            }
+
+            $nuevo = new PvCiclo;
+            $nuevo->codigo = $nuevoCodigo;
+            $nuevo->nombre = $this->nombreConVersion((string) $origen->nombre, $siguiente);
+            $nuevo->anio_referencia = $origen->anio_referencia;
+            $nuevo->anio_presupuesto = $origen->anio_presupuesto;
+            $nuevo->fecha_inicio = $origen->fecha_inicio;
+            $nuevo->fecha_fin = $origen->fecha_fin;
+            $nuevo->captura_hasta = $origen->captura_hasta;
+            $nuevo->revision_desde = $origen->revision_desde;
+            $nuevo->estado = $origen->estado;
+            $nuevo->tipo_cambio = $origen->tipo_cambio;
+            if (Schema::hasColumn('tbl_pv_ciclos', 'tipo_cambio_meses')) {
+                $nuevo->tipo_cambio_meses = $origen->tipo_cambio_meses;
+            }
+            if (Schema::hasColumn('tbl_pv_ciclos', 'tipo_budget')) {
+                $nuevo->tipo_budget = $origen->tipo_budget;
+            }
+            if (Schema::hasColumn('tbl_pv_ciclos', 'ciclo_base')) {
+                $nuevo->ciclo_base = $origen->ciclo_base;
+            }
+            if (Schema::hasColumn('tbl_pv_ciclos', 'venta_real_sap')) {
+                $nuevo->venta_real_sap = $origen->venta_real_sap;
+            }
+            $nuevo->observaciones = $origen->observaciones;
+            $nuevo->created_by = auth()->id();
+            $nuevo->updated_by = auth()->id();
+            $nuevo->save();
+
+            $stats = $this->ejecutarCopiaBudgetHaciaSiop($origenCodigo, $nuevoCodigo, false, true);
+        } catch (Throwable $e) {
+            Log::error('PV copiar presupuesto: '.$e->getMessage(), [
+                'origen' => $origenAnterior,
+                'destino' => $nuevoCodigo ?? null,
+            ]);
+            if (isset($nuevo) && $nuevo->exists) {
+                $this->limpiarCicloRecienCreado($nuevo);
+                if (Schema::hasTable('tbl_pv_proyecciones')) {
+                    PvPresupuesto::query()->where('ciclo_codigo', $nuevo->codigo)->delete();
+                }
+                if (Schema::hasTable('tbl_pv_captura_clientes')) {
+                    PvCapturaCentro::query()->where('ciclo_codigo', $nuevo->codigo)->delete();
+                }
+            }
+
+            return response()->json([
+                'message' => 'No se pudo completar la copia: '.$e->getMessage(),
+            ], 500);
+        }
+
+        $fresh = $nuevo->fresh() ?: $nuevo;
+
+        return response()->json([
+            'ok' => true,
+            'origenAnterior' => $origenAnterior,
+            'origen' => $origenCodigo,
+            'destino' => $nuevoCodigo,
+            'versionOrigen' => $this->versionDeCodigo($origenCodigo, $base) ?: 1,
+            'versionDestino' => $siguiente,
+            'origenActualizado' => $origenActualizado,
+            'ciclo' => $this->cicloPayload($fresh),
+            'stats' => $stats,
+        ]);
+    }
+
+    /**
+     * Base del código sin sufijo de versión ni -COPIA.
+     */
+    protected function baseCodigoPresupuesto(string $codigo): string
+    {
+        $codigo = strtoupper(trim($codigo));
+        $codigo = preg_replace('/-COPIA\d*$/i', '', $codigo) ?: $codigo;
+        $codigo = preg_replace('/-(\d+)$/', '', $codigo) ?: $codigo;
+
+        return strtoupper(trim($codigo));
+    }
+
+    protected function versionDeCodigo(string $codigo, string $base): ?int
+    {
+        $codigo = strtoupper(trim($codigo));
+        $base = strtoupper(trim($base));
+        if ($codigo === $base) {
+            return null;
+        }
+        if (preg_match('/^'.preg_quote($base, '/').'-(\d+)$/', $codigo, $m)) {
+            return (int) $m[1];
+        }
+
+        return null;
+    }
+
+    protected function maxVersionFamilia(string $base): int
+    {
+        $base = strtoupper(trim($base));
+        $max = 0;
+        $rows = PvCiclo::query()
+            ->where('codigo', $base)
+            ->orWhere('codigo', 'like', $base.'-%')
+            ->pluck('codigo');
+
+        foreach ($rows as $cod) {
+            $ver = $this->versionDeCodigo((string) $cod, $base);
+            if ($ver !== null) {
+                $max = max($max, $ver);
+            }
+        }
+
+        return $max;
+    }
+
+    protected function codigoConVersion(string $base, int $version): string
+    {
+        $suffix = '-'.$version;
+        $maxBase = 40 - strlen($suffix);
+
+        return substr(strtoupper(trim($base)), 0, max(1, $maxBase)).$suffix;
+    }
+
+    protected function nombreConVersion(string $nombre, int $version): string
+    {
+        $base = trim(preg_replace('/\s*[\(\·\-]\s*\d+\s*\)?\s*$/u', '', $nombre) ?? $nombre);
+        $base = rtrim($base, " \t-·");
+        if ($base === '') {
+            $base = 'Presupuesto';
+        }
+        $out = $base.' ('.$version.')';
+
+        return mb_substr($out, 0, 180);
+    }
+
+    /**
+     * Cambia el código del ciclo y de todas sus tablas hijas.
+     */
+    protected function renombrarCodigoCiclo(string $de, string $a): void
+    {
+        $de = strtoupper(trim($de));
+        $a = strtoupper(trim($a));
+        if ($de === '' || $a === '' || $de === $a) {
+            return;
+        }
+        if (PvCiclo::query()->where('codigo', $a)->exists()) {
+            throw new \RuntimeException('Ya existe el código '.$a);
+        }
+
+        DB::transaction(function () use ($de, $a) {
+            foreach ([
+                'tbl_pv_asignaciones' => 'ciclo_codigo',
+                'tbl_pv_proyecciones' => 'ciclo_codigo',
+                'tbl_pv_captura_clientes' => 'ciclo_codigo',
+                'tbl_pv_usuario_permisos' => 'ciclo_codigo',
+            ] as $tabla => $col) {
+                if (Schema::hasTable($tabla)) {
+                    DB::table($tabla)->where($col, $de)->update([$col => $a]);
+                }
+            }
+            if (Schema::hasColumn('tbl_pv_ciclos', 'ciclo_base')) {
+                DB::table('tbl_pv_ciclos')->where('ciclo_base', $de)->update(['ciclo_base' => $a]);
+            }
+            PvCiclo::query()->where('codigo', $de)->update([
+                'codigo' => $a,
+                'updated_by' => auth()->id(),
+            ]);
+        });
+    }
+
+    /**
+     * Perfil Master / Master - Austin, o usuario tipo master.
+     */
+    protected function usuarioEsMaster(): bool
+    {
+        $user = auth()->user();
+        if (! $user) {
+            return false;
+        }
+
+        $tipo = strtolower(trim((string) ($user->tipo ?? '')));
+        if ($tipo === 'master') {
+            return true;
+        }
+
+        if (! Schema::hasTable('tblusuario_perfiles') || ! Schema::hasTable('tblperfiles')) {
+            return false;
+        }
+
+        return DB::table('tblusuario_perfiles as up')
+            ->join('tblperfiles as p', 'p.id', '=', 'up.id_perfil')
+            ->where('up.id_usuario', (int) $user->id)
+            ->where(function ($q) {
+                $q->whereRaw("UPPER(TRIM(p.nombre)) = 'MASTER'")
+                    ->orWhereRaw("UPPER(TRIM(p.nombre)) LIKE 'MASTER %'");
+            })
+            ->exists();
+    }
+
     public function destroyCiclo(string $ciclo): JsonResponse
     {
         if (! Schema::hasTable('tbl_pv_ciclos')) {
@@ -11394,6 +11656,7 @@ class ProyeccionesVentasController extends Controller
             'empresasLocales' => $empresasLocales,
             'unidadesMedida' => $this->mapaUnidadesMedida(),
             'ciclos' => $this->ciclosPayload(),
+            'puedeCopiarPresupuesto' => $this->usuarioEsMaster(),
             'periodoDefault' => [
                 'codigo' => 'PRY-2027',
                 'nombre' => 'Proyección de ventas 2027',

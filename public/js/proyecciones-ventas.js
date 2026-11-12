@@ -3688,6 +3688,13 @@
         var gridEl = document.getElementById('ciclo-grid');
         if (gridEl && !CC._cicloDelBound) {
             gridEl.addEventListener('click', function (e) {
+                var btnCopia = e.target.closest ? e.target.closest('[data-copiar-ciclo]') : null;
+                if (btnCopia) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    CC.copiarPresupuesto(btnCopia.getAttribute('data-copiar-ciclo'));
+                    return;
+                }
                 var btn = e.target.closest ? e.target.closest('[data-del-ciclo]') : null;
                 if (btn) {
                     e.preventDefault();
@@ -3752,7 +3759,10 @@
                 '<div class="cc-ciclo-obs">' + escapeHtml(c.observaciones || 'Sin observaciones') + '</div>' +
                 '<div class="actions">' +
                     '<span class="cc-ciclo-load">' + resumenCargaCiclo(c) + '</span>' +
-                    '<span style="display:flex;gap:.4rem">' +
+                    '<span style="display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end">' +
+                    (CC.state.puedeCopiarPresupuesto
+                        ? '<button type="button" class="cc-btn" data-copiar-ciclo="' + escapeHtml(c.codigo) + '" title="Duplicar presupuesto completo">Generar presupuesto copia</button>'
+                        : '') +
                     '<button type="button" class="cc-btn cc-btn-danger" data-del-ciclo="' + escapeHtml(c.codigo) + '">Eliminar</button>' +
                     '<a class="cc-btn cc-btn-ink" href="' + cicloUrl(c.codigo) + '">Abrir</a>' +
                     '</span></div></article>';
@@ -3973,6 +3983,73 @@
             return;
         }
         if (window.confirm('¿Eliminar el budget ' + c.codigo + '?')) go();
+    };
+
+    CC.copiarPresupuesto = function (codigo) {
+        if (!CC.state.puedeCopiarPresupuesto) {
+            toast('warning', 'Sin permiso', 'Solo Master puede generar una copia del presupuesto.');
+            return;
+        }
+        var c = findCiclo(codigo) || { codigo: codigo, nombre: codigo };
+        var go = function () {
+            if (window.Swal) {
+                Swal.fire({
+                    title: 'Copiando presupuesto…',
+                    html: 'Se está duplicando <strong>' + escapeHtml(c.codigo) + '</strong>. Puede tardar unos segundos.',
+                    allowOutsideClick: false,
+                    allowEscapeKey: false,
+                    didOpen: function () { Swal.showLoading(); }
+                });
+            }
+            return fetch('/ProyeccionesVentas/api/ciclos/' + encodeURIComponent(c.codigo) + '/copiar', {
+                method: 'POST',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrfToken()
+                },
+                body: '{}'
+            }).then(function (res) {
+                return res.json().then(function (json) {
+                    if (!res.ok) throw new Error(json.message || 'No se pudo copiar el presupuesto');
+                    return json;
+                });
+            }).then(function (json) {
+                if (json.origenAnterior && json.origen && String(json.origenAnterior).toUpperCase() !== String(json.origen).toUpperCase()) {
+                    CC.state.ciclos = (CC.state.ciclos || []).filter(function (row) {
+                        return String(row.codigo || '').toUpperCase() !== String(json.origenAnterior).toUpperCase();
+                    });
+                    saveJSON(SK.ciclos, CC.state.ciclos);
+                }
+                if (json.origenActualizado) upsertCiclo(json.origenActualizado);
+                if (json.ciclo) upsertCiclo(json.ciclo);
+                if (window.Swal) Swal.close();
+                var v1 = json.versionOrigen || 1;
+                var v2 = json.versionDestino || 2;
+                toast(
+                    'success',
+                    'Presupuesto copiado',
+                    'Original ' + v1 + ': ' + (json.origen || '') + ' · Copia ' + v2 + ': ' + (json.destino || '')
+                );
+                renderCiclos();
+            }).catch(function (err) {
+                if (window.Swal) Swal.close();
+                toast('error', 'No se copió', err && err.message ? err.message : 'Error de red');
+            });
+        };
+        if (window.Swal) {
+            Swal.fire({
+                icon: 'question',
+                title: 'Generar presupuesto copia',
+                html: 'El presupuesto actual queda como <strong>1</strong> y se crea una copia idéntica como <strong>2</strong> (o el siguiente número).<br><br>Origen: <strong>' + escapeHtml(c.codigo) + '</strong>',
+                showCancelButton: true,
+                confirmButtonText: 'Generar copia',
+                cancelButtonText: 'Cancelar'
+            }).then(function (r) { if (r.isConfirmed) go(); });
+            return;
+        }
+        if (window.confirm('El actual queda como 1 y la copia como 2. ¿Continuar con ' + c.codigo + '?')) go();
     };
 
     /* ---------- Admin ---------- */
@@ -13446,6 +13523,7 @@
         CC.state.puedeEditarPreciosCaptura = boot.hasOwnProperty('puedeEditarPreciosCaptura')
             ? !!boot.puedeEditarPreciosCaptura
             : false;
+        CC.state.puedeCopiarPresupuesto = !!boot.puedeCopiarPresupuesto;
         CC.state.empresasLocales = boot.empresasLocales || [];
         CC.state.unidadesMedida = boot.unidadesMedida || {};
         CC.state.gastoCache = {};
