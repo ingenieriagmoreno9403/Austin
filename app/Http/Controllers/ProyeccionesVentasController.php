@@ -6478,13 +6478,15 @@ class ProyeccionesVentasController extends Controller
     }
 
     /**
-     * Base del código sin sufijo de versión ni -COPIA.
+     * Base del código sin sufijo de versión (solo -1 … -99) ni -COPIA.
+     * No quita años del código (BUD-2027 se queda BUD-2027).
      */
     protected function baseCodigoPresupuesto(string $codigo): string
     {
         $codigo = strtoupper(trim($codigo));
         $codigo = preg_replace('/-COPIA\d*$/i', '', $codigo) ?: $codigo;
-        $codigo = preg_replace('/-(\d+)$/', '', $codigo) ?: $codigo;
+        // Solo versiones cortas: -1 … -99. Nunca -2027 / -2028.
+        $codigo = preg_replace('/-(\d{1,2})$/', '', $codigo) ?: $codigo;
 
         return strtoupper(trim($codigo));
     }
@@ -6496,7 +6498,8 @@ class ProyeccionesVentasController extends Controller
         if ($codigo === $base) {
             return null;
         }
-        if (preg_match('/^'.preg_quote($base, '/').'-(\d+)$/', $codigo, $m)) {
+        // Solo -1 … -99 cuentan como versión de copia.
+        if (preg_match('/^'.preg_quote($base, '/').'-(\d{1,2})$/', $codigo, $m)) {
             return (int) $m[1];
         }
 
@@ -6532,7 +6535,8 @@ class ProyeccionesVentasController extends Controller
 
     protected function nombreConVersion(string $nombre, int $version): string
     {
-        $base = trim(preg_replace('/\s*[\(\·\-]\s*\d+\s*\)?\s*$/u', '', $nombre) ?? $nombre);
+        // Solo quita sufijos de copia (1)/(2), no años como (2027).
+        $base = trim(preg_replace('/\s*\(\d{1,2}\)\s*$/u', '', $nombre) ?? $nombre);
         $base = rtrim($base, " \t-·");
         if ($base === '') {
             $base = 'Presupuesto';
