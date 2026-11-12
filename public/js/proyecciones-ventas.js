@@ -9359,9 +9359,17 @@
                 }
                 hideAnalisisBusy();
                 renderAnalisis();
-            }).catch(function () {
+            }).catch(function (err) {
                 if (asigGen !== CC._anAsigGen) return;
                 CC._anAsigLoading = false;
+                console.error('Análisis catálogo falló', err && err.message ? err.message : err);
+                toast(
+                    'error',
+                    'No se pudo cargar Análisis',
+                    (err && err.status === 404)
+                        ? 'La ruta de análisis no está en el servidor (404). Sube routes/web.php y limpia la caché de rutas.'
+                        : ((err && err.message) || 'Error al consultar el presupuesto')
+                );
                 aplicarCatalogoAnalisis({ clientes: [], sin_revision: false });
                 hideAnalisisBusy();
                 renderAnalisis();
@@ -9391,7 +9399,12 @@
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin'
         }).then(function (r) {
-            if (!r.ok) throw new Error(String(r.status));
+            if (!r.ok) {
+                var err = new Error('HTTP ' + r.status + ' · ' + url);
+                err.status = r.status;
+                err.url = url;
+                throw err;
+            }
             return r.json();
         });
     }
@@ -9647,8 +9660,16 @@
                 renderAnalisis();
             }
             maybeQueueAnalisisGastos();
-        }).catch(function () {
+        }).catch(function (err) {
             if (seq !== CC._anKickSeq) return;
+            console.error('Análisis detalle falló', err && err.message ? err.message : err);
+            toast(
+                'error',
+                'No se pudo cargar el presupuesto',
+                (err && err.status === 404)
+                    ? 'La ruta de análisis no está en el servidor (404). Sube routes/web.php y limpia la caché de rutas.'
+                    : ((err && err.message) || 'Error al consultar el detalle')
+            );
             hideAnalisisBusy();
             renderAnalisis();
         });
