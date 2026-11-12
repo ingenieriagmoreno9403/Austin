@@ -1373,6 +1373,7 @@
         var centrosReq = 0;
         var ctaReq = 0;
         var saveBusy = false;
+        var pendingManualProductos = null;
 
         function normCode(s) {
             return String(s || '').replace(/\s+/g, '').toLowerCase();
@@ -2164,6 +2165,12 @@
                 if (req !== ctaReq) return;
                 cuentas = mergeSelectedIntoCuentas(rows || []);
                 if (groups && groups.length) agrupaciones = groups;
+                if (pendingManualProductos &&
+                    String(pendingManualProductos.cliente || '').toUpperCase() === String(cliente || '').toUpperCase()) {
+                    aplicarProductosManuales(pendingManualProductos.productos || []);
+                    pendingManualProductos = null;
+                    return;
+                }
                 fillMaskUi('asig-cta-mask', agrupaciones, cuentas, ctaMask, setCtaMask);
                 fillGrupoUi('asig-cta-grupo', grupos, ctaGrupo, setCtaGrupo);
                 if (ctaMask) {
@@ -2341,6 +2348,428 @@
             ccQ.addEventListener('input', onCcSearch);
             ccQ.addEventListener('search', onCcSearch);
             ccQ.addEventListener('keyup', onCcSearch);
+        }
+
+        function filaProductoManualHtml(p) {
+            p = p || {};
+            return '<tr class="swal-prod-row">' +
+                '<td><input type="text" class="swal2-input swal-prod-codigo" placeholder="Código" value="' +
+                escapeHtml(String(p.codigo || '')) + '" style="margin:.15rem 0;width:100%"></td>' +
+                '<td><input type="text" class="swal2-input swal-prod-nombre" placeholder="Nombre" value="' +
+                escapeHtml(String(p.nombre || '')) + '" style="margin:.15rem 0;width:100%"></td>' +
+                '<td><input type="text" class="swal2-input swal-prod-grupo" placeholder="Grupo" value="' +
+                escapeHtml(String(p.grupo || '')) + '" style="margin:.15rem 0;width:100%"></td>' +
+                '<td><input type="number" min="0" step="0.01" class="swal2-input swal-prod-costo" placeholder="0" value="' +
+                escapeHtml(p.costo != null && p.costo !== '' ? String(p.costo) : '') +
+                '" style="margin:.15rem 0;width:100%"></td>' +
+                '<td style="text-align:center;vertical-align:middle">' +
+                '<button type="button" class="cc-icon-btn swal-prod-del" title="Quitar fila"><i class="fa-solid fa-xmark"></i></button>' +
+                '</td></tr>';
+        }
+
+        function leerProductosManualDom() {
+            var out = [];
+            var vistos = {};
+            document.querySelectorAll('#swal-prod-tbody .swal-prod-row').forEach(function (tr) {
+                var codigo = String((tr.querySelector('.swal-prod-codigo') || {}).value || '').trim().toUpperCase();
+                if (!codigo) return;
+                if (vistos[codigo]) return;
+                vistos[codigo] = true;
+                var nombre = String((tr.querySelector('.swal-prod-nombre') || {}).value || '').trim();
+                var grupo = String((tr.querySelector('.swal-prod-grupo') || {}).value || '').trim();
+                var costoRaw = String((tr.querySelector('.swal-prod-costo') || {}).value || '').trim();
+                var costo = costoRaw === '' ? 0 : Number(costoRaw);
+                if (!isFinite(costo) || costo < 0) costo = 0;
+                out.push({
+                    codigo: codigo,
+                    nombre: nombre || codigo,
+                    grupo: grupo,
+                    costo: costo
+                });
+            });
+            return out;
+        }
+
+        function aplicarProductosManuales(lista) {
+            var rows = Array.isArray(lista) ? lista : [];
+            if (!rows.length) return;
+            rows.forEach(function (p) {
+                var codigo = String(p.codigo || '').trim();
+                if (!codigo) return;
+                var key = normCode(codigo);
+                var nombre = String(p.nombre || codigo).trim();
+                var grupo = String(p.grupo || p.grupo_id || '').trim();
+                var costo = Number(p.costo || 0) || 0;
+                var ya = cuentas.some(function (c) {
+                    return normCode(c.codigo) === key;
+                });
+                if (!ya) {
+                    cuentas.unshift({
+                        codigo: codigo,
+                        nombre: nombre,
+                        grupo: grupo,
+                        grupo_id: grupo,
+                        costo: costo,
+                        moneda: 'MXN'
+                    });
+                }
+                ctaSelected[key] = {
+                    codigo: codigo,
+                    nombre: nombre,
+                    agrupacion: grupo
+                };
+            });
+            var cliente = centroSel ? String(centroSel.value || '').trim() : '';
+            var year = anioRef();
+            var keyCache = String(cfg.empresa || '').toLowerCase() + '|' + year + '|' + cliente.toUpperCase();
+            cacheCuentas[keyCache] = cuentas.slice();
+            if (ctaQ) ctaQ.disabled = false;
+            renderCuentas(ctaQ ? ctaQ.value : '');
+            updateCtaSelCount();
+            setStep(4);
+        }
+
+        var btnAltaCli = document.getElementById('asig-cc-alta');
+        if (btnAltaCli) {
+            btnAltaCli.addEventListener('click', function () {
+                if (!cfg.empresa) {
+                    if (window.Swal) Swal.fire({ icon: 'warning', title: 'Elige una empresa', text: 'Selecciona la tarjeta de empresa primero.' });
+                    else window.alert('Elige una empresa primero.');
+                    return;
+                }
+                var sugerido = String(ccQ && ccQ.value ? ccQ.value : '').trim().toUpperCase();
+                var pedir = function () {
+                    if (window.Swal) {
+                        return Swal.fire({
+                            title: 'Alta de cliente y productos',
+                            width: Math.min(920, window.innerWidth - 24),
+                            html:
+                                '<p style="text-align:left;margin:0 0 .65rem;font-size:.88rem">Todo queda en el <strong>catálogo local</strong> de <strong>' +
+                                String(cfg.empresa).toUpperCase() +
+                                '</strong>. No se envía nada a SAP. Puedes reutilizar productos de otros clientes o capturar nuevos.</p>' +
+                                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.75rem">' +
+                                '<input id="swal-cli-codigo" class="swal2-input" style="margin:0;width:100%" placeholder="Código cliente (ej. D871)" value="' +
+                                (sugerido.replace(/"/g, '&quot;')) + '">' +
+                                '<input id="swal-cli-nombre" class="swal2-input" style="margin:0;width:100%" placeholder="Nombre del cliente (opcional)">' +
+                                '</div>' +
+                                '<div style="position:relative;margin-bottom:.55rem">' +
+                                '<div class="cc-pick-search" style="margin:0">' +
+                                '<span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>' +
+                                '<input id="swal-prod-busca" class="cc-input" type="search" placeholder="Buscar productos ya usados en esta empresa (código o nombre)…" autocomplete="off">' +
+                                '</div>' +
+                                '<div id="swal-prod-sugerencias" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:20;max-height:180px;overflow:auto;background:#fff;border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,.08);margin-top:4px"></div>' +
+                                '</div>' +
+                                '<div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.35rem">' +
+                                '<strong style="font-size:.9rem">Productos del cliente</strong>' +
+                                '<button type="button" class="cc-btn" id="swal-prod-add"><i class="fa-solid fa-plus"></i> Producto nuevo</button>' +
+                                '</div>' +
+                                '<div style="max-height:260px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px">' +
+                                '<table style="width:100%;border-collapse:collapse;font-size:.82rem">' +
+                                '<thead><tr style="background:#f8fafc;text-align:left">' +
+                                '<th style="padding:.4rem .5rem">Código</th>' +
+                                '<th style="padding:.4rem .5rem">Nombre</th>' +
+                                '<th style="padding:.4rem .5rem">Grupo</th>' +
+                                '<th style="padding:.4rem .5rem">Precio</th>' +
+                                '<th style="padding:.4rem .5rem;width:42px"></th>' +
+                                '</tr></thead>' +
+                                '<tbody id="swal-prod-tbody">' + filaProductoManualHtml({}) + '</tbody>' +
+                                '</table></div>' +
+                                '<p style="text-align:left;margin:.55rem 0 0;font-size:.75rem;color:#64748b">Busca coincidencias locales o agrega un producto nuevo. El precio es opcional.</p>',
+                            showCancelButton: true,
+                            confirmButtonText: 'Dar de alta',
+                            cancelButtonText: 'Cancelar',
+                            focusConfirm: false,
+                            didOpen: function () {
+                                var tbody = document.getElementById('swal-prod-tbody');
+                                var addBtn = document.getElementById('swal-prod-add');
+                                var busca = document.getElementById('swal-prod-busca');
+                                var sugBox = document.getElementById('swal-prod-sugerencias');
+                                var buscaTimer = null;
+                                var buscaReq = 0;
+
+                                function codigosEnTabla() {
+                                    var set = {};
+                                    leerProductosManualDom().forEach(function (p) {
+                                        set[String(p.codigo || '').toUpperCase()] = true;
+                                    });
+                                    return set;
+                                }
+
+                                function insertarProductoEnTabla(p) {
+                                    if (!tbody || !p || !p.codigo) return;
+                                    var code = String(p.codigo).toUpperCase();
+                                    if (codigosEnTabla()[code]) {
+                                        if (busca) busca.value = '';
+                                        if (sugBox) sugBox.style.display = 'none';
+                                        return;
+                                    }
+                                    var vacia = null;
+                                    tbody.querySelectorAll('.swal-prod-row').forEach(function (tr) {
+                                        if (vacia) return;
+                                        var c = String((tr.querySelector('.swal-prod-codigo') || {}).value || '').trim();
+                                        if (!c) vacia = tr;
+                                    });
+                                    if (vacia) {
+                                        var iCod = vacia.querySelector('.swal-prod-codigo');
+                                        var iNom = vacia.querySelector('.swal-prod-nombre');
+                                        var iGru = vacia.querySelector('.swal-prod-grupo');
+                                        var iCos = vacia.querySelector('.swal-prod-costo');
+                                        if (iCod) iCod.value = p.codigo || '';
+                                        if (iNom) iNom.value = p.nombre || p.codigo || '';
+                                        if (iGru) iGru.value = p.grupo || '';
+                                        if (iCos && (p.costo != null && Number(p.costo) > 0)) iCos.value = String(p.costo);
+                                    } else {
+                                        tbody.insertAdjacentHTML('beforeend', filaProductoManualHtml({
+                                            codigo: p.codigo || '',
+                                            nombre: p.nombre || p.codigo || '',
+                                            grupo: p.grupo || '',
+                                            costo: p.costo > 0 ? p.costo : ''
+                                        }));
+                                    }
+                                    if (busca) busca.value = '';
+                                    if (sugBox) sugBox.style.display = 'none';
+                                }
+
+                                function pintarSugerencias(rows, q) {
+                                    if (!sugBox) return;
+                                    var ya = codigosEnTabla();
+                                    var list = (rows || []).filter(function (r) {
+                                        return r && r.codigo && !ya[String(r.codigo).toUpperCase()];
+                                    }).slice(0, 40);
+                                    if (!list.length) {
+                                        sugBox.style.display = 'block';
+                                        sugBox.innerHTML = '<div style="padding:.65rem .75rem;color:#64748b;font-size:.82rem">' +
+                                            (q ? 'Sin coincidencias locales. Puedes agregar el producto nuevo abajo.' : 'Escribe al menos 2 caracteres.') +
+                                            '</div>';
+                                        return;
+                                    }
+                                    sugBox.style.display = 'block';
+                                    sugBox.innerHTML = list.map(function (r) {
+                                        var costo = Number(r.costo || 0) || 0;
+                                        return '<button type="button" class="swal-prod-sug" data-codigo="' + escapeHtml(r.codigo) + '"' +
+                                            ' data-nombre="' + escapeHtml(r.nombre || r.codigo) + '"' +
+                                            ' data-grupo="' + escapeHtml(r.grupo || '') + '"' +
+                                            ' data-costo="' + escapeHtml(String(costo)) + '"' +
+                                            ' style="display:flex;width:100%;text-align:left;gap:.5rem;align-items:center;border:0;border-bottom:1px solid #f1f5f9;background:#fff;padding:.55rem .7rem;cursor:pointer">' +
+                                            '<span style="font-weight:600;min-width:88px">' + escapeHtml(r.codigo) + '</span>' +
+                                            '<span style="flex:1;color:#334155">' + escapeHtml(r.nombre || r.codigo) + '</span>' +
+                                            (costo > 0 ? ('<span style="color:#64748b;font-size:.75rem">' + escapeHtml(String(costo)) + '</span>') : '') +
+                                            '</button>';
+                                    }).join('');
+                                }
+
+                                function buscarProductosLocales(q) {
+                                    q = String(q || '').trim();
+                                    if (!sugBox) return;
+                                    if (q.length < 2) {
+                                        sugBox.style.display = 'none';
+                                        sugBox.innerHTML = '';
+                                        return;
+                                    }
+                                    var req = ++buscaReq;
+                                    sugBox.style.display = 'block';
+                                    sugBox.innerHTML = '<div style="padding:.65rem .75rem;color:#64748b;font-size:.82rem">Buscando en catálogo local…</div>';
+                                    var url = '/ProyeccionesVentas/api/asignacion/productos?todas=1'
+                                        + '&empresa=' + encodeURIComponent(cfg.empresa)
+                                        + '&year=' + encodeURIComponent(anioRef())
+                                        + '&q=' + encodeURIComponent(q);
+                                    fetch(url, {
+                                        headers: {
+                                            Accept: 'application/json',
+                                            'X-Requested-With': 'XMLHttpRequest'
+                                        },
+                                        credentials: 'same-origin'
+                                    }).then(function (res) { return res.json(); }).then(function (json) {
+                                        if (req !== buscaReq) return;
+                                        pintarSugerencias(json.cuentas || [], q);
+                                    }).catch(function () {
+                                        if (req !== buscaReq) return;
+                                        sugBox.innerHTML = '<div style="padding:.65rem .75rem;color:#b91c1c;font-size:.82rem">No se pudo buscar. Prueba de nuevo o agrega el producto nuevo.</div>';
+                                    });
+                                }
+
+                                if (addBtn) {
+                                    addBtn.addEventListener('click', function (ev) {
+                                        ev.preventDefault();
+                                        ev.stopPropagation();
+                                        if (!tbody) return;
+                                        tbody.insertAdjacentHTML('beforeend', filaProductoManualHtml({}));
+                                        var last = tbody.querySelector('.swal-prod-row:last-child .swal-prod-codigo');
+                                        if (last) last.focus();
+                                    });
+                                }
+                                if (tbody) {
+                                    tbody.addEventListener('click', function (ev) {
+                                        var btn = ev.target && ev.target.closest ? ev.target.closest('.swal-prod-del') : null;
+                                        if (!btn) return;
+                                        ev.preventDefault();
+                                        var tr = btn.closest('tr');
+                                        if (!tr || !tbody) return;
+                                        if (tbody.querySelectorAll('.swal-prod-row').length <= 1) {
+                                            tr.querySelectorAll('input').forEach(function (inp) { inp.value = ''; });
+                                            return;
+                                        }
+                                        tr.remove();
+                                    });
+                                }
+                                if (busca) {
+                                    busca.addEventListener('input', function () {
+                                        clearTimeout(buscaTimer);
+                                        var q = busca.value;
+                                        buscaTimer = setTimeout(function () { buscarProductosLocales(q); }, 280);
+                                    });
+                                    busca.addEventListener('focus', function () {
+                                        if (String(busca.value || '').trim().length >= 2) {
+                                            buscarProductosLocales(busca.value);
+                                        }
+                                    });
+                                }
+                                if (sugBox) {
+                                    sugBox.addEventListener('click', function (ev) {
+                                        var btn = ev.target && ev.target.closest ? ev.target.closest('.swal-prod-sug') : null;
+                                        if (!btn) return;
+                                        ev.preventDefault();
+                                        insertarProductoEnTabla({
+                                            codigo: btn.getAttribute('data-codigo') || '',
+                                            nombre: btn.getAttribute('data-nombre') || '',
+                                            grupo: btn.getAttribute('data-grupo') || '',
+                                            costo: Number(btn.getAttribute('data-costo') || 0) || 0
+                                        });
+                                    });
+                                }
+                                document.addEventListener('mousedown', function hideSug(ev) {
+                                    if (!sugBox || sugBox.style.display === 'none') return;
+                                    var t = ev.target;
+                                    if (busca && (busca === t || busca.contains(t))) return;
+                                    if (sugBox.contains(t)) return;
+                                    sugBox.style.display = 'none';
+                                });
+                            },
+                            preConfirm: function () {
+                                var codigo = String((document.getElementById('swal-cli-codigo') || {}).value || '').trim();
+                                var nombre = String((document.getElementById('swal-cli-nombre') || {}).value || '').trim();
+                                var productos = leerProductosManualDom();
+                                if (codigo.length < 2) {
+                                    Swal.showValidationMessage('Escribe el código del cliente');
+                                    return false;
+                                }
+                                if (!productos.length) {
+                                    Swal.showValidationMessage('Agrega al menos un producto con código');
+                                    return false;
+                                }
+                                return { codigo: codigo, nombre: nombre, productos: productos };
+                            }
+                        }).then(function (r) {
+                            if (!r.isConfirmed || !r.value) return null;
+                            return r.value;
+                        });
+                    }
+                    var codigo = window.prompt('Código del cliente', sugerido || '');
+                    if (!codigo || String(codigo).trim().length < 2) return Promise.resolve(null);
+                    var nombre = window.prompt('Nombre del cliente (opcional)', '') || '';
+                    var prodCodigo = window.prompt('Código del producto', '') || '';
+                    if (!prodCodigo || String(prodCodigo).trim() === '') return Promise.resolve(null);
+                    var prodNombre = window.prompt('Nombre del producto (opcional)', '') || '';
+                    return Promise.resolve({
+                        codigo: String(codigo).trim(),
+                        nombre: String(nombre).trim(),
+                        productos: [{
+                            codigo: String(prodCodigo).trim(),
+                            nombre: String(prodNombre).trim() || String(prodCodigo).trim(),
+                            grupo: '',
+                            costo: 0
+                        }]
+                    });
+                };
+
+                pedir().then(function (datos) {
+                    if (!datos) return;
+                    var anioPpto = Number((window.CC && CC.state && CC.state.anioPresupuesto) || anioRef()) || anioRef();
+                    return fetch('/ProyeccionesVentas/api/asignacion/clientes/manual', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Accept: 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-CSRF-TOKEN': csrf
+                        },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({
+                            empresa: cfg.empresa,
+                            codigo: datos.codigo,
+                            nombre: datos.nombre || '',
+                            year: anioRef(),
+                            anio_presupuesto: anioPpto,
+                            productos: datos.productos || []
+                        })
+                    }).then(function (res) {
+                        return res.json().then(function (json) {
+                            if (!res.ok || !json.ok) {
+                                throw new Error((json && json.mensaje) || (json && json.message) || 'No se pudo dar de alta');
+                            }
+                            return json;
+                        });
+                    }).then(function (json) {
+                        var cli = json.cliente || {};
+                        var codigo = String(cli.codigo || datos.codigo || '').trim();
+                        var nombre = String(cli.nombre || datos.nombre || codigo).trim();
+                        var prods = Array.isArray(json.productos) && json.productos.length
+                            ? json.productos
+                            : (datos.productos || []);
+                        var ya = centros.some(function (c) {
+                            return String(c.codigo || '').toUpperCase() === codigo.toUpperCase();
+                        });
+                        if (!ya) {
+                            centros.unshift({
+                                codigo: codigo,
+                                nombre: nombre,
+                                empresa: cfg.empresa,
+                                activo: true,
+                                departamento: ''
+                            });
+                        }
+                        Object.keys(cacheCentros).forEach(function (k) {
+                            if (k.indexOf(String(cfg.empresa || '').toLowerCase() + '|') === 0) {
+                                delete cacheCentros[k];
+                            }
+                        });
+                        Object.keys(cacheCuentas).forEach(function (k) {
+                            if (k.indexOf(String(cfg.empresa || '').toLowerCase() + '|') === 0) {
+                                delete cacheCuentas[k];
+                            }
+                        });
+                        pendingManualProductos = {
+                            cliente: codigo.toUpperCase(),
+                            productos: prods
+                        };
+                        if (ccQ) ccQ.value = codigo;
+                        syncCentroSelect(centros);
+                        fillCentros(codigo);
+                        pickCentro(codigo, nombre);
+                        // Si el catálogo aún carga, aplicarProductosManuales se completa en loadCuentas.
+                        // Refuerzo inmediato por si ya hay filas locales.
+                        setTimeout(function () {
+                            if (pendingManualProductos && String(pendingManualProductos.cliente || '') === codigo.toUpperCase()) {
+                                aplicarProductosManuales(pendingManualProductos.productos);
+                                pendingManualProductos = null;
+                            }
+                        }, 700);
+                        if (window.Swal) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Cliente listo',
+                                text: (json.mensaje || ('Ya puedes asignar ' + codigo + ' con sus productos')),
+                                timer: 2200,
+                                showConfirmButton: false
+                            });
+                        }
+                    }).catch(function (err) {
+                        var msg = err && err.message ? err.message : 'Error de red';
+                        if (window.Swal) Swal.fire({ icon: 'error', title: 'No se dio de alta', text: msg });
+                        else window.alert(msg);
+                    });
+                });
+            });
         }
 
         if (centroSel) centroSel.addEventListener('change', function () {

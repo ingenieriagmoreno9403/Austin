@@ -7213,6 +7213,185 @@ class ProyeccionesVentasController extends Controller
      * Clientes ligeros solo para /Ventas/Asignaciones/.../asignar.
      * No descarga todas las líneas de venta: catálogo local + búsqueda SAP filtrada por empresa.
      */
+    /**
+     * Alta manual de cliente para poder asignarlo aunque SAP no tenga ventas.
+     * Solo escribe en el catálogo local; no cambia la búsqueda SAP.
+     */
+    public function altaClienteManual(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('tbl_pv_cliente_catalogo')) {
+            return response()->json(['ok' => false, 'mensaje' => 'Falta el catálogo local de clientes.'], 422);
+        }
+
+        $data = $request->validate([
+            'empresa' => 'required|string|in:austin,imsa,pitic,sydney',
+            'codigo' => 'required|string|min:2|max:40',
+            'nombre' => 'nullable|string|max:180',
+            'year' => 'nullable|integer|min:2000|max:2100',
+            'anio_presupuesto' => 'nullable|integer|min:2000|max:2100',
+            'productos' => 'nullable|array|max:200',
+            'productos.*.codigo' => 'required_with:productos|string|max:80',
+            'productos.*.nombre' => 'nullable|string|max:220',
+            'productos.*.grupo' => 'nullable|string|max:80',
+            'productos.*.costo' => 'nullable|numeric|min:0',
+        ]);
+
+        $empresa = strtolower(trim($data['empresa']));
+        $codigo = strtoupper(trim($data['codigo']));
+        $nombre = trim((string) ($data['nombre'] ?? ''));
+        if ($nombre === '') {
+            $nombre = $codigo;
+        }
+        $year = (int) ($data['year'] ?? date('Y'));
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+        $anioCosto = (int) ($data['anio_presupuesto'] ?? $year);
+        if ($anioCosto < 2000 || $anioCosto > 2100) {
+            $anioCosto = $year;
+        }
+
+        if (! preg_match('/^[A-Z0-9._\-]{2,40}$/', $codigo)) {
+            return response()->json([
+                'ok' => false,
+                'mensaje' => 'El código solo puede llevar letras, números, punto, guion o guion bajo.',
+            ], 422);
+        }
+
+        $productosIn = is_array($data['productos'] ?? null) ? $data['productos'] : [];
+        $productosNorm = [];
+        $vistos = [];
+        foreach ($productosIn as $p) {
+            $pCodigo = strtoupper(trim((string) ($p['codigo'] ?? '')));
+            if ($pCodigo === '' || ! preg_match('/^[A-Z0-9._\-\/]{1,80}$/', $pCodigo)) {
+                continue;
+            }
+            if (isset($vistos[$pCodigo])) {
+                continue;
+            }
+            $vistos[$pCodigo] = true;
+            $pNombre = trim((string) ($p['nombre'] ?? ''));
+            $pGrupo = trim((string) ($p['grupo'] ?? ''));
+            $pCosto = is_numeric($p['costo'] ?? null) ? (float) $p['costo'] : 0.0;
+            $productosNorm[] = [
+                'codigo' => $pCodigo,
+                'nombre' => $pNombre !== '' ? $pNombre : $pCodigo,
+                'grupo' => $pGrupo,
+                'grupo_id' => $pGrupo,
+                'costo' => $pCosto,
+                'moneda' => 'MXN',
+            ];
+        }
+
+        if ($productosNorm === []) {
+            return response()->json([
+                'ok' => false,
+                'mensaje' => 'Agrega al menos un producto con código para poder proyectar.',
+            ], 422);
+        }
+
+        $row = PvClienteCatalogo::query()->updateOrCreate(
+            ['empresa' => $empresa, 'codigo' => $codigo],
+            [
+                'nombre' => $nombre,
+                'anio' => $year,
+                'origen' => 'manual',
+                'synced_at' => now(),
+            ]
+        );
+
+        $this->guardarProductosCatalogo($empresa, $codigo, $year, $productosNorm, 'manual');
+        $this->sembrarPreciosManualCliente($empresa, $codigo, $nombre, $anioCosto, $productosNorm);
+
+        // Limpia caché de búsquedas SAP vacías para este código.
+        try {
+            Cache::forget('pv.asig.cli.q.'.$empresa.'.'.$year.'.'.md5(mb_strtoupper($codigo)));
+        } catch (Throwable $e) {
+            // sin impacto
+        }
+
+        return response()->json([
+            'ok' => true,
+            'cliente' => [
+                'codigo' => (string) $row->codigo,
+                'nombre' => (string) ($row->nombre ?: $row->codigo),
+                'empresa' => $empresa,
+                'activo' => true,
+                'departamento' => '',
+            ],
+            'productos' => $productosNorm,
+            'mensaje' => 'Cliente y productos listos. Ya puedes guardarlos en la asignación.',
+        ]);
+    }
+
+    /**
+     * Precio global (mes=0) opcional al dar de alta productos manuales.
+     *
+     * @param  array<int, array<string, mixed>>  $productos
+     */
+    protected function sembrarPreciosManualCliente(
+        string $empresa,
+        string $cardCode,
+        string $cardName,
+        int $anio,
+        array $productos
+    ): void {
+        if (! Schema::hasTable('tbl_pv_productos_costo') || $productos === []) {
+            return;
+        }
+
+        $hasAnio = Schema::hasColumn('tbl_pv_productos_costo', 'anio');
+        $hasCard = Schema::hasColumn('tbl_pv_productos_costo', 'card_code');
+        $hasCardName = Schema::hasColumn('tbl_pv_productos_costo', 'card_name');
+        $hasMes = Schema::hasColumn('tbl_pv_productos_costo', 'mes');
+        $hasPrecioLista = Schema::hasColumn('tbl_pv_productos_costo', 'precio_lista');
+
+        foreach ($productos as $p) {
+            $item = trim((string) ($p['codigo'] ?? ''));
+            $costo = is_numeric($p['costo'] ?? null) ? (float) $p['costo'] : 0.0;
+            if ($item === '' || $costo <= 0) {
+                continue;
+            }
+            $lookup = [
+                'empresa' => $empresa,
+                'producto_codigo' => mb_substr($item, 0, 80),
+            ];
+            if ($hasAnio) {
+                $lookup['anio'] = $anio;
+            }
+            if ($hasCard) {
+                $lookup['card_code'] = mb_substr($cardCode, 0, 40);
+            }
+            if ($hasMes) {
+                $lookup['mes'] = 0;
+            }
+
+            $local = PvProductoCosto::query()->firstOrNew($lookup);
+            $nombreProd = trim((string) ($p['nombre'] ?? ''));
+            if ($nombreProd === '') {
+                $nombreProd = $item;
+            }
+            $local->producto_nombre = mb_substr($nombreProd, 0, 180);
+            $local->costo_unitario = $costo;
+            if ($hasPrecioLista && (! $local->exists || (float) ($local->precio_lista ?? 0) <= 0)) {
+                $local->precio_lista = $costo;
+            }
+            if (Schema::hasColumn('tbl_pv_productos_costo', 'moneda') && trim((string) ($local->moneda ?? '')) === '') {
+                $local->moneda = 'MXN';
+            }
+            if ($hasCardName && $cardName !== '') {
+                $local->card_name = mb_substr($cardName, 0, 180);
+            }
+            if ($hasMes) {
+                $local->mes = 0;
+            }
+            if ($hasAnio) {
+                $local->anio = $anio;
+            }
+            $local->save();
+        }
+    }
+
     public function clientesAsignacion(Request $request): JsonResponse
     {
         $empresa = strtolower(trim((string) $request->get('empresa', '')));

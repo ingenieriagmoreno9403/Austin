@@ -104,6 +104,12 @@
                     <span class="cc-pick-search-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
                     <input id="asig-cc-q" class="cc-input" type="search" placeholder="Buscar cliente por código o nombre…">
                 </div>
+                <div class="d-flex gap-2 align-items-center flex-wrap mt-2 mb-2">
+                    <button type="button" class="cc-btn" id="asig-cc-alta" title="Alta local del cliente con sus productos para proyectar">
+                        <i class="fa-solid fa-user-plus"></i> Dar de alta cliente
+                    </button>
+                    <span class="text-muted" style="font-size:.75rem">Alta local (no SAP): busca productos de la empresa o captura nuevos, luego Guarda la asignación.</span>
+                </div>
                 <select id="asig-centro" class="cc-sr-only" aria-hidden="true" tabindex="-1">
                     <option value="">Elige un cliente…</option>
                 </select>
