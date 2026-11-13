@@ -9277,6 +9277,8 @@
         CC._anDetalleKey = '';
         CC._anDetalleReady = false;
         CC._capturaReady = false;
+        CC._anVistaConfirmada = false;
+        CC._anVistaKey = '';
         CC._anGastoTried = {};
         CC._anVentasBudget = {};
         CC._anVentasBudgetTried = {};
@@ -9286,6 +9288,7 @@
         CC._anGastoTotal = 0;
         CC._anGastoPhase = '';
         CC._anGastoFilterKey = '';
+        setAnalisisFilterNote('Ciclo cambiado · elige filtros y pulsa Buscar.');
         CC.initAnalisis();
     }
 
@@ -9317,15 +9320,17 @@
             ['an-empresa', 'an-cliente', 'an-user'].forEach(function (id) {
                 var el = document.getElementById(id);
                 if (!el) return;
-                el.addEventListener('change', function () {
-                    kickAnalisisVista();
-                });
+                el.addEventListener('change', onFiltroAnalisisChange);
             });
             if (window.jQuery) {
-                jQuery('#an-empresa, #an-cliente, #an-user').on('change.anKick', function () {
-                    kickAnalisisVista();
-                });
+                jQuery('#an-empresa, #an-cliente, #an-user').on('change.anFiltro', onFiltroAnalisisChange);
             }
+            var buscarBtn = document.getElementById('an-buscar');
+            if (buscarBtn) buscarBtn.addEventListener('click', buscarAnalisisPv);
+            var refrescarBtn = document.getElementById('an-refrescar');
+            if (refrescarBtn) refrescarBtn.addEventListener('click', refrescarAnalisisPv);
+            var limpiarBtn = document.getElementById('an-limpiar');
+            if (limpiarBtn) limpiarBtn.addEventListener('click', limpiarFiltrosAnalisisPv);
             var heatQ = document.getElementById('an-heat-q');
             if (heatQ) heatQ.addEventListener('input', applyHeatFilter);
             var cicloEl = document.getElementById('an-ciclo');
@@ -9375,10 +9380,6 @@
                 CC._anAsigLoading = false;
                 if (String(val('an-ciclo') || CC.state.cicloCodigo || '').toUpperCase() !== String(ciclo).toUpperCase()) return;
                 aplicarCatalogoAnalisis(json || {});
-                if (analisisPideDatos()) {
-                    kickAnalisisVista();
-                    return;
-                }
                 hideAnalisisBusy();
                 renderAnalisis();
             }).catch(function (err) {
@@ -9401,7 +9402,7 @@
 
         CC.state.centros = centrosDesdeCatalogo(CC._anCatalogo || []);
         fillAnalisisFilters();
-        if (analisisPideDatos()) {
+        if (CC._anVistaConfirmada && analisisPideDatos()) {
             if (CC._anDetalleReady && CC._anDetalleKey === detalleAnalisisKey()) {
                 if (!filtroAnalisisEnCache()) {
                     maybeQueueAnalisisGastos();
@@ -9415,6 +9416,130 @@
         }
         renderAnalisis();
     };
+
+    function setAnalisisFilterNote(txt) {
+        var el = document.getElementById('an-filter-note');
+        if (el) el.textContent = txt || '';
+    }
+
+    function onFiltroAnalisisChange() {
+        if (CC._anFillingFilters) return;
+        fillAnalisisFilters();
+        var key = detalleAnalisisKey();
+        if (CC._anVistaConfirmada && CC._anVistaKey && CC._anVistaKey !== key) {
+            // No dejar resultados viejos con filtros nuevos.
+            CC._anVistaConfirmada = false;
+            CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+            CC._anGastoRunning = false;
+            hideAnalisisBusy();
+            setAnalisisFilterNote('Filtros cambiados · pulsa Buscar para aplicar.');
+            renderAnalisis();
+            return;
+        }
+        if (!analisisPideDatos()) {
+            setAnalisisFilterNote('Elige una empresa (o Todas) y pulsa Buscar.');
+        } else {
+            setAnalisisFilterNote('Listo · pulsa Buscar.');
+        }
+    }
+
+    function invalidarCacheVentaAnalisis(centros) {
+        (centros || []).forEach(function (c) {
+            var key = gastoCacheKey(c);
+            if (CC.state.gastoCache) delete CC.state.gastoCache[key];
+            if (CC.state.gastoMeta) delete CC.state.gastoMeta[key];
+            if (CC.state.gastoLookup) delete CC.state.gastoLookup[key];
+            if (CC._anGastoTried) delete CC._anGastoTried[key];
+            var vbKey = analisisVentasBudgetKey(c);
+            if (CC._anVentasBudget) delete CC._anVentasBudget[vbKey];
+            if (CC._anVentasBudgetTried) delete CC._anVentasBudgetTried[vbKey];
+        });
+    }
+
+    function buscarAnalisisPv() {
+        if (CC._anFillingFilters) return;
+        fillAnalisisFilters();
+        if (!analisisPideDatos()) {
+            CC._anVistaConfirmada = false;
+            CC._anVistaKey = '';
+            setAnalisisFilterNote('Elige una empresa (o Todas) y pulsa Buscar.');
+            hideAnalisisBusy();
+            renderAnalisis();
+            return;
+        }
+        CC._anVistaConfirmada = true;
+        CC._anVistaKey = detalleAnalisisKey();
+        CC._anDetalleReady = false;
+        CC._anDetalleKey = '';
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        CC._anGastoRunning = false;
+        CC._anGastoFilterKey = '';
+        setAnalisisFilterNote('Buscando…');
+        kickAnalisisVista();
+    }
+
+    /** Vuelve a consultar con los filtros actuales (sin limpiarlos). */
+    function refrescarAnalisisPv() {
+        if (CC._anFillingFilters) return;
+        fillAnalisisFilters();
+        if (!analisisPideDatos()) {
+            setAnalisisFilterNote('Elige una empresa (o Todas) y pulsa Buscar.');
+            return;
+        }
+        if (!CC._anVistaConfirmada) {
+            buscarAnalisisPv();
+            return;
+        }
+        invalidarCacheVentaAnalisis(centrosObjetivoAnalisis());
+        CC._anVistaConfirmada = true;
+        CC._anVistaKey = detalleAnalisisKey();
+        CC._anDetalleReady = false;
+        CC._anDetalleKey = '';
+        CC._capturaReady = false;
+        CC.state.misAsignaciones = [];
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        CC._anGastoRunning = false;
+        CC._anGastoFilterKey = '';
+        CC._chartSig = {};
+        setAnalisisFilterNote('Refrescando consulta…');
+        kickAnalisisVista();
+    }
+
+    /** Solo limpia filtros y oculta resultados. */
+    function limpiarFiltrosAnalisisPv() {
+        CC._anFillingFilters = true;
+        ['an-empresa', 'an-cliente', 'an-user'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.value = '';
+            if (window.jQuery && jQuery.fn.select2 && jQuery(el).hasClass('select2-hidden-accessible')) {
+                jQuery(el).val('').trigger('change.select2');
+            }
+        });
+        CC._anFillingFilters = false;
+        CC._anVistaConfirmada = false;
+        CC._anVistaKey = '';
+        CC._anDetalleReady = false;
+        CC._anDetalleKey = '';
+        CC._capturaReady = false;
+        CC.state.misAsignaciones = [];
+        CC._anGastoGen = (CC._anGastoGen || 0) + 1;
+        CC._anGastoRunning = false;
+        CC._anGastoFilterKey = '';
+        CC._chartSig = {};
+        if (CC.state.charts) {
+            ['chart-empresas', 'chart-estados'].forEach(function (id) {
+                if (CC.state.charts[id]) {
+                    try { CC.state.charts[id].destroy(); } catch (e) { /* ignore */ }
+                    delete CC.state.charts[id];
+                }
+            });
+        }
+        setAnalisisFilterNote('Filtros limpios · elige y pulsa Buscar.');
+        hideAnalisisBusy();
+        fillAnalisisFilters();
+        renderAnalisis();
+    }
 
     function fetchJsonOk(url) {
         return fetch(url, {
@@ -9527,9 +9652,16 @@
         return !!(val('an-cliente') || val('an-user'));
     }
 
-    /** Todas muestra el resumen de empresas. Un cliente o usuario carga solo ese detalle. */
+    /** Empresa concreta, Todas, cliente o usuario disparan la carga. */
     function analisisPideDatos() {
-        return analisisTieneDetalle() || val('an-empresa') === AN_EMP_TODAS;
+        return analisisTieneDetalle()
+            || val('an-empresa') === AN_EMP_TODAS
+            || !!empresaAnalisisConcreta();
+    }
+
+    function analisisEsResumenEmpresa() {
+        return !analisisTieneDetalle()
+            && (val('an-empresa') === AN_EMP_TODAS || !!empresaAnalisisConcreta());
     }
 
     function detalleAnalisisKey() {
@@ -9579,12 +9711,13 @@
         CC._anDetalleGen = (CC._anDetalleGen || 0) + 1;
         var gen = CC._anDetalleGen;
         var p = filtroDetalleParams();
-        var todas = !p.cliente && !p.usuario && val('an-empresa') === AN_EMP_TODAS;
+        // Todas = todas las empresas; una empresa concreta también pide resumen (sin cliente/usuario).
+        var resumen = !p.cliente && !p.usuario && (val('an-empresa') === AN_EMP_TODAS || !!p.empresa);
         var url = '/ProyeccionesVentas/api/analisis/detalle?ciclo=' + encodeURIComponent(p.ciclo)
             + '&empresa=' + encodeURIComponent(p.empresa)
             + '&cliente=' + encodeURIComponent(p.cliente)
             + '&usuario=' + encodeURIComponent(p.usuario)
-            + (todas ? '&todas=1' : '');
+            + (resumen ? '&todas=1' : '');
         return fetchJsonOk(url).then(function (json) {
             if (gen !== CC._anDetalleGen) return;
             if (detalleAnalisisKey() !== key) return;
@@ -9668,19 +9801,26 @@
         }
         showAnalisisBusy();
         var key = detalleAnalisisKey();
+        // Venta real en paralelo con el Budget: no esperar a que termine detalle.
+        if (!filtroAnalisisEnCache()) {
+            maybeQueueAnalisisGastos();
+        }
         var detalleLista = CC._anDetalleReady && CC._anDetalleKey === key;
         var paso = detalleLista ? Promise.resolve() : cargarAnalisisDetalle(key);
         paso.then(function () {
             if (seq !== CC._anKickSeq || CC.state.page !== 'analisis' || !analisisPideDatos()) return;
             if (filtroAnalisisEnCache()) {
                 hideAnalisisBusy();
+                setAnalisisFilterNote('Resultados actualizados.');
                 renderAnalisis();
                 return;
             }
-            if (val('an-empresa') === AN_EMP_TODAS && !analisisTieneDetalle()) {
+            if (analisisEsResumenEmpresa()) {
                 hideAnalisisBusy();
+                setAnalisisFilterNote('Cargando venta…');
                 renderAnalisis();
             }
+            // Si el batch paralelo aún no arrancó (catálogo tarde), reintentar.
             maybeQueueAnalisisGastos();
         }).catch(function (err) {
             if (seq !== CC._anKickSeq) return;
@@ -9693,6 +9833,7 @@
                     : ((err && err.message) || 'Error al consultar el detalle')
             );
             hideAnalisisBusy();
+            setAnalisisFilterNote('No se pudo cargar · intenta de nuevo.');
             renderAnalisis();
         });
     }
@@ -9710,13 +9851,32 @@
         hideAnalisisBusy();
         if (CC.state.page !== 'analisis') return;
         CC._anLightPaint = false;
+        if (CC._anVistaConfirmada) setAnalisisFilterNote('Resultados actualizados.');
         renderAnalisis();
     }
 
     function ventaCentroLista(c) {
-        var entry = gastoCacheEntry(gastoCacheKey(c));
-        if (!entry || !entry.por) return false;
-        return Object.keys(entry.por).length > 0;
+        var key = gastoCacheKey(c);
+        var entry = gastoCacheEntry(key);
+        // Con meta (snapshot/api/vacio) ya resolvimos, aunque el importe sea 0.
+        if (entry && entry.meta && entry.meta.fuente) return true;
+        if (entry && entry.por && Object.keys(entry.por).length > 0) return true;
+        // Análisis: falló o sin datos → no dejar el KPI/panel en “cargando” eterno.
+        if (CC.state.page === 'analisis' && CC._anGastoTried && CC._anGastoTried[key]) return true;
+        return false;
+    }
+
+    function rememberVentaVaciaAnalisis(cacheKey, year, mensaje) {
+        if (!cacheKey) return;
+        CC._anGastoTried = CC._anGastoTried || {};
+        CC._anGastoTried[cacheKey] = true;
+        rememberGastoCache(cacheKey, {}, {
+            fuente: 'vacio',
+            synced_at: null,
+            year: year || CC.state.anioGasto || '',
+            mensaje: mensaje || null,
+            budget_completo: false
+        });
     }
 
     function htmlCargando(size) {
@@ -9955,7 +10115,7 @@
             renderAnalisis();
             return;
         }
-        var resumenYaVisible = val('an-empresa') === AN_EMP_TODAS && !analisisTieneDetalle() && !!CC._capturaReady;
+        var resumenYaVisible = analisisEsResumenEmpresa() && !!CC._capturaReady;
         if (!resumenYaVisible) showAnalisisBusy();
         var needGasto = centros.filter(function (c) {
             var gKey = gastoCacheKey(c);
@@ -9991,6 +10151,42 @@
             paintAnalisisLoading();
         }
 
+        var batchDirty = false;
+        var batchPaintTimer = null;
+        function scheduleAnalisisVentaPaint(force) {
+            if (gen !== CC._anGastoGen) return;
+            if (!analisisTieneFiltro()) return;
+            // Sin Budget aún: el paint ligero no muestra importes; esperar captura.
+            if (!(CC._capturaReady || analisisTieneDetalle())) {
+                if (force) batchDirty = true;
+                return;
+            }
+            function paintNow(asForce) {
+                if (gen !== CC._anGastoGen) return;
+                if (!batchDirty && !asForce) return;
+                batchDirty = false;
+                if (CC.state.page === 'analisis' && analisisTieneFiltro()) {
+                    hideAnalisisBusy();
+                    renderAnalisis();
+                }
+            }
+            if (force) {
+                if (batchPaintTimer) {
+                    clearTimeout(batchPaintTimer);
+                    batchPaintTimer = null;
+                }
+                batchDirty = true;
+                paintNow(true);
+                return;
+            }
+            batchDirty = true;
+            if (batchPaintTimer) return;
+            batchPaintTimer = setTimeout(function () {
+                batchPaintTimer = null;
+                paintNow();
+            }, 180);
+        }
+
         function hydrateGastoBatch(json, onlyCentros) {
             var map = (json && json.por_cliente) || {};
             var index = {};
@@ -10001,6 +10197,7 @@
             });
             var missing = [];
             var rellenar = [];
+            var hydrated = 0;
             (onlyCentros || needGasto).forEach(function (c) {
                 var emp = String(c.empresa || '').toUpperCase();
                 var cc = String(c.codigo || '').trim();
@@ -10016,12 +10213,13 @@
                     });
                     CC.state.gastoLookup = CC.state.gastoLookup || {};
                     CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(hit.por_cuenta);
+                    hydrated += 1;
                     if (hit.rellenar) rellenar.push(c);
                 } else {
                     missing.push(c);
                 }
             });
-            return { missing: missing, rellenar: rellenar };
+            return { missing: missing, rellenar: rellenar, hydrated: hydrated };
         }
 
         /** Fase B: faltantes vía /gasto-real (SAP → snapshot), con progreso. */
@@ -10039,7 +10237,7 @@
 
             var pending = centrosMissing.slice();
             var inflight = 0;
-            var max = 2;
+            var max = 3;
             var dirty = false;
             var paintTimer = null;
             function schedulePaint() {
@@ -10047,11 +10245,13 @@
                 paintTimer = setTimeout(function () {
                     paintTimer = null;
                     if (gen !== CC._anGastoGen) return;
-                    if (CC.state.page === 'analisis' && dirty && analisisTieneFiltro()) {
+                    if (CC.state.page === 'analisis' && dirty && analisisTieneFiltro() &&
+                        (CC._capturaReady || analisisTieneDetalle())) {
                         dirty = false;
+                        hideAnalisisBusy();
                         renderAnalisis();
                     }
-                }, 500);
+                }, 280);
             }
             function kickOne() {
                 if (gen !== CC._anGastoGen) return;
@@ -10076,7 +10276,12 @@
                             if (!pending.length && !inflight) done();
                             else kickOne();
                         }
-                        var timer = setTimeout(doneOne, 180000);
+                        // Análisis: no dejar IMSA/KPI colgados 3 min por 1 cliente SAP lento.
+                        var timer = setTimeout(function () {
+                            rememberVentaVaciaAnalisis(cacheKey, year, 'Tiempo de espera agotado');
+                            dirty = true;
+                            doneOne();
+                        }, 12000);
                         fetch((CC.state.gastoUrl || '/ProyeccionesVentas/api/gasto-real') +
                             '?empresa=' + encodeURIComponent(centro.empresa || '') +
                             '&cc=' + encodeURIComponent(centro.codigo || '') +
@@ -10087,8 +10292,8 @@
                             if (gen !== CC._anGastoGen) return;
                             var por = (json && json.por_cuenta) || {};
                             if (json && json.ok === false) {
-                                CC._anGastoTried = CC._anGastoTried || {};
-                                CC._anGastoTried[cacheKey] = true;
+                                rememberVentaVaciaAnalisis(cacheKey, year, (json && json.mensaje) || null);
+                                dirty = true;
                                 return;
                             }
                             if (por && Object.keys(por).length) {
@@ -10103,13 +10308,13 @@
                                 CC.state.gastoLookup[cacheKey] = mapFromPorCuenta(por);
                                 dirty = true;
                             } else {
-                                CC._anGastoTried = CC._anGastoTried || {};
-                                CC._anGastoTried[cacheKey] = true;
+                                rememberVentaVaciaAnalisis(cacheKey, year, (json && json.mensaje) || null);
+                                dirty = true;
                             }
                         }).catch(function () {
                             if (gen !== CC._anGastoGen) return;
-                            CC._anGastoTried = CC._anGastoTried || {};
-                            CC._anGastoTried[cacheKey] = true;
+                            rememberVentaVaciaAnalisis(cacheKey, year, null);
+                            dirty = true;
                         }).then(function () {
                             clearTimeout(timer);
                             doneOne();
@@ -10202,11 +10407,14 @@
             if (gen !== CC._anGastoGen) return;
             clearLoading();
             if (silencioso && !analisisTieneFiltro()) return;
+            scheduleAnalisisVentaPaint(true);
             soltarAnalisisBusy();
+            // Oct–dic y precios no bloquean la venta ya hidratada del snapshot.
             loadAnalisisVentasBudget(centros, gen, function () {
                 if (gen !== CC._anGastoGen) return;
                 if (CC.state.page === 'analisis' && analisisTieneFiltro()) renderAnalisis();
             });
+            queuePreciosBackground();
         }
 
         if (!CC._anAsigLoaded) {
@@ -10218,14 +10426,14 @@
         }
 
         var batchUrl = CC.state.gastoBatchUrl || '/ProyeccionesVentas/api/gasto-real-batch';
-        var chunkSize = 80;
+        var chunkSize = 100;
         var slices = [];
         for (var cut = 0; cut < needGasto.length; cut += chunkSize) {
             slices.push(needGasto.slice(cut, cut + chunkSize));
         }
         var sliceAt = 0;
         var inflightChunks = 0;
-        var maxChunks = 3;
+        var maxChunks = 4;
         var missingAll = [];
         var rellenarAll = [];
 
@@ -10253,8 +10461,12 @@
         function pumpChunks() {
             if (gen !== CC._anGastoGen) return;
             if (sliceAt >= slices.length && !inflightChunks) {
+                // Pintar ya con lo del snapshot; SAP faltante sigue en segundo plano.
+                scheduleAnalisisVentaPaint(true);
+                finishAll();
                 fetchGastoIndividual(missingAll, function () {
-                    finishAll();
+                    if (gen !== CC._anGastoGen) return;
+                    scheduleAnalisisVentaPaint(true);
                     fetchGastoIndividual(rellenarAll, function () {
                         if (gen !== CC._anGastoGen) return;
                         if (CC.state.page === 'analisis' && analisisTieneFiltro()) renderAnalisis();
@@ -10270,6 +10482,7 @@
                         var parted = hydrateGastoBatch(json, slice) || {};
                         (parted.missing || []).forEach(function (c) { missingAll.push(c); });
                         (parted.rellenar || []).forEach(function (c) { rellenarAll.push(c); });
+                        if (parted.hydrated) scheduleAnalisisVentaPaint(false);
                     }).catch(function () {
                         if (gen !== CC._anGastoGen) return;
                         slice.forEach(function (c) { missingAll.push(c); });
@@ -10286,7 +10499,7 @@
     }
 
     function snapshotCentros() {
-        var resumenListo = analisisTieneDetalle() || (val('an-empresa') === AN_EMP_TODAS && !!CC._capturaReady);
+        var resumenListo = analisisTieneDetalle() || (analisisEsResumenEmpresa() && !!CC._capturaReady);
         var light = !!CC._anLightPaint || !resumenListo;
         var fuente = CC.state.centros || [];
         if (!light && CC.state.page === 'analisis') fuente = centrosObjetivoAnalisis();
@@ -10356,8 +10569,17 @@
             CC._anFillingFilters = true;
             jQuery(sel).val(sel.value).trigger('change.select2');
             CC._anFillingFilters = false;
+        } else {
+            fillAnalisisFilters();
         }
-        kickAnalisisVista();
+        if (sel.value) buscarAnalisisPv();
+        else {
+            CC._anVistaConfirmada = false;
+            CC._anVistaKey = '';
+            setAnalisisFilterNote('Elige una empresa (o Todas) y pulsa Buscar.');
+            hideAnalisisBusy();
+            renderAnalisis();
+        }
     }
 
     function applyHeatFilter() {
@@ -10579,23 +10801,24 @@
         var emptyMsg = document.getElementById('an-empty-msg');
         var emptyIcon = document.getElementById('an-empty-icon');
         var work = document.getElementById('an-work');
-        var all = CC._anAsigLoaded ? snapshotCentros() : [];
-        var needsFilter = CC._anAsigLoaded && !!(CC.state.centros && CC.state.centros.length) && !analisisPideDatos();
+        var all = (CC._anAsigLoaded && CC._anVistaConfirmada) ? snapshotCentros() : [];
+        var needsFilter = CC._anAsigLoaded && !!(CC.state.centros && CC.state.centros.length)
+            && (!analisisPideDatos() || !CC._anVistaConfirmada);
         paintAnalisisLoading();
         if (empty) {
             if (!CC._anAsigLoaded) {
                 empty.hidden = false;
-                if (analisisPideDatos()) {
+                if (CC._anVistaConfirmada && analisisPideDatos()) {
                     if (emptyMsg) emptyMsg.innerHTML = htmlCargando('lg');
                     if (emptyIcon) emptyIcon.hidden = true;
                 } else {
-                    if (emptyMsg) emptyMsg.textContent = 'Elige Todas para ver el resumen de empresas, o una empresa y después un cliente o un usuario.';
+                    if (emptyMsg) emptyMsg.textContent = 'Elige una empresa (o Todas) y pulsa Buscar.';
                     if (emptyIcon) {
                         emptyIcon.hidden = false;
                         emptyIcon.className = 'fa-solid fa-filter';
                     }
                 }
-            } else if (!all.length) {
+            } else if (!(CC.state.centros && CC.state.centros.length)) {
                 empty.hidden = false;
                 if (emptyMsg) {
                     emptyMsg.textContent = CC._anSinRevision
@@ -10609,7 +10832,9 @@
             } else if (needsFilter) {
                 empty.hidden = false;
                 if (emptyMsg) {
-                    emptyMsg.textContent = 'Elige Todas para ver el resumen de empresas, o una empresa y después un cliente o un usuario.';
+                    emptyMsg.textContent = !analisisPideDatos()
+                        ? 'Elige una empresa (o Todas) y pulsa Buscar.'
+                        : 'Pulsa Buscar para cargar el análisis con esos filtros.';
                 }
                 if (emptyIcon) {
                     emptyIcon.hidden = false;
@@ -10680,18 +10905,25 @@
         // Variación KPI y pie Δ año: misma base (tableRows) y misma fórmula.
         var sumGastoYoy = 0;
         var sumPptoYoy = 0;
-        var ventaPendYoy = false;
-        var proyPendYoy = false;
+        var ventaPendCount = 0;
+        var proyPendCount = 0;
         tableRows.forEach(function (c) {
             if (c.ventaLista) sumGastoYoy += Number(c.gasto) || 0;
-            else ventaPendYoy = true;
+            else ventaPendCount += 1;
             if (c.proyLista) sumPptoYoy += Number(c.pptoVista != null ? c.pptoVista : c.ppto) || 0;
-            else proyPendYoy = true;
+            else proyPendCount += 1;
         });
-        var yoyTotShared = (!ventaPendYoy && !proyPendYoy)
+        var nYoy = tableRows.length || 1;
+        // No exigir 100%: con ≥95% listo (o sin cola activa) ya se muestra la variación.
+        var ventaCubre = ventaPendCount === 0 ||
+            (ventaPendCount / nYoy <= 0.05 && (sumGastoYoy > 0 || !CC._anGastoRunning));
+        var proyCubre = proyPendCount === 0 || (proyPendCount / nYoy <= 0.05 && !!CC._capturaReady);
+        var ventaPendYoy = !ventaCubre;
+        var proyPendYoy = !proyCubre;
+        var yoyTotShared = (ventaCubre && proyCubre)
             ? (sumGastoYoy ? deltaPct(sumPptoYoy, sumGastoYoy) : null)
             : null;
-        var yoyTxtShared = (ventaPendYoy || proyPendYoy)
+        var yoyTxtShared = (!ventaCubre || !proyCubre)
             ? null
             : (sumGastoYoy ? ((yoyTotShared > 0 ? '+' : '') + yoyTotShared + '%') : '—');
 
@@ -10747,9 +10979,12 @@
                 var cls = av == null ? '' : (av < 40 ? 'warn' : (av > 85 ? 'good' : ''));
                 var on = empRaw === e ? ' is-on' : '';
                 var avTxt = av == null ? htmlCargando('sm') : (av + '% capturado · ' + info.n + ' clientes');
-                var ventaTxt = info.ventaPend
-                    ? (info.ventaPend === info.n ? htmlCargando('sm') : (moneyVista(info.gasto) + ' · ' + htmlCargando('sm')))
-                    : moneyVista(info.gasto);
+                var ventaCasiLista = !info.ventaPend || info.ventaPend / Math.max(info.n, 1) <= 0.05 || !CC._anGastoRunning;
+                var ventaTxt = info.ventaPend === info.n && !ventaCasiLista
+                    ? htmlCargando('sm')
+                    : (info.ventaPend && !ventaCasiLista
+                        ? (moneyVista(info.gasto) + ' · ' + htmlCargando('sm'))
+                        : moneyVista(info.gasto));
                 var proyTxt = info.proyPend
                     ? (info.proyPend === info.n ? htmlCargando('sm') : (moneyGasto(info.ppto) + ' · ' + htmlCargando('sm')))
                     : moneyGasto(info.ppto);
@@ -10964,15 +11199,43 @@
         }
     }
 
+    function chartDataKey(payload) {
+        try { return JSON.stringify(payload); } catch (e) { return String(Date.now()); }
+    }
+
     function drawBar(id, labels, datasets) {
         var canvas = document.getElementById(id);
         if (!canvas || !window.Chart) return;
-        if (CC.state.charts[id]) CC.state.charts[id].destroy();
+        CC.state.charts = CC.state.charts || {};
+        CC._chartSig = CC._chartSig || {};
+        var sig = chartDataKey({
+            labels: labels,
+            ds: (datasets || []).map(function (d) {
+                return { label: d.label, data: d.data, bg: d.backgroundColor };
+            })
+        });
+        var existing = CC.state.charts[id];
+        if (existing && CC._chartSig[id] === sig) return;
+        CC._chartSig[id] = sig;
+        if (existing) {
+            existing.data.labels = labels.slice();
+            existing.data.datasets = (datasets || []).map(function (d) {
+                return {
+                    label: d.label,
+                    data: (d.data || []).slice(),
+                    backgroundColor: d.backgroundColor
+                };
+            });
+            existing.update('none');
+            return;
+        }
         CC.state.charts[id] = new Chart(canvas, {
             type: 'bar',
             data: { labels: labels, datasets: datasets },
             options: {
-                responsive: true, maintainAspectRatio: false,
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
                 plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
                 scales: {
                     x: { grid: { display: false } },
@@ -10989,14 +11252,33 @@
     function drawDoughnut(id, labels, data) {
         var canvas = document.getElementById(id);
         if (!canvas || !window.Chart) return;
-        if (CC.state.charts[id]) CC.state.charts[id].destroy();
+        CC.state.charts = CC.state.charts || {};
+        CC._chartSig = CC._chartSig || {};
+        var sig = chartDataKey({ labels: labels, data: data });
+        var existing = CC.state.charts[id];
+        if (existing && CC._chartSig[id] === sig) return;
+        CC._chartSig[id] = sig;
+        if (existing) {
+            existing.data.labels = (labels || []).slice();
+            if (existing.data.datasets && existing.data.datasets[0]) {
+                existing.data.datasets[0].data = (data || []).slice();
+            }
+            existing.update('none');
+            return;
+        }
         CC.state.charts[id] = new Chart(canvas, {
             type: 'doughnut',
             data: {
                 labels: labels,
                 datasets: [{ data: data, backgroundColor: ['#1d4ed8', '#d97706', '#6d28d9', '#047857', '#b91c1c', '#475569'], borderWidth: 0 }]
             },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } }, cutout: '62%' }
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
+                cutout: '62%'
+            }
         });
     }
 

@@ -30,7 +30,7 @@
     @include('ProyeccionesVentas.partials.nav')
 
     <div class="cc-panel">
-        <div class="cc-filters cc-filters-asig">
+        <div class="cc-filters cc-filters-asig cc-filters-buscar">
             <label class="cc-filter-field" for="an-empresa">Empresa
                 <select id="an-empresa" class="cc-select cc-select-search">
                     <option value="">Seleccionar</option>
@@ -47,6 +47,18 @@
                     <option value="">Seleccionar</option>
                 </select>
             </label>
+            <div class="cc-filter-field cc-filter-go">
+                <button type="button" class="cc-btn cc-btn-ink" id="an-buscar">
+                    <i class="fa-solid fa-magnifying-glass"></i> Buscar
+                </button>
+                <button type="button" class="cc-btn" id="an-refrescar">
+                    <i class="fa-solid fa-arrows-rotate"></i> Refrescar
+                </button>
+                <button type="button" class="cc-btn" id="an-limpiar">
+                    <i class="fa-solid fa-eraser"></i> Limpiar
+                </button>
+            </div>
+            <p id="an-filter-note" class="cc-filter-note">Elige filtros y pulsa Buscar.</p>
         </div>
     </div>
 
@@ -62,7 +74,7 @@
     <div id="an-empty" class="cc-panel">
         <div class="cc-empty" style="padding:2.2rem 1rem">
             <i class="fa-solid fa-filter" id="an-empty-icon"></i>
-            <div id="an-empty-msg">Selecciona una empresa, o Todas, para ver el análisis.</div>
+            <div id="an-empty-msg">Elige una empresa (o Todas) y pulsa Buscar.</div>
         </div>
     </div>
 

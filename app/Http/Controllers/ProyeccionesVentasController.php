@@ -7763,10 +7763,11 @@ class ProyeccionesVentasController extends Controller
             'captura' => $this->capturaParaClientes($ciclo, [], []),
         ];
         $todas = in_array((string) $request->get('todas', ''), ['1', 'true', '*'], true);
-        if ($ciclo === '' || ($cliente === '' && $usuario === '' && ! $todas)) {
+        // Resumen por empresa concreta (sin cliente/usuario) también es válido.
+        if ($ciclo === '' || ($cliente === '' && $usuario === '' && ! $todas && $empresa === '')) {
             return response()->json($vacio);
         }
-        if ($todas) {
+        if ($todas || ($empresa !== '' && $cliente === '' && $usuario === '')) {
             @set_time_limit(180);
         }
 
