@@ -1895,8 +1895,14 @@
                     // Solo sincroniza estado local si seguimos en el mismo ciclo.
                     if (String(cicloActualCodigo() || '').toUpperCase() !== String(ciclo).toUpperCase()) return json;
                     CC.state.completados = CC.state.completados || {};
+                    CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+                    CC.state.budgetKeysFromServer[String(key).toUpperCase()] = true;
                     if (json.completado) CC.state.completados[key] = true;
                     else delete CC.state.completados[key];
+                    if (Array.isArray(json.meses) && json.meses.length) {
+                        CC.state.budgets = CC.state.budgets || {};
+                        CC.state.budgets[key] = normalizeLoadedMonths(json.meses, !!json.completado);
+                    }
                     if (json.precio_meses) setPrecioMesesLocal(empresa, cc, cuenta, json.precio_meses);
                     return json;
                 });
@@ -1997,8 +2003,14 @@
         (items || []).forEach(function (item) {
             if (!item || !item.key) return;
             CC.state.completados = CC.state.completados || {};
+            CC.state.budgetKeysFromServer = CC.state.budgetKeysFromServer || {};
+            CC.state.budgetKeysFromServer[String(item.key).toUpperCase()] = true;
             if (item.completado) CC.state.completados[item.key] = true;
             else delete CC.state.completados[item.key];
+            if (Array.isArray(item.meses) && item.meses.length) {
+                CC.state.budgets = CC.state.budgets || {};
+                CC.state.budgets[item.key] = normalizeLoadedMonths(item.meses, !!item.completado);
+            }
             if (!item.precio_meses) return;
             var parts = String(item.key).split('|');
             if (parts.length < 3) return;
@@ -2777,12 +2789,10 @@
     }
 
     /**
-     * En tipo Budget, Oct–Dic del input no deben copiar ventas-budget.
-     * Si la proyección guardada coincide con la ref de arriba, se vacía (queda 0/vacío).
-     */
-    /**
      * En tipo Budget, Oct–Dic del input son captura (arriba = solo ref).
-     * Si la proyección guardada copia ventas-budget, la vacía para dejar capturar.
+     * Si aún no hay fila en servidor y la proyección copia ventas-budget, la vacía
+     * en memoria para dejar capturar. Nunca pisa la BD: un PUT con null borraba
+     * oct–dic recién guardados cuando coincidían con la ref.
      */
     function scrubProyeccionOctDicSiCopiaBudgetRef() {
         var c = control.centro;
@@ -2793,6 +2803,8 @@
         var ctas = control._allCtas || cuentasEnriquecidas(c);
         var any = false;
         ctas.forEach(function (cta) {
+            // Ya capturado/guardado: respetar oct–dic aunque igualen la referencia.
+            if (budgetTieneFilaEnServidor(c.empresa, c.codigo, cta.codigo)) return;
             var hit = map[cta.codigo]
                 || map[String(cta.codigo || '').toUpperCase()]
                 || map[codigoCuentaKey(cta.codigo)]
@@ -2812,7 +2824,7 @@
                 }
             }
             if (changed) {
-                persistBudget(c.empresa, c.codigo, cta.codigo, next, { completado: false });
+                persistBudget(c.empresa, c.codigo, cta.codigo, next, { completado: false, localOnly: true });
                 any = true;
             }
         });
@@ -7319,19 +7331,29 @@
             inp.addEventListener('input', function () {
                 var td = inp.closest('td');
                 var codigo = inp.getAttribute('data-cta');
+                var c = control.centro;
                 var cta = (control._allCtas || []).filter(function (x) { return String(x.codigo) === String(codigo); })[0];
                 if (!td || !cta) return;
                 var shown = sanitizeQtyTyping(inp.value);
                 if (inp.value !== shown) inp.value = shown;
                 var raw = shown;
+                var mIdx = Number(inp.getAttribute('data-m'));
+                var months = (c ? pptoDe(c.empresa, c.codigo, cta, cta.gasto) : (cta.ppto || []).slice());
+                while (months.length < 12) months.push(null);
+                months = months.slice(0, 12);
+                months[mIdx] = readQtyInput(raw);
+                // Memoria al teclear (no solo al blur): así Guardar no pierde oct–dic.
+                if (c && !mesBloqueadoBudget(mIdx)) {
+                    persistBudget(c.empresa, c.codigo, codigo, months, { localOnly: true });
+                    if (cta) cta.ppto = months.slice();
+                }
                 var fake = {
                     gasto: cta.gasto,
-                    ppto: (cta.ppto || []).slice(),
+                    ppto: months.slice(),
                     codigo: cta.codigo
                 };
-                fake.ppto[Number(inp.getAttribute('data-m'))] = readQtyInput(raw);
-                var lockedMes = mesBloqueadoBudget(Number(inp.getAttribute('data-m')));
-                td.className = monthCellClass(fake, Number(inp.getAttribute('data-m'))).replace('cc-month-cell', 'cc-matrix-cell') +
+                var lockedMes = mesBloqueadoBudget(mIdx);
+                td.className = monthCellClass(fake, mIdx).replace('cc-month-cell', 'cc-matrix-cell') +
                     (lockedMes ? ' is-locked' : '');
                 inp.classList.toggle('is-neg', (Number(raw) || 0) < 0);
                 var rowLive = inp.closest('tr');
