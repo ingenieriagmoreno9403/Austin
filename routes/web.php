@@ -530,6 +530,26 @@ use App\Http\Controllers\ProyeccionesVentasController;
         Route::delete('/destroy/{id}', [LicitacionController::class,'destroy'])->name('licitaciones.destroy');
     });
 
+    // Módulo de Requisiciones (independiente de Licitaciones)
+    Route::prefix('/requisiciones')->name('requisiciones.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\RequisicionController::class, 'index'])->name('index');
+        Route::get('/crear', [\App\Http\Controllers\RequisicionController::class, 'create'])->name('create');
+        Route::post('/', [\App\Http\Controllers\RequisicionController::class, 'store'])->name('store');
+        Route::get('/config', [\App\Http\Controllers\RequisicionController::class, 'configRutas'])->name('config');
+        Route::post('/config/rutas', [\App\Http\Controllers\RequisicionController::class, 'storeRuta'])->name('config.rutas.store');
+        Route::put('/config/niveles/{nivelId}', [\App\Http\Controllers\RequisicionController::class, 'updateNivel'])->name('config.niveles.update');
+        Route::get('/api/productos', [\App\Http\Controllers\RequisicionController::class, 'buscarProductos'])->name('api.productos');
+        Route::post('/api/productos', [\App\Http\Controllers\RequisicionController::class, 'crearProductoRapido'])->name('api.productos.store');
+        Route::get('/{id}', [\App\Http\Controllers\RequisicionController::class, 'show'])->name('show');
+        Route::get('/{id}/editar', [\App\Http\Controllers\RequisicionController::class, 'edit'])->name('edit');
+        Route::put('/{id}', [\App\Http\Controllers\RequisicionController::class, 'update'])->name('update');
+        Route::post('/{id}/enviar', [\App\Http\Controllers\RequisicionController::class, 'enviar'])->name('enviar');
+        Route::post('/{id}/autorizar', [\App\Http\Controllers\RequisicionController::class, 'autorizar'])->name('autorizar');
+        Route::post('/{id}/rechazar', [\App\Http\Controllers\RequisicionController::class, 'rechazar'])->name('rechazar');
+        Route::post('/{id}/devolver', [\App\Http\Controllers\RequisicionController::class, 'devolver'])->name('devolver');
+        Route::post('/{id}/cancelar', [\App\Http\Controllers\RequisicionController::class, 'cancelar'])->name('cancelar');
+    });
+
     Route::prefix('/OrdenCompras')->group(function () {
         Route::get('/', [OrdCompraController::class,'index'])->name('ordcompras.index');
         Route::get('/show/{id}',[OrdCompraController::class,'show'])->name('ordcompras.show');
