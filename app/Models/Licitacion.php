@@ -17,6 +17,7 @@ class Licitacion extends Model
         'fecha_creacion',
         'fecha_limite',
         'descripcion_detalle',
+        'condiciones',
         'proveedor_adjudicado_id',
         'estado',
         'id_servicio',

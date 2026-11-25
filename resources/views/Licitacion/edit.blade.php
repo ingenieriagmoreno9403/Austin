@@ -68,6 +68,12 @@
                     <textarea name="descripcion_detalle" id="descripcion_detalle"
                         class="form-control" required>{{ $licitacion->descripcion_detalle }}</textarea>
                 </div>
+                <div class="col-12">
+                    <label class="lic-form__label" for="condiciones">Condiciones / reglas para proveedores <span class="text-danger">*</span></label>
+                    <textarea name="condiciones" id="condiciones" class="form-control" rows="5" required
+                        placeholder="Reglas de la empresa para poder cumplir esta licitación...">{{ $licitacion->condiciones }}</textarea>
+                    <div class="form-text">Sin catálogo: las defines tú al crear/editar. El proveedor las ve y debe aceptarlas para cotizar.</div>
+                </div>
             </div>
         </div>
 

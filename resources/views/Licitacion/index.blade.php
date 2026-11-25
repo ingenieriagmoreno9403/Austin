@@ -612,6 +612,13 @@
                                 <textarea class="form-control" id="descripcion_detalle" name="descripcion_detalle"
                                     rows="3" placeholder="Detalles de la licitación"></textarea>
                             </div>
+                            <div class="col-12">
+                                <label class="form-label" for="condiciones">Condiciones / reglas <span class="text-danger">*</span></label>
+                                <textarea class="form-control" id="condiciones" name="condiciones"
+                                    rows="4" required
+                                    placeholder="Reglas de la empresa para participar: plazos, documentación, entrega, penalizaciones, etc."></textarea>
+                                <div class="form-text">Las verá el proveedor invitado en su portal antes de cotizar.</div>
+                            </div>
                             <div class="col-md-12">
                                 <label class="form-label" for="tipo_param_id">Tipo / familia de evaluación</label>
                                 <select class="form-select" name="tipo_param_id" id="tipo_param_id">

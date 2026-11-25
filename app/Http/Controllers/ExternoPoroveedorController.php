@@ -381,6 +381,13 @@ class ExternoPoroveedorController extends Controller
                 $totalCotizadoProveedor += ((float) ($row['costo'] ?? 0)) * ((float) ($row['cantidad'] ?? 0));
             }
 
+            $relProv = DB::table('tbllicitacion_proveedor')
+                ->where('licitacion_id', $licitacion_id)
+                ->where('proveedor_id', $proveedor_id)
+                ->first();
+            $condicionesAceptadas = (bool) ($relProv->condiciones_aceptadas ?? false);
+            $condicionesAceptadasAt = $relProv->condiciones_aceptadas_at ?? null;
+
             return view('proveedorext.showexterno', compact(
                 'proveedor_id',
                 'varpantallas',
@@ -397,7 +404,9 @@ class ExternoPoroveedorController extends Controller
                 'parametrosEval',
                 'paramPrecioId',
                 'scoresProveedor',
-                'totalCotizadoProveedor'
+                'totalCotizadoProveedor',
+                'condicionesAceptadas',
+                'condicionesAceptadasAt'
             ));
 
         // } catch (\Illuminate\Database\QueryException $ex) {
@@ -668,6 +677,28 @@ class ExternoPoroveedorController extends Controller
                         'estado_provext' => 'Enviada',
                         'updated_at' => now()
                     ]);
+            }
+
+            // Condiciones definidas por quien creó la licitación
+            $condicionesTexto = trim((string) ($licitacion->condiciones ?? ''));
+            if ($condicionesTexto !== '') {
+                $yaAcepto = (bool) DB::table('tbllicitacion_proveedor')
+                    ->where('licitacion_id', $id)
+                    ->where('proveedor_id', $proveedor->id)
+                    ->value('condiciones_aceptadas');
+                if (! $yaAcepto && ! $request->boolean('acepto_condiciones')) {
+                    return back()->with('warningBD', 'Debes aceptar las condiciones de la licitación para cotizar.');
+                }
+                if (! $yaAcepto && $request->boolean('acepto_condiciones')) {
+                    DB::table('tbllicitacion_proveedor')
+                        ->where('licitacion_id', $id)
+                        ->where('proveedor_id', $proveedor->id)
+                        ->update([
+                            'condiciones_aceptadas' => 1,
+                            'condiciones_aceptadas_at' => now(),
+                            'updated_at' => now(),
+                        ]);
+                }
             }
 
             // Parámetros de evaluación de la licitación (entrega, garantía, soporte, etc.)

@@ -169,7 +169,7 @@ class LicitacionController extends Controller
         try {
             $payload = $request->only([
                 'nombre', 'folio', 'fecha_creacion', 'fecha_limite',
-                'descripcion_detalle', 'proveedor_adjudicado_id', 'estado', 'id_servicio', 'tipo_param_id',
+                'descripcion_detalle', 'condiciones', 'proveedor_adjudicado_id', 'estado', 'id_servicio', 'tipo_param_id',
             ]);
             if (empty($payload['tipo_param_id'])) {
                 $payload['tipo_param_id'] = null;

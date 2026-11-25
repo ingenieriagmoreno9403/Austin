@@ -102,6 +102,38 @@
             </div>
         </div>
 
+        @php
+            $condicionesTexto = trim((string) ($licitacion->condiciones ?? ''));
+            $condicionesAceptadas = !empty($condicionesAceptadas);
+        @endphp
+
+        @if($condicionesTexto !== '')
+            <div class="row mb-3">
+                <div class="col-12">
+                    <div class="card border-warning">
+                        <div class="card-header bg-warning-subtle">
+                            <h6 class="mb-0 text-dark">
+                                <i class="fa-solid fa-file-contract me-1"></i>
+                                Condiciones / reglas de esta licitación
+                            </h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="border rounded p-3 bg-light" style="white-space: pre-wrap; max-height: 280px; overflow:auto;">{{ $condicionesTexto }}</div>
+                            @if($condicionesAceptadas)
+                                <div class="alert alert-success py-2 mt-3 mb-0 small">
+                                    <i class="fa-solid fa-check-circle me-1"></i>
+                                    Ya aceptaste estas condiciones
+                                    @if(!empty($condicionesAceptadasAt))
+                                        el {{ \Carbon\Carbon::parse($condicionesAceptadasAt)->format('d/m/Y H:i') }}
+                                    @endif.
+                                </div>
+                            @endif
+                        </div>
+                    </div>
+                </div>
+            </div>
+        @endif
+
         <div class="row">
             <div class="col-md-12">
                 <div class="card">
@@ -125,6 +157,20 @@
 
                             <!-- Campo oculto para guardar borrador -->
                             <input type="hidden" name="is_draft" id="is_draft" value="0">
+
+                            @if($condicionesTexto !== '' && ! $condicionesAceptadas)
+                                <div class="alert alert-warning">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="1"
+                                               name="acepto_condiciones" id="acepto_condiciones" required>
+                                        <label class="form-check-label" for="acepto_condiciones">
+                                            He leído y <strong>acepto las condiciones / reglas</strong> de esta licitación para poder cotizar.
+                                        </label>
+                                    </div>
+                                </div>
+                            @elseif($condicionesTexto !== '')
+                                <input type="hidden" name="acepto_condiciones" value="1">
+                            @endif
 
                             <!-- Implementación LiveWire -->
                             @php
