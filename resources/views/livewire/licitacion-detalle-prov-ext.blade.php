@@ -27,14 +27,62 @@
 
         <div class="col-md-8 col-12 mb-3 pt-1">
             <div class="border-4 border-start border-warning p-3 fs-8 shadow rounded-2 text-start">
-                <i class="fa-solid fa-info-circle text-orange fs-7"></i> &nbsp; Introduce el precio y marca para cada producto. Recuerda guardar tus cambios periódicamente.
+                <i class="fa-solid fa-info-circle text-orange fs-7"></i> &nbsp;
+                @if(!empty($parametrosEval))
+                    Captura costos por producto y los <strong>parámetros de esta licitación</strong>
+                    @if(!empty($tipoParamNombre)) ({{ $tipoParamNombre }}) @endif.
+                    El precio del ranking se toma del total de costos.
+                @else
+                    Introduce el precio y marca para cada producto. Recuerda guardar tus cambios periódicamente.
+                @endif
             </div>
         </div>
 
         <div class="col-md-12 col-12 form-outline text-start">
-            <div class="row g-2 align-items-end mb-3">
-                <div class="col">
-                     <!-- Input Margen Global -->
+            @if(!empty($parametrosEval))
+                {{-- Reemplaza margen/fletes por los parámetros de la licitación --}}
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                    <div class="fw-bold" style="font-size:.95em">
+                        Parámetros de la licitación
+                        @if(!empty($tipoParamNombre))
+                            <span class="badge bg-secondary">{{ $tipoParamNombre }}</span>
+                        @endif
+                    </div>
+                    <span class="text-muted small">Misma ponderación que Comparar / ranking</span>
+                </div>
+                <div class="row g-2 align-items-end mb-3">
+                    @foreach($parametrosEval as $param)
+                        @php
+                            $pid = (int) ($param['id'] ?? 0);
+                            $esPrecio = $paramPrecioId && $pid === (int) $paramPrecioId;
+                            $valorActual = $esPrecio
+                                ? ($totalCotizadoProveedor > 0 ? $totalCotizadoProveedor : ($scoresProveedor[$pid] ?? $scoresProveedor[(string)$pid] ?? ''))
+                                : ($scoresProveedor[$pid] ?? $scoresProveedor[(string)$pid] ?? '');
+                            $sentidoLabel = (($param['sentido'] ?? '') === 'menor_mejor') ? 'Menor mejor' : 'Mayor mejor';
+                            $peso = rtrim(rtrim(number_format((float)($param['peso_pct'] ?? 0), 2), '0'), '.');
+                        @endphp
+                        <div class="col-6 col-md-3">
+                            <label class="form-label fw-bold mb-1" style="font-size: 0.9em;">
+                                {{ $param['nombre'] ?? 'Parámetro' }}
+                                <span class="badge bg-light text-dark border">{{ $peso }}%</span>
+                            </label>
+                            <div class="form-text mb-1" style="font-size:.7rem">
+                                {{ $param['tipo_dato'] ?? '' }} · {{ $sentidoLabel }}
+                                @if($esPrecio) · desde costos @endif
+                            </div>
+                            <input type="number"
+                                   step="0.0001"
+                                   class="form-control {{ $esPrecio ? 'bg-light' : '' }}"
+                                   name="param_scores[{{ $pid }}]"
+                                   value="{{ $valorActual !== '' && $valorActual !== null ? $valorActual : '' }}"
+                                   placeholder="{{ $esPrecio ? 'Al guardar' : 'Valor' }}"
+                                   @if($esPrecio) readonly @endif>
+                        </div>
+                    @endforeach
+                </div>
+            @else
+                <div class="row g-2 align-items-end mb-3">
+                    <div class="col">
                         <label for="margenGlobal" class="form-label fw-bold" style="font-size: 0.95em;">Margen General (%)</label>
                         <div class="input-group">
                         <span class="input-group-text"><i class="fa-solid fa-percent"></i></span>
@@ -48,56 +96,55 @@
                             wire:change="actualizarMargenGlobalHidden"
                             placeholder="Margen general para todos los productos">
                         </div>
-                </div>
-                <div class="col">
-                    <label for="fleteInterno" class="form-label mb-1" style="font-size: 0.95em;">Flete Interno</label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fa-solid fa-truck"></i></span>
-                        <input type="text"
-                               class="form-control formato-numero"
-                               style="width: 120px;"
-                               data-wire-model="fleteInterno"
-                               id="fleteInterno"
-                               value="{{ number_format($fleteInterno ?? 0, 2, '.', ',') }}"
-                               autocomplete="off"
-                               required
-                               placeholder="Interno" />
+                    </div>
+                    <div class="col">
+                        <label for="fleteInterno" class="form-label mb-1" style="font-size: 0.95em;">Flete Interno</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fa-solid fa-truck"></i></span>
+                            <input type="text"
+                                   class="form-control formato-numero"
+                                   style="width: 120px;"
+                                   data-wire-model="fleteInterno"
+                                   id="fleteInterno"
+                                   value="{{ number_format($fleteInterno ?? 0, 2, '.', ',') }}"
+                                   autocomplete="off"
+                                   placeholder="Interno" />
+                        </div>
+                    </div>
+                    <div class="col">
+                        <label for="fleteExterno" class="form-label mb-1" style="font-size: 0.95em;">Flete Externo</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fa-solid fa-truck-moving"></i></span>
+                            <input type="text"
+                                   class="form-control formato-numero"
+                                   style="width: 120px;"
+                                   data-wire-model="fleteExterno"
+                                   id="fleteExterno"
+                                   value="{{ number_format($fleteExterno ?? 0, 2, '.', ',') }}"
+                                   autocomplete="off"
+                                   placeholder="Externo" />
+                        </div>
+                    </div>
+                    <div class="col">
+                        <label for="fleteUniversal" class="form-label mb-1" style="font-size: 0.95em;">Flete Total</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fa-solid fa-dollar"></i></span>
+                            <input type="text"
+                                   class="form-control formato-numero"
+                                   style="width: 120px;"
+                                   data-wire-model="fleteUniversal"
+                                   id="fleteUniversal"
+                                   value="{{ number_format($fleteUniversal ?? 0, 2, '.', ',') }}"
+                                   autocomplete="off"
+                                   placeholder="Universal" />
+                        </div>
                     </div>
                 </div>
-                <div class="col">
-                    <label for="fleteExterno" class="form-label mb-1" style="font-size: 0.95em;">Flete Externo</label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fa-solid fa-truck-moving"></i></span>
-                        <input type="text"
-                               class="form-control formato-numero"
-                               style="width: 120px;"
-                               data-wire-model="fleteExterno"
-                               id="fleteExterno"
-                               value="{{ number_format($fleteExterno ?? 0, 2, '.', ',') }}"
-                               autocomplete="off"
-                               required
-                               placeholder="Externo" />
-                    </div>
-                </div>
-                <div class="col">
-                    <label for="fleteUniversal" class="form-label mb-1" style="font-size: 0.95em;">Flete Total</label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fa-solid fa-dollar"></i></span>
-                        <input type="text"
-                               class="form-control formato-numero"
-                               style="width: 120px;"
-                               data-wire-model="fleteUniversal"
-                               id="fleteUniversal"
-                               value="{{ number_format($fleteUniversal ?? 0, 2, '.', ',') }}"
-                               autocomplete="off"
-                               required
-                               placeholder="Universal" />
-                    </div>
-                </div>
-            </div>
+            @endif
         </div>
     </div>
 
+    @php $modoParamsLic = !empty($parametrosEval); @endphp
     <table class="table table-striped table-hover">
         <thead>
             <tr>
@@ -105,10 +152,12 @@
                 <th class="text-truncate">Cantidad</th>
                 <th class="text-truncate">U. Med</th>
                 <th class="text-truncate">Costo U.</th>
-                <th class="text-truncate">Margen</th>
-                <th class="text-truncate fw-bold">Cost + Margen</th>
-                <th class="text-truncate">Envio</th>
-                <th class="text-truncate fw-bold">Subtotal</th>
+                @if(!$modoParamsLic)
+                    <th class="text-truncate">Margen</th>
+                    <th class="text-truncate fw-bold">Cost + Margen</th>
+                    <th class="text-truncate">Envio</th>
+                    <th class="text-truncate fw-bold">Subtotal</th>
+                @endif
                 <th class="text-truncate fw-bold">Total</th>
                 <th class="text-truncate">Marca</th>
                 <th class="text-truncate">Observaciones</th>
@@ -131,10 +180,9 @@
                     <td><input type="number" class="inputInv" wire:model="filas.{{ $i }}.cantidad" readonly></td>
                     <td><input type="text" class="inputInv" wire:model="filas.{{ $i }}.umed" readonly></td>
 
-                    
                     <td>
-                        <input type="text" 
-                               class="form-control formato-numero" 
+                        <input type="text"
+                               class="form-control formato-numero"
                                data-index="{{ $i }}"
                                data-field="costo"
                                data-wire-model="filas.{{ $i }}.costo"
@@ -142,48 +190,49 @@
                                required>
                     </td>
 
-                    
+                    @if(!$modoParamsLic)
+                        <td>
+                            <input type="text"
+                                   class="form-control formato-numero"
+                                   data-index="{{ $i }}"
+                                   data-field="margen"
+                                   data-wire-model="filas.{{ $i }}.margen"
+                                   value="{{ number_format($fila['margen'] ?? 0, 2, '.', ',') }}"
+                                   required>
+                        </td>
 
-                     <td>
-                        <input type="text" 
-                               class="form-control formato-numero" 
-                               data-index="{{ $i }}"
-                               data-field="margen"
-                               data-wire-model="filas.{{ $i }}.margen"
-                               value="{{ number_format($fila['margen'] ?? 0, 2, '.', ',') }}"
-                               required>
-                    </td>
+                        <td class="table-warning">
+                            <input type="text"
+                                   class="inputInv formato-numero-readonly"
+                                   data-index="{{ $i }}"
+                                   data-field="margencost"
+                                   value="{{ number_format($fila['margencost'] ?? 0, 2, '.', ',') }}"
+                                   readonly>
+                        </td>
 
-                     <td class="table-warning">
-                        <input type="text" 
-                               class="inputInv formato-numero-readonly" 
-                               data-index="{{ $i }}"
-                               data-field="margencost"
-                               value="{{ number_format($fila['margencost'] ?? 0, 2, '.', ',') }}"
-                               readonly>
-                    </td>
+                        <td class="table-primary">
+                            <input type="text"
+                                   class="inputInv formato-numero-readonly"
+                                   data-index="{{ $i }}"
+                                   data-field="enviototal"
+                                   value="{{ number_format($fila['enviototal'] ?? 0, 2, '.', ',') }}"
+                                   readonly>
+                        </td>
 
-                    <td class="table-primary">
-                        <input type="text" 
-                               class="inputInv formato-numero-readonly"  
-                               data-index="{{ $i }}"
-                               data-field="enviototal"
-                               value="{{ number_format($fila['enviototal'] ?? 0, 2, '.', ',') }}"
-                               readonly>
-                    </td>
-                    
-                    <td class="table-secondary">
-                        <input type="text" 
-                               class="inputInv formato-numero-readonly" 
-                               data-index="{{ $i }}"
-                               data-field="subtotal"
-                               value="{{ number_format($fila['subtotal'] ?? 0, 2, '.', ',') }}"
-                               tabindex="-1"
-                               readonly>
-                    </td>
+                        <td class="table-secondary">
+                            <input type="text"
+                                   class="inputInv formato-numero-readonly"
+                                   data-index="{{ $i }}"
+                                   data-field="subtotal"
+                                   value="{{ number_format($fila['subtotal'] ?? 0, 2, '.', ',') }}"
+                                   tabindex="-1"
+                                   readonly>
+                        </td>
+                    @endif
+
                     <td class="table-success">
-                        <input type="text" 
-                               class="inputInv formato-numero-readonly" 
+                        <input type="text"
+                               class="inputInv formato-numero-readonly"
                                data-index="{{ $i }}"
                                data-field="total"
                                value="{{ number_format($fila['total'] ?? 0, 2, '.', ',') }}"

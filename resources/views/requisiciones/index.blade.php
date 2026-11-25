@@ -48,13 +48,11 @@
                         <h2 class="mb-0 text-marino fw-bold">Requisiciones</h2>
                         <p class="text-muted mb-0">
                             @if($vista === 'historial')
-                                Historial de requisiciones cerradas, rechazadas o atendidas
+                                Autorizadas (en licitaciones), atendidas, rechazadas o canceladas
                             @elseif($vista === 'autorizar')
                                 Pendientes de autorización asignadas a tu usuario
-                            @elseif($vista === 'autorizadas')
-                                Requisiciones autorizadas listas para Compras
                             @else
-                                Solicitud, autorización por niveles y seguimiento
+                                Solicitud y autorización por niveles (antes de pasar a licitaciones)
                             @endif
                         </p>
                     </div>
@@ -89,10 +87,10 @@
 
     <div class="row g-3 compras-kpi-row mb-3">
         <div class="col-6 col-md">
-            <a href="{{ route('requisiciones.index') }}" class="text-decoration-none">
-                <div class="compras-kpi compras-kpi--success {{ $vista === 'activas' ? 'border border-2' : '' }}">
+            <a href="{{ route('requisiciones.index', ['vista' => !empty($puedeVerTodas) ? 'todas' : 'activas']) }}" class="text-decoration-none">
+                <div class="compras-kpi compras-kpi--success {{ in_array($vista, ['activas', 'todas'], true) ? 'border border-2' : '' }}">
                     <div class="compras-kpi__body">
-                        <span class="compras-kpi__label">Mis activas</span>
+                        <span class="compras-kpi__label">{{ !empty($puedeVerTodas) ? 'Todas' : 'Mis activas' }}</span>
                         <span class="compras-kpi__value">{{ $kpis['mias'] ?? 0 }}</span>
                     </div>
                     <div class="compras-kpi__icon" aria-hidden="true"><i class="fa-solid fa-folder-open"></i></div>
@@ -107,17 +105,6 @@
                         <span class="compras-kpi__value">{{ $kpis['autorizar'] ?? 0 }}</span>
                     </div>
                     <div class="compras-kpi__icon" aria-hidden="true"><i class="fa-solid fa-user-check"></i></div>
-                </div>
-            </a>
-        </div>
-        <div class="col-6 col-md">
-            <a href="{{ route('requisiciones.index', ['vista' => 'autorizadas']) }}" class="text-decoration-none">
-                <div class="compras-kpi compras-kpi--info {{ $vista === 'autorizadas' ? 'border border-2' : '' }}">
-                    <div class="compras-kpi__body">
-                        <span class="compras-kpi__label">Autorizadas</span>
-                        <span class="compras-kpi__value">{{ $kpis['autorizadas'] ?? 0 }}</span>
-                    </div>
-                    <div class="compras-kpi__icon" aria-hidden="true"><i class="fa-solid fa-circle-check"></i></div>
                 </div>
             </a>
         </div>
@@ -141,10 +128,8 @@
                     Historial de requisiciones
                 @elseif($vista === 'autorizar')
                     Bandeja de autorización
-                @elseif($vista === 'autorizadas')
-                    Listas para Compras
                 @elseif($vista === 'todas')
-                    Todas las requisiciones
+                    Requisiciones en curso
                 @else
                     Listado de requisiciones
                 @endif
@@ -167,14 +152,21 @@
                     <label class="form-label">Estado</label>
                     <select name="estado" class="form-select form-select-sm">
                         <option value="">Todos</option>
-                        @foreach($estados as $k => $label)
-                            <option value="{{ $k }}" @selected(($filtros['estado'] ?? '') === $k)>{{ $label }}</option>
+                        @php
+                            $estadosVista = $vista === 'historial'
+                                ? \App\Models\Requisicion::ESTADOS_HISTORIAL
+                                : ($vista === 'autorizar'
+                                    ? ['pendiente_autorizacion', 'reenviada']
+                                    : \App\Models\Requisicion::ESTADOS_ACTIVAS);
+                        @endphp
+                        @foreach($estadosVista as $k)
+                            <option value="{{ $k }}" {{ ($filtros['estado'] ?? '') === $k ? 'selected' : '' }}>{{ $estados[$k] ?? $k }}</option>
                         @endforeach
                     </select>
                 </div>
                 <div class="col-md-2">
-                    <label class="form-label">Departamento</label>
-                    <input type="text" name="departamento" value="{{ $filtros['departamento'] ?? '' }}" class="form-control form-control-sm">
+                    <label class="form-label">Tipo</label>
+                    <input type="text" name="departamento" value="{{ $filtros['departamento'] ?? '' }}" class="form-control form-control-sm" placeholder="Tecnologías…">
                 </div>
                 <div class="col-md-2">
                     <label class="form-label">Desde</label>
@@ -200,7 +192,7 @@
                             <th class="text-center">Folio</th>
                             <th class="text-center">Fecha</th>
                             <th class="text-center">Solicitante</th>
-                            <th class="text-center">Depto</th>
+                            <th class="text-center">Tipo</th>
                             <th class="text-center">Prioridad</th>
                             <th class="text-center">Estado</th>
                             <th class="text-center">Responsable</th>
@@ -253,6 +245,14 @@
                                                     title="Cancelar">
                                                 <i class="fa-solid fa-ban"></i>
                                             </button>
+                                        @endif
+
+                                        @if($r->licitacion)
+                                            <a class="btn btn-baseColor btn-sm"
+                                               href="{{ route('licitaciones.editar', $r->licitacion->id) }}"
+                                               title="Ir a licitación {{ $r->licitacion->folio }}">
+                                                <i class="fa-solid fa-scale-balanced"></i>
+                                            </a>
                                         @endif
                                     </div>
                                 </td>

@@ -131,21 +131,33 @@
                     <label class="lic-form__label">Solicitante</label>
                     <input type="text" class="form-control" value="{{ auth()->user()->name }}" disabled>
                 </div>
-                <div class="col-md-4">
-                    <label class="lic-form__label" for="departamento">Departamento</label>
-                    <input type="text" id="departamento" name="departamento" class="form-control"
-                           value="{{ old('departamento', $requisicion->departamento ?? '') }}"
-                           placeholder="Ej. Mantenimiento">
+                <div class="col-md-6">
+                    <label class="lic-form__label" for="tipo_param_id">Tipo / familia <span class="text-danger">*</span></label>
+                    @php $tipoSel = old('tipo_param_id', $requisicion->tipo_param_id ?? ''); @endphp
+                    <select id="tipo_param_id" name="tipo_param_id" class="form-select" required>
+                        <option value="">Selecciona…</option>
+                        @foreach(($tiposParam ?? []) as $t)
+                            <option value="{{ $t->id }}" {{ (string) $tipoSel === (string) $t->id ? 'selected' : '' }}
+                                    title="{{ $t->descripcion }}">
+                                {{ $t->nombre }}
+                            </option>
+                        @endforeach
+                    </select>
+                    <div class="form-text">Define los parámetros de evaluación al pasar a licitación.</div>
                 </div>
-                <div class="col-md-4">
-                    <label class="lic-form__label" for="centro_costo">Centro de costos</label>
-                    <input type="text" id="centro_costo" name="centro_costo" class="form-control"
-                           value="{{ old('centro_costo', $requisicion->centro_costo ?? '') }}">
-                </div>
-                <div class="col-md-4">
-                    <label class="lic-form__label" for="almacen_destino">Almacén / ubicación destino</label>
-                    <input type="text" id="almacen_destino" name="almacen_destino" class="form-control"
-                           value="{{ old('almacen_destino', $requisicion->almacen_destino ?? '') }}">
+                <div class="col-md-6">
+                    <label class="lic-form__label" for="centro_costo">Centro de costos <span class="text-danger">*</span></label>
+                    @php $ccSel = old('centro_costo', $requisicion->centro_costo ?? ''); @endphp
+                    <select id="centro_costo" name="centro_costo" class="form-select" required>
+                        <option value="">Selecciona…</option>
+                        @forelse(($centrosCosto ?? []) as $cc)
+                            <option value="{{ $cc->value }}" {{ $ccSel === $cc->value ? 'selected' : '' }}>
+                                {{ $cc->label }}
+                            </option>
+                        @empty
+                            <option value="" disabled>No tienes centros de costo asignados</option>
+                        @endforelse
+                    </select>
                 </div>
                 <div class="col-12">
                     <label class="lic-form__label" for="justificacion">Justificación</label>
@@ -299,7 +311,7 @@
                                 @foreach(($unidadesMedida ?? []) as $u)
                                     <option value="{{ $u->id }}"
                                         data-abr="{{ $u->abreviacion ?? '' }}"
-                                        @selected(($u->abreviacion ?? '') === 'PZA' || strtoupper($u->nombre ?? '') === 'PIEZAS')>
+                                        {{ (($u->abreviacion ?? '') === 'PZA' || strtoupper($u->nombre ?? '') === 'PIEZAS') ? 'selected' : '' }}>
                                         {{ $u->nombre }}{{ !empty($u->abreviacion) ? ' ('.$u->abreviacion.')' : '' }}
                                     </option>
                                 @endforeach

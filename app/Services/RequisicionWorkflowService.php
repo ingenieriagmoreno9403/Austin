@@ -237,29 +237,129 @@ class RequisicionWorkflowService
                 $userId
             );
 
-            $siguiente = $req->aprobaciones()
-                ->where('estado', 'pendiente')
-                ->orderBy('orden')
-                ->first();
-
-            if ($siguiente) {
-                $req->nivel_actual_orden = $siguiente->orden;
-                $req->responsable_actual_id = $siguiente->responsable_id;
-                $req->estado = 'pendiente_autorizacion';
-                $req->updated_by = $userId;
-                $req->save();
-            } else {
-                $req->nivel_actual_orden = null;
-                $req->responsable_actual_id = null;
-                $req->estado = 'autorizada';
-                $req->autorizado_at = now();
-                $req->updated_by = $userId;
-                $req->save();
-                $this->registrarHistorial($req, 'autorizacion_final', $antes, 'autorizada', 'Completó la ruta de autorización', null, $userId);
-            }
+            $this->omitirPendientesNoObligatorios($req, $userId);
+            $quedoAutorizada = $this->avanzarAlSiguienteNivelObligatorio($req, $userId, $antes);
 
             return $req->fresh(['detalles', 'aprobaciones', 'historial', 'solicitante', 'responsableActual']);
         });
+    }
+
+    /**
+     * Actualiza obligatoriedad (y opcionalmente responsable) de niveles DE ESTA requisición.
+     * Si ya no quedan niveles obligatorios pendientes → queda autorizada.
+     *
+     * @param  array<int, array{id:int, obligatorio?:bool, responsable_id?:?int}>  $items
+     * @return array{requisicion: Requisicion, autorizada_ahora: bool}
+     */
+    public function actualizarNivelesDeRequisicion(Requisicion $req, array $items, int $userId): array
+    {
+        if (! in_array($req->estado, ['pendiente_autorizacion', 'reenviada', 'autorizada'], true)) {
+            throw ValidationException::withMessages([
+                'niveles' => 'Solo puedes ajustar niveles en requisiciones en autorización o ya autorizadas.',
+            ]);
+        }
+
+        return DB::transaction(function () use ($req, $items, $userId) {
+            $req->refresh();
+            $antes = $req->estado;
+            $porId = collect($items)->keyBy(fn ($i) => (int) ($i['id'] ?? 0));
+
+            foreach ($req->aprobaciones()->orderBy('orden')->get() as $a) {
+                if (! $porId->has($a->id)) {
+                    continue;
+                }
+                $cfg = $porId->get($a->id);
+                if (array_key_exists('obligatorio', $cfg)) {
+                    $a->obligatorio = (bool) $cfg['obligatorio'];
+                }
+                if (array_key_exists('responsable_id', $cfg) && $cfg['responsable_id']) {
+                    // Solo si aún está pendiente
+                    if ($a->estado === 'pendiente') {
+                        $a->responsable_id = (int) $cfg['responsable_id'];
+                    }
+                }
+                $a->save();
+            }
+
+            $this->omitirPendientesNoObligatorios($req, $userId);
+            $autorizadaAhora = $this->avanzarAlSiguienteNivelObligatorio($req, $userId, $antes);
+
+            $this->registrarHistorial(
+                $req,
+                'ajustar_niveles',
+                $antes,
+                $req->fresh()->estado,
+                'Se actualizó la obligatoriedad de niveles de esta requisición',
+                ['items' => $items],
+                $userId
+            );
+
+            return [
+                'requisicion' => $req->fresh(['detalles', 'aprobaciones.responsable', 'historial', 'solicitante', 'responsableActual', 'tipoParam']),
+                'autorizada_ahora' => $autorizadaAhora || $req->fresh()->estado === 'autorizada',
+            ];
+        });
+    }
+
+    protected function omitirPendientesNoObligatorios(Requisicion $req, int $userId): void
+    {
+        $req->aprobaciones()
+            ->where('estado', 'pendiente')
+            ->where('obligatorio', false)
+            ->update([
+                'estado' => 'omitido',
+                'decision' => 'omitir',
+                'comentario' => 'Nivel no obligatorio: se omite',
+                'fecha_decision' => now(),
+                'updated_at' => now(),
+            ]);
+    }
+
+    /**
+     * Avanza al siguiente nivel obligatorio pendiente, o cierra como autorizada.
+     */
+    protected function avanzarAlSiguienteNivelObligatorio(Requisicion $req, int $userId, ?string $estadoAntes = null): bool
+    {
+        $req->refresh();
+        $antes = $estadoAntes ?: $req->estado;
+
+        $siguiente = $req->aprobaciones()
+            ->where('estado', 'pendiente')
+            ->where('obligatorio', true)
+            ->orderBy('orden')
+            ->first();
+
+        if ($siguiente) {
+            $req->nivel_actual_orden = $siguiente->orden;
+            $req->responsable_actual_id = $siguiente->responsable_id;
+            $req->estado = 'pendiente_autorizacion';
+            $req->updated_by = $userId;
+            $req->save();
+
+            return false;
+        }
+
+        // Sin pendientes obligatorios: autorizada (aunque haya omitidos)
+        $req->nivel_actual_orden = null;
+        $req->responsable_actual_id = null;
+        $req->estado = 'autorizada';
+        $req->autorizado_at = $req->autorizado_at ?: now();
+        $req->updated_by = $userId;
+        $req->save();
+
+        if ($antes !== 'autorizada') {
+            $this->registrarHistorial(
+                $req,
+                'autorizacion_final',
+                $antes,
+                'autorizada',
+                'Completó los niveles obligatorios de autorización',
+                null,
+                $userId
+            );
+        }
+
+        return true;
     }
 
     public function rechazar(Requisicion $req, int $userId, string $comentario): Requisicion

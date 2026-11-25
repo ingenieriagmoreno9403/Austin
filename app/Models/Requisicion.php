@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Requisicion extends Model
 {
@@ -23,6 +24,24 @@ class Requisicion extends Model
         'cancelada' => 'Cancelada',
     ];
 
+    /** En curso (bandeja operativa). Autorizadas ya van a historial / licitaciones. */
+    public const ESTADOS_ACTIVAS = [
+        'borrador',
+        'pendiente_autorizacion',
+        'devuelta',
+        'reenviada',
+    ];
+
+    /** Cerradas para el flujo de requisición (autorizada → compras/licitación). */
+    public const ESTADOS_HISTORIAL = [
+        'autorizada',
+        'en_proceso_compra',
+        'atendida_parcial',
+        'atendida',
+        'rechazada',
+        'cancelada',
+    ];
+
     public const PRIORIDADES = [
         'baja' => 'Baja',
         'normal' => 'Normal',
@@ -34,6 +53,7 @@ class Requisicion extends Model
         'folio',
         'solicitante_id',
         'departamento',
+        'tipo_param_id',
         'centro_costo',
         'almacen_destino',
         'prioridad',
@@ -73,6 +93,11 @@ class Requisicion extends Model
         return $this->belongsTo(ReqRuta::class, 'ruta_id');
     }
 
+    public function tipoParam(): BelongsTo
+    {
+        return $this->belongsTo(LicParamTipo::class, 'tipo_param_id');
+    }
+
     public function detalles(): HasMany
     {
         return $this->hasMany(RequisicionDetalle::class, 'requisicion_id')->orderBy('orden');
@@ -88,9 +113,32 @@ class Requisicion extends Model
         return $this->hasMany(RequisicionHistorial::class, 'requisicion_id')->orderByDesc('id');
     }
 
+    public function licitacion(): HasOne
+    {
+        return $this->hasOne(Licitacion::class, 'requisicion_id');
+    }
+
     public function estadoLabel(): string
     {
-        return self::ESTADOS[$this->estado] ?? $this->estado;
+        $base = self::ESTADOS[$this->estado] ?? $this->estado;
+
+        if (in_array($this->estado, ['pendiente_autorizacion', 'reenviada'], true)) {
+            $nivel = null;
+            if ($this->relationLoaded('aprobaciones')) {
+                $pend = $this->aprobaciones->firstWhere('estado', 'pendiente');
+                $nivel = $pend?->nombre_nivel;
+            }
+            if (! $nivel && $this->nivel_actual_orden) {
+                $nivel = $this->aprobaciones()
+                    ->where('orden', $this->nivel_actual_orden)
+                    ->value('nombre_nivel');
+            }
+            if ($nivel) {
+                return 'Pendiente: '.$nivel;
+            }
+        }
+
+        return $base;
     }
 
     public function prioridadLabel(): string

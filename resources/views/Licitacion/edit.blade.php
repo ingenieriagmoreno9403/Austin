@@ -12,16 +12,16 @@
                     </div>
                     <div>
                         <h2 class="mb-0 text-marino fw-bold">
-                            Editar Comparativa
+                            Editar Licitación
                             <span class="badge bg-orange fs-6">Folio: {{ $licitacion->folio }}</span>
                         </h2>
-                        <p class="text-muted mb-0">Modificación de la comparativa de precios</p>
+                        <p class="text-muted mb-0">Modificación de la licitación de precios</p>
                     </div>
                 </div>
                 <div class="header-actions">
                     <a class="btn btn-baseColor-light" title="Comparar Precios"
                         href="{{ route('licitaciones.comparar', $licitacion->id) }}">
-                        <i class="fa-solid fa-scale-balanced me-1"></i> Ver Comparativa
+                        <i class="fa-solid fa-scale-balanced me-1"></i> Ver Licitación
                     </a>
                 </div>
             </div>
@@ -42,7 +42,7 @@
                     </div>
                     <div>
                         <h3 class="lic-form__section-title">1. Información general</h3>
-                        <p class="lic-form__section-subtitle">Datos básicos de la comparativa.</p>
+                        <p class="lic-form__section-subtitle">Datos básicos de la licitación.</p>
                     </div>
                 </div>
             </div>
@@ -140,7 +140,187 @@
             </button>
         </div>
     </form>
+
+    {{-- Parámetros de evaluación (formulario independiente) --}}
+    <div class="lic-form__section mt-3" id="seccion-parametros">
+        <div class="lic-form__section-head">
+            <div class="lic-form__section-title-wrap">
+                <div class="lic-form__section-icon" aria-hidden="true">
+                    <i class="fa-solid fa-sliders"></i>
+                </div>
+                <div>
+                    <h3 class="lic-form__section-title">Parámetros de evaluación</h3>
+                    <p class="lic-form__section-subtitle">
+                        Ponderación por tipo/familia. La suma de pesos debe ser 100%.
+                        @if($licitacion->tipoParam)
+                            · Tipo actual: <strong>{{ $licitacion->tipoParam->nombre }}</strong>
+                        @endif
+                    </p>
+                </div>
+            </div>
+            <a href="{{ route('licitaciones.parametros.index') }}" class="btn btn-sm btn-outline-secondary">Catálogo</a>
+        </div>
+
+        @if(session('success'))
+            <div class="alert alert-success py-2">{{ session('success') }}</div>
+        @endif
+        @if($errors->any())
+            <div class="alert alert-danger py-2">
+                <ul class="mb-0 ps-3">@foreach($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul>
+            </div>
+        @endif
+
+        <form method="post" action="{{ route('licitaciones.parametros.aplicarTipo', $licitacion->id) }}" class="row g-2 align-items-end mb-3">
+            @csrf
+            <div class="col-md-8">
+                <label class="form-label">Aplicar plantilla de tipo</label>
+                <select name="tipo_param_id" class="form-select" required>
+                    <option value="">Selecciona tipo…</option>
+                    @foreach(($tiposParam ?? []) as $t)
+                        <option value="{{ $t->id }}" {{ (int) $licitacion->tipo_param_id === (int) $t->id ? 'selected' : '' }}>{{ $t->nombre }}</option>
+                    @endforeach
+                </select>
+            </div>
+            <div class="col-md-4">
+                <button type="submit" class="btn btn-outline-secondary w-100"
+                        onclick="return confirm('Esto reemplaza los parámetros actuales de la licitación. ¿Continuar?');">
+                    <i class="fa-solid fa-copy me-1"></i> Aplicar plantilla
+                </button>
+            </div>
+        </form>
+
+        @php
+            $params = $licitacion->parametrosEval ?? collect();
+            $sumaPesos = round($params->sum('peso_pct'), 2);
+        @endphp
+
+        <form method="post" action="{{ route('licitaciones.parametros.sync', $licitacion->id) }}" id="form-params-lic">
+            @csrf
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="badge {{ abs($sumaPesos - 100) <= 0.05 ? 'bg-success' : 'bg-warning text-dark' }}">
+                    Suma pesos: <span id="suma-pesos-lic">{{ $sumaPesos }}</span>%
+                </span>
+                <button type="button" class="btn btn-sm btn-baseColor" id="btn-add-param-lic">
+                    <i class="fa-solid fa-plus"></i> Agregar parámetro
+                </button>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle" id="tabla-params-lic">
+                    <thead>
+                        <tr>
+                            <th>Orden</th>
+                            <th>Nombre</th>
+                            <th>Peso %</th>
+                            <th>Sentido</th>
+                            <th>Tipo</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @forelse($params as $i => $p)
+                            <tr data-row>
+                                <td>
+                                    <input type="hidden" name="parametros[{{ $i }}][id]" value="{{ $p->id }}">
+                                    <input type="number" name="parametros[{{ $i }}][orden]" class="form-control form-control-sm" value="{{ $p->orden }}" min="1" style="width:70px">
+                                </td>
+                                <td><input type="text" name="parametros[{{ $i }}][nombre]" class="form-control form-control-sm" value="{{ $p->nombre }}" required></td>
+                                <td><input type="number" step="0.01" min="0" max="100" name="parametros[{{ $i }}][peso_pct]" class="form-control form-control-sm peso-input" value="{{ $p->peso_pct }}" required style="width:90px"></td>
+                                <td>
+                                    <select name="parametros[{{ $i }}][sentido]" class="form-select form-select-sm">
+                                        @foreach(($sentidos ?? []) as $k => $label)
+                                            <option value="{{ $k }}" {{ $p->sentido === $k ? 'selected' : '' }}>{{ $label }}</option>
+                                        @endforeach
+                                    </select>
+                                </td>
+                                <td>
+                                    <select name="parametros[{{ $i }}][tipo_dato]" class="form-select form-select-sm">
+                                        @foreach(($tiposDato ?? []) as $k => $label)
+                                            <option value="{{ $k }}" {{ $p->tipo_dato === $k ? 'selected' : '' }}>{{ $label }}</option>
+                                        @endforeach
+                                    </select>
+                                </td>
+                                <td><button type="button" class="btn btn-sm btn-danger" data-del-param><i class="fa-solid fa-xmark"></i></button></td>
+                            </tr>
+                        @empty
+                            <tr class="text-muted" id="params-empty-row"><td colspan="6" class="text-center py-3">Sin parámetros. Aplica un tipo o agrega manualmente.</td></tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
+            <div class="text-end mt-2">
+                <button type="submit" class="btn btn-baseColor">
+                    <i class="fa-solid fa-floppy-disk me-1"></i> Guardar parámetros
+                </button>
+            </div>
+        </form>
+    </div>
 </div>
+
+<template id="tpl-param-lic">
+    <tr data-row>
+        <td>
+            <input type="hidden" name="parametros[__I__][id]" value="">
+            <input type="number" name="parametros[__I__][orden]" class="form-control form-control-sm" value="__ORD__" min="1" style="width:70px">
+        </td>
+        <td><input type="text" name="parametros[__I__][nombre]" class="form-control form-control-sm" required></td>
+        <td><input type="number" step="0.01" min="0" max="100" name="parametros[__I__][peso_pct]" class="form-control form-control-sm peso-input" value="0" required style="width:90px"></td>
+        <td>
+            <select name="parametros[__I__][sentido]" class="form-select form-select-sm">
+                @foreach(($sentidos ?? []) as $k => $label)
+                    <option value="{{ $k }}">{{ $label }}</option>
+                @endforeach
+            </select>
+        </td>
+        <td>
+            <select name="parametros[__I__][tipo_dato]" class="form-select form-select-sm">
+                @foreach(($tiposDato ?? []) as $k => $label)
+                    <option value="{{ $k }}">{{ $label }}</option>
+                @endforeach
+            </select>
+        </td>
+        <td><button type="button" class="btn btn-sm btn-danger" data-del-param><i class="fa-solid fa-xmark"></i></button></td>
+    </tr>
+</template>
+
+<script>
+(function () {
+    var tbody = document.querySelector('#tabla-params-lic tbody');
+    var tpl = document.getElementById('tpl-param-lic');
+    var idx = {{ $params->count() }};
+    var btnAdd = document.getElementById('btn-add-param-lic');
+    if (!tbody || !tpl || !btnAdd) return;
+
+    function recalc() {
+        var sum = 0;
+        tbody.querySelectorAll('.peso-input').forEach(function (el) {
+            sum += parseFloat(el.value || '0') || 0;
+        });
+        var badge = document.getElementById('suma-pesos-lic');
+        if (badge) badge.textContent = sum.toFixed(2);
+    }
+
+    btnAdd.addEventListener('click', function () {
+        var empty = document.getElementById('params-empty-row');
+        if (empty) empty.remove();
+        var html = tpl.innerHTML.replace(/__I__/g, String(idx++)).replace(/__ORD__/g, String(idx));
+        tbody.insertAdjacentHTML('beforeend', html);
+        recalc();
+    });
+
+    tbody.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('[data-del-param]');
+        if (!btn) return;
+        btn.closest('tr').remove();
+        if (!tbody.querySelector('[data-row]')) {
+            tbody.innerHTML = '<tr class="text-muted" id="params-empty-row"><td colspan="6" class="text-center py-3">Sin parámetros.</td></tr>';
+        }
+        recalc();
+    });
+    tbody.addEventListener('input', function (ev) {
+        if (ev.target.classList.contains('peso-input')) recalc();
+    });
+})();
+</script>
 
 <script src="{{ asset('js/validation.js') }}"></script>
 <script src="{{ asset('js/validaPDF.js') }}"></script>

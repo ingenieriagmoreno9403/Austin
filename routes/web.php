@@ -517,6 +517,15 @@ use App\Http\Controllers\ProyeccionesVentasController;
 
     Route::prefix('/licitaciones')->group(function () {
         Route::get('/', [LicitacionController::class,'index'])->name('licitaciones.index');
+        Route::get('/parametros', [\App\Http\Controllers\LicitacionParametroController::class, 'index'])->name('licitaciones.parametros.index');
+        Route::post('/parametros/tipos', [\App\Http\Controllers\LicitacionParametroController::class, 'storeTipo'])->name('licitaciones.parametros.tipos.store');
+        Route::put('/parametros/tipos/{id}', [\App\Http\Controllers\LicitacionParametroController::class, 'updateTipo'])->name('licitaciones.parametros.tipos.update');
+        Route::post('/parametros/tipos/{tipoId}/items', [\App\Http\Controllers\LicitacionParametroController::class, 'storeParametro'])->name('licitaciones.parametros.store');
+        Route::put('/parametros/items/{paramId}', [\App\Http\Controllers\LicitacionParametroController::class, 'updateParametro'])->name('licitaciones.parametros.update');
+        Route::delete('/parametros/items/{paramId}', [\App\Http\Controllers\LicitacionParametroController::class, 'destroyParametro'])->name('licitaciones.parametros.destroy');
+        Route::post('/{licitacionId}/parametros/sync', [\App\Http\Controllers\LicitacionParametroController::class, 'syncLicitacion'])->name('licitaciones.parametros.sync');
+        Route::post('/{licitacionId}/parametros/aplicar-tipo', [\App\Http\Controllers\LicitacionParametroController::class, 'aplicarTipo'])->name('licitaciones.parametros.aplicarTipo');
+        Route::post('/{licitacionId}/parametros/scores', [\App\Http\Controllers\LicitacionParametroController::class, 'guardarScores'])->name('licitaciones.parametros.scores');
         Route::get('/costos/{id}', [LicitacionController::class,'costos'])->name('licitaciones.costos');
         Route::get('/enviarcorreo/{id}', [LicitacionController::class, 'enviarCorreos'])->name('licitaciones.enviarcorreo');
         Route::get('/show/{id}',[LicitacionController::class,'show'])->name('licitaciones.show');
@@ -527,6 +536,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
         Route::put('/adjudicar-producto/{id}',[LicitacionController::class,'adjudicarPorProducto'])->name('licitaciones.adjudicarPorProducto');
         Route::post('/store',[LicitacionController::class,'store'])->name('licitaciones.store');
         Route::post('/storeSolicitud',[LicitacionController::class,'storeSolicitud'])->name('licitaciones.storeSolicitud');
+        Route::post('/desde-requisicion/{requisicionId}', [LicitacionController::class, 'storeDesdeRequisicion'])->name('licitaciones.desdeRequisicion');
         Route::delete('/destroy/{id}', [LicitacionController::class,'destroy'])->name('licitaciones.destroy');
     });
 
@@ -548,6 +558,7 @@ use App\Http\Controllers\ProyeccionesVentasController;
         Route::post('/{id}/rechazar', [\App\Http\Controllers\RequisicionController::class, 'rechazar'])->name('rechazar');
         Route::post('/{id}/devolver', [\App\Http\Controllers\RequisicionController::class, 'devolver'])->name('devolver');
         Route::post('/{id}/cancelar', [\App\Http\Controllers\RequisicionController::class, 'cancelar'])->name('cancelar');
+        Route::post('/{id}/niveles', [\App\Http\Controllers\RequisicionController::class, 'actualizarNiveles'])->name('niveles.update');
     });
 
     Route::prefix('/OrdenCompras')->group(function () {

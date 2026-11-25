@@ -6,7 +6,7 @@
                 ';
                 echo
                     'Swal.fire({
-                        title: "¡Comparativa calculada exitosamente!",
+                        title: "¡Licitación calculada exitosamente!",
                         text: "Proceso realizado de forma correcta",
                         icon: "success",
                         timer: 2000,
@@ -121,18 +121,18 @@
             }
         }
 
-        #modalNuevaComparativa .modal-content {
+        #modalNuevaLicitacion .modal-content {
             border: 1px solid var(--table-border, #e5e7eb);
             border-radius: 16px;
             box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
             overflow: hidden;
         }
-        #modalNuevaComparativa .modal-header {
+        #modalNuevaLicitacion .modal-header {
             border-bottom: 1px solid #eef2f7;
             padding: 1rem 1.25rem;
             background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
         }
-        #modalNuevaComparativa .modal-title {
+        #modalNuevaLicitacion .modal-title {
             display: flex;
             align-items: center;
             gap: 0.75rem;
@@ -140,7 +140,7 @@
             font-weight: 750;
             color: #0f172a;
         }
-        #modalNuevaComparativa .modal-title-icon {
+        #modalNuevaLicitacion .modal-title-icon {
             width: 40px;
             height: 40px;
             border-radius: 12px;
@@ -151,38 +151,38 @@
             color: #0284c7;
             font-size: 0.95rem;
         }
-        #modalNuevaComparativa .modal-subtitle {
+        #modalNuevaLicitacion .modal-subtitle {
             margin: 0.15rem 0 0;
             font-size: 0.78rem;
             font-weight: 500;
             color: #64748b;
         }
-        #modalNuevaComparativa .modal-body {
+        #modalNuevaLicitacion .modal-body {
             padding: 1.15rem 1.25rem;
         }
-        #modalNuevaComparativa .modal-footer {
+        #modalNuevaLicitacion .modal-footer {
             border-top: 1px solid #eef2f7;
             padding: 0.85rem 1.25rem;
             background: #f8fafc;
         }
-        #modalNuevaComparativa .form-label {
+        #modalNuevaLicitacion .form-label {
             font-size: 0.78rem;
             font-weight: 650;
             color: #64748b;
             margin-bottom: 0.35rem;
         }
-        #modalNuevaComparativa .form-control,
-        #modalNuevaComparativa .form-select {
+        #modalNuevaLicitacion .form-control,
+        #modalNuevaLicitacion .form-select {
             border: 1px solid var(--table-border, #e5e7eb);
             border-radius: 10px;
             min-height: 38px;
             font-size: 0.9rem;
         }
-        #modalNuevaComparativa .form-text {
+        #modalNuevaLicitacion .form-text {
             font-size: 0.72rem;
             color: #94a3b8;
         }
-        #modalNuevaComparativa textarea.form-control {
+        #modalNuevaLicitacion textarea.form-control {
             min-height: 72px;
         }
 
@@ -219,13 +219,32 @@
                         </div>
                         <div>
                             <h2 class="mb-0 text-marino fw-bold">Licitaciones</h2>
-                            <p class="text-muted mb-0">Administración de licitaciones de la empresa</p>
+                            <p class="text-muted mb-0">
+                                @if(($vista ?? 'activas') === 'historial')
+                                    Adjudicadas y cerradas
+                                @else
+                                    Borradores y licitaciones en curso
+                                @endif
+                            </p>
                         </div>
                     </div>
                     <div class="header-actions d-flex flex-wrap align-items-center gap-2">
-                        <button class="btn btn-baseColor" type="button" data-bs-toggle="modal" data-bs-target="#modalNuevaComparativa">
-                            <i class="fa-solid fa-plus"></i> Nueva Comparativa
+                        <a href="{{ route('licitaciones.index', ['vista' => 'activas']) }}"
+                           class="btn {{ ($vista ?? 'activas') === 'activas' ? 'btn-baseColor' : 'btn-baseColor-light' }}">
+                            <i class="fa-solid fa-folder-open"></i> En curso
+                        </a>
+                        <a href="{{ route('licitaciones.index', ['vista' => 'historial']) }}"
+                           class="btn {{ ($vista ?? 'activas') === 'historial' ? 'btn-baseColor' : 'btn-baseColor-light' }}">
+                            <i class="fa-solid fa-clock-rotate-left"></i> Historial
+                        </a>
+                        <a href="{{ route('licitaciones.parametros.index') }}" class="btn btn-outline-secondary">
+                            <i class="fa-solid fa-sliders"></i> Parámetros
+                        </a>
+                        @if(($vista ?? 'activas') !== 'historial')
+                        <button class="btn btn-baseColor" type="button" data-bs-toggle="modal" data-bs-target="#modalNuevaLicitacion">
+                            <i class="fa-solid fa-plus"></i> Nueva Licitación
                         </button>
+                        @endif
 
                         {{-- <button class="btn btn-baseColor-light position-relative" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasBottom2"
                             aria-controls="offcanvasBottom">
@@ -241,10 +260,11 @@
         </div>
 
         @php
+            $vistaActual = $vista ?? 'activas';
             $totalComparativas = count($varlista);
-            $activas = 0;
+            $activasKpi = (int) ($kpis['activas'] ?? 0);
+            $historialKpi = (int) ($kpis['historial'] ?? 0);
             $porVencer = 0;
-            $adjudicadas = 0;
             $conOC = 0;
             $hoyResumen = \Carbon\Carbon::now();
 
@@ -254,18 +274,12 @@
                 $estadoItem = isset($item->estado) ? trim(strtolower($item->estado)) : '';
                 $estaAdjudicadaItem = in_array($estadoItem, ['adjudicada', 'cerrada'], true);
 
-                $tieneOC = isset($conOrden[$item->id]);
-
-                if ($tieneOC) {
+                if (isset($conOrden[$item->id])) {
                     $conOC++;
                 }
 
-                if ($estaAdjudicadaItem) {
-                    $adjudicadas++;
-                } elseif ($diasRestantes >= 0 && $diasRestantes <= 3) {
+                if (! $estaAdjudicadaItem && $diasRestantes >= 0 && $diasRestantes <= 3) {
                     $porVencer++;
-                } elseif ($diasRestantes >= 0) {
-                    $activas++;
                 }
             }
         @endphp
@@ -273,32 +287,23 @@
         <!-- Tarjetas resumen -->
         <div class="row g-3 compras-kpi-row">
             <div class="col-6 col-md">
-                <div class="compras-kpi compras-kpi--secondary">
-                    <div class="compras-kpi__body">
-                        <span class="compras-kpi__label">Total</span>
-                        <span class="compras-kpi__value">{{ $totalComparativas }}</span>
+                <a href="{{ route('licitaciones.index', ['vista' => 'activas']) }}" class="text-decoration-none">
+                    <div class="compras-kpi compras-kpi--success {{ $vistaActual === 'activas' ? 'border border-2' : '' }}">
+                        <div class="compras-kpi__body">
+                            <span class="compras-kpi__label">En curso</span>
+                            <span class="compras-kpi__value">{{ $activasKpi }}</span>
+                        </div>
+                        <div class="compras-kpi__icon" aria-hidden="true">
+                            <i class="fa-solid fa-circle-check"></i>
+                        </div>
                     </div>
-                    <div class="compras-kpi__icon" aria-hidden="true">
-                        <i class="fa-solid fa-clipboard-list"></i>
-                    </div>
-                </div>
-            </div>
-            <div class="col-6 col-md">
-                <div class="compras-kpi compras-kpi--success">
-                    <div class="compras-kpi__body">
-                        <span class="compras-kpi__label">Activas</span>
-                        <span class="compras-kpi__value">{{ $activas }}</span>
-                    </div>
-                    <div class="compras-kpi__icon" aria-hidden="true">
-                        <i class="fa-solid fa-circle-check"></i>
-                    </div>
-                </div>
+                </a>
             </div>
             <div class="col-6 col-md">
                 <div class="compras-kpi compras-kpi--warning">
                     <div class="compras-kpi__body">
                         <span class="compras-kpi__label">Por vencer</span>
-                        <span class="compras-kpi__value">{{ $porVencer }}</span>
+                        <span class="compras-kpi__value">{{ $vistaActual === 'activas' ? $porVencer : '—' }}</span>
                     </div>
                     <div class="compras-kpi__icon" aria-hidden="true">
                         <i class="fa-solid fa-hourglass-half"></i>
@@ -306,13 +311,26 @@
                 </div>
             </div>
             <div class="col-6 col-md">
-                <div class="compras-kpi compras-kpi--info">
+                <a href="{{ route('licitaciones.index', ['vista' => 'historial']) }}" class="text-decoration-none">
+                    <div class="compras-kpi compras-kpi--info {{ $vistaActual === 'historial' ? 'border border-2' : '' }}">
+                        <div class="compras-kpi__body">
+                            <span class="compras-kpi__label">Historial</span>
+                            <span class="compras-kpi__value">{{ $historialKpi }}</span>
+                        </div>
+                        <div class="compras-kpi__icon" aria-hidden="true">
+                            <i class="fa-solid fa-trophy"></i>
+                        </div>
+                    </div>
+                </a>
+            </div>
+            <div class="col-6 col-md">
+                <div class="compras-kpi compras-kpi--secondary">
                     <div class="compras-kpi__body">
-                        <span class="compras-kpi__label">Adjudicadas</span>
-                        <span class="compras-kpi__value">{{ $adjudicadas }}</span>
+                        <span class="compras-kpi__label">{{ $vistaActual === 'historial' ? 'En este historial' : 'En este listado' }}</span>
+                        <span class="compras-kpi__value">{{ $totalComparativas }}</span>
                     </div>
                     <div class="compras-kpi__icon" aria-hidden="true">
-                        <i class="fa-solid fa-trophy"></i>
+                        <i class="fa-solid fa-clipboard-list"></i>
                     </div>
                 </div>
             </div>
@@ -332,9 +350,19 @@
         {{-- tabla de licitaciones principal  --}}
         <div class="card shadow mb-4">
             <div class="card-header py-3">
-                <h6 class="m-0 font-weight-bold text-orange">Listado de Comparativas</h6>
+                <h6 class="m-0 font-weight-bold text-orange">
+                    {{ ($vista ?? 'activas') === 'historial' ? 'Historial de licitaciones' : 'Listado de licitaciones' }}
+                </h6>
             </div>
             <div class="card-body">
+                @if(($vista ?? 'activas') === 'historial' && count($varlista) === 0)
+                    <div class="alert alert-info py-2 mb-3">
+                        Aquí solo aparecen licitaciones <strong>adjudicadas o cerradas</strong>.
+                        La de la requisición demo sigue en <strong>borrador</strong>:
+                        <a href="{{ route('licitaciones.index', ['vista' => 'activas']) }}" class="alert-link">ver En curso</a>
+                        (folio <code>LIC-REQ-REQ-DEMO-261125</code>).
+                    </div>
+                @endif
                 <div class="table-responsive">
                     <div class="filters licitacion-filters">
                         <form id="filtroLicitaciones" class="d-flex flex-wrap align-items-center">
@@ -342,11 +370,15 @@
                                 <label class="form-label" for="filtroEstado">Estado</label>
                                 <select class="form-select form-select-sm" id="filtroEstado" aria-label="Filtrar por estado">
                                     <option value="all">Todas</option>
-                                    <option value="activas">Activas</option>
-                                    <option value="vencer">Por vencer</option>
-                                    <option value="adjudicadas">Adjudicadas</option>
-                                    <option value="con_oc">Con OC</option>
-                                    <option value="vencidas">Vencidas</option>
+                                    @if(($vista ?? 'activas') === 'historial')
+                                        <option value="adjudicadas">Adjudicadas</option>
+                                        <option value="con_oc">Con OC</option>
+                                    @else
+                                        <option value="borradores">Borradores</option>
+                                        <option value="activas">Activas</option>
+                                        <option value="vencer">Por vencer</option>
+                                        <option value="vencidas">Vencidas</option>
+                                    @endif
                                 </select>
                             </div>
                             <button type="button" class="btn btn-baseColor-light btn-sm flex-shrink-0" id="btnAplicarFiltros">
@@ -399,8 +431,10 @@
                                 $tieneOrdenCompra = isset($conOrden[$vis->id]);
                                 
                                 // Lógica de estados - Con prioridad para adjudicada o cerrada
+                                $estadoDb = isset($vis->estado) ? trim(strtolower((string) $vis->estado)) : '';
+
                                 if ($estaAdjudicada) {
-                                    $estadoTextoBase = isset($vis->estado) && trim(strtolower($vis->estado)) === 'cerrada' ? 'Cerrada' : 'Adjudicada';
+                                    $estadoTextoBase = $estadoDb === 'cerrada' ? 'Cerrada' : 'Adjudicada';
                                     
                                     if ($tieneOrdenCompra) {
                                         $estadoClase = 'bg-purple text-white';
@@ -411,9 +445,12 @@
                                         $estadoTexto = $estadoTextoBase;
                                         $filterClass = 'adjudicadas';
                                     }
-                                } 
-                                // Solo aplicar lógica de fecha si no está adjudicada
-                                elseif ($diasRestantes < 0) {
+                                } elseif ($estadoDb === 'borrador') {
+                                    // Recién creada (ej. desde requisición): aún no está en cotización
+                                    $estadoClase = 'bg-secondary text-white';
+                                    $estadoTexto = 'Borrador';
+                                    $filterClass = 'borradores';
+                                } elseif ($diasRestantes < 0) {
                                     $estadoClase = 'bg-danger text-white';
                                     $estadoTexto = 'Vencida';
                                     $filterClass = 'vencidas';
@@ -434,10 +471,10 @@
                             <tr class="filter-row {{ $filterClass }}">
                                 <td class="text-center licitacion-acciones">
                                     <div class="licitacion-acciones-row">
-                                        {{-- <a class="btn btn-baseColor btn-sm" href="{{ route('licitaciones.show', $vis->id) }}" title="Ver Datos de Comparativa">
+                                        {{-- <a class="btn btn-baseColor btn-sm" href="{{ route('licitaciones.show', $vis->id) }}" title="Ver Datos de Licitación">
                                             <i class="fa-solid fa-eye"></i>
                                         </a> --}}
-                                        <a class="btn btn-primary btn-sm" title="Editar Comparativa"
+                                        <a class="btn btn-primary btn-sm" title="Editar Licitación"
                                             href="{{ route('licitaciones.editar', $vis->id) }}">
                                             <i class="fa-solid fa-pen"></i>
                                         </a>
@@ -452,7 +489,7 @@
                                             <i class="fa-solid fa-money-bill-wave"></i>
                                         </button>
                                         <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal"
-                                            data-bs-target="#cancelModal" data-id="{{ $vis->id }}" title="Eliminar Comparativa">
+                                            data-bs-target="#cancelModal" data-id="{{ $vis->id }}" title="Eliminar Licitación">
                                             <i class="fa-solid fa-trash"></i>
                                         </button>
                                     </div>
@@ -516,13 +553,13 @@
                 <div class="modal-content">
                     <div class="modal-header bg-danger text-white">
                         <h5 class="modal-title" id="exampleModalLabel">
-                            <i class="fa-solid fa-triangle-exclamation me-2"></i>Eliminar Comparativa
+                            <i class="fa-solid fa-triangle-exclamation me-2"></i>Eliminar Licitación
                         </h5>
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body text-center p-4">
                         <i class="fa-solid fa-trash fa-3x text-danger mb-3"></i>
-                        <h5 class="text-dark">¿Está seguro que desea eliminar esta Comparativa?</h5>
+                        <h5 class="text-dark">¿Está seguro que desea eliminar esta licitación?</h5>
                         <p class="text-muted">Esta acción no se puede deshacer.</p>
                     </div>
                     <div class="modal-footer">
@@ -539,20 +576,20 @@
     </div>
 
 
-    <!-- Modal Nueva Comparativa -->
-    <div class="modal fade" id="modalNuevaComparativa" tabindex="-1" aria-labelledby="modalNuevaComparativaLabel" aria-hidden="true">
+    <!-- Modal Nueva Licitación -->
+    <div class="modal fade" id="modalNuevaLicitacion" tabindex="-1" aria-labelledby="modalNuevaLicitacionLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content">
                 <form action="{{ route('licitaciones.store') }}" method="POST" class="needs-validation" novalidate>
                     @csrf
                     <div class="modal-header">
-                        <div class="modal-title" id="modalNuevaComparativaLabel">
+                        <div class="modal-title" id="modalNuevaLicitacionLabel">
                             <span class="modal-title-icon" aria-hidden="true">
                                 <i class="fa-solid fa-scale-balanced"></i>
                             </span>
                             <div>
-                                <div>Nueva Comparativa</div>
-                                <p class="modal-subtitle">Captura la información general para iniciar la comparativa.</p>
+                                <div>Nueva Licitación</div>
+                                <p class="modal-subtitle">Captura la información general para iniciar la licitación.</p>
                             </div>
                         </div>
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
@@ -563,7 +600,7 @@
                                 <label class="form-label" for="folio">Folio <span class="text-danger">*</span></label>
                                 <input type="text" class="form-control" name="folio" id="folio" minlength="3"
                                     maxlength="10" placeholder="Ej: COT-192" required>
-                                <div class="form-text">Folio único de la comparativa</div>
+                                <div class="form-text">Folio único de la licitación</div>
                             </div>
                             <div class="col-md-8">
                                 <label class="form-label" for="nombre">Nombre <span class="text-danger">*</span></label>
@@ -573,7 +610,17 @@
                             <div class="col-12">
                                 <label class="form-label" for="descripcion_detalle">Descripción</label>
                                 <textarea class="form-control" id="descripcion_detalle" name="descripcion_detalle"
-                                    rows="3" placeholder="Detalles de la comparativa"></textarea>
+                                    rows="3" placeholder="Detalles de la licitación"></textarea>
+                            </div>
+                            <div class="col-md-12">
+                                <label class="form-label" for="tipo_param_id">Tipo / familia de evaluación</label>
+                                <select class="form-select" name="tipo_param_id" id="tipo_param_id">
+                                    <option value="">Sin plantilla (definir después)</option>
+                                    @foreach(($tiposParam ?? []) as $tipo)
+                                        <option value="{{ $tipo->id }}">{{ $tipo->nombre }}</option>
+                                    @endforeach
+                                </select>
+                                <div class="form-text">Copia parámetros precargados (precio, entrega, etc.) editables por licitación.</div>
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label" for="fecha_creacion">Fecha de inicio <span class="text-danger">*</span></label>
@@ -592,7 +639,7 @@
                             Cancelar
                         </button>
                         <button class="btn btn-baseColor" type="submit">
-                            <i class="fa-solid fa-check me-1"></i>Crear Comparativa
+                            <i class="fa-solid fa-check me-1"></i>Crear Licitación
                         </button>
                     </div>
                 </form>
@@ -605,7 +652,7 @@
         style="height:80vh">
         <div class="offcanvas-header bg-light">
             <h5 class="offcanvas-title" id="offcanvasBottomLabel">
-                <i class="fa-solid fa-plus me-2"></i>Nueva Comparativa desde Solicitud
+                <i class="fa-solid fa-plus me-2"></i>Nueva Licitación desde Solicitud
             </h5>
             
             <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
@@ -659,13 +706,13 @@
                                 <div class="col-md-6">
                                     <!-- nombre -->
                                     <div class="form-outline">
-                                        <label class="form-label" for="nombre">Nombre de Comparativa</label>
+                                        <label class="form-label" for="nombre">Nombre de Licitación</label>
                                         <div class="input-group">
                                             <span class="input-group-text"><i class="fa-solid fa-tag"></i></span>
                                             <input type="text" class="form-control" name="nombre" id="nombre"
                                                 placeholder="Ej: Compra de equipos informáticos" required />
                                         </div>
-                                        <div class="form-text">Ingrese un nombre descriptivo para la comparativa</div>
+                                        <div class="form-text">Ingrese un nombre descriptivo para la licitación</div>
                                     </div>
                                 </div>
                                 
@@ -676,7 +723,7 @@
                                         <div class="input-group">
                                             <span class="input-group-text"><i class="fa-solid fa-align-left"></i></span>
                                             <textarea class="form-control" id="descripcion_detalle" name="descripcion_detalle" 
-                                                rows="1" placeholder="Detalles de la Comparativa"></textarea>
+                                                rows="1" placeholder="Detalles de la licitación"></textarea>
                                         </div>
                                     </div>
                                 </div>
@@ -709,13 +756,13 @@
                         </div>
                     </div>
 
-                    <!-- Guardar Comparativa -->
+                    <!-- Guardar Licitación -->
                     <div class="text-end">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="offcanvas">
                             <i class="fa-solid fa-xmark me-1"></i>Cancelar
                         </button>
                         <button class="btn btn-primary" type="submit">
-                            <i class="fa-solid fa-check me-1"></i>Crear Comparativa
+                            <i class="fa-solid fa-check me-1"></i>Crear Licitación
                         </button>
                     </div>
                 </form>

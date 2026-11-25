@@ -12,7 +12,7 @@
                         </div>
                         <div>
                             <h2 class="mb-0 text-marino fw-bold">Detalle de Licitación</h2>
-                            <p class="text-muted mb-0">Consulta de información de la comparativa</p>
+                            <p class="text-muted mb-0">Consulta de Información de la Licitación</p>
                         </div>
                     </div>
                 </div>

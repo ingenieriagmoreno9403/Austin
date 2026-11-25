@@ -11,8 +11,8 @@
                         <i class="fas fa-file-signature"></i>
                     </div>
                     <div>
-                        <h2 class="mb-0 text-marino fw-bold">Nueva Comparativa</h2>
-                        <p class="text-muted mb-0">Registro de una nueva comparativa de precios</p>
+                        <h2 class="mb-0 text-marino fw-bold">Nueva Licitación</h2>
+                        <p class="text-muted mb-0">Registro de una Nueva Licitación de precios</p>
                     </div>
                 </div>
             </div>
@@ -32,7 +32,7 @@
                     </div>
                     <div>
                         <h3 class="lic-form__section-title">1. Información general</h3>
-                        <p class="lic-form__section-subtitle">Datos básicos de la comparativa.</p>
+                        <p class="lic-form__section-subtitle">Datos básicos de la licitación.</p>
                     </div>
                 </div>
             </div>
@@ -99,7 +99,7 @@
             </button>
 
             <button type="button" id="btn-guardar" onclick="guardarLicitacion()" class="btn btn-baseColor">
-                <i class="fa-solid fa-check me-1"></i> Crear Comparativa
+                <i class="fa-solid fa-check me-1"></i> Crear Licitación
             </button>
 
             <button type="button" id="btn-guardando" class="btn btn-baseColor d-none" disabled>

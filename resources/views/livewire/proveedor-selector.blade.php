@@ -72,7 +72,7 @@
                 </div>
                 <p class="prov-selector__empty-title">Selecciona proveedores</p>
                 <p class="prov-selector__empty-text">
-                    Usa el botón <strong>+</strong> de la izquierda para invitar al menos un proveedor a esta comparativa.
+                    Usa el botón <strong>+</strong> de la izquierda para invitar al menos un proveedor a esta licitación.
                 </p>
             </div>
         @else

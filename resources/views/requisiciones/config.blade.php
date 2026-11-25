@@ -14,12 +14,19 @@
             <div class="text-muted" style="font-size:.78rem">
                 <a href="{{ route('requisiciones.index') }}">Requisiciones</a> / Rutas de autorización
             </div>
-            <h1 class="h4 mb-0 fw-bold">Configuración de rutas</h1>
+            <h1 class="h4 mb-0 fw-bold">Plantilla de rutas (nuevas requisiciones)</h1>
+            <p class="text-muted mb-0" style="font-size:.85rem">
+                Esto solo aplica al <strong>enviar</strong> una requisición nueva. La obligatoriedad de una requisición ya en curso se ajusta en su detalle.
+            </p>
         </div>
         <a href="{{ route('requisiciones.index') }}" class="btn btn-sm btn-outline-secondary">Lista</a>
     </div>
 
     @if(session('success')) <div class="alert alert-success py-2">{{ session('success') }}</div> @endif
+    <div class="alert alert-info py-2">
+        Para quitar un nivel obligatorio de una requisición concreta (ej. REQ-AUTH…), abre esa requisición y usa
+        <strong>Niveles de esta requisición</strong>. Si con eso ya queda autorizada, pasa a Licitaciones.
+    </div>
 
     <div class="req-card">
         <h3>Nueva ruta</h3>
@@ -70,7 +77,7 @@
                             <select name="responsable_user_id" class="form-select form-select-sm">
                                 <option value="">— Sin asignar —</option>
                                 @foreach($users as $u)
-                                    <option value="{{ $u->id }}" @selected((int)$nivel->responsable_user_id === (int)$u->id)>{{ $u->name }}</option>
+                                    <option value="{{ $u->id }}" {{ (int) $nivel->responsable_user_id === (int) $u->id ? 'selected' : '' }}>{{ $u->name }}</option>
                                 @endforeach
                             </select>
                         </div>
@@ -85,7 +92,7 @@
                         </div>
                         <div class="col-md-1">
                             <div class="form-check mt-4">
-                                <input class="form-check-input" type="checkbox" name="obligatorio" value="1" id="ob-{{ $nivel->id }}" @checked($nivel->obligatorio)>
+                                <input class="form-check-input" type="checkbox" name="obligatorio" value="1" id="ob-{{ $nivel->id }}" {{ $nivel->obligatorio ? 'checked' : '' }}>
                                 <label class="form-check-label" for="ob-{{ $nivel->id }}">Oblig.</label>
                             </div>
                         </div>

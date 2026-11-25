@@ -23,6 +23,9 @@
             <h1 class="h4 mb-1 fw-bold">{{ $requisicion->folio }}</h1>
             <span class="req-badge">{{ $requisicion->estadoLabel() }}</span>
             <span class="req-badge ms-1">{{ $requisicion->prioridadLabel() }}</span>
+            @if(in_array($requisicion->estado, ['pendiente_autorizacion','reenviada'], true) && $requisicion->responsableActual)
+                <span class="req-badge ms-1">Espera a: {{ $requisicion->responsableActual->name }}</span>
+            @endif
         </div>
         <div class="d-flex gap-2 flex-wrap">
             <a href="{{ route('requisiciones.index') }}" class="btn btn-sm btn-outline-secondary">Lista</a>
@@ -32,6 +35,21 @@
             @if($puedeEnviar)
                 <form method="post" action="{{ route('requisiciones.enviar', $requisicion->id) }}">@csrf
                     <button class="btn btn-sm btn-dark">Enviar a autorización</button>
+                </form>
+            @endif
+            @if($requisicion->licitacion)
+                <a href="{{ route('licitaciones.editar', $requisicion->licitacion->id) }}"
+                   class="btn btn-sm btn-baseColor"
+                   title="Abrir licitación {{ $requisicion->licitacion->folio }}">
+                    <i class="fa-solid fa-scale-balanced"></i> Ir a licitación
+                </a>
+            @elseif(in_array($requisicion->estado, ['autorizada', 'en_proceso_compra', 'atendida_parcial'], true))
+                <form method="post" action="{{ route('licitaciones.desdeRequisicion', $requisicion->id) }}">
+                    @csrf
+                    <button class="btn btn-sm btn-baseColor" type="submit"
+                            onclick="return confirm('¿Crear licitación con las partidas catalogadas de esta requisición?');">
+                        <i class="fa-solid fa-scale-balanced"></i> Crear licitación
+                    </button>
                 </form>
             @endif
         </div>
@@ -49,9 +67,8 @@
                 <h3>Encabezado</h3>
                 <div class="row g-2" style="font-size:.9rem">
                     <div class="col-md-6"><strong>Solicitante:</strong> {{ $requisicion->solicitante->name ?? '—' }}</div>
-                    <div class="col-md-6"><strong>Departamento:</strong> {{ $requisicion->departamento ?: '—' }}</div>
+                    <div class="col-md-6"><strong>Tipo / familia:</strong> {{ optional($requisicion->tipoParam)->nombre ?: ($requisicion->departamento ?: '—') }}</div>
                     <div class="col-md-6"><strong>Centro de costos:</strong> {{ $requisicion->centro_costo ?: '—' }}</div>
-                    <div class="col-md-6"><strong>Almacén destino:</strong> {{ $requisicion->almacen_destino ?: '—' }}</div>
                     <div class="col-md-6"><strong>Fecha solicitud:</strong> {{ optional($requisicion->fecha_solicitud)->format('d/m/Y') }}</div>
                     <div class="col-md-6"><strong>Fecha requerida:</strong> {{ optional($requisicion->fecha_requerida)->format('d/m/Y') ?: '—' }}</div>
                     <div class="col-md-6"><strong>Responsable actual:</strong> {{ $requisicion->responsableActual->name ?? '—' }}</div>
@@ -119,17 +136,70 @@
 
         <div class="col-lg-4">
             <div class="req-card">
-                <h3>Niveles de autorización</h3>
-                @forelse($requisicion->aprobaciones as $a)
-                    <div class="mb-2 p-2 border rounded-3" style="font-size:.82rem">
-                        <div class="fw-bold">{{ $a->orden }}. {{ $a->nombre_nivel }}</div>
-                        <div>{{ $a->responsable->name ?? '—' }}</div>
-                        <div class="text-muted">{{ ucfirst($a->estado) }} @if($a->fecha_decision)· {{ $a->fecha_decision->format('d/m/Y H:i') }}@endif</div>
-                        @if($a->comentario)<div class="mt-1">“{{ $a->comentario }}”</div>@endif
-                    </div>
-                @empty
-                    <div class="text-muted" style="font-size:.85rem">Aún no se ha enviado a autorización.</div>
-                @endforelse
+                <h3>Niveles de esta requisición</h3>
+                <p class="text-muted mb-2" style="font-size:.75rem">
+                    La obligatoriedad es <strong>por requisición</strong>, no la plantilla global.
+                </p>
+
+                @if(!empty($puedeAjustarNiveles) && $requisicion->aprobaciones->count())
+                    <form method="post" action="{{ route('requisiciones.niveles.update', $requisicion->id) }}">
+                        @csrf
+                        @foreach($requisicion->aprobaciones as $i => $a)
+                            <div class="mb-2 p-2 border rounded-3" style="font-size:.82rem">
+                                <input type="hidden" name="niveles[{{ $i }}][id]" value="{{ $a->id }}">
+                                <div class="fw-bold">{{ $a->orden }}. {{ $a->nombre_nivel }}</div>
+                                <div class="row g-1 align-items-center mt-1">
+                                    <div class="col-12">
+                                        <label class="form-label mb-0" style="font-size:.7rem">Responsable</label>
+                                        @if($a->estado === 'pendiente')
+                                            <select name="niveles[{{ $i }}][responsable_id]" class="form-select form-select-sm">
+                                                @foreach($users as $u)
+                                                    <option value="{{ $u->id }}" {{ (int)$a->responsable_id === (int)$u->id ? 'selected' : '' }}>{{ $u->name }}</option>
+                                                @endforeach
+                                            </select>
+                                        @else
+                                            <div>{{ $a->responsable->name ?? '—' }}</div>
+                                            <input type="hidden" name="niveles[{{ $i }}][responsable_id]" value="{{ $a->responsable_id }}">
+                                        @endif
+                                    </div>
+                                    <div class="col-12 mt-1">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" name="niveles[{{ $i }}][obligatorio]" value="1"
+                                                   id="ob-req-{{ $a->id }}" {{ $a->obligatorio ? 'checked' : '' }}
+                                                   {{ in_array($a->estado, ['autorizado','rechazado'], true) ? 'disabled' : '' }}>
+                                            <label class="form-check-label" for="ob-req-{{ $a->id }}">Obligatorio</label>
+                                        </div>
+                                        @if(in_array($a->estado, ['autorizado','rechazado'], true))
+                                            <input type="hidden" name="niveles[{{ $i }}][obligatorio]" value="{{ $a->obligatorio ? 1 : 0 }}">
+                                        @endif
+                                    </div>
+                                </div>
+                                <div class="text-muted mt-1">
+                                    {{ ucfirst($a->estado) }}
+                                    @if($a->fecha_decision)· {{ $a->fecha_decision->format('d/m/Y H:i') }}@endif
+                                </div>
+                                @if($a->comentario)<div class="mt-1">“{{ $a->comentario }}”</div>@endif
+                            </div>
+                        @endforeach
+                        <button class="btn btn-sm btn-baseColor w-100" type="submit"
+                                onclick="return confirm('¿Actualizar niveles de esta requisición? Si ya no quedan obligatorios pendientes, quedará autorizada y pasará a licitación.');">
+                            Guardar niveles de la requisición
+                        </button>
+                    </form>
+                @else
+                    @forelse($requisicion->aprobaciones as $a)
+                        <div class="mb-2 p-2 border rounded-3" style="font-size:.82rem">
+                            <div class="fw-bold">{{ $a->orden }}. {{ $a->nombre_nivel }}
+                                @if($a->obligatorio)<span class="badge bg-dark ms-1">Oblig.</span>@else<span class="badge bg-secondary ms-1">Opcional</span>@endif
+                            </div>
+                            <div>{{ $a->responsable->name ?? '—' }}</div>
+                            <div class="text-muted">{{ ucfirst($a->estado) }} @if($a->fecha_decision)· {{ $a->fecha_decision->format('d/m/Y H:i') }}@endif</div>
+                            @if($a->comentario)<div class="mt-1">“{{ $a->comentario }}”</div>@endif
+                        </div>
+                    @empty
+                        <div class="text-muted" style="font-size:.85rem">Aún no se ha enviado a autorización.</div>
+                    @endforelse
+                @endif
             </div>
 
             <div class="req-card">

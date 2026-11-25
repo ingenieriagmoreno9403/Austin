@@ -367,7 +367,7 @@
                             <i class="fa-solid fa-plus"></i> Nueva
                         </a>
                         <button class="btn btn-baseColor-light" type="button" data-bs-toggle="modal" data-bs-target="#modalDesdeLicitacion">
-                            <i class="fa-solid fa-file-circle-plus"></i> Desde Comparativa
+                            <i class="fa-solid fa-file-circle-plus"></i> Desde Licitación
                         </button>
 
                         @if($permiso2 == 'revision_ordenesCompra')
@@ -762,25 +762,25 @@
                 @csrf
                 <div class="modal-content">
                     <div class="modal-header bg-primary text-white">
-                        <h5 class="modal-title" id="modalDesdeLicitacionLabel">Generar Orden de Compra desde Comparativa</h5>
+                        <h5 class="modal-title" id="modalDesdeLicitacionLabel">Generar Orden de Compra Desde Licitación</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
                     </div>
                     <div class="modal-body">
                         <div class="alert alert-info">
-                            <i class="fas fa-info-circle"></i> Al generar una orden de compra desde una comparativa, se aplicarán los precios y condiciones acordados con el proveedor adjudicado.
+                            <i class="fas fa-info-circle"></i> Al generar una orden de compra desde una licitación, se aplicarán los precios y condiciones acordados con el proveedor adjudicado.
                             <hr>
                             <p class="mb-0"><strong>Requisitos:</strong></p>
                             <ul class="mb-0">
-                                <li>La comparativa debe estar en estado "adjudicada"</li>
+                                <li>La licitación debe estar en estado "adjudicada"</li>
                                 <li>Debe tener un proveedor adjudicado válido</li>
                                 <li>Todos los productos deben tener precios asignados por el proveedor adjudicado</li>
                             </ul>
                         </div>
                         
                         <div class="mb-3">
-                            <label for="licitacion_id" class="form-label">Seleccionar comparativa</label>
+                            <label for="licitacion_id" class="form-label">Seleccionar licitación</label>
                             <select class="form-select" id="licitacion_id" name="licitacion_id" required>
-                                <option value="">-- Selecciona una comparativa --</option>
+                                <option value="">-- Selecciona una licitación --</option>
                                 @foreach ($licitacionesDisponibles as $licitacion)
                                     <option value="{{ $licitacion->id }}">
                                         {{ $licitacion->id }} - {{ $licitacion->nombre }} 
@@ -845,7 +845,7 @@
                                     <div class="card-body">
                                         <div class="row">
                                             <div class="col-md-6">
-                                                <p><strong>No. Comparativa:</strong> <span id="licitacionId"></span></p>
+                                                <p><strong>No. Licitación:</strong> <span id="licitacionId"></span></p>
                                                 <p><strong>Nombre:</strong> <span id="compLicitacionNombre"></span></p>
                                                 <p><strong>Fecha:</strong> <span id="compLicitacionFecha"></span></p>
                                             </div>

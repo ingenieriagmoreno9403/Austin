@@ -254,7 +254,7 @@
                             <div class="form-check">
                                 <input class="form-check-input" name="licitaciones" type="checkbox" value="si" id="defaultCheck1">
                                 <label class="form-check-label" for="defaultCheck1">
-                                    Enviar a Comparativa
+                                    Enviar a Licitación
                                 </label>
                             </div>
                         </div>

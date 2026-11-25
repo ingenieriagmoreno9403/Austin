@@ -272,7 +272,7 @@
                             @endif
 
                             <label class="form-check-label" for="defaultCheck1">
-                                Enviar a Comparativa
+                                Enviar a Licitación
                             </label>
                         </div>
                     </div>

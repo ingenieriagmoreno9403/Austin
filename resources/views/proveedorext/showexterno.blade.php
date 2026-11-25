@@ -5,10 +5,10 @@
         <div class="row mb-4">
             <div class="col-md-8">
                 <h3 class="mt-1 animate_animated animate_backInLeft">
-                    Responder a Comparativa &nbsp;
+                    Responder a Licitación &nbsp;
                     <span class="badge bg-orange fs-6"> Folio: {{ $licitacion->folio }}</span>
                 </h3>
-                <p class="text-muted fs-8">Proporciona tus precios para cada producto solicitado.</p>
+                <p class="text-muted fs-8">Captura costos por producto y los parámetros de evaluación de esta licitación.</p>
             </div>
             <div class="col-md-4 text-md-end">
                 <a href="{{ route('licitaciones.editar',[$licitacion->id]) }}" class="btn btn-baseColor-light">
@@ -127,15 +127,35 @@
                             <input type="hidden" name="is_draft" id="is_draft" value="0">
 
                             <!-- Implementación LiveWire -->
+                            @php
+                                $parametrosEvalArr = ($parametrosEval ?? collect())->map(function ($p) {
+                                    return [
+                                        'id' => $p->id,
+                                        'nombre' => $p->nombre,
+                                        'peso_pct' => $p->peso_pct,
+                                        'sentido' => $p->sentido,
+                                        'tipo_dato' => $p->tipo_dato,
+                                    ];
+                                })->values()->all();
+                                $scoresValores = [];
+                                foreach (($scoresProveedor ?? []) as $pid => $row) {
+                                    $scoresValores[(int) $pid] = is_object($row) ? $row->valor : $row;
+                                }
+                            @endphp
                             @livewire('licitacion-detalle-prov-ext', [
                                 'detalle' => old('detalle', $detalle ?? []),
                                 'sololectura' => false,
-                                'licitacion_id' => $licitacion_id, 
+                                'licitacion_id' => $licitacion_id,
                                 'proveedor_id' => $proveedor_id,
                                 'fleteInterno' => $flete_interno ?? 0,
-                                'fleteExterno' => $flete_externo ?? 0
+                                'fleteExterno' => $flete_externo ?? 0,
+                                'parametrosEval' => $parametrosEvalArr,
+                                'paramPrecioId' => $paramPrecioId ?? null,
+                                'scoresProveedor' => $scoresValores,
+                                'tipoParamNombre' => optional($licitacion->tipoParam)->nombre,
+                                'totalCotizadoProveedor' => $totalCotizadoProveedor ?? 0,
                             ])
-                            
+
                             <!-- Sección para comentarios adicionales -->
                             <div class="mt-4">
                                 <h5>Información Adicional</h5>

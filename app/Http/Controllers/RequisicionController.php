@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CcAsignacion;
+use App\Models\LicParamTipo;
 use App\Models\Producto;
 use App\Models\ReqNivel;
 use App\Models\ReqRuta;
@@ -39,18 +41,20 @@ class RequisicionController extends Controller
     public function index(Request $request)
     {
         $userId = (int) auth()->id();
-        $q = Requisicion::query()->with(['solicitante', 'responsableActual']);
+        $q = Requisicion::query()->with(['solicitante', 'responsableActual', 'aprobaciones', 'licitacion']);
 
-        $vista = $request->get('vista', 'activas');
+        $puedeVerTodas = $this->puedeVerTodas();
+        // Master/empresa: por defecto ve todas (incluye pendientes de autorizar)
+        $vista = $request->get('vista', $puedeVerTodas ? 'todas' : 'activas');
+
         if ($vista === 'autorizar') {
             $q->where('responsable_actual_id', $userId)
                 ->whereIn('estado', ['pendiente_autorizacion', 'reenviada']);
         } elseif ($vista === 'autorizadas') {
-            $q->where('estado', 'autorizada');
-        } elseif ($vista === 'historial') {
-            // Historial: cerradas / rechazadas / canceladas / atendidas (propias o todas si admin)
-            $q->whereIn('estado', ['rechazada', 'cancelada', 'atendida', 'atendida_parcial']);
-            if (! $this->puedeVerTodas()) {
+            // Compat: las autorizadas viven en historial (ya pasaron a compras/licitación)
+            $vista = 'historial';
+            $q->whereIn('estado', Requisicion::ESTADOS_HISTORIAL);
+            if (! $puedeVerTodas) {
                 $q->where(function ($w) use ($userId) {
                     $w->where('solicitante_id', $userId)
                         ->orWhere('responsable_actual_id', $userId)
@@ -62,13 +66,38 @@ class RequisicionController extends Controller
                         });
                 });
             }
-        } elseif ($vista === 'todas' && $this->puedeVerTodas()) {
-            // sin filtro de usuario
+        } elseif ($vista === 'historial') {
+            // Historial: desde autorizada (pasa a licitaciones) + cerradas/rechazadas
+            $q->whereIn('estado', Requisicion::ESTADOS_HISTORIAL);
+            if (! $puedeVerTodas) {
+                $q->where(function ($w) use ($userId) {
+                    $w->where('solicitante_id', $userId)
+                        ->orWhere('responsable_actual_id', $userId)
+                        ->orWhereExists(function ($sub) use ($userId) {
+                            $sub->selectRaw('1')
+                                ->from('tbl_requisicion_aprobaciones as a')
+                                ->whereColumn('a.requisicion_id', 'tbl_requisiciones.id')
+                                ->where('a.responsable_id', $userId);
+                        });
+                });
+            }
+        } elseif ($vista === 'todas' && $puedeVerTodas) {
+            // Master: solo en curso (no historial)
+            $q->whereIn('estado', Requisicion::ESTADOS_ACTIVAS);
+        } elseif ($vista === 'activas') {
+            $q->whereIn('estado', Requisicion::ESTADOS_ACTIVAS);
+            if (! $puedeVerTodas) {
+                $q->where('solicitante_id', $userId);
+            }
         } else {
-            // Activas del usuario (default)
-            $q->where('solicitante_id', $userId)
-                ->whereNotIn('estado', ['rechazada', 'cancelada', 'atendida']);
-            $vista = 'activas';
+            if ($puedeVerTodas) {
+                $vista = 'todas';
+                $q->whereIn('estado', Requisicion::ESTADOS_ACTIVAS);
+            } else {
+                $q->where('solicitante_id', $userId)
+                    ->whereIn('estado', Requisicion::ESTADOS_ACTIVAS);
+                $vista = 'activas';
+            }
         }
 
         if ($folio = trim((string) $request->get('folio', ''))) {
@@ -99,12 +128,23 @@ class RequisicionController extends Controller
         });
 
         $kpis = [
-            'mias' => Requisicion::query()->where('solicitante_id', $userId)->whereNotIn('estado', ['rechazada', 'cancelada', 'atendida'])->count(),
+            'mias' => Requisicion::query()
+                ->when(! $puedeVerTodas, fn ($q) => $q->where('solicitante_id', $userId))
+                ->whereIn('estado', Requisicion::ESTADOS_ACTIVAS)
+                ->count(),
             'autorizar' => Requisicion::query()->where('responsable_actual_id', $userId)->whereIn('estado', ['pendiente_autorizacion', 'reenviada'])->count(),
-            'autorizadas' => Requisicion::query()->where('estado', 'autorizada')->count(),
-            'historial' => Requisicion::query()->whereIn('estado', ['rechazada', 'cancelada', 'atendida', 'atendida_parcial'])
-                ->when(! $this->puedeVerTodas(), function ($q) use ($userId) {
-                    $q->where('solicitante_id', $userId);
+            'historial' => Requisicion::query()->whereIn('estado', Requisicion::ESTADOS_HISTORIAL)
+                ->when(! $puedeVerTodas, function ($q) use ($userId) {
+                    $q->where(function ($w) use ($userId) {
+                        $w->where('solicitante_id', $userId)
+                            ->orWhere('responsable_actual_id', $userId)
+                            ->orWhereExists(function ($sub) use ($userId) {
+                                $sub->selectRaw('1')
+                                    ->from('tbl_requisicion_aprobaciones as a')
+                                    ->whereColumn('a.requisicion_id', 'tbl_requisiciones.id')
+                                    ->where('a.responsable_id', $userId);
+                            });
+                    });
                 })->count(),
         ];
 
@@ -114,7 +154,7 @@ class RequisicionController extends Controller
             'estados' => Requisicion::ESTADOS,
             'prioridades' => Requisicion::PRIORIDADES,
             'filtros' => $request->only(['folio', 'estado', 'departamento', 'desde', 'hasta', 'vista']),
-            'puedeVerTodas' => $this->puedeVerTodas(),
+            'puedeVerTodas' => $puedeVerTodas,
             'puedeConfigurar' => $this->puedeConfigurar(),
             'kpis' => $kpis,
             'userId' => $userId,
@@ -123,14 +163,10 @@ class RequisicionController extends Controller
 
     public function create()
     {
-        return view('requisiciones.form', array_merge($this->menuData(), [
+        return view('requisiciones.form', array_merge($this->menuData(), $this->formCatalogos(), [
             'requisicion' => null,
             'detalles' => [],
             'prioridades' => Requisicion::PRIORIDADES,
-            'productos' => $this->productosSelect(),
-            'unidades' => $this->unidadesSelect(),
-            'unidadesMedida' => $this->unidadesMedidaCatalogo(),
-            'categoriasProducto' => $this->categoriasProductoCatalogo(),
         ]));
     }
 
@@ -141,12 +177,14 @@ class RequisicionController extends Controller
 
         $req = DB::transaction(function () use ($data, $partidas, $request) {
             $userId = (int) auth()->id();
+            $tipoMeta = $this->resolverTipoParam($data['tipo_param_id'] ?? null);
             $req = Requisicion::query()->create([
                 'folio' => $this->workflow->siguienteFolio(),
                 'solicitante_id' => $userId,
-                'departamento' => $data['departamento'] ?? null,
+                'departamento' => $tipoMeta['nombre'],
+                'tipo_param_id' => $tipoMeta['id'],
                 'centro_costo' => $data['centro_costo'] ?? null,
-                'almacen_destino' => $data['almacen_destino'] ?? null,
+                'almacen_destino' => null,
                 'prioridad' => $data['prioridad'] ?? 'normal',
                 'fecha_solicitud' => $data['fecha_solicitud'] ?? now()->toDateString(),
                 'fecha_requerida' => $data['fecha_requerida'] ?? null,
@@ -173,7 +211,7 @@ class RequisicionController extends Controller
     public function show(int $id)
     {
         $req = Requisicion::query()
-            ->with(['detalles', 'aprobaciones.responsable', 'historial.usuario', 'solicitante', 'responsableActual', 'ruta.niveles'])
+            ->with(['detalles', 'aprobaciones.responsable', 'historial.usuario', 'solicitante', 'responsableActual', 'ruta.niveles', 'tipoParam', 'licitacion'])
             ->findOrFail($id);
 
         $userId = (int) auth()->id();
@@ -186,8 +224,71 @@ class RequisicionController extends Controller
             'puedeEditar' => $req->esEditablePor($userId),
             'puedeDecidir' => $this->workflow->puedeDecidir($req, $userId),
             'puedeEnviar' => $req->esEditablePor($userId) && $req->detalles->count() > 0,
+            'puedeAjustarNiveles' => $this->puedeConfigurar()
+                && in_array($req->estado, ['pendiente_autorizacion', 'reenviada', 'autorizada'], true),
+            'users' => $this->puedeConfigurar()
+                ? User::query()->orderBy('name')->get(['id', 'name'])
+                : collect(),
             'estados' => Requisicion::ESTADOS,
         ]));
+    }
+
+    /**
+     * Ajusta obligatoriedad/responsable de niveles de ESTA requisición (no la plantilla global).
+     */
+    public function actualizarNiveles(Request $request, int $id)
+    {
+        if (! $this->puedeConfigurar()) {
+            abort(403, 'Solo master/empresa puede ajustar niveles de la requisición.');
+        }
+
+        $req = Requisicion::query()->with('aprobaciones')->findOrFail($id);
+        $data = $request->validate([
+            'niveles' => 'required|array|min:1',
+            'niveles.*.id' => 'required|integer',
+            'niveles.*.obligatorio' => 'nullable|boolean',
+            'niveles.*.responsable_id' => 'nullable|integer|exists:users,id',
+        ]);
+
+        $items = [];
+        foreach ($data['niveles'] as $n) {
+            $items[] = [
+                'id' => (int) $n['id'],
+                'obligatorio' => ! empty($n['obligatorio']),
+                'responsable_id' => $n['responsable_id'] ?? null,
+            ];
+        }
+
+        try {
+            $result = $this->workflow->actualizarNivelesDeRequisicion($req, $items, (int) auth()->id());
+        } catch (ValidationException $e) {
+            return back()->withErrors($e->errors())->with('warning', collect($e->errors())->flatten()->first());
+        }
+
+        $reqFresh = $result['requisicion'];
+        if ($result['autorizada_ahora'] && $reqFresh->estado === 'autorizada') {
+            $lic = \App\Models\Licitacion::query()->where('requisicion_id', $reqFresh->id)->first();
+            if ($lic) {
+                return redirect()
+                    ->route('licitaciones.editar', $lic->id)
+                    ->with('success', 'Niveles actualizados. Requisición autorizada; abriendo su licitación.');
+            }
+
+            // Crear licitación vía el mismo flujo POST (request sintético)
+            $sub = Request::create(
+                route('licitaciones.desdeRequisicion', $reqFresh->id),
+                'POST',
+                ['tipo_param_id' => $reqFresh->tipo_param_id]
+            );
+            $sub->setUserResolver(fn () => auth()->user());
+
+            return app(\App\Http\Controllers\LicitacionController::class)
+                ->storeDesdeRequisicion($sub, $reqFresh->id);
+        }
+
+        return redirect()
+            ->route('requisiciones.show', $reqFresh->id)
+            ->with('success', 'Niveles de esta requisición actualizados. Siguiente: '.$reqFresh->estadoLabel());
     }
 
     public function edit(int $id)
@@ -199,14 +300,10 @@ class RequisicionController extends Controller
                 ->with('warning', 'Solo puedes editar borradores o requisiciones devueltas.');
         }
 
-        return view('requisiciones.form', array_merge($this->menuData(), [
+        return view('requisiciones.form', array_merge($this->menuData(), $this->formCatalogos(), [
             'requisicion' => $req,
             'detalles' => $req->detalles,
             'prioridades' => Requisicion::PRIORIDADES,
-            'productos' => $this->productosSelect(),
-            'unidades' => $this->unidadesSelect(),
-            'unidadesMedida' => $this->unidadesMedidaCatalogo(),
-            'categoriasProducto' => $this->categoriasProductoCatalogo(),
         ]));
     }
 
@@ -223,10 +320,12 @@ class RequisicionController extends Controller
 
         DB::transaction(function () use ($req, $data, $partidas, $request, $userId) {
             $antes = $req->estado;
+            $tipoMeta = $this->resolverTipoParam($data['tipo_param_id'] ?? null);
             $req->fill([
-                'departamento' => $data['departamento'] ?? null,
+                'departamento' => $tipoMeta['nombre'],
+                'tipo_param_id' => $tipoMeta['id'],
                 'centro_costo' => $data['centro_costo'] ?? null,
-                'almacen_destino' => $data['almacen_destino'] ?? null,
+                'almacen_destino' => null,
                 'prioridad' => $data['prioridad'] ?? 'normal',
                 'fecha_solicitud' => $data['fecha_solicitud'] ?? $req->fecha_solicitud,
                 'fecha_requerida' => $data['fecha_requerida'] ?? null,
@@ -550,15 +649,82 @@ class RequisicionController extends Controller
 
     protected function validarEncabezado(Request $request): array
     {
-        return $request->validate([
-            'departamento' => 'nullable|string|max:120',
-            'centro_costo' => 'nullable|string|max:120',
-            'almacen_destino' => 'nullable|string|max:120',
+        $data = $request->validate([
+            'tipo_param_id' => 'required|integer|exists:tbl_lic_param_tipos,id',
+            'centro_costo' => 'required|string|max:120',
             'prioridad' => 'required|in:baja,normal,alta,urgente',
             'fecha_solicitud' => 'nullable|date',
             'fecha_requerida' => 'nullable|date',
             'justificacion' => 'nullable|string|max:5000',
         ]);
+
+        $centrosPermitidos = $this->centrosCostoUsuario((int) auth()->id())
+            ->pluck('value')
+            ->all();
+        if ($centrosPermitidos && ! in_array($data['centro_costo'], $centrosPermitidos, true)) {
+            throw ValidationException::withMessages([
+                'centro_costo' => 'El centro de costos no está asignado a tu usuario.',
+            ]);
+        }
+
+        return $data;
+    }
+
+    /**
+     * @return array{id:?int,nombre:?string}
+     */
+    protected function resolverTipoParam($tipoId): array
+    {
+        $tipoId = (int) $tipoId;
+        if ($tipoId < 1) {
+            return ['id' => null, 'nombre' => null];
+        }
+        $tipo = LicParamTipo::query()->where('activo', true)->find($tipoId);
+
+        return [
+            'id' => $tipo?->id,
+            'nombre' => $tipo?->nombre,
+        ];
+    }
+
+    protected function formCatalogos(): array
+    {
+        return [
+            'productos' => $this->productosSelect(),
+            'unidades' => $this->unidadesSelect(),
+            'unidadesMedida' => $this->unidadesMedidaCatalogo(),
+            'categoriasProducto' => $this->categoriasProductoCatalogo(),
+            'tiposParam' => LicParamTipo::query()->where('activo', true)->orderBy('nombre')->get(['id', 'nombre', 'descripcion']),
+            'centrosCosto' => $this->centrosCostoUsuario((int) auth()->id()),
+        ];
+    }
+
+    protected function centrosCostoUsuario(int $userId)
+    {
+        if ($userId < 1 || ! Schema::hasTable('tbl_cc_asignaciones')) {
+            return collect();
+        }
+
+        return CcAsignacion::query()
+            ->where('user_id', $userId)
+            ->whereNotNull('centro_codigo')
+            ->orderByDesc('es_principal')
+            ->orderBy('empresa')
+            ->orderBy('centro_nombre')
+            ->get(['empresa', 'centro_codigo', 'centro_nombre', 'es_principal'])
+            ->unique(fn ($r) => strtolower($r->empresa.'|'.$r->centro_codigo))
+            ->values()
+            ->map(function ($r) {
+                $label = trim(($r->centro_nombre ?: $r->centro_codigo).' · '.strtoupper((string) $r->empresa));
+                $value = $r->centro_codigo.(($r->empresa) ? ' ('.$r->empresa.')' : '');
+
+                return (object) [
+                    'value' => $value,
+                    'label' => $label,
+                    'codigo' => $r->centro_codigo,
+                    'empresa' => $r->empresa,
+                ];
+            });
     }
 
     protected function validarPartidas(Request $request): array

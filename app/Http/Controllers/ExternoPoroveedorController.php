@@ -29,6 +29,8 @@ use SoapClient;
 use GuzzleHttp\Client;
 use App\Services\SatVerificationService;
 use App\Models\Licitacion;
+use App\Models\LicParamScore;
+use App\Services\LicitacionParametroService;
 
 class ExternoPoroveedorController extends Controller
 {
@@ -37,9 +39,12 @@ class ExternoPoroveedorController extends Controller
 
     /*------------------------------------ */
 
-    public function __construct()
+    protected LicitacionParametroService $paramService;
+
+    public function __construct(LicitacionParametroService $paramService)
     {
          $this->middleware('auth');
+         $this->paramService = $paramService;
     }
 
     public function licitacionesExtIndex()
@@ -356,6 +361,26 @@ class ExternoPoroveedorController extends Controller
                 ->where('licitacion_id', $licitacion_id)
                 ->where('proveedor_id', $proveedor_id)
                 ->value('flete_externo');
+
+            $licitacion->load(['parametrosEval', 'tipoParam']);
+            $parametrosEval = $licitacion->parametrosEval;
+            $paramPrecio = $this->paramService->parametroPrecio($licitacion);
+            $paramPrecioId = $paramPrecio?->id;
+            $scoresProveedor = [];
+            if ($parametrosEval->isNotEmpty()) {
+                $scores = LicParamScore::query()
+                    ->where('licitacion_id', $licitacion_id)
+                    ->where('proveedor_id', $proveedor_id)
+                    ->get();
+                foreach ($scores as $s) {
+                    $scoresProveedor[(int) $s->parametro_id] = $s;
+                }
+            }
+            $totalCotizadoProveedor = 0.0;
+            foreach ($detalle as $row) {
+                $totalCotizadoProveedor += ((float) ($row['costo'] ?? 0)) * ((float) ($row['cantidad'] ?? 0));
+            }
+
             return view('proveedorext.showexterno', compact(
                 'proveedor_id',
                 'varpantallas',
@@ -368,7 +393,11 @@ class ExternoPoroveedorController extends Controller
                 'documento_adjunto',
                 'detalles_calculados',
                 'flete_interno',
-                'flete_externo'
+                'flete_externo',
+                'parametrosEval',
+                'paramPrecioId',
+                'scoresProveedor',
+                'totalCotizadoProveedor'
             ));
 
         // } catch (\Illuminate\Database\QueryException $ex) {
@@ -641,11 +670,31 @@ class ExternoPoroveedorController extends Controller
                     ]);
             }
 
-            if (strtolower((string) auth()->user()->tipo) === 'ext') {
-                return redirect()->route('ext_licitaciones')->with('success', 'Precios guardados correctamente.');
+            // Parámetros de evaluación de la licitación (entrega, garantía, soporte, etc.)
+            $paramRows = [];
+            $scoresIn = $request->input('param_scores', []);
+            if (is_array($scoresIn)) {
+                foreach ($scoresIn as $paramId => $valor) {
+                    $paramRows[] = [
+                        'parametro_id' => (int) $paramId,
+                        'proveedor_id' => (int) $proveedor->id,
+                        'valor' => ($valor === '' || $valor === null) ? null : (float) $valor,
+                    ];
+                }
+            }
+            if ($paramRows !== []) {
+                $this->paramService->guardarYNormalizarScores($licitacion, $paramRows);
+            }
+            // Precio ponderado = total cotizado de este proveedor
+            if ($this->paramService->sincronizarPrecioDesdeCotizaciones($licitacion)) {
+                $this->paramService->recalcularNormalizacion($licitacion);
             }
 
-            return redirect()->route('licitaciones.editar', [$id])->with('success', 'Borrador guardado correctamente.');
+            if (strtolower((string) auth()->user()->tipo) === 'ext') {
+                return redirect()->route('ext_licitaciones')->with('success', 'Precios y parámetros guardados correctamente.');
+            }
+
+            return redirect()->route('licitaciones.editar', [$id])->with('success', 'Borrador y parámetros guardados correctamente.');
         } catch (\Exception $e) {
             Log::error('Error en actualización de licitación: ' . $e->getMessage());
             return back()->with("warningBD", "Error al actualizar la licitación: " . $e->getMessage());

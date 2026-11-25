@@ -17,29 +17,47 @@ use App\Exports\CostosLicitacionExport;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Traits\ServiciosTrait;
 use App\Exports\ComparativaExportar;
+use App\Models\LicParamTipo;
+use App\Models\LicParamPlantilla;
+use App\Models\Requisicion;
+use App\Services\LicitacionParametroService;
 
 
 class LicitacionController extends Controller
 {
-
     use MenuTrait;
     use DatosimpleTraits;
     use SistemasTraits;
     use GlobalTraits;
     use ServiciosTrait;
 
-    public function __construct()
+    protected LicitacionParametroService $paramService;
+
+    public function __construct(LicitacionParametroService $paramService)
     {
         $this->middleware('auth');
+        $this->paramService = $paramService;
     }
-    
-    public function index()
+
+    public function index(\Illuminate\Http\Request $request)
     {
         try{
             $varpantallas =  $this->Traermenuenc();
             $varsubmenus =   $this->Traermenudet();
 
-            $varlista = Licitacion::orderByDesc('id')->get();
+            $vista = $request->get('vista', 'activas') === 'historial' ? 'historial' : 'activas';
+
+            $q = Licitacion::query()->orderByDesc('id');
+            if ($vista === 'historial') {
+                $q->whereIn('estado', Licitacion::ESTADOS_HISTORIAL);
+            } else {
+                $q->where(function ($w) {
+                    $w->whereNotIn('estado', Licitacion::ESTADOS_HISTORIAL)
+                        ->orWhereNull('estado');
+                });
+            }
+            $varlista = $q->get();
+
             $ids = $varlista->pluck('id');
             $conOrden = collect();
             $conteoProveedores = collect();
@@ -60,7 +78,33 @@ class LicitacionController extends Controller
             $date = $date->format('Y-m-d');
             $idusuario=auth()->user()->id;
 
-            return view('Licitacion.index',compact('varpantallas','varsubmenus','varlista','solicitudes_pendientes','conOrden','conteoProveedores'));
+            $tiposParam = LicParamTipo::query()
+                ->where('activo', true)
+                ->orderBy('nombre')
+                ->get(['id', 'nombre']);
+
+            $kpis = [
+                'activas' => Licitacion::query()
+                    ->where(function ($w) {
+                        $w->whereNotIn('estado', Licitacion::ESTADOS_HISTORIAL)
+                            ->orWhereNull('estado');
+                    })->count(),
+                'historial' => Licitacion::query()
+                    ->whereIn('estado', Licitacion::ESTADOS_HISTORIAL)
+                    ->count(),
+            ];
+
+            return view('Licitacion.index', compact(
+                'varpantallas',
+                'varsubmenus',
+                'varlista',
+                'solicitudes_pendientes',
+                'conOrden',
+                'conteoProveedores',
+                'tiposParam',
+                'vista',
+                'kpis'
+            ));
         } catch(\Illuminate\Database\QueryException $ex)
         {
           return back()->with("warningBD","no guardado correctamente");
@@ -123,8 +167,19 @@ class LicitacionController extends Controller
 
     public function store(Request $request){
         try {
-            $Licitacion = Licitacion::create($request->all());
+            $payload = $request->only([
+                'nombre', 'folio', 'fecha_creacion', 'fecha_limite',
+                'descripcion_detalle', 'proveedor_adjudicado_id', 'estado', 'id_servicio', 'tipo_param_id',
+            ]);
+            if (empty($payload['tipo_param_id'])) {
+                $payload['tipo_param_id'] = null;
+            }
 
+            $Licitacion = Licitacion::create($payload);
+
+            if (! empty($payload['tipo_param_id'])) {
+                $this->paramService->clonarPlantillaALicitacion($Licitacion, (int) $payload['tipo_param_id']);
+            }
 
             // Guardar detalles
             if ($request->has('detalle_json')) {
@@ -164,7 +219,7 @@ class LicitacionController extends Controller
 
             // Verificación final
             if ($Licitacion) {
-                return redirect()->route('licitaciones.index')->with("success", "¡Se guardaron los cambios correctamente!");
+                return redirect()->route('licitaciones.editar', $Licitacion->id)->with("success", "¡Licitación creada! Completa productos, proveedores y parámetros.");
             } else {
                 return redirect()->route('licitaciones.index')->with("warning", "¡No se guardaron los cambios correctamente!");
             }
@@ -174,6 +229,85 @@ class LicitacionController extends Controller
         }
     }
 
+
+    /**
+     * Crea una licitación a partir de una requisición autorizada.
+     */
+    public function storeDesdeRequisicion(Request $request, int $requisicionId)
+    {
+        $req = Requisicion::query()->with('detalles')->findOrFail($requisicionId);
+
+        if (! in_array($req->estado, ['autorizada', 'en_proceso_compra', 'atendida_parcial'], true)) {
+            return back()->with('warning', 'Solo se puede generar licitación desde una requisición autorizada.');
+        }
+
+        $yaExiste = Licitacion::query()->where('requisicion_id', $req->id)->first();
+        if ($yaExiste) {
+            return redirect()
+                ->route('licitaciones.editar', $yaExiste->id)
+                ->with('warning', 'Ya existe la licitación '.$yaExiste->folio.' para esta requisición.');
+        }
+
+        $tipoId = (int) ($request->input('tipo_param_id')
+            ?: ($req->tipo_param_id
+                ?: (LicParamTipo::query()->where('nombre', 'Tecnologías')->value('id') ?? 0)));
+
+        try {
+            $lic = DB::transaction(function () use ($req, $tipoId) {
+                $folio = 'LIC-REQ-'.$req->folio;
+                if (Licitacion::query()->where('folio', $folio)->exists()) {
+                    $folio .= '-'.now()->format('His');
+                }
+
+                $tipoNombre = $req->departamento
+                    ?: optional(LicParamTipo::query()->find($tipoId))->nombre;
+
+                $lic = Licitacion::query()->create([
+                    'folio' => mb_substr($folio, 0, 50),
+                    'nombre' => mb_substr('Licitación desde '.$req->folio.($tipoNombre ? ' · '.$tipoNombre : ''), 0, 120),
+                    'descripcion_detalle' => $req->justificacion ?: ('Generada desde requisición '.$req->folio),
+                    'fecha_creacion' => now()->toDateString(),
+                    'fecha_limite' => optional($req->fecha_requerida)->format('Y-m-d') ?: now()->addDays(7)->toDateString(),
+                    'estado' => 'borrador',
+                    'requisicion_id' => $req->id,
+                    'tipo_param_id' => $tipoId ?: null,
+                ]);
+
+                foreach ($req->detalles as $d) {
+                    if (empty($d->producto_id)) {
+                        continue; // solo partidas catalogadas entran a licitación
+                    }
+                    $lic->detalles()->create([
+                        'producto_id' => $d->producto_id,
+                        'cantidad' => $d->cantidad,
+                        'observaciones' => trim(implode(' · ', array_filter([
+                            $d->codigo,
+                            $d->especificaciones,
+                            $d->motivo,
+                        ]))) ?: null,
+                    ]);
+                }
+
+                if ($tipoId) {
+                    $this->paramService->clonarPlantillaALicitacion($lic, $tipoId);
+                }
+
+                if ($req->estado === 'autorizada') {
+                    $req->estado = 'en_proceso_compra';
+                    $req->updated_by = (int) auth()->id();
+                    $req->save();
+                }
+
+                return $lic;
+            });
+
+            return redirect()
+                ->route('licitaciones.editar', $lic->id)
+                ->with('success', 'Licitación creada desde requisición '.$req->folio.'. Invita proveedores y continúa el proceso.');
+        } catch (\Throwable $e) {
+            return back()->with('warningBD', 'No se pudo crear la licitación: '.$e->getMessage());
+        }
+    }
 
     public function storeSolicitud(Request $request){
         try {
@@ -274,7 +408,21 @@ class LicitacionController extends Controller
                 ->select('tblprovedores.id', 'tblprovedores.nombre')
                 ->get();
 
-            return view('Licitacion.edit',compact('varpantallas','varsubmenus','licitacion','detalle','proveedoresInvitados'));
+            $licitacion->load(['parametrosEval', 'tipoParam']);
+            $tiposParam = LicParamTipo::query()->where('activo', true)->orderBy('nombre')->get();
+            $sentidos = LicParamPlantilla::SENTIDOS;
+            $tiposDato = LicParamPlantilla::TIPOS_DATO;
+
+            return view('Licitacion.edit', compact(
+                'varpantallas',
+                'varsubmenus',
+                'licitacion',
+                'detalle',
+                'proveedoresInvitados',
+                'tiposParam',
+                'sentidos',
+                'tiposDato'
+            ));
         } catch(\Exception $ex){  
             return back()->with("warningBD", "Error al cargar licitación: " . $ex->getMessage()); 
         }
@@ -613,16 +761,67 @@ class LicitacionController extends Controller
                     return $item->producto_id . '-' . $item->proveedor_id;
                 });
 
+            $licitacion->load(['parametrosEval', 'tipoParam']);
+            $parametrosEval = $licitacion->parametrosEval;
+            $scoresMap = [];
+            $ranking = [];
+            $paramPrecioId = null;
+            $precioDesdeCotizacion = false;
+
+            $totalesPorProveedor = [];
+            foreach ($proveedores as $p) {
+                $total = 0.0;
+                foreach ($productos as $producto) {
+                    $key = $producto->id.'-'.$p->id;
+                    if (isset($cotizaciones[$key])) {
+                        $total += ((float) $cotizaciones[$key][0]->costo) * ((float) $producto->cantidad);
+                    }
+                }
+                $totalesPorProveedor[(int) $p->id] = round($total, 2);
+            }
+
+            if ($parametrosEval->isNotEmpty()) {
+                $precioDesdeCotizacion = $this->paramService->sincronizarPrecioDesdeCotizaciones($licitacion);
+                $paramPrecio = $this->paramService->parametroPrecio($licitacion);
+                $paramPrecioId = $paramPrecio?->id;
+
+                $result = $this->paramService->recalcularNormalizacion($licitacion);
+                $ranking = $result['ranking'];
+                foreach ($result['scores'] as $s) {
+                    $scoresMap[$s->parametro_id.'-'.$s->proveedor_id] = $s;
+                }
+            }
+
+            $sugerencia = null;
+            if (! empty($ranking)) {
+                $bestId = (int) array_key_first($ranking);
+                $bestProv = $proveedores->firstWhere('id', $bestId);
+                $sugerencia = [
+                    'proveedor_id' => $bestId,
+                    'nombre' => $bestProv->nombre ?? ('#'.$bestId),
+                    'score' => (float) $ranking[$bestId],
+                    'total' => (float) ($totalesPorProveedor[$bestId] ?? 0),
+                    'ranking' => $ranking,
+                ];
+            }
+
             return view('Licitacion.comparar', compact(
-                'varpantallas', 
-                'varsubmenus', 
-                'licitacion', 
-                'proveedores', 
-                'productos', 
-                'cotizaciones'
+                'varpantallas',
+                'varsubmenus',
+                'licitacion',
+                'proveedores',
+                'productos',
+                'cotizaciones',
+                'parametrosEval',
+                'scoresMap',
+                'ranking',
+                'totalesPorProveedor',
+                'sugerencia',
+                'paramPrecioId',
+                'precioDesdeCotizacion'
             ));
         } catch(\Exception $ex) {
-            return back()->with("warningBD", "Error al cargar la comparativa: " . $ex->getMessage());
+            return back()->with("warningBD", "Error al cargar la licitación: " . $ex->getMessage());
         }
     }
 

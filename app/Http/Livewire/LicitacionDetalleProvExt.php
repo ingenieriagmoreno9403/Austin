@@ -21,14 +21,42 @@ class LicitacionDetalleProvExt extends Component
     public $fleteUniversal = 0;
     public $margenGlobal = 0;
 
+    /** @var array<int, array<string, mixed>> */
+    public $parametrosEval = [];
+
+    public $paramPrecioId = null;
+
+    /** @var array<int|string, mixed> valor por parametro_id */
+    public $scoresProveedor = [];
+
+    public $tipoParamNombre = null;
+
+    public $totalCotizadoProveedor = 0;
+
     protected $listeners = ['calcularSubtotales' => 'calcularTodosLosSubtotales'];
 
-    public function mount($detalle = [], $licitacion_id = null, $proveedor_id = null, $fleteInterno = 0, $fleteExterno = 0)
+    public function mount(
+        $detalle = [],
+        $licitacion_id = null,
+        $proveedor_id = null,
+        $fleteInterno = 0,
+        $fleteExterno = 0,
+        $parametrosEval = [],
+        $paramPrecioId = null,
+        $scoresProveedor = [],
+        $tipoParamNombre = null,
+        $totalCotizadoProveedor = 0
+    )
     {
         $this->licitacion_id = $licitacion_id;
         $this->proveedor_id = $proveedor_id;
         $this->fleteInterno = $fleteInterno;
         $this->fleteExterno = $fleteExterno;
+        $this->parametrosEval = is_array($parametrosEval) ? array_values($parametrosEval) : [];
+        $this->paramPrecioId = $paramPrecioId ? (int) $paramPrecioId : null;
+        $this->scoresProveedor = is_array($scoresProveedor) ? $scoresProveedor : [];
+        $this->tipoParamNombre = $tipoParamNombre;
+        $this->totalCotizadoProveedor = (float) $totalCotizadoProveedor;
 
         // Cargar el flete universal desde la base de datos
         if ($licitacion_id && $proveedor_id) {
