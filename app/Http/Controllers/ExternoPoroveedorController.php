@@ -31,6 +31,7 @@ use App\Services\SatVerificationService;
 use App\Models\Licitacion;
 use App\Models\LicParamScore;
 use App\Services\LicitacionParametroService;
+use App\Services\ProveedorDocumentacionService;
 
 class ExternoPoroveedorController extends Controller
 {
@@ -41,10 +42,100 @@ class ExternoPoroveedorController extends Controller
 
     protected LicitacionParametroService $paramService;
 
-    public function __construct(LicitacionParametroService $paramService)
+    protected ProveedorDocumentacionService $docsService;
+
+    public function __construct(LicitacionParametroService $paramService, ProveedorDocumentacionService $docsService)
     {
          $this->middleware('auth');
          $this->paramService = $paramService;
+         $this->docsService = $docsService;
+    }
+
+    public function misDocumentos()
+    {
+        $varpantallas = $this->Traermenuenc();
+        $varsubmenus = $this->Traermenudet();
+
+        $proveedorId = DB::table('tblprovedores')->where('id_usuario', auth()->id())->value('id');
+        if (! $proveedorId) {
+            return redirect()->route('ext_licitaciones')->with('warningBD', 'Tu usuario no está ligado a un proveedor.');
+        }
+
+        $proveedor = DB::table('tblprovedores')->where('id', $proveedorId)->first();
+        $matriz = $this->docsService->matrizDocumentos((int) $proveedorId);
+        $estado = $this->docsService->estado((int) $proveedorId);
+
+        return view('proveedorext.misdocumentos', compact(
+            'varpantallas',
+            'varsubmenus',
+            'proveedor',
+            'matriz',
+            'estado'
+        ));
+    }
+
+    public function subirMiDocumento(Request $request)
+    {
+        $proveedorId = DB::table('tblprovedores')->where('id_usuario', auth()->id())->value('id');
+        if (! $proveedorId) {
+            return redirect()->route('ext_licitaciones')->with('warningBD', 'Tu usuario no está ligado a un proveedor.');
+        }
+
+        if ($request->input('modo') === 'uno' || $request->has('tipo_id')) {
+            $request->validate([
+                'tipo_id' => 'required|integer',
+                'vigencia' => 'nullable|date',
+                'archivo' => 'required|file|mimes:pdf,jpg,jpeg,png|max:5120',
+            ]);
+
+            try {
+                $this->docsService->guardarDocumento(
+                    (int) $proveedorId,
+                    (int) $request->input('tipo_id'),
+                    $request->file('archivo'),
+                    $request->input('vigencia'),
+                    (int) auth()->id()
+                );
+            } catch (\InvalidArgumentException $e) {
+                return back()->with('warningBD', $e->getMessage());
+            }
+
+            return back()->with('success', 'Documento cargado correctamente.');
+        }
+
+        $request->validate([
+            'archivos' => 'required|array',
+            'archivos.*' => 'nullable|file|mimes:pdf,jpg,jpeg,png|max:5120',
+            'vigencias' => 'nullable|array',
+            'vigencias.*' => 'nullable|date',
+        ]);
+
+        $archivos = $request->file('archivos', []);
+        $conArchivo = array_filter($archivos, fn ($f) => $f && $f->isValid());
+        if (count($conArchivo) === 0) {
+            return back()->with('warningBD', 'Selecciona al menos un archivo para guardar.');
+        }
+
+        $resultado = $this->docsService->guardarDocumentosLote(
+            (int) $proveedorId,
+            $archivos,
+            (array) $request->input('vigencias', []),
+            (int) auth()->id()
+        );
+
+        if ($resultado['ok'] === 0) {
+            return back()->with('warningBD', implode(' ', $resultado['errores']) ?: 'No se guardó ningún documento.');
+        }
+
+        $msg = $resultado['ok'] === 1
+            ? '1 documento cargado correctamente.'
+            : "{$resultado['ok']} documentos cargados correctamente.";
+
+        if (! empty($resultado['errores'])) {
+            return back()->with('success', $msg)->with('warningBD', implode(' ', $resultado['errores']));
+        }
+
+        return back()->with('success', $msg);
     }
 
     public function licitacionesExtIndex()

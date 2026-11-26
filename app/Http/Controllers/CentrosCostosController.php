@@ -2258,13 +2258,13 @@ class CentrosCostosController extends Controller
         }
         $asignacionesActualizadas = 0;
         DB::transaction(function () use ($grupo, $data, &$asignacionesActualizadas) {
-            $grupo->updated_by = auth()->id();
-            $grupo->save();
+        $grupo->updated_by = auth()->id();
+        $grupo->save();
 
-            if (array_key_exists('cuentas', $data)) {
+        if (array_key_exists('cuentas', $data)) {
                 $asignacionesActualizadas = $this->syncGrupoCuentas($grupo, $data['cuentas']);
-            }
-            $grupo->load('cuentas');
+        }
+        $grupo->load('cuentas');
         });
 
         return response()->json([
@@ -4982,7 +4982,7 @@ class CentrosCostosController extends Controller
                 $nombreRow = trim((string) ($row->cuenta_nombre ?? ''));
                 foreach ($this->clavesCuentaCaptura($empRow, $centroRow, $cuentaRow, $nombreRow) as $key) {
                     if (! isset($budgets[$key])) {
-                        $budgets[$key] = $meses;
+                    $budgets[$key] = $meses;
                     }
                     if ($done) {
                         $completados[$key] = true;
@@ -5060,9 +5060,9 @@ class CentrosCostosController extends Controller
         $row = $this->presupuestoPorAlias($ciclo, $empresa, $centro, $cuenta, $cuentaNombre);
         if (! $row) {
             $row = new CcPresupuesto([
-                'ciclo_codigo' => $ciclo,
-                'empresa' => $empresa,
-                'centro_codigo' => $centro,
+            'ciclo_codigo' => $ciclo,
+            'empresa' => $empresa,
+            'centro_codigo' => $centro,
                 'cuenta_codigo' => $this->codigoCuentaCatalogo($empresa, $cuenta, $cuentaNombre) ?: $cuenta,
             ]);
         } else {
@@ -5777,7 +5777,7 @@ class CentrosCostosController extends Controller
         return [
             'ok' => $ok,
             'completo' => $ok && ($pedido === [] || count($porCuenta) >= count($pedido)),
-            'year' => $year,
+                'year' => $year,
             'por_cuenta' => $porCuenta ?: (object) [],
             'mensaje' => $mensaje,
         ];
@@ -5906,7 +5906,7 @@ class CentrosCostosController extends Controller
 
                 return ['mapa' => $mapa, 'completa' => true, 'rows' => $rows, 'ok' => true];
             }
-                if (empty($res['ok'])) {
+            if (empty($res['ok'])) {
                 return $vacio;
             }
             Cache::put($cacheKey, 'wide', 1800);
@@ -6008,7 +6008,7 @@ class CentrosCostosController extends Controller
             if (isset($failed[$cc])) {
                 continue;
             }
-                    $ok = true;
+            $ok = true;
             foreach ($rows as $row) {
                         if (is_array($row)) {
                     $filas[] = $row;
@@ -6030,14 +6030,14 @@ class CentrosCostosController extends Controller
     protected function mapaPorCentroDesdeFilas(array $rows, string $empresa, int $year): array
     {
         $porCc = [];
-        foreach ($rows as $row) {
-            if (! is_array($row)) {
-                continue;
-            }
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
             $rowCc = strtoupper($this->campoFila($row, ['CC', 'PrcCode', 'OcrCode', 'ProfitCode', 'centro', 'Centro']));
             if ($rowCc === '') {
-                continue;
-            }
+                    continue;
+                }
             if (! isset($porCc[$rowCc])) {
                 $porCc[$rowCc] = [];
             }
@@ -6121,11 +6121,11 @@ class CentrosCostosController extends Controller
         foreach ($pedido as $ck => $cuenta) {
             $hit = $this->gastoDesdeIndice($todo, $ck);
             if (! $hit) {
-                continue;
-            }
+                    continue;
+                }
             $propia = trim((string) ($hit['codigo'] ?? ''));
             if ($propia !== '' && $propia !== trim((string) $cuenta) && $propia !== trim((string) $ck)) {
-                continue;
+                    continue;
             }
             $hit['codigo'] = $cuenta;
             $por[$ck] = $hit;
@@ -6267,29 +6267,29 @@ class CentrosCostosController extends Controller
         $anioFila = $this->anioDeFecha($fecha);
         if ($anioFila > 0 && $anioFila !== $year) {
             return;
-        }
-        $mes = $this->mesDeFecha($fecha);
-        if ($mes < 0) {
+                }
+                $mes = $this->mesDeFecha($fecha);
+                if ($mes < 0) {
             return;
         }
 
         $nombre = $this->campoFila($row, ['DescCuenta', 'AcctName', 'NOMBRE', 'AccountName', 'nombre']);
         $importe = $this->importeGastoFila($row);
         $importeUsd = $this->importeGastoFilaUsd($row);
-        if (! isset($porCuenta[$key])) {
-            $porCuenta[$key] = [
-                'codigo' => $codigo,
-                'nombre' => $nombre,
-                'gasto' => array_fill(0, 12, 0.0),
+                if (! isset($porCuenta[$key])) {
+                    $porCuenta[$key] = [
+                        'codigo' => $codigo,
+                        'nombre' => $nombre,
+                        'gasto' => array_fill(0, 12, 0.0),
                 'gasto_usd' => array_fill(0, 12, 0.0),
-            ];
+                    ];
         } elseif ($nombre !== '' && ($porCuenta[$key]['nombre'] ?? '') === '') {
-            $porCuenta[$key]['nombre'] = $nombre;
-        }
+                    $porCuenta[$key]['nombre'] = $nombre;
+                }
         if (! isset($porCuenta[$key]['gasto_usd']) || ! is_array($porCuenta[$key]['gasto_usd'])) {
             $porCuenta[$key]['gasto_usd'] = array_fill(0, 12, 0.0);
-        }
-        $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $importe, 2);
+                }
+                $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $importe, 2);
         $porCuenta[$key]['gasto_usd'][$mes] = round($porCuenta[$key]['gasto_usd'][$mes] + $importeUsd, 2);
     }
 
@@ -6632,7 +6632,7 @@ class CentrosCostosController extends Controller
                 $resCentros = $api->centrosCostoGlobal(array_merge($filtrosCentro, ['page' => $page]));
                 if (empty($resCentros['ok'])) {
                     if ($page === 1) {
-                        $sapMensaje = $resCentros['message'] ?? 'Sin conexión a catálogo SAP';
+                $sapMensaje = $resCentros['message'] ?? 'Sin conexión a catálogo SAP';
                     }
                     break;
                 }

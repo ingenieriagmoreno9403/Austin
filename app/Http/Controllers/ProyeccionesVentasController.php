@@ -9786,7 +9786,7 @@ class ProyeccionesVentasController extends Controller
                 if ($actual === '' || $this->unidadEsMejor($unidad, $actual)) {
                     $porCuenta[$key]['unidad'] = $unidad;
                 }
-            }
+                }
                 $porCuenta[$key]['gasto'][$mes] = round($porCuenta[$key]['gasto'][$mes] + $qty, 4);
                 $porCuenta[$key]['importe'][$mes] = round($porCuenta[$key]['importe'][$mes] + $importe, 2);
                 $porCuenta[$key]['importe_usd'][$mes] = round($porCuenta[$key]['importe_usd'][$mes] + $importeUsd, 2);
@@ -9869,10 +9869,10 @@ class ProyeccionesVentasController extends Controller
                 'card_code_consulta' => $cc,
             ];
 
-            return [
+        return [
                 'ok' => true,
-                'year' => $year,
-                'por_cuenta' => $porCuenta,
+            'year' => $year,
+            'por_cuenta' => $porCuenta,
                 'mensaje' => null,
             ];
         }

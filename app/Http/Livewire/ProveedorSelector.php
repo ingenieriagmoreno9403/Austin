@@ -5,6 +5,7 @@ use Livewire\Component;
 use App\Models\Proveedor;
 use App\Models\Licitacion;
 use App\Support\HomologacionProveedor;
+use App\Services\ProveedorDocumentacionService;
 use Illuminate\Support\Facades\DB;
 use Livewire\WithPagination;
 use Illuminate\Validation\ValidationException;
@@ -20,6 +21,11 @@ class ProveedorSelector extends Component
     public $sololectura = false;
 
     protected $listeners = ['guardarTodo' => 'guardar', 'validarProveedores' => 'validarYGuardar'];
+
+    protected function docsService(): ProveedorDocumentacionService
+    {
+        return app(ProveedorDocumentacionService::class);
+    }
 
 
     public function updatingBuscar()
@@ -49,6 +55,18 @@ class ProveedorSelector extends Component
         if (! $proveedor || ! HomologacionProveedor::puedeInvitar($proveedor->homologacion ?? null)) {
             $this->dispatchBrowserEvent('proveedores-no-validos', [
                 'mensaje' => 'Ese proveedor no se puede invitar por su homologación.'
+            ]);
+            return;
+        }
+
+        $docEstado = $this->docsService()->estado((int) $id);
+        if (! $docEstado['puede_invitar']) {
+            $extra = $docEstado['faltantes'] ? (' Faltan: '.implode(', ', $docEstado['faltantes']).'.') : '';
+            if (in_array($docEstado['contrato_estado'], ['vencido', 'por_vencer', 'sin_contrato'], true)) {
+                $extra .= ' Contrato: '.$docEstado['etiqueta'].'.';
+            }
+            $this->dispatchBrowserEvent('proveedores-no-validos', [
+                'mensaje' => 'No se puede invitar a '.$proveedor->nombre.': documentación incompleta o contrato no vigente.'.$extra
             ]);
             return;
         }
@@ -98,20 +116,43 @@ class ProveedorSelector extends Component
             $catalogo = Proveedor::whereIn('id', $ids)->get()->keyBy('id');
             $validos = [];
             $rechazados = [];
+            $rechazadosDocs = [];
             foreach ($ids as $id) {
-                $proveedor = $catalogo->get($id);
-                $invitable = $proveedor && HomologacionProveedor::puedeInvitar($proveedor->homologacion ?? null);
-                if ($invitable || in_array($id, $yaInvitados, true)) {
+                // Ya invitados se conservan (aunque ahora fallen docs: se gestionan fuera)
+                if (in_array($id, $yaInvitados, true)) {
                     $validos[] = $id;
-                } elseif ($proveedor) {
-                    $rechazados[] = $proveedor->nombre;
+                    continue;
                 }
+
+                $proveedor = $catalogo->get($id);
+                if (! $proveedor) {
+                    continue;
+                }
+
+                if (! HomologacionProveedor::puedeInvitar($proveedor->homologacion ?? null)) {
+                    $rechazados[] = $proveedor->nombre;
+                    continue;
+                }
+
+                if (! $this->docsService()->estado($id)['puede_invitar']) {
+                    $rechazadosDocs[] = $proveedor->nombre;
+                    continue;
+                }
+
+                $validos[] = $id;
             }
 
             $this->proveedoresSeleccionados = $validos;
-            if ($rechazados) {
+            if ($rechazados || $rechazadosDocs) {
+                $msg = [];
+                if ($rechazados) {
+                    $msg[] = 'Homologación: '.implode(', ', $rechazados);
+                }
+                if ($rechazadosDocs) {
+                    $msg[] = 'Documentos/contrato: '.implode(', ', $rechazadosDocs);
+                }
                 $this->dispatchBrowserEvent('proveedores-no-validos', [
-                    'mensaje' => 'No se invitaron por homologación: '.implode(', ', $rechazados).'.'
+                    'mensaje' => 'No se invitaron — '.implode(' · ', $msg).'.'
                 ]);
                 return;
             }
@@ -165,15 +206,21 @@ class ProveedorSelector extends Component
                 ->keyBy('proveedor_id');
         }
 
+        $page = $disponibles
+            ->orderByDesc('preferido')
+            ->orderBy('nombre')
+            ->paginate(10);
+
+        $idsPagina = $page->getCollection()->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $docEstados = $this->docsService()->mapaEstados($idsPagina);
+
         return view('livewire.proveedor-selector', [
-            'proveedoresDisponibles' => $disponibles
-                ->orderByDesc('preferido')
-                ->orderBy('nombre')
-                ->paginate(10),
+            'proveedoresDisponibles' => $page,
             'proveedoresSeleccionadosDatos' => Proveedor::whereIn('id', $this->proveedoresSeleccionados)->get(),
             'categorias' => $categorias,
             'nombresCategoria' => $nombres,
             'preciosAplicados' => $preciosAplicados,
+            'docEstados' => $docEstados,
         ]);
     }
 }

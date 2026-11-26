@@ -20,6 +20,7 @@ use App\Models\perfiles;
 use App\Models\Proveedores;
 use App\Models\UserSucursal;
 use App\Support\HomologacionProveedor;
+use App\Services\ProveedorDocumentacionService;
 use Illuminate\Support\Arr;
 use DB;
 use Log;
@@ -28,10 +29,13 @@ class ProveedorController extends Controller
 {
     use MenuTrait;
     use DatosimpleTraits;
+
+    protected ProveedorDocumentacionService $docsService;
     
-    public function __construct()
+    public function __construct(ProveedorDocumentacionService $docsService)
     {
         $this->middleware('auth');
+        $this->docsService = $docsService;
     }
 
     public function indexproveedores()
@@ -39,7 +43,7 @@ class ProveedorController extends Controller
         $varpantallas = $this->Traermenuenc();
         $varsubmenus = $this->Traermenudet();
         $varlistausers = $this->obtenerusuarios();
-        $proveedores = DB::select("SELECT * FROM tblprovedores where estado = 'A';");
+        $proveedores = DB::select("SELECT * FROM tblprovedores where estado = 'A'");
         $alertasDocumentos = $this->alertasDocumentos();
         $alertasContratos = $this->alertasContratos();
         $categorias = $this->categoriasProveedor();
@@ -49,7 +53,159 @@ class ProveedorController extends Controller
             WHERE u.tipo = 'ext'
         AND p.id_usuario IS NULL;");
 
-        return view('proveedores/proveedoresIndex', compact('varpantallas', 'varsubmenus', 'varlistausers', 'proveedores','lista_proveedores','alertasDocumentos','alertasContratos','categorias'));
+        $docTipos = $this->docsService->tiposActivos();
+        $docEstados = $this->docsService->mapaEstados(array_map(fn ($p) => (int) $p->id, $proveedores));
+
+        return view('proveedores/proveedoresIndex', compact(
+            'varpantallas',
+            'varsubmenus',
+            'varlistausers',
+            'proveedores',
+            'lista_proveedores',
+            'alertasDocumentos',
+            'alertasContratos',
+            'categorias',
+            'docTipos',
+            'docEstados'
+        ));
+    }
+
+    public function guardarTipoDocumento(Request $request)
+    {
+        $data = $request->validate([
+            'nombre' => 'required|string|max:150',
+            'obligatorio' => 'nullable|boolean',
+            'es_contrato' => 'nullable|boolean',
+            'orden' => 'nullable|integer|min:1|max:999',
+        ]);
+
+        if ($request->boolean('es_contrato')) {
+            DB::table('tbl_prov_doc_tipos')->where('es_contrato', 1)->update(['es_contrato' => 0]);
+        }
+
+        DB::table('tbl_prov_doc_tipos')->insert([
+            'nombre' => trim($data['nombre']),
+            'clave' => null,
+            'obligatorio' => $request->boolean('obligatorio') ? 1 : 0,
+            'es_contrato' => $request->boolean('es_contrato') ? 1 : 0,
+            'activo' => 1,
+            'orden' => (int) ($data['orden'] ?? 99),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return back()->with('success', 'Tipo de documento agregado al catálogo.');
+    }
+
+    public function actualizarTipoDocumento(Request $request, int $id)
+    {
+        $data = $request->validate([
+            'nombre' => 'required|string|max:150',
+            'obligatorio' => 'nullable|boolean',
+            'es_contrato' => 'nullable|boolean',
+            'activo' => 'nullable|boolean',
+            'orden' => 'nullable|integer|min:1|max:999',
+        ]);
+
+        if ($request->boolean('es_contrato')) {
+            DB::table('tbl_prov_doc_tipos')->where('id', '!=', $id)->where('es_contrato', 1)->update(['es_contrato' => 0]);
+        }
+
+        DB::table('tbl_prov_doc_tipos')->where('id', $id)->update([
+            'nombre' => trim($data['nombre']),
+            'obligatorio' => $request->boolean('obligatorio') ? 1 : 0,
+            'es_contrato' => $request->boolean('es_contrato') ? 1 : 0,
+            'activo' => $request->boolean('activo') ? 1 : 0,
+            'orden' => (int) ($data['orden'] ?? 1),
+            'updated_at' => now(),
+        ]);
+
+        return back()->with('success', 'Tipo de documento actualizado.');
+    }
+
+    public function documentosProveedor(int $id)
+    {
+        $proveedor = DB::table('tblprovedores')->where('id', $id)->first();
+        if (! $proveedor) {
+            return back()->with('warningBD', 'Proveedor no encontrado.');
+        }
+
+        $matriz = $this->docsService->matrizDocumentos($id);
+        $estado = $this->docsService->estado($id);
+
+        return view('proveedores.documentos', array_merge($this->menuCompat(), [
+            'proveedor' => $proveedor,
+            'matriz' => $matriz,
+            'estado' => $estado,
+        ]));
+    }
+
+    public function subirDocumentoProveedor(Request $request, int $id)
+    {
+        if ($request->input('modo') === 'uno' || $request->has('tipo_id')) {
+            $request->validate([
+                'tipo_id' => 'required|integer',
+                'vigencia' => 'nullable|date',
+                'archivo' => 'required|file|mimes:pdf,jpg,jpeg,png|max:5120',
+            ]);
+
+            try {
+                $this->docsService->guardarDocumento(
+                    $id,
+                    (int) $request->input('tipo_id'),
+                    $request->file('archivo'),
+                    $request->input('vigencia'),
+                    (int) auth()->id()
+                );
+            } catch (\InvalidArgumentException $e) {
+                return back()->with('warningBD', $e->getMessage());
+            }
+
+            return back()->with('success', 'Documento guardado.');
+        }
+
+        $request->validate([
+            'archivos' => 'required|array',
+            'archivos.*' => 'nullable|file|mimes:pdf,jpg,jpeg,png|max:5120',
+            'vigencias' => 'nullable|array',
+            'vigencias.*' => 'nullable|date',
+        ]);
+
+        $archivos = $request->file('archivos', []);
+        $conArchivo = array_filter($archivos, fn ($f) => $f && $f->isValid());
+        if (count($conArchivo) === 0) {
+            return back()->with('warningBD', 'Selecciona al menos un archivo para guardar.');
+        }
+
+        $resultado = $this->docsService->guardarDocumentosLote(
+            $id,
+            $archivos,
+            (array) $request->input('vigencias', []),
+            (int) auth()->id()
+        );
+
+        if ($resultado['ok'] === 0) {
+            return back()->with('warningBD', implode(' ', $resultado['errores']) ?: 'No se guardó ningún documento.');
+        }
+
+        $msg = $resultado['ok'] === 1
+            ? '1 documento guardado.'
+            : "{$resultado['ok']} documentos guardados.";
+
+        if (! empty($resultado['errores'])) {
+            return back()->with('success', $msg)->with('warningBD', implode(' ', $resultado['errores']));
+        }
+
+        return back()->with('success', $msg);
+    }
+
+    private function menuCompat(): array
+    {
+        return [
+            'varpantallas' => $this->Traermenuenc(),
+            'varsubmenus' => $this->Traermenudet(),
+            'varlistausers' => $this->obtenerusuarios(),
+        ];
     }
 
     public function historialproveedores()
@@ -127,12 +283,7 @@ class ProveedorController extends Controller
             }
             $this->guardarDocumentosYAcciones($request, (int) $tblproveedorres->id);
 
-            $proveedores = DB::select("SELECT * FROM tblprovedores where estado = 'A';");
-
-            $alertasDocumentos = $this->alertasDocumentos();
-            $alertasContratos = $this->alertasContratos();
-            $categorias = $this->categoriasProveedor();
-            return view('proveedores/proveedoresIndex', compact('varpantallas', 'varsubmenus', 'varlistausers', 'proveedores','lista_proveedores','alertasDocumentos','alertasContratos','categorias'));
+            return redirect()->route('proveedores')->with('success', 'Proveedor creado correctamente.');
         } 
         catch (\Illuminate\Database\QueryException $ex){
             Log::info($ex->getMessage());
@@ -204,6 +355,7 @@ class ProveedorController extends Controller
 
             $tblproveedor->save();
             $this->guardarDocumentosYAcciones($request, (int) $id);
+            $this->docsService->sincronizarVigenciaContrato((int) $id);
 
             $proveedores = DB::select("SELECT * FROM tblprovedores where id = ?;",[$id]);
 
@@ -498,11 +650,27 @@ join tblmonedas m on pp.moneda = m.id
 
     private function alertasDocumentos()
     {
-        return DB::table('tblproveedor_documentos as d')
+        // Excluye documentos marcados como contrato: esa fecha sale de Editar (contrato_fin).
+        $tipoContratoIds = DB::table('tbl_prov_doc_tipos')
+            ->where('es_contrato', 1)
+            ->pluck('id')
+            ->all();
+
+        $q = DB::table('tblproveedor_documentos as d')
             ->join('tblprovedores as p', 'p.id', '=', 'd.proveedor_id')
             ->whereNotNull('d.vigencia')
-            ->whereDate('d.vigencia', '<=', Carbon::today()->addDays(30)->toDateString())
-            ->orderBy('d.vigencia')
+            ->whereDate('d.vigencia', '<=', Carbon::today()->addDays(30)->toDateString());
+
+        if ($tipoContratoIds) {
+            $q->where(function ($w) use ($tipoContratoIds) {
+                $w->whereNull('d.tipo_id')
+                    ->orWhereNotIn('d.tipo_id', $tipoContratoIds);
+            });
+        }
+
+        $q->whereRaw("LOWER(d.nombre) NOT LIKE '%contrato%'");
+
+        return $q->orderBy('d.vigencia')
             ->limit(20)
             ->get(['p.id as proveedor_id', 'p.nombre as proveedor', 'd.nombre', 'd.vigencia']);
     }

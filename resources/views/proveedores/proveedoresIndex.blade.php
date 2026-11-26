@@ -16,6 +16,28 @@
                         </div>
                     </div>
                     <div class="header-actions d-flex flex-wrap align-items-center gap-2">
+                        @php
+                            $alertasDocsCol = collect($alertasDocumentos ?? []);
+                            $alertasContratosCol = collect($alertasContratos ?? []);
+                            $docsPorProveedor = $alertasDocsCol->groupBy('proveedor_id');
+                            $idsConAlerta = $alertasContratosCol->pluck('id')
+                                ->merge($alertasDocsCol->pluck('proveedor_id'))
+                                ->unique()
+                                ->filter();
+                            $totalAlertasVig = $idsConAlerta->count();
+                            $totalDocsAlerta = $alertasDocsCol->count();
+                        @endphp
+                        @if ($totalAlertasVig > 0)
+                            <button class="btn btn-warning position-relative" type="button" data-bs-toggle="offcanvas" data-bs-target="#panelVigencias" aria-controls="panelVigencias">
+                                <i class="fa-solid fa-bell"></i> Vigencias
+                                <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">
+                                    {{ $totalAlertasVig }}
+                                </span>
+                            </button>
+                        @endif
+                        <button class="btn btn-outline-secondary" type="button" data-bs-toggle="modal" data-bs-target="#modalDocTipos">
+                            <i class="fa-solid fa-folder-open"></i> Catálogo documentos
+                        </button>
                         <button class="btn btn-baseColor" type="button" data-bs-toggle="modal" data-bs-target="#modalInsert">
                             <i class="fa-solid fa-plus"></i> Nuevo Proveedor
                         </button>
@@ -24,24 +46,108 @@
             </div>
         </div>
 
-        @if ((isset($alertasContratos) && $alertasContratos->isNotEmpty()) || (isset($alertasDocumentos) && $alertasDocumentos->isNotEmpty()))
-            <div class="alert alert-warning">
-                <div class="fw-bold mb-2">Vigencias por vencer o vencidas</div>
-                @foreach ($alertasContratos ?? [] as $alerta)
-                    <div>
-                        Contrato de {{ $alerta->nombre }}:
-                        {{ \Carbon\Carbon::parse($alerta->fecha_fin ?? $alerta->contrato_fin)->format('d/m/Y') }}
-                        <a href="/editar_proveedor/{{ $alerta->id }}">Abrir ficha</a>
-                    </div>
-                @endforeach
-                @foreach ($alertasDocumentos ?? [] as $alerta)
-                    <div>
-                        {{ $alerta->nombre }} de {{ $alerta->proveedor }}:
-                        {{ \Carbon\Carbon::parse($alerta->vigencia)->format('d/m/Y') }}
-                        <a href="/editar_proveedor/{{ $alerta->proveedor_id }}">Abrir ficha</a>
-                    </div>
-                @endforeach
+        @if ($totalAlertasVig > 0)
+            <div class="offcanvas offcanvas-end" tabindex="-1" id="panelVigencias" aria-labelledby="panelVigenciasLabel">
+                <div class="offcanvas-header border-bottom bg-warning bg-opacity-25">
+                    <h5 class="offcanvas-title text-marino fw-bold" id="panelVigenciasLabel">
+                        <i class="fa-solid fa-triangle-exclamation me-1"></i>
+                        Vigencias por vencer o vencidas
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button>
+                </div>
+                <div class="offcanvas-body p-0">
+                    @if ($alertasContratosCol->isNotEmpty())
+                        <div class="px-3 pt-3 pb-1">
+                            <div class="small text-uppercase text-muted fw-bold mb-2">Contratos</div>
+                            <div class="list-group list-group-flush">
+                                @foreach ($alertasContratosCol as $alerta)
+                                    @php
+                                        $f = \Carbon\Carbon::parse($alerta->fecha_fin ?? $alerta->contrato_fin);
+                                        $vencido = $f->lt(\Carbon\Carbon::today());
+                                    @endphp
+                                    <div class="list-group-item px-0">
+                                        <div class="d-flex justify-content-between align-items-start gap-2">
+                                            <div>
+                                                <div class="fw-semibold">{{ $alerta->nombre }}</div>
+                                                <div class="small {{ $vencido ? 'text-danger' : 'text-warning' }}">
+                                                    Contrato {{ $vencido ? 'vencido' : 'por vencer' }}:
+                                                    {{ $f->format('d/m/Y') }}
+                                                </div>
+                                            </div>
+                                            <a class="btn btn-sm btn-outline-primary" href="/editar_proveedor/{{ $alerta->id }}">Abrir ficha</a>
+                                        </div>
+                                    </div>
+                                @endforeach
+                            </div>
+                        </div>
+                    @endif
+
+                    @if ($docsPorProveedor->isNotEmpty())
+                        <div class="px-3 pt-3 pb-3 {{ $alertasContratosCol->isNotEmpty() ? 'border-top' : '' }}">
+                            <div class="small text-uppercase text-muted fw-bold mb-2">
+                                Documentos
+                                <span class="badge bg-secondary">{{ $totalDocsAlerta }}</span>
+                            </div>
+                            <div class="accordion accordion-flush" id="accDocsVigencias">
+                                @foreach ($docsPorProveedor as $provId => $docsProv)
+                                    @php
+                                        $nombreProv = $docsProv->first()->proveedor ?? ('Proveedor #'.$provId);
+                                        $accId = 'accProv'.$provId;
+                                        $hayVencidos = $docsProv->contains(fn ($d) => \Carbon\Carbon::parse($d->vigencia)->lt(\Carbon\Carbon::today()));
+                                    @endphp
+                                    <div class="accordion-item border rounded mb-2">
+                                        <h2 class="accordion-header" id="head{{ $accId }}">
+                                            <button class="accordion-button collapsed py-2 px-3" type="button"
+                                                    data-bs-toggle="collapse" data-bs-target="#{{ $accId }}"
+                                                    aria-expanded="false" aria-controls="{{ $accId }}">
+                                                <div class="d-flex w-100 justify-content-between align-items-center pe-2">
+                                                    <span class="fw-semibold text-marino">{{ $nombreProv }}</span>
+                                                    <span class="badge {{ $hayVencidos ? 'bg-danger' : 'bg-warning text-dark' }} ms-2">
+                                                        {{ $docsProv->count() }} doc{{ $docsProv->count() === 1 ? '' : 's' }}
+                                                    </span>
+                                                </div>
+                                            </button>
+                                        </h2>
+                                        <div id="{{ $accId }}" class="accordion-collapse collapse"
+                                             aria-labelledby="head{{ $accId }}" data-bs-parent="#accDocsVigencias">
+                                            <div class="accordion-body pt-1 pb-2 px-3">
+                                                <ul class="list-unstyled mb-2 small">
+                                                    @foreach ($docsProv as $alerta)
+                                                        @php
+                                                            $f = \Carbon\Carbon::parse($alerta->vigencia);
+                                                            $vencido = $f->lt(\Carbon\Carbon::today());
+                                                        @endphp
+                                                        <li class="d-flex justify-content-between gap-2 py-1 border-bottom">
+                                                            <span>{{ $alerta->nombre }}</span>
+                                                            <span class="{{ $vencido ? 'text-danger' : 'text-warning' }} text-nowrap">
+                                                                {{ $vencido ? 'Vencido' : 'Por vencer' }} {{ $f->format('d/m/Y') }}
+                                                            </span>
+                                                        </li>
+                                                    @endforeach
+                                                </ul>
+                                                <a class="btn btn-sm btn-outline-primary" href="{{ route('proveedores.documentos', $provId) }}">
+                                                    Ver documentos
+                                                </a>
+                                            </div>
+                                        </div>
+                                    </div>
+                                @endforeach
+                            </div>
+                        </div>
+                    @endif
+                </div>
             </div>
+
+            {{-- Botón flotante derecho para reabrir el panel --}}
+            <button type="button"
+                    class="btn btn-warning shadow position-fixed"
+                    style="right: 1rem; bottom: 5rem; z-index: 1040; border-radius: 999px; width: 3.25rem; height: 3.25rem;"
+                    data-bs-toggle="offcanvas"
+                    data-bs-target="#panelVigencias"
+                    title="Ver vigencias">
+                <i class="fa-solid fa-bell"></i>
+                <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{{ $totalAlertasVig }}</span>
+            </button>
         @endif
 
         <div class="row mt-3">
@@ -55,6 +161,8 @@
                             <th class="text-center text-truncate fw-bold">Direccion</th>
                             <th class="text-center text-truncate fw-bold">Estado</th>
                             <th class="text-center text-truncate fw-bold">Homologación</th>
+                            <th class="text-center text-truncate fw-bold">Documentación</th>
+                            <th class="text-center text-truncate fw-bold">Contrato</th>
                             <th class="text-center text-truncate fw-bold">Categoría</th>
                             <th class="text-center text-truncate fw-bold">Alias</th>
                             <th class="text-center text-truncate fw-bold">RFC</th>
@@ -64,6 +172,9 @@
                     </thead>
                     <tbody>
                         @foreach ($proveedores as $ltsproveedores)
+                            @php
+                                $docEst = ($docEstados[(int)$ltsproveedores->id] ?? null);
+                            @endphp
                             <tr>
                                 {{-- <td class="fw-bold">{{ $ltsproveedores->id }}</td> --}}
                                 <td>{{ $ltsproveedores->nombre }}</td>
@@ -88,6 +199,26 @@
                                     @endif
                                 </td>
                                 <td class="text-center">
+                                    @if($docEst)
+                                        <span class="badge {{ $docEst['clase'] }}" title="{{ !empty($docEst['faltantes']) ? ('Faltan: '.implode(', ', $docEst['faltantes'])) : $docEst['etiqueta'] }}">
+                                            {{ $docEst['etiqueta'] }}
+                                        </span>
+                                    @else
+                                        —
+                                    @endif
+                                </td>
+                                <td class="text-center">
+                                    @if($docEst && !empty($docEst['contrato_fin']))
+                                        @php
+                                            $cFin = \Carbon\Carbon::parse($docEst['contrato_fin']);
+                                            $cCls = $docEst['contrato_estado'] === 'vencido' ? 'bg-danger' : ($docEst['contrato_estado'] === 'por_vencer' ? 'bg-warning text-dark' : 'bg-success');
+                                        @endphp
+                                        <span class="badge {{ $cCls }}">{{ $cFin->format('d/m/Y') }}</span>
+                                    @else
+                                        <span class="badge bg-secondary">Sin fecha</span>
+                                    @endif
+                                </td>
+                                <td class="text-center">
                                     {{ optional(collect($categorias ?? [])->firstWhere('id', $ltsproveedores->categoria_id ?? null))->nombre ?: '—' }}
                                 </td>
                                 <td>{{ $ltsproveedores->nit }}</td>
@@ -107,6 +238,11 @@
                                         <i class="fa-solid fa-pen fs-8"></i>
                                     </a>
 
+                                    <a href="{{ route('proveedores.documentos', $ltsproveedores->id) }}"
+                                       class="btn btn-warning" title="Ver documentos">
+                                        <i class="fa-solid fa-file-lines fs-8"></i>
+                                    </a>
+
                                     <button type="button" data-bs-toggle="modal" data-bs-target="#PersonasAtencion{{$ltsproveedores->id}}"
                                         class="btn btn-baseColor" title="Ver personas de atención">
                                         <i class="fa-solid fa-users fs-8"></i>
@@ -116,8 +252,6 @@
                                         class="btn btn-success" title="Productos del proveedor">
                                         <i class="fa-solid fa-bag-shopping fs-8"></i>
                                     </a>
-
-                                    
 
                                     <button type="button" data-bs-toggle="modal" data-bs-target="#Eliminar{{$ltsproveedores->id}}"
                                         class="btn btn-danger" title="Eliminar proveedor">
@@ -756,5 +890,84 @@
             mostrarFormularioNuevaPersona(proveedorId);
         }
     </script>
+
+    {{-- Catálogo de tipos de documentos requeridos --}}
+    <div class="modal fade" id="modalDocTipos" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Catálogo de documentos para proveedores</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="small text-muted">Define qué documentos necesitan para ser elegibles. Marca cuáles son obligatorios. El de tipo <strong>Contrato</strong> controla el vencimiento en la lista y al invitar a licitaciones.</p>
+
+                    <div class="mb-3">
+                        @forelse(($docTipos ?? collect()) as $tipo)
+                            <form method="post" action="{{ route('proveedores.docTipos.update', $tipo->id) }}" class="border rounded p-2 mb-2">
+                                @csrf
+                                @method('PUT')
+                                <div class="row g-2 align-items-end">
+                                    <div class="col-md-1">
+                                        <label class="form-label small mb-0">Orden</label>
+                                        <input type="number" name="orden" class="form-control form-control-sm" value="{{ $tipo->orden }}" min="1">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small mb-0">Nombre</label>
+                                        <input type="text" name="nombre" class="form-control form-control-sm" value="{{ $tipo->nombre }}" required>
+                                    </div>
+                                    <div class="col-md-2 form-check mt-3 ms-2">
+                                        <input class="form-check-input" type="checkbox" name="obligatorio" value="1" id="ob{{ $tipo->id }}" {{ $tipo->obligatorio ? 'checked' : '' }}>
+                                        <label class="form-check-label small" for="ob{{ $tipo->id }}">Obligatorio</label>
+                                    </div>
+                                    <div class="col-md-2 form-check mt-3">
+                                        <input class="form-check-input" type="checkbox" name="es_contrato" value="1" id="ct{{ $tipo->id }}" {{ $tipo->es_contrato ? 'checked' : '' }}>
+                                        <label class="form-check-label small" for="ct{{ $tipo->id }}">Es contrato</label>
+                                    </div>
+                                    <div class="col-md-1 form-check mt-3">
+                                        <input class="form-check-input" type="checkbox" name="activo" value="1" id="ac{{ $tipo->id }}" {{ $tipo->activo ? 'checked' : '' }}>
+                                        <label class="form-check-label small" for="ac{{ $tipo->id }}">Activo</label>
+                                    </div>
+                                    <div class="col-md-1">
+                                        <button class="btn btn-sm btn-primary w-100" type="submit" title="Guardar">
+                                            <i class="fa-solid fa-save"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </form>
+                        @empty
+                            <div class="text-muted text-center py-2">Sin tipos aún.</div>
+                        @endforelse
+                    </div>
+
+                    <h6 class="fw-bold">Agregar tipo</h6>
+                    <form method="post" action="{{ route('proveedores.docTipos.store') }}" class="row g-2 align-items-end">
+                        @csrf
+                        <div class="col-md-4">
+                            <label class="form-label">Nombre</label>
+                            <input type="text" name="nombre" class="form-control form-control-sm" required maxlength="150">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Orden</label>
+                            <input type="number" name="orden" class="form-control form-control-sm" value="{{ (($docTipos ?? collect())->count() + 1) }}" min="1">
+                        </div>
+                        <div class="col-md-2 form-check mt-4">
+                            <input class="form-check-input" type="checkbox" name="obligatorio" id="nuevoObligatorio" value="1" checked>
+                            <label class="form-check-label" for="nuevoObligatorio">Obligatorio</label>
+                        </div>
+                        <div class="col-md-2 form-check mt-4">
+                            <input class="form-check-input" type="checkbox" name="es_contrato" id="nuevoContrato" value="1">
+                            <label class="form-check-label" for="nuevoContrato">Es contrato</label>
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-baseColor btn-sm w-100">
+                                <i class="fa-solid fa-plus"></i> Agregar
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
     
 @endsection

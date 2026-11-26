@@ -23,6 +23,7 @@
 
         <div class="prov-selector__list">
             @forelse($proveedoresDisponibles as $proveedor)
+                @php $docEst = $docEstados[(int)$proveedor->id] ?? null; @endphp
                 <div class="prov-selector__item">
                     <p class="prov-selector__item-name" title="{{ $proveedor->nombre }}">
                         {{ $proveedor->nombre }}
@@ -32,13 +33,19 @@
                         @if (\App\Support\HomologacionProveedor::normalizar($proveedor->homologacion ?? '') === 'condicionado')
                             <span class="badge bg-warning text-dark">Condicionado</span>
                         @endif
+                        @if ($docEst)
+                            <span class="badge {{ $docEst['clase'] }}">{{ $docEst['etiqueta'] }}</span>
+                        @endif
                         @if (!empty($nombresCategoria[$proveedor->categoria_id]))
                             <span class="badge bg-light text-dark border">{{ $nombresCategoria[$proveedor->categoria_id] }}</span>
                         @endif
                     </p>
                     @if(!$sololectura)
                         <div class="prov-selector__item-actions">
-                            <button type="button" wire:click="agregar({{ $proveedor->id }})" class="btn btn-success btn-sm" title="Agregar">
+                            <button type="button" wire:click="agregar({{ $proveedor->id }})"
+                                    class="btn btn-success btn-sm"
+                                    title="{{ ($docEst && !($docEst['puede_invitar'] ?? false)) ? $docEst['etiqueta'] : 'Agregar' }}"
+                                    @if($docEst && !($docEst['puede_invitar'] ?? false)) disabled @endif>
                                 <i class="fa-solid fa-plus"></i>
                             </button>
                         </div>

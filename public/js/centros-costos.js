@@ -594,7 +594,7 @@
             var nk = nombreCuentaKey(row.nombre || '');
             if (!nk) return;
             var compact = nk.replace(/\s+/g, '');
-            map['n:' + nk] = gasto;
+                map['n:' + nk] = gasto;
             map['nc:' + compact] = gasto;
             map[nk] = gasto;
             map[compact] = gasto;
@@ -602,7 +602,7 @@
             usdMap['nc:' + compact] = usd;
             usdMap[nk] = usd;
             usdMap[compact] = usd;
-            nombres.push({ key: nk, gasto: gasto });
+                nombres.push({ key: nk, gasto: gasto });
         });
         return { map: map, usdMap: usdMap, nombres: nombres };
     }
@@ -671,7 +671,7 @@
             var one = enriquecerCuentaDesdeMaps(control.centro, currentCta() || { codigo: control.cuenta });
             patchCuentaEnLista(control.cuenta, one);
         } else {
-            control._allCtas = cuentasEnriquecidas(control.centro);
+        control._allCtas = cuentasEnriquecidas(control.centro);
         }
         if (opts.quiet) return;
         updateControlProgress();
@@ -1039,7 +1039,7 @@
         CC.state.gastoCache = CC.state.gastoCache || {};
         CC.state.gastoCache[key] = Object.assign({}, CC.state.gastoCache[key] || {}, por || {});
         if (control.centro && gastoCacheKey(control.centro) === key) confirmarGastoCuentas(control.centro, por);
-        applyGastoMap(CC.state.gastoCache[key]);
+            applyGastoMap(CC.state.gastoCache[key]);
     }
 
     function fetchGastoCuentas(c, cuentas, done) {
@@ -3546,10 +3546,10 @@
                 control.cuenta = null;
             }
             if (mode === 'full') {
-                renderCicloPicks();
+            renderCicloPicks();
                 renderNavEmpresas();
                 renderNavCentros();
-                syncImportTools();
+            syncImportTools();
             }
             if (cicloChanged) {
                 CC._capturaCentroKey = '';
@@ -3681,11 +3681,11 @@
         renderMisCentros();
         syncImportTools();
         invalidateVisorResumen();
-        renderControlNav();
-        loadControlCentro();
-        fillVisorFilters();
+            renderControlNav();
+            loadControlCentro();
+            fillVisorFilters();
         cargarAvanceCaptura();
-        setVista(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura');
+            setVista(control.vista === 'visor' || CC.state.vistaInicial === 'visor' ? 'visor' : 'captura');
     };
 
     CC.initDetalle = function () {
@@ -3738,11 +3738,11 @@
             centro: CC.state.centroInicial || val('ctl-centro')
         }).then(function () {
             try {
-                loadControlCentro();
-                paintDetalleHeader();
-                renderDetalleTable();
-                renderDetalleChart();
-                paintScopeHints();
+            loadControlCentro();
+            paintDetalleHeader();
+            renderDetalleTable();
+            renderDetalleChart();
+            paintScopeHints();
             } finally {
                 endDetalleLoad(token);
             }
@@ -3863,7 +3863,7 @@
                 : '<span class="text-muted">Sin permiso</span>';
         }
         // Parte 1: solo listado ligero de cuentas (sin gasto ni pantalla completa).
-        control.cuenta = null;
+            control.cuenta = null;
         control._allCtas = cuentasListadoLigero(c);
         var ctaSel = document.getElementById('ctl-cuenta');
         if (ctaSel) ctaSel.value = '';
@@ -3895,7 +3895,7 @@
             }
             if (doVisor) {
                 loadGastoRealCentro(c);
-                renderVisorTable();
+        renderVisorTable();
             }
         }, 0);
     }
@@ -3994,12 +3994,12 @@
 
         // Sin cuenta: pantalla vacía (parte 1).
         if (!control.centro || !control.cuenta) {
-            renderCapturaForm();
-            renderControlTable();
-            renderControlCharts();
+        renderCapturaForm();
+        renderControlTable();
+        renderControlCharts();
             if (CC.state.page === 'detalle') {
-                renderDetalleTable();
-                renderDetalleChart();
+        renderDetalleTable();
+        renderDetalleChart();
             }
             return;
         }
@@ -5148,7 +5148,7 @@
                 var rango = MONTHS[from] + '–' + MONTHS[to];
                 toast('info', modo === 'mismo' ? 'Gasto fijo en pantalla' : 'Dispersado en pantalla',
                     (modo === 'mismo'
-                        ? money(monto) + ' en cada mes (' + rango + ')'
+                    ? money(monto) + ' en cada mes (' + rango + ')'
                         : money(monto) + ' en ' + cta.nombre) + ' · Pulsa Guardar');
             });
         }
@@ -5846,9 +5846,9 @@
         recordarAsignacionesPropias(propias);
 
         var fuente = (CC._anAsigTodas && CC._anAsigTodas.length) ? CC._anAsigTodas : propias;
-        if (!ciclo) {
+            if (!ciclo) {
             CC.state.misAsignaciones = propias.slice();
-            CC.state.centros = [];
+                CC.state.centros = [];
         } else {
             var visibles = filasVisiblesRevision(fuente);
             var fallback = propias.filter(function (a) { return mismoCicloAsig(a, ciclo); });
@@ -5859,9 +5859,9 @@
             );
         }
         // Habilitar selects ya: Empresa debe listar al menos lo propio / Todas.
-        CC._anAsigLoaded = true;
+                CC._anAsigLoaded = true;
         CC._anAsigLoading = false;
-        fillAnalisisFilters();
+                fillAnalisisFilters();
 
         // Lo que antes llenaba Empresa/Centro: asignaciones del ciclo visibles para revisión.
         if (ciclo && !CC._anAsigTodas) {
@@ -5890,7 +5890,7 @@
         fetch('/AdminCentros/' + encodeURIComponent(ciclo) + '/asignaciones?resumen=1', {
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             cache: 'no-store'
-        }).then(function (r) { return r.json(); }).then(function (json) {
+            }).then(function (r) { return r.json(); }).then(function (json) {
             if (gen !== CC._anAsigGen || CC.state.page !== 'analisis') return;
             CC._anAsigTodas = fusionarCuentasPropiasEnLista((json && json.asignaciones) || []);
             CC._anAsigResumen = true;
@@ -5977,8 +5977,8 @@
             CC._anVistaConfirmada = false;
             CC._anGastoGen = (CC._anGastoGen || 0) + 1;
             hideAnalisisBusy();
-            fillAnalisisFilters();
-            renderAnalisis();
+                fillAnalisisFilters();
+                renderAnalisis();
         }, 40);
     }
 
@@ -6183,14 +6183,14 @@
         etiquetaBuscar(document.getElementById('an-buscar'), 'Buscando…');
         prepararDatosBuscarAnalisis().then(function () {
             if (status) status.textContent = '';
-            queueAnalisisGastos();
-        }).catch(function () {
+                queueAnalisisGastos();
+            }).catch(function () {
             hideAnalisisBusy();
             controlesAnalisis(false);
             etiquetaBuscar(document.getElementById('an-buscar'), '');
             if (status) status.textContent = 'No se pudieron cargar los datos locales.';
-            renderAnalisis();
-        });
+                renderAnalisis();
+            });
     }
 
     function refrescarAnalisis() {
@@ -6309,7 +6309,7 @@
             if (CC._anVistaConfirmada) {
                 limpiarCacheGasto(centrosObjetivoAnalisis());
                 CC._anSeedTried = true; // ya se forzó SAP; no resembrar en loop
-                queueAnalisisGastos();
+        queueAnalisisGastos();
             }
         }
         function paso() {
@@ -6886,11 +6886,11 @@
             });
         } else {
             rowsPreview = all.filter(function (c) {
-                if (emp && c.empresa !== emp) return false;
+            if (emp && c.empresa !== emp) return false;
                 if (centro && centroAnalisisKey(c) !== centro) return false;
-                if (user && (c.usuarios || []).indexOf(user) === -1 && c.usuario !== user) return false;
-                return true;
-            });
+            if (user && (c.usuarios || []).indexOf(user) === -1 && c.usuario !== user) return false;
+            return true;
+        });
         }
         var sinResultadosFiltro = CC._anAsigLoaded && CC._anVistaConfirmada && !!all.length && !rowsPreview.length;
         var vacio = !CC._anAsigLoaded || needsFilter || !all.length || sinResultadosFiltro;

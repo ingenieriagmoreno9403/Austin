@@ -88,7 +88,9 @@
             </div>
 
             <div class="col-lg-9 col-6 text-end">
-                <!-- Podríamos añadir un botón o función aquí si es necesario -->
+                <a href="{{ route('ext_documentos') }}" class="btn btn-baseColor-light">
+                    <i class="fa-solid fa-file-lines"></i> Mis documentos
+                </a>
             </div>
         </div>
 

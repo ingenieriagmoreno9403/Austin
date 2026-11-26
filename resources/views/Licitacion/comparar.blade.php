@@ -205,11 +205,11 @@
                             · Total cotizado: <strong>${{ number_format($sugerencia['total'], 2) }}</strong>
                         @endif
                     </p>
-                </div>
+                        </div>
                 <div class="col-lg-4 text-lg-end">
                     <span class="badge bg-success fs-6 px-3 py-2">#1 recomendado</span>
+                    </div>
                 </div>
-            </div>
         </div>
     @endif
 
@@ -542,7 +542,7 @@
                                                 ${{ number_format(($envio / $partidas) / $producto->cantidad, 2) }}
                                             @else — @endif
                                         </td>
-                                        <td class="text-end {{ $claseColumna }}">
+                                         <td class="text-end {{ $claseColumna }}">
                                             @if($margen > 0 && $margen < 100)
                                                 ${{ number_format(round($costo * round((100 / (100 - $margen)), 2), 2), 2) }}
                                             @else — @endif
@@ -577,90 +577,90 @@
                 <div class="alert alert-secondary py-2 small mb-0">
                     Aún no hay precios por producto capturados. La comparación actual usa solo los valores de la sección 1
                     (incluye el campo <strong>Precio</strong> que capturaste arriba).
-                </div>
+            </div>
             @endif
         </div>
-    </div>
+            </div>
 
     <div class="mb-4">
-        <a href="{{ route('licitaciones.index') }}" class="btn btn-baseColor-light btn-mode fs-8">
-            <i class="fa-solid fa-house"></i> Inicio
-        </a>
-        <a href="{{ route('licitaciones.editar', $licitacion->id) }}" class="btn btn-baseColor btn-mode fs-8 me-2">
-            <i class="fa-solid fa-pen"></i> Editar
-        </a>
-
-        @if($licitacion->estado != 'adjudicada')
-            <div class="float-end">
-                <button type="button" class="btn btn-success btn-mode fs-8" data-bs-toggle="modal" data-bs-target="#modalAdjudicarPorProducto">
-                    <i class="fa-solid fa-check"></i> Adjudicar por Producto
-                </button>
-            </div>
-        @else
-            <div class="float-end">
-                <div class="alert alert-success p-2 mb-0">
-                    <i class="fa-solid fa-check-circle"></i> Licitación adjudicada
-                </div>
-            </div>
-
-            @php
-                $adjudicaciones = DB::table('tbllicitacion_adjudicaciones as la')
-                    ->join('tblprovedores as p', 'p.id', '=', 'la.proveedor_id')
-                    ->join('tblproductos as pr', 'pr.id', '=', 'la.producto_id')
-                    ->where('la.licitacion_id', $licitacion->id)
-                    ->select('la.*', 'p.nombre as proveedor_nombre', 'pr.nombre as producto_nombre')
-                    ->get();
-            @endphp
-
-            @if($adjudicaciones->isNotEmpty())
-                <div class="mt-3">
-                    <div class="card">
-                        <div class="card-header bg-info text-white">
-                            <h6 class="mb-0">Resumen de Adjudicaciones</h6>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-sm">
-                                    <thead>
-                                        <tr>
-                                            <th>Producto</th>
-                                            <th>Proveedor</th>
-                                            <th>Cantidad</th>
-                                            <th>Precio Unitario</th>
-                                            <th>Subtotal</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        @foreach($adjudicaciones as $adj)
-                                            <tr>
-                                                <td>{{ $adj->producto_nombre }}</td>
-                                                <td>{{ $adj->proveedor_nombre }}</td>
-                                                <td>{{ $adj->cantidad_adjudicada }}</td>
-                                                <td>${{ number_format($adj->precio_unitario, 2) }}</td>
-                                                <td>${{ number_format($adj->subtotal, 2) }}</td>
-                                            </tr>
-                                        @endforeach
-                                    </tbody>
-                                    <tfoot>
-                                        <tr class="table-info">
-                                            <th colspan="4">Total Adjudicado:</th>
-                                            <th>${{ number_format($adjudicaciones->sum('subtotal'), 2) }}</th>
-                                        </tr>
-                                    </tfoot>
-                                </table>
-                            </div>
-                            <div class="mt-2">
-                                <small class="text-muted">
-                                    <i class="fa-solid fa-info-circle"></i>
-                                    Adjudicado el {{ \Carbon\Carbon::parse($adjudicaciones->first()->fecha_adjudicacion)->format('d/m/Y H:i') }}
-                                    por {{ $adjudicaciones->first()->usuario_adjudicador }}
-                                </small>
-                            </div>
+                <a href="{{ route('licitaciones.index') }}" class="btn btn-baseColor-light btn-mode fs-8">
+                    <i class="fa-solid fa-house"></i> Inicio
+                </a>
+                <a href="{{ route('licitaciones.editar', $licitacion->id) }}" class="btn btn-baseColor btn-mode fs-8 me-2">
+                    <i class="fa-solid fa-pen"></i> Editar
+                </a>
+                
+                @if($licitacion->estado != 'adjudicada')
+                    <div class="float-end">
+                        <button type="button" class="btn btn-success btn-mode fs-8" data-bs-toggle="modal" data-bs-target="#modalAdjudicarPorProducto">
+                            <i class="fa-solid fa-check"></i> Adjudicar por Producto
+                        </button>
+                    </div>
+                @else
+                    <div class="float-end">
+                        <div class="alert alert-success p-2 mb-0">
+                            <i class="fa-solid fa-check-circle"></i> Licitación adjudicada
                         </div>
                     </div>
-                </div>
-            @endif
-        @endif
+                    
+                    @php
+                        $adjudicaciones = DB::table('tbllicitacion_adjudicaciones as la')
+                            ->join('tblprovedores as p', 'p.id', '=', 'la.proveedor_id')
+                            ->join('tblproductos as pr', 'pr.id', '=', 'la.producto_id')
+                            ->where('la.licitacion_id', $licitacion->id)
+                            ->select('la.*', 'p.nombre as proveedor_nombre', 'pr.nombre as producto_nombre')
+                            ->get();
+                    @endphp
+                    
+                    @if($adjudicaciones->isNotEmpty())
+                        <div class="mt-3">
+                            <div class="card">
+                                <div class="card-header bg-info text-white">
+                                    <h6 class="mb-0">Resumen de Adjudicaciones</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Producto</th>
+                                                    <th>Proveedor</th>
+                                                    <th>Cantidad</th>
+                                                    <th>Precio Unitario</th>
+                                                    <th>Subtotal</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach($adjudicaciones as $adj)
+                                                    <tr>
+                                                        <td>{{ $adj->producto_nombre }}</td>
+                                                        <td>{{ $adj->proveedor_nombre }}</td>
+                                                        <td>{{ $adj->cantidad_adjudicada }}</td>
+                                                        <td>${{ number_format($adj->precio_unitario, 2) }}</td>
+                                                        <td>${{ number_format($adj->subtotal, 2) }}</td>
+                                                    </tr>
+                                                @endforeach
+                                            </tbody>
+                                            <tfoot>
+                                                <tr class="table-info">
+                                                    <th colspan="4">Total Adjudicado:</th>
+                                                    <th>${{ number_format($adjudicaciones->sum('subtotal'), 2) }}</th>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    </div>
+                                    <div class="mt-2">
+                                        <small class="text-muted">
+                                            <i class="fa-solid fa-info-circle"></i>
+                                            Adjudicado el {{ \Carbon\Carbon::parse($adjudicaciones->first()->fecha_adjudicacion)->format('d/m/Y H:i') }}
+                                            por {{ $adjudicaciones->first()->usuario_adjudicador }}
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    @endif
+                @endif
     </div>
 </div>
 
@@ -697,8 +697,8 @@
                     @endif
 
                     <div class="alert alert-info py-2">
-                        <i class="fa-solid fa-info-circle"></i>
-                        <strong>Instrucciones:</strong>
+                        <i class="fa-solid fa-info-circle"></i> 
+                        <strong>Instrucciones:</strong> 
                         <ul class="mb-0 mt-2">
                             <li>Seleccione el proveedor y la cantidad para cada producto</li>
                             <li>Use el botón <i class="fa-solid fa-plus text-success"></i> para <strong>dividir un producto</strong> entre varios proveedores</li>
@@ -871,15 +871,15 @@ function aplicarPrecioYEstilo(selectEl) {
     const productoId = selectEl.getAttribute('data-producto-id');
     const filaIndex = selectEl.getAttribute('data-fila-index');
     const proveedorId = selectEl.value;
-    const precioInput = document.querySelector(`input[data-producto-id="${productoId}"][data-fila-index="${filaIndex}"].precio-input`);
+        const precioInput = document.querySelector(`input[data-producto-id="${productoId}"][data-fila-index="${filaIndex}"].precio-input`);
     const opt = selectEl.options[selectEl.selectedIndex];
     const esSugerido = opt && opt.getAttribute('data-sugerido') === '1';
 
     selectEl.classList.toggle('border-success', !!esSugerido);
     selectEl.classList.toggle('border-warning', !!(proveedorId && !esSugerido));
-
-    if (proveedorId) {
-        const precio = obtenerPrecioProducto(productoId, proveedorId);
+        
+        if (proveedorId) {
+            const precio = obtenerPrecioProducto(productoId, proveedorId);
         if (precio > 0) {
             precioInput.value = Number(precio).toFixed(2);
             precioInput.readOnly = true;
@@ -889,13 +889,13 @@ function aplicarPrecioYEstilo(selectEl) {
             precioInput.readOnly = false;
             precioInput.placeholder = 'Capturar precio';
         }
-    } else {
-        precioInput.value = '';
+        } else {
+            precioInput.value = '';
         precioInput.readOnly = true;
-    }
-
-    calcularSubtotal(productoId, filaIndex);
-    validarCantidadesProducto(productoId);
+        }
+        
+        calcularSubtotal(productoId, filaIndex);
+        validarCantidadesProducto(productoId);
 }
 
 // Evento cuando cambia el proveedor
@@ -918,7 +918,7 @@ document.addEventListener('input', function(e) {
         const filaIndex = e.target.getAttribute('data-fila-index');
         calcularSubtotal(productoId, filaIndex);
         if (e.target.classList.contains('cantidad-input')) {
-            validarCantidadesProducto(productoId);
+        validarCantidadesProducto(productoId);
         }
     }
 });
